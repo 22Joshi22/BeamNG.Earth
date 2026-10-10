@@ -295,6 +295,12 @@ clouds, fog and wind. On top of it:
   grass in dry summers (e.g. California), green in wet seasons - driven by latitude, day of year,
   land cover and climate data (phenology), applied to the v1.9 trees/grass and as a seasonal tint of
   vegetation pixels in the imagery (the photos are from one season, usually summer leaf-on).
+- **Winter details** (docs/research/2026-10-10-winter-reference-notes.md): snow amount by traffic
+  level (busy roads plowed and packed, bus stops/quiet streets snowier, country lanes covered),
+  snow banks dirty at the bottom and cleaner on top and low/soft rather than solid walls (BeamNG has
+  no deformation; banks should not stop trucks like concrete), ice patches in shade and refrozen
+  melt (ICE ground model), lakes and rivers freezing from the temperature history, lit windows at
+  night, SNOW/ICE friction tuned for normal tyres (no winter tyres exist in the game).
 - **Other events**: heavy rain/storm visuals and sound, fog banks from real visibility, wind storms;
   floods and wildfire smoke later if data allows.
 - **References**: "Polish Roads" by mcct (https://www.beamng.com/resources/polish-roads.5846/,
