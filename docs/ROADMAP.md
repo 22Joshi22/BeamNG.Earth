@@ -9,6 +9,21 @@ Research behind this plan (all 2026-10-10, docs/research/):
 origin-distance.md, official-map-look.md, world-data-sources.md, perf-and-architecture.md,
 navgraph-traffic-signals.md, long-distance-gps.md, world-map-ui.md.
 
+## Principle: improvements must generalise (user, 2026-10-10)
+"An improvement in one part of the world should improve things everywhere." Places like Fells Point,
+Monument Valley, the Kern River ravine or a famous trail are test cases, never special cases:
+- No location-specific code or hard-coded coordinates in the generator. Every rule is driven by data
+  available everywhere (elevation, land cover, climate zone, OSM/Overture tags, imagery statistics),
+  with sensible fallbacks where data is missing.
+- Per-region choices are allowed only for data sources (e.g. the best imagery per country), never for
+  how the world is built from them.
+- Every tuning change is checked on a fixed, diverse benchmark set of places (all continents and
+  biomes, data-rich and data-poor, flat and steep, cities and wilderness), with before/after
+  screenshots and numbers, plus a held-out set that is not used for tuning. A change that improves
+  the test place but makes the benchmark worse elsewhere is rejected or reworked.
+- Fixes like de-shadowing and colour matching are global methods with automatic gates (they switch
+  themselves off where they do not apply), validated on places with and without the problem.
+
 ## Done today (v1.3.1)
 - Server deleted a previous anchor's tile files while the mod still showed them (rebase reload
   outlasting the fixed 30 s prune delay): the engine logged `Could not open '...far_<a>_....cdae'`
