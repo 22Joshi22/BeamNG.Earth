@@ -21,3 +21,20 @@ so every frame-cost number of this run is invalid; redo costs with the window fo
   exactly 0 after 6 s. Inconclusive: arcade auto-parking-brake or a sleeping physics body can hold
   the car; redo with the car rolling slowly (e.g. 2 m/s coasting) and compare drift with/without wind.
 - Rain (Precipitation, rain_medium) created and destroyed fine; cost unmeasured (unfocused window).
+
+## Second pass (game focused, only BeamNG.Earth active, Whitney summit, 4K) - tools/probe_weather2.py
+- **Other mods cost ~4-5 ms/frame**: 120 fps at the summit view with only BeamNG.Earth, vs ~77 fps
+  at a similar view earlier with the user's 8 other mods (TAA, PerformanceTweaker, BWM weather,
+  vehicle FX, particles, scratches, sparks, driver camera).
+- Cloud cost: coverage 0 / 0.5 / 0.9 -> p50 8.24 / 8.36 / 8.53 ms (+0.3 ms at 0.9).
+- Rain (Precipitation rain_medium, followCam): 0 / 3000 / 9000 drops -> p50 9.74 / 9.77 / 9.94 ms
+  (+0.2 ms at 9000). The drops were not visible in a screenshot: check the intensity call
+  (setPercentage / dataBlock fields) in the weather build.
+- Coverage looking 20 deg up, 4 headings (sky fraction, clouds vs the coverage-0 reference):
+  0.6 -> 1.3 %, 0.7 -> 2.1 %, 0.8 -> 3.0 %, 0.9 -> 4.2 %, 0.95 -> 5.1 %. Visually: a band of
+  fair-weather cumulus toward the horizon from ~0.7, never overcast. Overcast needs other fields
+  (layer `height`/thickness, baseColor alpha, weather map seed) - calibrate in the weather build.
+- cirrusDensity 0.5 + cirrusCoverage 0.5: faint cirrus streaks visible (default density 0 = none).
+- Ground wind 25 m/s from the car's left on a test car coasting at 3 m/s: the car rolled down the
+  summit slope to ~30 m/s either way (bad site); it drifted ~85 m further right with wind than without
+  over 8 s, which suggests wind does push cars. Confirm on flat ground.
