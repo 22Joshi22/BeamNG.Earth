@@ -9,8 +9,9 @@ commit never re-keys a tile (v1.1 had per-block apron variants). Levels: L0 (256
 
 Selection (select()):
   - a node of level L >= 1 is refined while the player is closer than K(L) * S; in mesh mode
-    a node is also refined down to L-1 within NEAR_RADII[-1] (400 m) and to L-2 within
-    NEAR_RADII[-2] (150 m) of the player (min-level radii);
+    a node is also refined down to L-1 within 400 m and to L-2 within 150 m of the player
+    (min-level radii NEAR_RADII[32]; with 64 cells: L0 within 400 m, L-1 within 150 m, and the
+    K' table, so selection stays one level coarser at the same distance);
   - hysteresis: a node refined last time stays refined until the player is (1 + h) times its
     switch distance away (h = 0.25, so the band is 25 % of the switch distance);
   - terrain mode only: nodes overlapping a forced box (the committed, pending and predicted
@@ -24,14 +25,17 @@ LOD changes are grouped into swap groups (swap_groups()): connected sets of adde
 tiles with the same footprint (a parent and its descendants), which the mod exchanges with a
 vertical crossover (§2.5 C2).
 
-Each tile is 32 x 32 cells (2048 tris) plus a skirt on all 4 edges: a vertical curtain facing
-outwards, max(2 m, 0.02 S, 2.5 err + 1 m) deep, so neighbours at different levels and tiles
-moving during a crossover never show cracks. Vertex x, y are plane positions; z is the ENU z of
-the DEM surface point under it (curvature included). Tiles of level <= 0 use the terrain block's
-DEM zoom and height quantum, so their vertices (every 4th / 2nd / every lattice sample for L0 /
-L-1 / L-2) equal the terrain's samples bit for bit. Cells are split along the diagonal the
-Torque TerrainBlock uses for the same square (torque_split45()), so an L-2 tile is the
-TerrainBlock's collision surface exactly. Per tile the builder also measures `err` (max deviation
+Each tile is C x C cells plus a skirt on all 4 edges: a vertical curtain facing outwards,
+max(2 m, 0.02 S, 2.5 err + 1 m) deep, so neighbours at different levels and tiles moving during a
+crossover never show cracks. C is the layout's cell count (Layout, docs/V1_4_SPEC.md §3.1 M1):
+32 (v1.3.1, FORMAT 3, 2048 + 256 tris; the default) or 64 (FORMAT 4, 8192 + 512 tris, every level
+keeps its size so its vertex spacing halves, and the exact level is L-1). Vertex x, y are plane
+positions; z is the ENU z of the DEM surface point under it (curvature included). Tiles of level
+<= 0 use the terrain block's DEM zoom and height quantum, so their vertices (every 4th / 2nd /
+every lattice sample for L0 / L-1 / L-2 with 32 cells; every 2nd / every sample for L0 / L-1 with
+64) equal the terrain's samples bit for bit. Cells are split along the diagonal the Torque
+TerrainBlock uses for the same square (torque_split45()), so an exact-level tile (L-2 with 32
+cells, L-1 with 64) is the TerrainBlock's surface exactly at its vertices. Per tile the builder also measures `err` (max deviation
 from a 2x finer reference surface) and, for L0 in terrain mode, `sink` (how far the tile must go
 down to be under the terrain block everywhere).
 
@@ -60,13 +64,29 @@ import imagery
 
 BASE = 256.0            # L0 tile size
 MAX_LEVEL = 9           # L9 = 131 072 m
-MESH_MIN_LEVEL = -2     # mesh near-visual mode: L-2 = 64 m tiles on the 2 m physics lattice
-CELLS = 32
 RADIUS = 80000.0
-K_NEAR = {1: 3.0, 2: 3.0}   # K(L) for refining a node of level L >= 1 (§3 recommendation)
-K_FAR = 2.5                 # ... for L >= 3
-# Mesh mode: everything within NEAR_RADII[m] of the player is level m or finer (v1.3 §B).
-NEAR_RADII = {-2: 150.0, -1: 400.0}
+# Tile layouts by cell count (docs/V1_4_SPEC.md §3.1 M1; Layout below). Nothing reads these at call
+# time through a module setting: a Layout picks its row, and the server makes one Layout.
+CELL_COUNTS = (32, 64)
+# K(L) for refining a node of level L >= 1; the last entry repeats for coarser levels.
+# 32 (v1.3.1, §3 recommendation): K(1) = K(2) = 3, K(>=3) = 2.5. 64: K'(L) = K(L-1) / 2, so a level
+# splits at the distance where the 32-cell layout split the level below it (K'(1) = 0.75: 384 m,
+# the 400 m radius of L0 wins).
+K_TABLE = {32: {1: 3.0, 2: 3.0, 3: 2.5}, 64: {1: 0.75, 2: 1.5, 3: 1.5, 4: 1.25}}
+# Mesh mode: everything within NEAR_RADII[cells][m] of the player is level m or finer (v1.3 §B).
+NEAR_RADII = {32: {-2: 150.0, -1: 400.0}, 64: {-1: 150.0, 0: 400.0}}
+# Mesh near-visual mode's finest level: the one whose vertices are the 2 m physics lattice
+# (cells * 2 m = its size): L-2 = 64 m with 32 cells, L-1 = 128 m with 64.
+MESH_MIN_LEVEL = {32: -2, 64: -1}
+CONTENT_FORMAT = {32: 3, 64: 4}     # the protocol's FORMAT (hello.format) of each layout
+# Texture edge (px) per level from the finest level of the mode, the last value repeating. 32: the
+# v1.3.1 rule (two finest levels tex_near, the rest tex_far; both 256). 64 (§3.1; P8 may change it):
+# 256 to L1, 512 from L2 (keeps today's texel density at distance).
+TEX_DEFAULT = {32: (256, 256, 256), 64: (256, 256, 256, 512)}
+BLOCK_SIZES = (1024,)       # terrain block samples per edge a layout may use (M4 adds 512)
+# Triangles per tile shape: 8192 + 512 at 64 cells. The old 8192 was the ProceduralMesh rule;
+# .cdae has no such cliff and the 65k-vertex engine limit is far away (§3.1).
+TRIS_MAX = 9000
 HYSTERESIS = 0.25           # a refined node stays refined while d < (1 + h) * its switch distance
 HOLD_S = 2.0                # a node changes state at most once per HOLD_S seconds (§2.4)
 DETAIL_M = 2.0              # UV1 (detail map) repeat in metres; must divide 64 (see module doc)
@@ -84,8 +104,79 @@ MOD_PALETTE = "far_palette.png"
 FORMATS = ("cdae", "dae")
 
 
+@dataclass(frozen=True)
+class Layout:
+    """The tile layout of a server (docs/V1_4_SPEC.md §3.1, M1): cells per tile edge (32: v1.3.1,
+    FORMAT 3; 64: FORMAT 4), the terrain block's samples per edge, the near-visual mode (mesh: tiles
+    down to the exact level with the near radii; terrain: L0 floor, frozen at 32 cells) and the
+    texture edge per level (from the mode's finest level, the last value repeating; None: the
+    cells' default). Made once by earthd.Server and passed to select (K, radii), build_tile,
+    zoom_for_level and heightmap, so nothing depends on a module setting."""
+    cells: int = 32
+    block: int = heightmap.SIZE
+    mesh: bool = True
+    tex: tuple = None
+
+    def __post_init__(self):
+        if self.cells not in CELL_COUNTS:
+            raise ValueError(f"cells must be one of {CELL_COUNTS}, not {self.cells!r}")
+        if self.block not in BLOCK_SIZES:
+            raise ValueError(f"terrain block size {self.block!r} is not supported (one of {BLOCK_SIZES})")
+        if not self.mesh and self.cells != 32:
+            raise ValueError("terrain near-visual mode is frozen at the v1.3.1 layout (32 cells)")
+        tex = TEX_DEFAULT[self.cells] if self.tex is None else tuple(int(v) for v in self.tex)
+        if not tex:
+            raise ValueError("no texture size")
+        object.__setattr__(self, "tex", tex)
+
+    @property
+    def k_table(self):
+        return K_TABLE[self.cells]
+
+    def k(self, level):
+        """K(L) of a node of level L >= 1 (the last table entry repeats)."""
+        t = self.k_table
+        return t[min(max(level, 1), max(t))]
+
+    @property
+    def near_radii(self):
+        """The min-level radii of the mode (none in terrain mode: its floor is L0)."""
+        return dict(NEAR_RADII[self.cells]) if self.mesh else {}
+
+    @property
+    def min_level(self):
+        return MESH_MIN_LEVEL[self.cells] if self.mesh else 0
+
+    @property
+    def exact_level(self):
+        """The level whose vertices are the physics lattice (mesh mode's finest)."""
+        return MESH_MIN_LEVEL[self.cells]
+
+    @property
+    def format(self):
+        return CONTENT_FORMAT[self.cells]
+
+    @property
+    def tris(self):
+        """Triangles per tile: the grid plus a skirt quad per edge cell."""
+        return 2 * self.cells * self.cells + 8 * self.cells
+
+    def spacing(self, level):
+        return level_size(level) / self.cells
+
+    def dem_zoom(self, lat, level):
+        return zoom_for_level(self, lat, level)
+
+    def tex_size(self, level):
+        return self.tex[min(max(level - self.min_level, 0), len(self.tex) - 1)]
+
+
+V131 = Layout(32)           # the v1.3.1 mesh layout (the server's default; terrain mode: mesh=False)
+
+
 def k_default(level):
-    return K_NEAR.get(level, K_FAR)
+    """K of the v1.3.1 layout (32 cells)."""
+    return V131.k(level)
 
 
 def level_size(level):
@@ -93,13 +184,14 @@ def level_size(level):
     return BASE * 2.0 ** level
 
 
-def switch_distance(level, kfun=k_default, radii=None, min_level=0):
+def switch_distance(level, kfun=None, radii=None, min_level=0, layout=V131):
     """Distance below which a node of `level` is refined (0: never): K(L) * S for L >= 1, and
-    at least NEAR_RADII[m] for every allowed finer minimum level m < L."""
+    at least radii[m] for every allowed finer minimum level m < L. kfun / radii default to the
+    layout's K table and NEAR_RADII row."""
     if level <= min_level:
         return 0.0
-    d = kfun(level) * level_size(level) if level >= 1 else 0.0
-    for m, r in (NEAR_RADII if radii is None else radii).items():
+    d = (kfun or layout.k)(level) * level_size(level) if level >= 1 else 0.0
+    for m, r in (NEAR_RADII[layout.cells] if radii is None else radii).items():
         if min_level <= m < level:
             d = max(d, r)
     return d
@@ -175,16 +267,19 @@ def overlaps(a, b):
     return a[0] < b[2] and b[0] < a[2] and a[1] < b[3] and b[1] < a[3]
 
 
-def select(px, py, forced=(), prev_refined=frozenset(), kfun=k_default, h=HYSTERESIS,
-           radius=RADIUS, max_level=MAX_LEVEL, hold=frozenset(), min_level=0, radii=None):
+def select(px, py, forced=(), prev_refined=frozenset(), kfun=None, h=HYSTERESIS,
+           radius=RADIUS, max_level=MAX_LEVEL, hold=frozenset(), min_level=0, radii=None, layout=V131):
     """Desired tiles for a player at (px, py).
 
     forced: bboxes (terrain blocks) under which everything is refined to L0 (terrain mode).
     prev_refined: the nodes (L, i, j) refined last time (for the hysteresis).
     hold: nodes whose state must not change now (they changed less than HOLD_S ago).
-    min_level: finest level (0; MESH_MIN_LEVEL in mesh mode); radii: the min-level radii
-    (default NEAR_RADII; only levels >= min_level count).
+    min_level: finest level (0; layout.min_level in mesh mode); kfun / radii: K(L) and the
+    min-level radii (default: the layout's K table and NEAR_RADII row; only levels >= min_level
+    count).
     Returns ({key: Tile}, set of refined nodes)."""
+    kfun = kfun or layout.k
+    radii = NEAR_RADII[layout.cells] if radii is None else radii
     lo_x, lo_y, hi_x, hi_y = px - radius, py - radius, px + radius, py + radius
     s = level_size(max_level)
     stack = [(max_level, i, j)
@@ -269,9 +364,9 @@ def transform_bbox(src, dst, bb):
     return (float(e.min()), float(n.min()), float(e.max()), float(n.max()))
 
 
-def zoom_for_level(lat, level):
-    """DEM zoom with pixels about half the vertex spacing (L1+; L0 uses the heightmap zoom)."""
-    return demmod.zoom_for(lat, BASE * (1 << level) / CELLS / 2, FAR_MAX_ZOOM)
+def zoom_for_level(layout, lat, level):
+    """DEM zoom with pixels about half the layout's vertex spacing (L1+; L0 uses the heightmap zoom)."""
+    return demmod.zoom_for(lat, layout.spacing(level) / 2, FAR_MAX_ZOOM)
 
 
 def skirt_depth(size, err=0.0):
@@ -385,7 +480,7 @@ class Built:
     uvs: np.ndarray         # (n, 2) palette coordinates
     planar: np.ndarray      # (n, 2) tile-local xy / S: the footprint UV0 and the tangent frame
     tris: np.ndarray        # (m, 3) counter-clockwise from +Z
-    grid: np.ndarray        # (33, 33) absolute vertex heights, float32 (for swap-group deltas)
+    grid: np.ndarray        # (cells + 1)² absolute vertex heights, float32 (for swap-group deltas)
     err: float              # max |reference - tile| (m)
     sink: float | None      # L0 (terrain mode): drop that puts the tile under the terrain everywhere
     skirt: float            # skirt depth (m)
@@ -397,23 +492,27 @@ class Built:
         return self.planar * (self.size / DETAIL_M)
 
 
-def build_tile(frame, dem, tile, zoom, q=None, ref_zoom=None, with_sink=True):
-    """Geometry of one tile. zoom: DEM zoom of its vertices; ref_zoom: zoom of the 2x finer
-    reference used for `err` (default zoom). For levels <= 0 pass q (the anchor's height
-    quantum) and the heightmap zoom: vertices are then Q-rounded 2 m lattice samples, the same
-    values the terrain block stores, and (L0, with_sink) `sink` is measured against the
-    terrain's 2 m lattice."""
+def build_tile(frame, dem, tile, zoom, q=None, ref_zoom=None, with_sink=True, layout=V131):
+    """Geometry of one tile with layout.cells cells per edge. zoom: DEM zoom of its vertices;
+    ref_zoom: zoom of the 2x finer reference used for `err` (default zoom). For levels <= 0 pass q
+    (the anchor's height quantum) and the heightmap zoom: vertices are then Q-rounded 2 m lattice
+    samples, the same values the terrain block stores, and (L0, with_sink) `sink` is measured
+    against the terrain's 2 m lattice."""
+    cells = layout.cells
     x0, y0, x1, y1 = tile.bbox
     S = tile.size
-    sp = S / CELLS
+    sp = S / cells
     elev_fn = lambda la, lo: dem.sample(la, lo, zoom)       # noqa: E731
     terrain = None
     if tile.level <= 0:
         # One evaluation of the terrain lattice over the tile (129² for L0, 65² for L-1, 33²
-        # for L-2) gives the vertices (every 4th / 2nd / every sample), the error reference at
-        # half the vertex spacing and the sink reference (all samples).
+        # for L-2) gives the vertices (32 cells: every 4th / 2nd / every sample; 64 cells: every
+        # 2nd / every sample for L0 / L-1), the error reference at half the vertex spacing and the
+        # sink reference (all samples).
         n = int(S / heightmap.SQUARE) + 1
-        step = (n - 1) // CELLS
+        step = (n - 1) // cells
+        if step < 1 or (n - 1) % cells:
+            raise ValueError(f"level {tile.level} is finer than the {cells}-cell layout's lattice level")
         k0x, k0y = int(x0 // heightmap.SQUARE), int(y0 // heightmap.SQUARE)
         lxs, lys = heightmap.lattice_coords(k0x, n), heightmap.lattice_coords(k0y, n)
         lelev, lu = heightmap.surface(frame, elev_fn, lxs, lys)
@@ -422,25 +521,25 @@ def build_tile(frame, dem, tile, zoom, q=None, ref_zoom=None, with_sink=True):
         elev, U = lelev[::step, ::step], lq[::step, ::step]
         if step >= 2:
             ref = lu[::step // 2, ::step // 2]
-        else:                           # L-2: the vertices are the lattice; reference at 1 m
-            r = x0 + np.arange(2 * CELLS + 1) * (sp / 2), y0 + np.arange(2 * CELLS + 1) * (sp / 2)
+        else:                           # the exact level: the vertices are the lattice; reference at 1 m
+            r = x0 + np.arange(2 * cells + 1) * (sp / 2), y0 + np.arange(2 * cells + 1) * (sp / 2)
             ref = heightmap.surface_u(frame, elev_fn, *r)
         if tile.level == 0 and with_sink:
             terrain = lq
     else:
-        xs = x0 + np.arange(CELLS + 1) * sp
-        ys = y0 + np.arange(CELLS + 1) * sp
+        xs = x0 + np.arange(cells + 1) * sp
+        ys = y0 + np.arange(cells + 1) * sp
         elev, U = heightmap.surface(frame, elev_fn, xs, ys)
         if q is not None:
             U = heightmap.quantise(U, q) * q
         rz = zoom if ref_zoom is None else ref_zoom
-        rxs = x0 + np.arange(2 * CELLS + 1) * (sp / 2)
-        rys = y0 + np.arange(2 * CELLS + 1) * (sp / 2)
+        rxs = x0 + np.arange(2 * cells + 1) * (sp / 2)
+        rys = y0 + np.arange(2 * cells + 1) * (sp / 2)
         ref = heightmap.surface_u(frame, lambda la, lo: dem.sample(la, lo, rz), rxs, rys)
     U = np.asarray(U, np.float64)
 
     # Geometric error: the reference against the triangulated tile, on the 2x grid.
-    rf = np.arange(2 * CELLS + 1) * (sp / 2)
+    rf = np.arange(2 * cells + 1) * (sp / 2)
     RX, RY = np.meshgrid(rf, rf)
     err = float(np.abs(ref - surface_at(U, sp, RX, RY)).max())
     sink = None
@@ -497,7 +596,7 @@ def write_built(path, built, fmt="cdae", material=MATERIAL, textured=False, tex_
     has its own imagery texture (UV0 = footprint, UV1 = world-locked detail); otherwise UV0 is
     the shared palette coordinate and there is no UV1. tex_px: the texture has a border of
     imagery.gutter(tex_px) texels around the footprint (UV0 is inset to match)."""
-    assert len(built.tris) <= 8192
+    assert len(built.tris) <= TRIS_MAX
     uvs = built.uvs
     if textured:
         uvs = built.planar if tex_px is None else imagery.gutter_uv(built.planar, tex_px)
@@ -511,11 +610,11 @@ def write_built(path, built, fmt="cdae", material=MATERIAL, textured=False, tex_
     return os.path.getsize(path)
 
 
-def write_tile(path, frame, dem, tile, zoom, q=None, ref_zoom=None, fmt="cdae", cancelled=None):
+def write_tile(path, frame, dem, tile, zoom, q=None, ref_zoom=None, fmt="cdae", cancelled=None, layout=V131):
     """Build and write one tile; returns the Built record, or None if cancelled meanwhile."""
     if cancelled is not None and cancelled.is_set():
         return None
-    built = build_tile(frame, dem, tile, zoom, q, ref_zoom)
+    built = build_tile(frame, dem, tile, zoom, q, ref_zoom, layout=layout)
     write_built(path, built, fmt)
     return built
 
@@ -523,13 +622,14 @@ def write_tile(path, frame, dem, tile, zoom, q=None, ref_zoom=None, fmt="cdae", 
 def group_deltas(group_tiles):
     """(dIn, dOut) of a swap group: how far the new surface rises above the old one at most,
     and how far the old one lies above the new one, evaluated on the finest vertex grid of the
-    group (every vertex of both sides). group_tiles: (adds, removes), lists of (Tile, grid)."""
+    group (every vertex of both sides). group_tiles: (adds, removes), lists of (Tile, grid); a
+    grid's shape gives its tile's cell count."""
     adds, removes = group_tiles
     if not adds or not removes:
         return 0.0, 0.0
-    sp = min(t.size / CELLS for t, _ in adds + removes)
     adds = [(t, np.asarray(g, np.float64)) for t, g in adds]
     removes = [(t, np.asarray(g, np.float64)) for t, g in removes]
+    sp = min(t.size / (g.shape[0] - 1) for t, g in adds + removes)
     d_in = d_out = 0.0
     for ta, ga in adds:
         ab = ta.bbox
@@ -541,8 +641,8 @@ def group_deltas(group_tiles):
             # The intersection of two quadtree tiles is the smaller one: aligned to sp.
             X, Y = np.meshgrid(x0 + np.arange(int(round((x1 - x0) / sp)) + 1) * sp,
                                y0 + np.arange(int(round((y1 - y0) / sp)) + 1) * sp)
-            z_new = surface_at(ga, ta.size / CELLS, X - ab[0], Y - ab[1])
-            z_old = surface_at(gr, tr.size / CELLS, X - rb[0], Y - rb[1])
+            z_new = surface_at(ga, ta.size / (ga.shape[0] - 1), X - ab[0], Y - ab[1])
+            z_old = surface_at(gr, tr.size / (gr.shape[0] - 1), X - rb[0], Y - rb[1])
             dz = z_new - z_old
             d_in = max(d_in, float(dz.max()))
             d_out = max(d_out, float(-dz.min()))

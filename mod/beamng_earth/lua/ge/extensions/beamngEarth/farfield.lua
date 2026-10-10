@@ -4,14 +4,15 @@
 --
 -- Messages (core.lua routes them here):
 --   far_tile {anchorId, key, level, shape, pos = SW corner, err, sink?, state = 'group'|'prefetch',
---             material?, texture?, detail?}
+--             material?, texture?, detail?, tex?}
 --     A tile to load. It is created HIDDEN (probe P6: a hidden TSStatic pays its whole import at
 --     registerObject, and unhiding later costs nothing), within the governor's budget. 'prefetch'
 --     tiles load only when nothing else waits.
 --     With `material` (protocol 4, satellite imagery) the tile's own Material (mapTo = material,
 --     colorMap = texture, detail map on UV1 if `detail`) is created first, as its own governor unit,
 --     and deleted with the last tile using it (satmat.lua). Without it (protocol 3 tiles,
---     `--imagery off`) the tile uses the static far-tile material.
+--     `--imagery off`) the tile uses the static far-tile material. `tex` (FORMAT 4, docs/V1_4_SPEC.md
+--     3.1 M1) is the texture's edge in px: the governor unit kind cdaeTex128/256/512 (governor.texKind).
 --   far_swap {anchorId, id, add = [keys], remove = [keys], dIn?, dOut?}
 --     One LOD change. It runs once every add is loaded, never earlier ("no removal before the
 --     replacement is loaded", so never a hole), and groups that share a key run in arrival order.
@@ -48,6 +49,15 @@
 -- previous anchor's add was dropped (still loading at the switch, or arriving late), the far_removes
 -- of that anchor are ignored instead (the dropped tile may be what covered their area) and its
 -- tiles wait for far_done.
+--
+-- Ground under the player (docs/V1_4_SPEC.md 3.0 M0, the `exactMiss` metric of 3.4): every update
+-- given the player's position finds the shown tile under it by key lookup (no loop over tiles) and
+-- counts the frame as an exact miss when, in mesh mode, that tile is not the exact level (the
+-- physics lattice: L-2 with 32-cell tiles; M1's 64 cells make it L-1: core.lua sets it from
+-- hello.cells through setExactLevel(exactLevelFor(cells))), is in a
+-- crossover more than 1 cm off its height, or there is none. A previous anchor's exact tile counts
+-- as exact. stats() reports exactMiss / exactFrames / underLevel; exactState() is for the per-frame
+-- driver (tools/drive_driver.lua).
 
 local M = {}
 
@@ -55,8 +65,9 @@ local geodesy = require('beamngEarth/geodesy')
 local crossover = require('beamngEarth/crossover')
 local lattice = require('beamngEarth/lattice')
 local satmat = require('beamngEarth/satmat')
+local governor = require('beamngEarth/governor')
 
-local floor, min, max, abs, huge = math.floor, math.min, math.max, math.abs, math.huge
+local floor, min, max, abs, huge, ln = math.floor, math.min, math.max, math.abs, math.huge, math.log
 
 M.MATERIAL = 'bngEarthFar_v3' -- the material name inside the server's shapes (design 6.2)
 M.MATERIALS_FILE = '/levels/beamng_earth/art/shapes/beamngEarth/main.materials.json'
@@ -64,6 +75,9 @@ M.EDGE_BAND = 128       -- a covered tile nearer than this to the block boundary
 M.HIDE_DEPTH = 2.0      -- covered tile without a server `sink`: how far it sinks before it hides
 M.DELETE_PRESSURE = 64  -- deletes wait for the import queue unless this many objects are doomed
 M.MAX_DT = 0.1          -- s; longest step of the transition clock per frame
+M.EXACT_LEVEL = -2      -- the exact (physics lattice) level of the 32-cell mesh layout (server MESH_MIN_LEVEL)
+M.MAX_LEVEL = 9         -- coarsest level (server farfield.MAX_LEVEL)
+M.EXACT_OFF = 0.01      -- m; an exact tile further than this off its height (crossover) is a miss
 
 local pending = {}      -- key -> instance received but not shown yet (current anchor)
 local live = {}         -- key -> shown instance (current anchor), covered or not
@@ -91,7 +105,12 @@ local clock = 0         -- s, transition clock (advanced by update)
 local materialChecked = false
 local nearVisual = 'terrain' -- 'terrain' | 'mesh' (server hello; survives forget(): a server setting)
 local counters = { imports = 0, failed = 0, crossovers = 0, instant = 0, pops = 0, textured = 0, materials = 0,
-  capWaits = 0, oldCovered = 0 }
+  capWaits = 0, oldCovered = 0, exactFrames = 0, exactMiss = 0 }
+local exactLevel = M.EXACT_LEVEL
+local under = { level = nil, old = false, miss = false } -- the tile under the player, last update
+-- Previous anchors whose tiles may still be shown, newest first: { anchor, invs = inverse transforms
+-- from the current frame back to that anchor's plane, applied in order } (the player lookup).
+local oldFrames = {}
 local lastFrame = { units = 0, moving = 0 }
 
 local function oldKey(a, key) return tostring(a) .. '/' .. key end
@@ -142,6 +161,7 @@ local function newInst(msg, seq)
     material = type(msg.material) == 'string' and msg.material ~= '' and msg.material or nil,
     texture = type(msg.texture) == 'string' and msg.texture or nil,
     detail = msg.detail == true,
+    tex = tonumber(msg.tex), -- texture px (FORMAT 4); nil from a FORMAT 3 server
     mat = nil, matFailed = false, -- mat: the material name this instance holds a reference to
     id = nil, queued = true, loaded = false, failed = false, shown = false, doomed = false,
     cover = 'none', coverOff = 0, coverHide = false, coverAnim = nil, -- cover state and its target
@@ -151,10 +171,11 @@ local function newInst(msg, seq)
 end
 
 -- Governor unit kind of an import: a .cdae with its own imagery texture costs more (texture load,
--- ~3 ms in-game) than one on the shared static material (~1.9 ms).
+-- ~3 ms in-game) than one on the shared static material (~1.9 ms); with FORMAT 4 the texture size
+-- picks the kind (cdaeTex128/256/512, governor.texKind).
 local function kindOf(inst)
   if not inst.shape:lower():match('%.cdae$') then return 'dae' end
-  return inst.material and 'cdaeTex' or 'cdae'
+  return inst.material and governor.texKind(inst.tex) or 'cdae'
 end
 
 -- Drop the instance's material reference (an object that never spawned, or failed to).
@@ -652,6 +673,12 @@ end
 -- Running transitions end first. Call before switchAnchor(..., true).
 function M.transform(xf)
   finishAll()
+  if xf.inverse then
+    local inv = xf:inverse()
+    for _, f in ipairs(oldFrames) do table.insert(f.invs, 1, inv) end
+    table.insert(oldFrames, 1, { anchor = anchorId, invs = { inv } })
+    oldFrames[5] = nil -- a tile older than four rebases is long gone
+  end
   local bx, by, bz, bw = xf:beamngQuat()
   local function move(inst)
     if inst.doomed then return end
@@ -702,7 +729,7 @@ function M.switchAnchor(newAnchorId, keepOld, blk)
     for _, set in ipairs({ live, old, pending }) do
       for _, inst in pairs(set) do doom(inst, true) end
     end
-    old, oldCount, lossy = {}, 0, {}
+    old, oldCount, lossy, oldFrames = {}, 0, {}, {}
   end
   pending, live = {}, {}
   mainQ, mH, mT, preQ, pH, pT, nQueued = {}, 1, 0, {}, 1, 0, 0
@@ -770,9 +797,42 @@ local function pendingMainCount()
   return n
 end
 
+-- The shown tile containing (x, y) in `set` (live, or old with anchor a: keys 'a/L_i_j'), finest
+-- level first, from the exact level up: at most MAX_LEVEL - exactLevel + 1 table lookups.
+local function shownAt(set, a, x, y)
+  for l = exactLevel, M.MAX_LEVEL do
+    local s = lattice.L0 * 2 ^ l
+    local k = l .. '_' .. floor(x / s) .. '_' .. floor(y / s)
+    local inst = set[a ~= nil and oldKey(a, k) or k]
+    if inst and inst.shown and not inst.failed and not inst.doomed then return inst end
+  end
+end
+
+-- The ground under the player this frame (after this frame's reveals): see the module header.
+local function updateUnder(player)
+  local px, py, pz = tonumber(player.x), tonumber(player.y), tonumber(player.z) or 0
+  if not px or not py or anchorId == nil then return end
+  local inst, isOld = shownAt(live, nil, px, py), false
+  if not inst then
+    for _, f in ipairs(oldFrames) do
+      local x, y, z = px, py, pz
+      for _, inv in ipairs(f.invs) do x, y, z = inv:apply(x, y, z) end
+      inst = shownAt(old, f.anchor, x, y)
+      if inst then isOld = true; break end
+    end
+  end
+  local miss = false
+  if nearVisual == 'mesh' then -- terrain mode: the TerrainBlock itself is the visible near ground
+    miss = not inst or inst.level ~= exactLevel or abs(inst.off) > M.EXACT_OFF
+    counters.exactFrames = counters.exactFrames + 1
+    if miss then counters.exactMiss = counters.exactMiss + 1 end
+  end
+  under.level, under.old, under.miss = inst and inst.level, isOld, miss
+end
+
 -- gov: governor instance (governor.lua); dt: s since the last frame (wall); cam: nil or
--- {x,y,z,fx,fy,fz,fovDeg} for the off-screen test.
-function M.update(gov, dt, cam)
+-- {x,y,z,fx,fy,fz,fovDeg} for the off-screen test; player: nil or {x,y,z} (the exactMiss metric).
+function M.update(gov, dt, cam, player)
   clock = clock + min(max(dt or 0, 0), M.MAX_DT)
   local now = gov.clock
   local units = 0
@@ -900,7 +960,7 @@ function M.update(gov, dt, cam)
   --    tiles go (progressively, through the delete queue)
   if doneReceived and oldCount > 0 and #groups == 0 and pendingMainCount() == 0 then
     for _, inst in pairs(old) do doom(inst, false) end
-    old, oldCount = {}, 0
+    old, oldCount, oldFrames = {}, 0, {}
   end
 
   -- 6. deletes; then the materials no object uses any more (never before their last object).
@@ -928,6 +988,24 @@ function M.update(gov, dt, cam)
     end
   end
   lastFrame.units, lastFrame.moving = units, nMoving
+  if player then updateUnder(player) end
+end
+
+-- The tile level under the player at the last update (nil: none), whether it is a previous
+-- anchor's tile, and whether that frame was an exact miss (mesh mode).
+function M.exactState() return under.level, under.old, under.miss end
+
+-- The exact (physics lattice) level of a tile grid: the level whose tile is `cells` lattice squares
+-- wide (32 cells: L-2 = 64 m; 64 cells: L-1 = 128 m).
+function M.exactLevelFor(cells)
+  cells = tonumber(cells) or 32
+  return floor(ln(cells * lattice.SQUARE / lattice.L0) / ln(2) + 0.5)
+end
+
+-- The exact (physics lattice) level: -2 for the v1.3.1 32-cell layout (default), -1 for 64 cells (M1).
+function M.setExactLevel(level)
+  exactLevel = tonumber(level) or M.EXACT_LEVEL
+  return exactLevel
 end
 
 -- Delete everything right away (extension unload / level end).
@@ -944,6 +1022,7 @@ end
 -- materials are not level objects: they are deleted here (no tile uses them any more).
 function M.forget()
   pending, live, old, oldCount, lossy, doomed, moving = {}, {}, {}, 0, {}, {}, {}
+  oldFrames, under.level, under.old, under.miss = {}, nil, false, false
   mainQ, mH, mT, preQ, pH, pT, nQueued = {}, 1, 0, {}, 1, 0, 0
   groups, activeGroups, removals, rH, rT = {}, 0, {}, 1, 0
   anchorId, doneReceived, block = nil, false, nil
@@ -981,7 +1060,9 @@ function M.stats()
     imports = counters.imports, failed = counters.failed, crossovers = counters.crossovers,
     instant = counters.instant, pops = counters.pops, capWaits = counters.capWaits, frameUnits = lastFrame.units,
     moving = lastFrame.moving, materials = satmat.count(), materialsCreated = counters.materials,
-    textured = counters.textured, oldCovered = counters.oldCovered, nearVisual = nearVisual }
+    textured = counters.textured, oldCovered = counters.oldCovered, nearVisual = nearVisual,
+    waitingGroups = waiting, exactLevel = exactLevel, underLevel = under.level, underOld = under.old,
+    exactMiss = counters.exactMiss, exactFrames = counters.exactFrames }
 end
 
 -- for tests

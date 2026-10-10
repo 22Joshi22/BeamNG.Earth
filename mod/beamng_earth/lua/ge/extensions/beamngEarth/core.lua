@@ -23,6 +23,7 @@ local geodesy = require('beamngEarth/geodesy')
 local net = require('beamngEarth/net')
 local terrain = require('beamngEarth/terrain')
 local farfield = require('beamngEarth/farfield')
+local crossover = require('beamngEarth/crossover')
 local rebase = require('beamngEarth/rebase')
 local follow = require('beamngEarth/follow')
 local lattice = require('beamngEarth/lattice')
@@ -34,7 +35,10 @@ local ui = require('beamngEarth/ui')
 local LEVEL_ID = 'beamng_earth'
 local MOD_VERSION = '0.4.0'
 local PROTOCOL = 4
-local FORMAT = 3               -- far-tile artefact format the mod understands (.cdae / static material)
+-- Far-tile artefact formats the mod reads: 3 (v1.3.1, 32-cell tiles) and 4 (docs/V1_4_SPEC.md 3.1
+-- M1: 64-cell tiles down to L-1, hello.cells, far_tile.tex). hello.format = the newest (FORMAT).
+local FORMAT = 4
+local FORMATS = { 3, 4 }
 local POSE_INTERVAL = 0.5      -- ~2 Hz
 local SKY_INTERVAL = 5.0       -- TimeOfDay lat/lon follow
 local VISIBLE_DISTANCE = 100000
@@ -85,6 +89,7 @@ local function resetState()
     cam = nil,               -- { x, y, z, fx, fy, fz, fovDeg } of this frame (core_camera), or nil
     loadingUntil = 0,        -- governor loading mode until this clock (after a teleport)
     slowFor = 0,             -- s the player has been below SLOW_SPEED
+    serverBacklog = nil,     -- status.backlog of the server's last status (v1.4 M0), nil before / from v1.3.1
   }
 end
 resetState()
@@ -379,6 +384,11 @@ end
 ------------------------------------------------------------------------------------------
 -- messages
 
+local function formatKnown(f)
+  for _, v in ipairs(FORMATS) do if v == f then return true end end
+  return false
+end
+
 local function onMessage(msg)
   local t = msg.type
   if t == '_connected' then
@@ -393,9 +403,13 @@ local function onMessage(msg)
     st.sessionId = msg.sessionId
     if msg.protocol ~= PROTOCOL then
       setStatus('Protocol mismatch: server ' .. tostring(msg.protocol) .. ', mod ' .. PROTOCOL)
-    elseif msg.format ~= nil and msg.format ~= FORMAT then
-      setStatus('Format mismatch: server ' .. tostring(msg.format) .. ', mod ' .. FORMAT)
+    elseif msg.format ~= nil and not formatKnown(msg.format) then
+      setStatus('Format mismatch: server ' .. tostring(msg.format) .. ', mod ' .. table.concat(FORMATS, '/'))
     end
+    -- M1 (FORMAT 4): the tiles' cells per edge; a FORMAT 3 server sends none (32). It sets the
+    -- crossover's fallback error and the exact (physics lattice) level of the exactMiss metric.
+    local cells = crossover.setCells(msg.cells)
+    farfield.setExactLevel(farfield.exactLevelFor(cells))
     -- every far tile references the server's material name; this mod ships (and loads) one
     -- static material (farfield.MATERIALS_FILE). A different name renders every tile without it.
     if msg.material ~= nil and msg.material ~= farfield.MATERIAL then
@@ -417,6 +431,9 @@ local function onMessage(msg)
     end
   elseif t == 'status' then
     st.status = tostring(msg.text)
+    -- v1.4 M0: the server's far-tile backlog (desired - shown) rides on every status; nil from a
+    -- v1.3.1 server. For the harness (status()), nothing here acts on it.
+    st.serverBacklog = tonumber(msg.backlog)
   elseif t == 'anchor_ready' then
     local p = st.pending
     if not p or msg.requestId ~= p.requestId then return end -- stale answer
@@ -654,7 +671,7 @@ local function onUpdate(dtReal, dtSim)
   updatePlayer(dtReal)
   if st.active then
     updateWorld(dtReal)
-    farfield.update(gov, (gov.w1 or dtReal * 1000) / 1000, st.cam)
+    farfield.update(gov, (gov.w1 or dtReal * 1000) / 1000, st.cam, st.player)
     updateSky(dtReal)
   end
   ui.draw(buildView(), { teleport = M.teleport, setRebaseDistance = M.setRebaseDistance })
@@ -785,7 +802,9 @@ function M.status()
     anchorId = st.anchorId, anchorKey = st.anchorKey, pending = st.pending and st.pending.purpose,
     block = st.block, terrainPending = st.terrainPending and { st.terrainPending.cx, st.terrainPending.cy },
     rebaseDistance = rebase.distance, lastFollowMs = st.lastFollowMs, lastRebaseMs = st.lastRebaseMs,
-    lastRebaseWaitFrames = st.lastRebaseWait, rebaseLag = rebaseLag, lastMoveLag = st.lastMoveLag, player = st.player, far = farfield.stats(), governor = gov:snapshot(), status = st.status })
+    lastRebaseWaitFrames = st.lastRebaseWait, rebaseLag = rebaseLag, lastMoveLag = st.lastMoveLag, player = st.player, far = farfield.stats(), governor = gov:snapshot(), status = st.status,
+    serverBacklog = st.serverBacklog, followCount = st.followCount, rebaseCount = st.rebaseCount,
+    cells = crossover.cells() })
 end
 
 -- net.close() drops its '_disconnected' event, so reset the connection state here.

@@ -1,0 +1,84 @@
+# BeamNG.Earth dev tools (spec, 2026-10-10)
+
+User request: "add some dev tools so I can visualise the LODs, the loading and anything else that
+might be useful". In-game, opt-in, zero cost when off. Built after v1.4 M0/M1 (they touch the same
+files). Engine-only (imgui + debugDrawer), like the existing `ui.lua` window.
+
+## Pause-menu integration (BeamNG 0.39 "Mods" tab)
+The pause menu has a mod API (lua/ge/extensions/ui/pause/actions.lua):
+`ui_pause_actions.registerModButton{id, tabId = "mods", label, icon, componentName = <.vue path>}`
+puts a button in the shared **Mods** tab, and `registerModTab{id, label, icon}` adds a whole tab of our
+own. Mods call it from a Vue mod entry `/ui/ui-vue/mods/<mod>/index.js` (`onLoad` / `onUnload`, via
+`import { lua } from "@/bridge"`), e.g. the user's taa_standalone mod (index.js + TaaSettings.vue,
+using BngSwitch / BngSlider / BngButton from `@/common/components/base`).
+
+BeamNG.Earth uses that:
+- a button **"BeamNG.Earth"** in the shared Mods tab (where users look), opening our settings page;
+  later its own tab once there are several pages (Settings, World Map, Dev Tools);
+- **Settings page** (Vue, `/ui/ui-vue/mods/beamngEarth/EarthSettings.vue`): server connection and
+  session, rebase distance, view distance mode (real horizon / fixed km) and haze strength, detail
+  level / streaming budget (when the M3 controller exists), sky mode (real time / manual) and the time
+  offset, imagery source preference, surface physics on/off (v1.5), attribution text; buttons to open
+  the Dev Tools and (v1.7) the World Map. Values persist in the mod's own settings file
+  (`/settings/beamngEarth.json`), applied through `beamngEarth_core` functions.
+- **Dev tools page**: the toggles and presets below (the in-world overlays and the stats/mini-map
+  panels themselves stay imgui: they must draw over the 3D view while driving, cheaply).
+- The existing imgui window becomes a compact HUD (status line + quick toggles), hidden by default
+  once the settings page exists.
+
+## Entry point
+- A **"Dev"** collapsible section / tab in the existing BeamNG.Earth window (ui.lua), plus a console
+  API `beamngEarth_dev.set('<overlay>', true|false)` and `beamngEarth_dev.preset('lod'|'loading'|'off')`.
+- A key binding (default unbound; user picks) to toggle the last-used preset.
+- State persists per session only (no settings file writes).
+- When every overlay is off: no per-frame work at all (the extension returns at the top of its hooks).
+
+## Overlays (each a checkbox)
+1. **LOD tint**: every far tile tinted by level (L-2/L-1 green = matches physics, L0 cyan, L1 blue,
+   L2 purple, L3+ orange -> red), so the quadtree is visible on the ground and the horizon.
+   Implementation: per-tile Material `diffuseColor` multiply (the tile materials are ours, one per
+   tile), applied/restored in time-sliced batches (governor unit kind `devTint`, ~50 materials per
+   frame) so toggling never hitches. Tiles created while it is on get the tint at creation.
+2. **Tile outlines**: debugDrawer outlines of tile footprints at ground height (colour by level),
+   only for tiles within N km (default 3 km; slider), so the cost stays bounded (<= ~150 boxes).
+   States drawn differently: shown, hidden-loaded (waiting in a swap group), in crossover, old anchor
+   (after a rebase), doomed.
+3. **Loading heat**: queued / importing tiles highlighted (outline flashes), the next ~10 imports
+   numbered in order, so priority problems (near tiles waiting behind far ones) are visible.
+4. **Physics block**: the TerrainBlock's collidable square drawn (and the pending/next block dashed),
+   with the terrain-follow commit thresholds; optional **"show physics terrain"** that turns the
+   invisible TerrainBlock's rendering on (rendered with a checker material) to compare visuals vs
+   collision.
+5. **Rings**: near radii (150/400 m today), rebase circle (15 km) and the prefetch circle, the
+   far-field radius / horizon distance (M1h), drawn as ground circles.
+6. **Under-car probe**: a vertical line at the car: physics ground height vs visible tile height and
+   the tile level under the car; turns red when the visible tile is not the exact level or differs by
+   > 5 cm (the `exactMiss` metric of V1_4_SPEC).
+
+## Panels (imgui)
+- **Stats**: fps, frame ms p50/p95/max (last 5 s), sim ratio, governor budget and per-kind estimates,
+  imports/s, deletes/s, queue length, waiting groups, crossovers running, live/old/doomed objects,
+  materials, pops, failed, exactMiss count, server backlog, server status line, anchor, distance to
+  rebase, last follow / rebase commit ms.
+- **Graphs**: rolling 60 s plots (imgui PlotLines) of frame ms, queue length, imports/s, speed.
+- **Mini-map**: top-down imgui draw-list view of the tiles around the player (zoom 1-80 km), coloured
+  by level and state, with the car arrow, physics block, rings and the server's desired-but-not-shown
+  tiles. Click a tile -> its key, level, state, texture size, build/import ms (from the server log
+  fields the mod already has).
+- **Controls**: freeze LOD (stop applying swaps, for inspecting), hide far tiles beyond X km, force
+  rebase now, rebase distance slider (exists), teleport (exists), reload far field, toggle sky mode
+  (real/manual) and time of day, motion-blur hold test, screenshot-with-overlays.
+- **Log**: last 50 mod events (commits, rebases, swaps blocked at the cap, failures) with timestamps.
+
+## Cost rules
+- Off: nothing per frame. On: <= 0.3 ms per frame with every overlay (budget checked with perfmon,
+  the panel shows the dev tools' own cost).
+- No loops over all tiles every frame: outlines and the mini-map iterate a spatial index updated on
+  tile add/remove, limited to the view radius; stats come from counters.
+- Material tint changes are time-sliced; never a full reload in one frame.
+
+## Tests
+- luajit: the dev module with stubs (toggles, zero work when off, tint batching restores every
+  material exactly, spatial index add/remove/query).
+- In-game (when the user is not driving): toggle each overlay at the Kern River spot, screenshot,
+  perfmon cost per overlay.

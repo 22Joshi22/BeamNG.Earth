@@ -47,6 +47,21 @@ class GeometryTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             heightmap.sample_coords(1.0, 0.0)
 
+    def test_block_size_parameter(self):
+        """The block size is a parameter (the server passes its Layout's block, docs/V1_4_SPEC.md
+        §3.1), not a module setting: a 512² block sits on the same lattice, centred the same way."""
+        self.assertEqual(heightmap.half_extent(), heightmap.HALF)
+        self.assertEqual(heightmap.half_extent(512), 512.0)
+        xs, ys = heightmap.sample_coords(256.0, -768.0, 512)
+        self.assertEqual((len(xs), xs[0], ys[0], xs[-1]), (512, 256.0 - 512, -768.0 - 512, 256.0 + 510))
+        big, _ = heightmap.sample_coords(256.0, -768.0)
+        self.assertTrue((big[256:768] == xs).all())                    # the same lattice points
+        # height_at takes the block size from the grid: a 4² grid centred at (0, 0) spans [-4, 4)
+        q = np.arange(16, dtype=np.uint16).reshape(4, 4)
+        self.assertEqual(heightmap.height_at(q, 0.0, 65536.0, 0.0, 0.0, -4.0, -4.0), 0.0)
+        self.assertEqual(heightmap.height_at(q, 0.0, 65536.0, 0.0, 0.0, -2.0, 0.0), 9.0)
+        self.assertIsNone(heightmap.height_at(q, 0.0, 65536.0, 0.0, 0.0, 2.5, 0.0))
+
     def test_snap(self):
         self.assertEqual(heightmap.snap(127.9), 0.0)
         self.assertEqual(heightmap.snap(128.0), 256.0)

@@ -21,6 +21,15 @@ T.check(X.duration(true) == 0.5 and X.duration(false) == 0.25, 'crossover 0.5 s,
 T.check(X.MAX_GROUPS == 24 and X.MARGIN_DEG == 10 and X.NEAR_POP_M == 5000, 'cap 24, 10 deg margin, near 5 km')
 T.check(X.FAR_INSTANT_M == nil, 'no distance beyond which in-view swaps are instant (v1.3 D)')
 T.near(X.defaultErr(0), 2, 1e-12, 'fallback err L0 = cell / 4')
+-- M1 (docs/V1_4_SPEC.md 3.1): the server's cells per tile edge (hello.cells, core.lua) set it
+T.check(X.cells() == 32, 'default: 32 cells (a FORMAT 3 server sends no hello.cells)')
+T.check(X.setCells(64) == 64 and X.cells() == 64, 'setCells(64)')
+T.near(X.defaultErr(0), 1, 1e-12, '64 cells: L0 fallback err = its 4 m cell / 4')
+T.near(X.defaultErr(-1), 0.5, 1e-12, '64 cells: L-1 (2 m cells, the exact level) 0.5')
+T.near(X.defaultErr(3), 8, 1e-12, '64 cells: L3 (32 m cells) 8')
+T.check(X.setCells(nil) == 32 and X.setCells('x') == 32 and X.setCells(0) == 32 and X.setCells(2.5) == 32,
+  'no / invalid cells: 32')
+T.near(X.defaultErr(0), 2, 1e-12, 'back to the 32-cell error')
 
 -- offsets over time
 local D = 3

@@ -242,7 +242,11 @@ their chunk arrived.
   `applyClusterVelocityScaleAdd(-1, 0, vx, vy, vz)`, rays the static-collision ground
   (`castRayStatic`, a miss = `fall`), keeps the inputs at zero and records each frame (wall ms,
   heavy slot, rebase, harness MCP work, exact miss, tile level under the car). A rebase moves the
-  driver's own frame through the wrapped `rebase.moveVehicles`. MCP is polled at most once a second,
+  driver's own frame through the wrapped `rebase.moveVehicles`. Error paths: a failed install step
+  undoes the earlier ones; an error in a frame, or no poll for 60 s (a dead harness), stops the run,
+  parks the car (velocity 0, inputs zero) and restores `rebase.moveVehicles`; every MCP call after
+  the first runs inside drive.py's `finally` uninstall; reloading the driver always uninstalls the
+  previous one. MCP is polled at most once a second,
   timing runs take no screenshots (`--shots S` = a separate visual run), `--step-mode mcp` keeps the
   old `sim_drive.py` stepping. The summary has the effective speed (a run below 95 % of nominal
   fails), exactMiss (overall and outside 2 s after rebases), commit / rebase frame ms apart from the
@@ -255,6 +259,9 @@ their chunk arrived.
   statistics; `core` keeps the server's `status.backlog` (`status().serverBacklog`).
 - **Server**: every `status` carries `backlog` (desired − shown, current anchor); `--status-interval S`
   (default 0 = v1.3.1) re-sends the last status while it changes — harness runs use 1.
+- **Default = v1.3.1** (`server/tests/test_v131_default.py`): a default `earthd.Server`'s selection,
+  switch distances, DEM zooms, tile geometry, written .cdae / .dae sizes, swap deltas and heightmap
+  match `tests/fixtures/v131_golden.json`, written by the v1.3.1 code.
 - **Offline**: `server/tests/test_demand.py` reproduces table 2.1's v1.3.1 rows (14.2 / 33.7 / 50.3
   adds/s at 40 / 90 / 134 m/s against 14.4 / 33.4 / 49.9; M1/M3a/M5 hooks marked);
   `server/tests/bench_build.py` (not discovered) times `Server.make_tile` per level, cold and warm.

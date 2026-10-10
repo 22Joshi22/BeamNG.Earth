@@ -15,6 +15,10 @@ x0 + 2048 on the N/E edges is left to the far tiles.
 
 The value of a sample is the ENU z of the DEM surface point under it. Stored as a 16-bit
 grayscale PNG, row 0 = north.
+
+SIZE, HALF, VALID and GRID describe the v1.3.1 block. The functions that depend on the block size
+take it as a parameter (`size`, samples per edge; the server passes its Layout's `block`,
+docs/V1_4_SPEC.md §3.1), defaulting to SIZE; nothing reads a module setting at call time.
 """
 import math
 import os
@@ -40,9 +44,14 @@ def snap(v, grid=GRID):
     return float(math.floor(v / grid + 0.5) * grid) + 0.0
 
 
-def lattice_index(c):
-    """Lattice index of the block's first sample for a centre c (a multiple of 2 m)."""
-    k = (c - HALF) / SQUARE
+def half_extent(size=SIZE):
+    """Block position = centre - this (1024 m for the 1024² block)."""
+    return size * SQUARE / 2
+
+
+def lattice_index(c, size=SIZE):
+    """Lattice index of the first sample of a `size`² block centred at c (a multiple of 2 m)."""
+    k = (c - half_extent(size)) / SQUARE
     if k != math.floor(k):
         raise ValueError(f"block centre {c} is not on the 2 m lattice")
     return int(k)
@@ -55,7 +64,7 @@ def lattice_coords(k0, n):
 
 def sample_coords(cx, cy, size=SIZE):
     """World x of grid columns and y of grid rows (both length `size`)."""
-    return lattice_coords(lattice_index(cx), size), lattice_coords(lattice_index(cy), size)
+    return lattice_coords(lattice_index(cx, size), size), lattice_coords(lattice_index(cy, size), size)
 
 
 def surface_u(frame, elev_fn, xs, ys):
@@ -138,9 +147,10 @@ def heights(qgrid, z_base, max_height):
 
 
 def height_at(qgrid, z_base, max_height, cx, cy, x, y, square=SQUARE):
-    """Bilinear height of the quantised grid at world (x, y), or None outside the valid
-    (collidable) area. This is what the game's terrain reports there."""
-    x0, y0 = cx - HALF, cy - HALF
+    """Bilinear height of the quantised grid (a block of qgrid.shape[0]² samples) at world (x, y),
+    or None outside the valid (collidable) area. This is what the game's terrain reports there."""
+    half = qgrid.shape[0] * square / 2
+    x0, y0 = cx - half, cy - half
     n = qgrid.shape[0] - 1
     fx, fy = (x - x0) / square, (y - y0) / square
     if not (0 <= fx <= n and 0 <= fy <= n):
@@ -151,10 +161,10 @@ def height_at(qgrid, z_base, max_height, cx, cy, x, y, square=SQUARE):
     return float((h[0, 0] * (1 - wx) + h[0, 1] * wx) * (1 - wy) + (h[1, 0] * (1 - wx) + h[1, 1] * wx) * wy)
 
 
-def generate(frame, elev_fn, path, cx=0.0, cy=0.0, ground_at=(0.0, 0.0), q=Q_DEFAULT):
-    """Build the block centred at (cx, cy) with height quantum q and write it to path.
+def generate(frame, elev_fn, path, cx=0.0, cy=0.0, ground_at=(0.0, 0.0), q=Q_DEFAULT, size=SIZE):
+    """Build the size² block centred at (cx, cy) with height quantum q and write it to path.
     groundZ is the terrain height at ground_at (None if that point is outside the block)."""
-    u = grid_u(frame, elev_fn, cx, cy)
+    u = grid_u(frame, elev_fn, cx, cy, size)
     q, z_base, max_height, qgrid = write_png(path, u, q)
     gz = height_at(qgrid, z_base, max_height, cx, cy, *ground_at) if ground_at else None
     return {"cx": cx, "cy": cy, "zBase": z_base, "maxHeight": max_height, "q": q,

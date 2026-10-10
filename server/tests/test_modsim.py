@@ -109,7 +109,10 @@ def far_script(seed, steps=70):
         x0, y0, _, _ = t.bbox
         sink = f"{0.3 + rnd() * 2:.3f}" if t.level == 0 else "-"
         mat = f"bngEarthSat_{aid}_{t.key}" if rnd() < 0.6 else "-"     # protocol 4 imagery or protocol 3
-        return f"T {aid} {t.key} {t.level} {x0:.1f} {y0:.1f} {(rnd() - 0.5) * 100:.1f} {rnd() * 3:.3f} {sink} {mat}"
+        # FORMAT 4 (M1): the texture size picks the governor kind (none: FORMAT 3, 'cdaeTex')
+        tex = ("", " 128", " 256", " 512")[int(rnd() * 4)]
+        return (f"T {aid} {t.key} {t.level} {x0:.1f} {y0:.1f} {(rnd() - 0.5) * 100:.1f} {rnd() * 3:.3f} {sink} "
+                f"{mat}{tex}")
 
     out += [f"A {aid} 0 0 0", "C 0 -8 3 0 1 0 60", "U 0 0 256 0"]   # nothing loaded yet: not ready
     for step in range(steps):
@@ -179,7 +182,8 @@ def far_script(seed, steps=70):
 def python_far_trace(lines, final=None):
     """The port's trace of a script; final: a dict that receives the FarField at the end."""
     far = modsim.FarField({"cdae": IMPORT_MS, "cdaeTex": IMPORT_MS, "material": IMPORT_MS, "dae": 8.0, "reveal": 0.0,
-                           "delete": DELETE_MS, "matDelete": DELETE_MS, "motion": 0.0}, lambda shape: __file__)
+                           "delete": DELETE_MS, "matDelete": DELETE_MS, "motion": 0.0, "cdaeTex128": IMPORT_MS,
+                           "cdaeTex256": IMPORT_MS, "cdaeTex512": IMPORT_MS}, lambda shape: __file__)
     gov = modsim.Governor()
     out, keys, cam, wall, frame = [], set(), None, None, 0
 
@@ -203,7 +207,8 @@ def python_far_trace(lines, final=None):
             far.on_tile({"type": "far_tile", "anchorId": int(w[1]), "key": w[2], "level": int(w[3]),
                          "shape": f"/temp/x/far_{w[2]}.cdae", "pos": [float(w[4]), float(w[5]), float(w[6])],
                          "err": float(w[7]), "sink": num(w[8]), "state": "group", "material": mat,
-                         "texture": f"/temp/x/far_{w[2]}.dds" if mat else None, "detail": mat is not None})
+                         "texture": f"/temp/x/far_{w[2]}.dds" if mat else None, "detail": mat is not None,
+                         "tex": num(w[10]) if len(w) > 10 else None})
         elif c == "S":
             i = 5
             n = int(w[i])
@@ -238,7 +243,7 @@ def python_far_trace(lines, final=None):
                   far.counters["imports"], far.counters["crossovers"], far.counters["instant"], nv, hv, len(far.mats)]
             out.append("F " + " ".join(str(v) for v in st))
     if final is not None:
-        final["far"] = far
+        final["far"], final["gov"] = far, gov
     return out
 
 
@@ -305,6 +310,8 @@ class ModSimTest(unittest.TestCase):
         self.assertGreater(far.counters["mat_deletes"], 0)
         self.assertGreater(far.counters["textured"], far.counters["materials"] * 0.9)   # shared by re-sent keys
         self.assertEqual(far.near_visual, "terrain")                                      # mesh, then back
+        # FORMAT 4 tiles (M1): every textured kind ran, each against its own estimate
+        self.assertLessEqual({"cdaeTex", "cdaeTex128", "cdaeTex256", "cdaeTex512"}, final["gov"].used)
         self.assertGreater(far.counters["cap_waits"], 0)                                  # the burst hit the cap
         self.assertGreater(far.counters["old_covered"], 0)      # mesh mode dropped covered old-anchor tiles
         self.assertEqual(max(col(9)), modsim.XO["MAX_GROUPS"])                            # ... never above it

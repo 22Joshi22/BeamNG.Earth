@@ -4,12 +4,17 @@
 
     python3 server/earthd.py [--port 47613] [--user-dir DIR] [--cache-dir DIR] [--far-format cdae|dae]
                              [--imagery usgs,eox2023,eox2016|off] [--near-visual mesh|terrain]
+                             [--cells 32|64] [--tex 256,256,256,512]
 
 Listens on 127.0.0.1 for the mod, builds terrain-block heightmaps (1024² on a world-locked
 2 m lattice, 256 m-aligned centres; in mesh near-visual mode the block is physics only) and a
 dynamic-LOD tile field (down to 64 m tiles on the physics lattice in mesh mode) with per-tile
 satellite textures, streamed as swap groups, and writes them into
 <user-dir>/temp/beamngEarth/<sessionId>/.
+
+Tile layout (docs/V1_4_SPEC.md §3.1, M1): --cells 32 (default) is the v1.3.1 layout, FORMAT 3;
+--cells 64 (mesh mode only) makes every tile 64 x 64 cells, FORMAT 4, with the exact level L-1,
+hello.cells and far_tile.tex. The default stays 32 until the in-game probe P8 passes.
 """
 import os
 
@@ -42,11 +47,18 @@ import imagery as imagerymod  # noqa: E402
 import protocol  # noqa: E402
 
 PROTOCOL = 4
-FORMAT = 3                  # tile/heightmap content format (2 m lattice, fixed Q, v3 tiles)
+# Tile/heightmap content format (hello.format) is the layout's: 3 = v1.3.1 (2 m lattice, fixed Q,
+# 32-cell tiles), 4 = 64-cell tiles down to L-1 (farfield.CONTENT_FORMAT). A mod's hello.format is
+# the newest format it reads (it reads every older one from 3: core.lua FORMATS), so a mod older
+# than the server's format gets the mismatch status.
+# --cells default: the v1.3.1 layout until the in-game gate P8 passes (docs/V1_4_SPEC.md §3.1);
+# then 64 (the spec's default in mesh mode).
+CELLS_DEFAULT = 32
 SERVER_VERSION = "0.4.0"
 NEAR_VISUALS = ("mesh", "terrain")
-TEX_NEAR, TEX_FAR = 256, 256    # texture edge (px) of the two finest levels / of the others (512 near
-                                 # was 15x finer than USGS: no visible gain for 2x build time and VRAM)
+TEX_NEAR, TEX_FAR = 256, 256    # 32 cells: texture edge (px) of the two finest levels / of the others (512
+                                 # near was 15x finer than USGS: no visible gain for 2x build time and VRAM);
+                                 # --tex gives one per level (64 cells: farfield.TEX_DEFAULT)
 SESSION_MARKER = ".earthd-session"
 # The engine caches every loaded .dae as a .cdae under <user-dir>/temp/<VFS path, lower-cased>
 # (seen in-game: temp/beamngEarth/<sid>/far_*.dae -> temp/temp/beamngearth/<sid>/far_*.cdae,
@@ -57,7 +69,9 @@ CDAE_ROOT = ("temp", "temp", "beamngearth")
 HM_CACHE = 6                # heightmaps kept beyond the protected ones
 HM_KEEP_COMMITTED = 3       # the current terrain and the last two
 HM_KEEP_SENT = 2            # terrains handed to the mod but maybe not committed yet
-TILE_CACHE = 6000           # generated far-tile files kept per server
+# Generated far-tile files kept per server, by layout: a 64-cell tile is ~3.7x the bytes (348 KB)
+# and a pose needs ~300 tiles instead of ~811 (docs/V1_4_SPEC.md §3.1).
+TILE_CACHE = {32: 6000, 64: 2500}
 PREFETCH_START = 200.0      # m (Chebyshev) from the block centre before prefetching
 # The mod's terrain-follow rule (mod follow.lua): it asks once the player is more than
 # FOLLOW_PREPARE (Chebyshev) from the block centre, for snap256(player + v * FOLLOW_LEAD),
@@ -101,6 +115,11 @@ SURVEY_ZOOM = 10
 DELTA_MARGIN = 0.1          # m added to measured swap-group deltas (crossings between vertices)
 NICE = 10                   # default niceness of the server process (§4.5)
 IMAGERY_PREFETCH = 12       # queued tiles whose imagery is fetched ahead of their build
+# status.backlog (docs/V1_4_SPEC.md §3.0, §4): every status message carries the number of desired
+# tiles of the current anchor not shown yet. Status messages only go out on events (v1.3.1); with
+# --status-interval S > 0 the last status is also re-sent from on_pose at most every S seconds
+# while the backlog changed, so tools/drive.py can sample it (M0 harness runs use 1).
+STATUS_INTERVAL = 0.0
 # Shown in the mod's UI (V1_3_SPEC §C), after the imagery credits.
 ELEVATION_CREDIT = "Elevation: Mapterhorn (see mapterhorn.com/attribution), AWS Terrain Tiles / Mapzen"
 
@@ -127,7 +146,7 @@ class TileInfo:
     err: float
     sink: float | None
     skirt: float
-    grid: np.ndarray            # 33 x 33 absolute vertex heights (float32), for swap deltas
+    grid: np.ndarray            # (cells + 1)² absolute vertex heights (float32), for swap deltas
     bytes: int
     seconds: float
     material: str | None = None     # per-tile imagery material (None: the static palette material)
@@ -185,10 +204,14 @@ def sat_material(aid, key):
 
 
 class Server:
-    def __init__(self, user_dir, cache_dir, tile_workers=3, kfun=farfield.k_default,
+    def __init__(self, user_dir, cache_dir, tile_workers=3, kfun=None,
                  hysteresis=farfield.HYSTERESIS, radius=farfield.RADIUS, far_format="cdae",
                  imagery=imagerymod.DEFAULT_CHAIN, near_visual="mesh", tex_near=TEX_NEAR, tex_far=TEX_FAR,
-                 tone=1.0, near_radii=None):
+                 tone=1.0, near_radii=None, status_interval=STATUS_INTERVAL, cells=CELLS_DEFAULT, tex=None):
+        """kfun: K(L) for every level (default: the layout's K table); near_radii: the min-level
+        radii (default: the layout's); cells: 32 (v1.3.1) or 64 (M1, mesh mode only); tex: texture
+        px per level from the finest (default: tex_near, tex_near, tex_far with 32 cells,
+        farfield.TEX_DEFAULT[64] with 64)."""
         self.sid = time.strftime("%Y%m%d-%H%M%S-") + secrets.token_hex(2)
         root = os.path.join(user_dir, "temp", "beamngEarth")
         self._clean_old_sessions(root, os.path.join(user_dir, *CDAE_ROOT))
@@ -202,21 +225,26 @@ class Server:
         self.far_format = far_format
         if near_visual not in NEAR_VISUALS:
             raise ValueError(f"unknown near-visual mode {near_visual!r}")
-        # mesh: the TerrainBlock is physics only, the ground is drawn by L-2 / L-1 tiles (§B)
+        # mesh: the TerrainBlock is physics only, the ground is drawn by the finest tiles (§B)
         self.near_visual = near_visual
-        self.min_level = farfield.MESH_MIN_LEVEL if near_visual == "mesh" else 0
-        self.near_radii = dict(farfield.NEAR_RADII if near_radii is None else near_radii)
+        if tex is None and cells == 32:
+            tex = (tex_near, tex_near, tex_far)         # the v1.3.1 rule: the two finest levels are near
+        # Every layout-dependent rule reads self.layout (terrain mode: frozen at 32 cells)
+        self.layout = farfield.Layout(cells, heightmap.SIZE, near_visual == "mesh", tex)
+        self.min_level = self.layout.min_level
+        self.near_radii = dict(self.layout.near_radii if near_radii is None else near_radii)
+        self.tile_cache = TILE_CACHE[cells]
         self.dem = demmod.Dem(os.path.join(cache_dir, "dem"))
         # Satellite imagery (§A); None = --imagery off (v3-style palette tiles).
         self.imagery = (imagerymod.Imagery(os.path.join(cache_dir, "imagery"), imagery, tone=tone)
                         if imagery else None)
-        self.tex_near, self.tex_far = tex_near, tex_far
         self.imagery_failures = 0           # tiles that fell back to the palette (network trouble)
         # Two heightmap workers so a mod request never waits behind a prefetch.
         self.hm_pool = ThreadPoolExecutor(2, thread_name_prefix="heightmap")
         self.tile_pool = ThreadPoolExecutor(tile_workers, thread_name_prefix="far")
         self.tile_workers = tile_workers
-        self.kfun, self.hysteresis, self.radius = kfun, hysteresis, radius
+        self.kfun, self.hysteresis, self.radius = kfun or self.layout.k, hysteresis, radius
+        self.status_interval = status_interval
         self.anchors = {}
         self._next_anchor = 1
         self.connections = set()
@@ -251,7 +279,7 @@ class Server:
     def new_anchor(self, lat, lon):
         a = Anchor(self._next_anchor, lat, lon, geodesy.EnuFrame(lat, lon))
         a.hm_zoom = demmod.zoom_for(lat, 2.5)       # ~2 m pixels where the data exists
-        a.zooms = {lvl: farfield.zoom_for_level(lat, lvl) for lvl in range(1, farfield.MAX_LEVEL + 1)}
+        a.zooms = {lvl: self.layout.dem_zoom(lat, lvl) for lvl in range(1, farfield.MAX_LEVEL + 1)}
         a.zooms[0] = a.hm_zoom                      # L0 shares the terrain's DEM (§1.4)
         self._next_anchor += 1
         return a
@@ -323,7 +351,8 @@ class Server:
         q = self.anchor_q(anchor)
         info = heightmap.generate(anchor.frame,
                                   lambda la, lo: self.dem.sample(la, lo, anchor.hm_zoom, progress),
-                                  os.path.join(self.out_dir, self.hm_name((anchor.id, cx, cy))), cx, cy, q=q)
+                                  os.path.join(self.out_dir, self.hm_name((anchor.id, cx, cy))), cx, cy, q=q,
+                                  size=self.layout.block)
         info["seconds"] = time.perf_counter() - t0
         info["zoom"] = anchor.hm_zoom
         return info
@@ -407,8 +436,9 @@ class Server:
         return out
 
     def tex_size(self, level):
-        """Texture edge of a level: the two finest levels of the mode get tex_near."""
-        return self.tex_near if level <= self.min_level + 1 else self.tex_far
+        """Texture edge of a level (the layout's per-level table: with 32 cells the two finest
+        levels of the mode get tex_near, the others tex_far)."""
+        return self.layout.tex_size(level)
 
     def prefetch_imagery(self, anchor, tile):
         """Start downloading a queued tile's imagery (fire and forget), so tile workers rarely
@@ -426,7 +456,7 @@ class Server:
         ref_zoom = anchor.zooms[lvl - 1] if lvl > 0 else None
         path = os.path.join(self.out_dir, self.tile_name(anchor.id, tile.key))
         built = farfield.build_tile(anchor.frame, self.dem, tile, anchor.zooms[max(lvl, 0)], q,
-                                    ref_zoom, with_sink=self.near_visual == "terrain")
+                                    ref_zoom, with_sink=self.near_visual == "terrain", layout=self.layout)
         t1 = time.perf_counter()
         material = texture = None
         tex_bytes = 0
@@ -501,9 +531,9 @@ class Server:
         if fut.cancelled() or fut.exception() is not None:
             return
         self.tiles[ck] = fut.result()
-        if len(self.tiles) > TILE_CACHE:
+        if len(self.tiles) > self.tile_cache:
             used = self.in_use()
-            for old in [k for k in self.tiles if k not in used][:len(self.tiles) - TILE_CACHE]:
+            for old in [k for k in self.tiles if k not in used][:len(self.tiles) - self.tile_cache]:
                 del self.tiles[old]
                 # through the rate-limited queue: the mod loaded most of these files once (P9)
                 self.queue_delete((p for p in self.tile_files(self.tile_name(*old)) if os.path.exists(p)), old)
@@ -592,13 +622,33 @@ class Connection:
         self.prefetching = False
         self.wake = asyncio.Event()
         self.streamer = None
+        self.last_status = ""           # text of the last status message (re-sent with a new backlog)
+        self.status_sent = (0.0, None)  # (monotonic time, backlog) of the last status message
 
     def send(self, msg):
         if not self.writer.is_closing():
             self.writer.write(protocol.encode(msg))
 
+    def backlog(self):
+        """status.backlog: desired tiles of the current anchor that are not shown yet (V1_4_SPEC §4)."""
+        aid = self.active
+        if aid is None:
+            return 0
+        return sum(1 for k in self.desired if (aid, k) not in self.shown)
+
     def status(self, text):
-        self.send({"type": "status", "text": text})
+        n = self.backlog()
+        self.last_status, self.status_sent = text, (time.monotonic(), n)
+        self.send({"type": "status", "text": text, "backlog": n})
+
+    def refresh_status(self):
+        """--status-interval: re-send the last status when the backlog changed, at most every
+        status_interval seconds (off by default: v1.3.1 sends status on events only)."""
+        iv = self.s.status_interval
+        if iv <= 0 or time.monotonic() - self.status_sent[0] < iv:
+            return
+        if self.backlog() != self.status_sent[1]:
+            self.status(self.last_status)
 
     async def run(self):
         log.info("client connected %s", self.peer)
@@ -635,13 +685,19 @@ class Connection:
     def dispatch(self, msg):
         kind = msg["type"]
         if kind == "hello":
+            lay = self.s.layout
+            fmt = msg.get("format", lay.format)
             if msg.get("protocol") != PROTOCOL:
                 self.status(f"protocol mismatch: mod {msg.get('protocol')}, server {PROTOCOL}")
-            elif msg.get("format", FORMAT) != FORMAT:
-                self.status(f"format mismatch: mod {msg.get('format')}, server {FORMAT}")
-            self.send({"type": "hello", "protocol": PROTOCOL, "format": FORMAT, "serverVersion": SERVER_VERSION,
-                       "sessionId": self.s.sid, "farFormat": self.s.far_format, "material": farfield.MATERIAL,
-                       "nearVisual": self.s.near_visual, "attribution": self.s.attribution()})
+            elif not isinstance(fmt, (int, float)) or fmt < lay.format:
+                # the mod's format is the newest it reads (a FORMAT 4 mod reads 3 too)
+                self.status(f"format mismatch: mod {msg.get('format')}, server {lay.format}")
+            m = {"type": "hello", "protocol": PROTOCOL, "format": lay.format, "serverVersion": SERVER_VERSION,
+                 "sessionId": self.s.sid, "farFormat": self.s.far_format, "material": farfield.MATERIAL,
+                 "nearVisual": self.s.near_visual, "attribution": self.s.attribution()}
+            if lay.format >= 4:         # M1: the tiles' cell count (crossover.defaultErr, the exact level)
+                m["cells"] = lay.cells
+            self.send(m)
         elif kind == "prepare_anchor":
             self.spawn(self.prepare_anchor(msg))
         elif kind == "prepare_terrain":
@@ -667,7 +723,7 @@ class Connection:
         return progress
 
     def terrain_msg(self, key, info):
-        return {"cx": key[1], "cy": key[2], "heightmap": self.s.hm_vfs(key), "size": heightmap.SIZE,
+        return {"cx": key[1], "cy": key[2], "heightmap": self.s.hm_vfs(key), "size": self.s.layout.block,
                 "squareSize": heightmap.SQUARE, "zBase": info["zBase"], "maxHeight": info["maxHeight"],
                 "q": info["q"]}
 
@@ -842,6 +898,7 @@ class Connection:
                     self.predicted_block = farfield.Block(*c)
         self.update_far()
         self.maybe_prefetch()
+        self.refresh_status()
 
     def maybe_prefetch(self):
         """Speculatively build the terrain the mod is about to ask for."""
@@ -885,7 +942,7 @@ class Connection:
         self.node_changed = {n: t for n, t in self.node_changed.items() if now - t < farfield.HOLD_S}
         new, refined = farfield.select(*self.focus, self.forced(), self.refined, self.s.kfun,
                                        self.s.hysteresis, self.s.radius, hold=set(self.node_changed),
-                                       min_level=self.s.min_level, radii=self.s.near_radii)
+                                       min_level=self.s.min_level, radii=self.s.near_radii, layout=self.s.layout)
         if self.desired:                # the first selection of an anchor is not a change
             for n in refined ^ self.refined:
                 self.node_changed[n] = now
@@ -1066,6 +1123,8 @@ class Connection:
                     m["material"] = info.material
                     m["texture"] = f"{self.s.vfs_dir}/{info.texture}"
                     m["detail"] = True          # the shape has UV1 (world-locked detail map)
+                    if self.s.layout.format >= 4:   # M1: texture px, the mod's governor unit kind
+                        m["tex"] = self.s.tex_size(t.level)
                 self.send(m)
                 if self.batch[1] % 50 == 0:
                     left = sum(1 for g in self.groups for k in g[0] if k not in self.sent)
@@ -1081,16 +1140,22 @@ async def main_async(args):
             log.warning("the game writes shape version 0x%08x, this server 0x%08x: using DAE far tiles",
                         v, cdae.VERSION_WORD)
             fmt = "dae"
-    kfun = farfield.k_default if args.lod_k is None else (lambda lvl: args.lod_k)
+    kfun = None if args.lod_k is None else (lambda lvl: args.lod_k)
+    radii = None
+    if args.near_radii is not None:
+        ml = farfield.MESH_MIN_LEVEL[args.cells]
+        radii = {ml: args.near_radii[0], ml + 1: args.near_radii[1]}
     server = Server(args.user_dir, args.cache_dir, args.workers, kfun, args.hysteresis, args.far_radius, fmt,
                     imagery=args.imagery, near_visual=args.near_visual, tex_near=args.tex_near,
-                    tex_far=args.tex_far, tone=args.tone, near_radii=args.near_radii)
+                    tex_far=args.tex_far, tone=args.tone, near_radii=radii,
+                    status_interval=args.status_interval, cells=args.cells, tex=args.tex)
     srv = await asyncio.start_server(
         lambda r, w: Connection(server, r, w).run(), "127.0.0.1", args.port)
     port = srv.sockets[0].getsockname()[1]
     print(f"earthd listening on 127.0.0.1:{port} session {server.sid} -> {server.out_dir} "
-          f"(far tiles: {fmt}, near visual: {server.near_visual}, imagery: "
-          f"{','.join(args.imagery) if args.imagery else 'off'})", flush=True)
+          f"(far tiles: {fmt}, near visual: {server.near_visual}, cells: {server.layout.cells} "
+          f"(format {server.layout.format}), imagery: {','.join(args.imagery) if args.imagery else 'off'})",
+          flush=True)
     async with srv:
         await srv.serve_forever()
 
@@ -1104,12 +1169,18 @@ def parse_tex_px(text):
     return px
 
 
+def parse_tex_list(text):
+    """--tex: texture px per level from the finest, the last value repeating: '256,256,256,512'."""
+    return tuple(parse_tex_px(v) for v in text.split(","))
+
+
 def parse_radii(text):
-    """'150,400' -> {-2: 150.0, -1: 400.0}."""
+    """'150,400' -> (150.0, 400.0): the radii of the exact level and the next one (32 cells: L-2,
+    L-1; 64 cells: L-1, L0)."""
     r2, r1 = (float(v) for v in text.split(","))
     if not 0 <= r2 <= r1:
-        raise argparse.ArgumentTypeError("need 0 <= L-2 radius <= L-1 radius")
-    return {-2: r2, -1: r1}
+        raise argparse.ArgumentTypeError("need 0 <= exact-level radius <= next-level radius")
+    return r2, r1
 
 
 def main():
@@ -1135,14 +1206,27 @@ def main():
     ap.add_argument("--near-visual", choices=NEAR_VISUALS, default="mesh",
                     help="mesh: the ground near the player is drawn by 64/128 m tiles and the terrain block is "
                          "physics only (default); terrain: the v1.2 look (the terrain block is drawn)")
-    ap.add_argument("--tex-near", type=parse_tex_px, default=TEX_NEAR, help="texture size (px) of the two finest levels")
-    ap.add_argument("--tex-far", type=parse_tex_px, default=TEX_FAR, help="texture size (px) of the other levels")
+    ap.add_argument("--cells", type=int, choices=farfield.CELL_COUNTS, default=CELLS_DEFAULT,
+                    help="tile cells per edge: 32 = the v1.3.1 layout (FORMAT 3, default until the in-game "
+                         "gate P8 passes), 64 = docs/V1_4_SPEC.md M1 (FORMAT 4, exact level L-1, mesh mode only)")
+    ap.add_argument("--tex", type=parse_tex_list, default=None,
+                    help="texture size (px) per level from the finest, the last value repeating "
+                         "(default: 64 cells 256,256,256,512; 32 cells from --tex-near / --tex-far)")
+    ap.add_argument("--tex-near", type=parse_tex_px, default=TEX_NEAR,
+                    help="32 cells: texture size (px) of the two finest levels")
+    ap.add_argument("--tex-far", type=parse_tex_px, default=TEX_FAR, help="32 cells: texture size (px) of the other levels")
     ap.add_argument("--tone", type=float, default=1.0,
                     help="strength of the imagery tone curve (0 = the imagery as downloaded)")
     ap.add_argument("--near-radii", type=parse_radii, default=None,
-                    help="mesh mode: L-2 and L-1 radii in m around the player (default 150,400)")
+                    help="mesh mode: radii in m around the player of the exact level and the next one "
+                         "(L-2, L-1 with 32 cells; L-1, L0 with 64; default 150,400)")
+    ap.add_argument("--status-interval", type=float, default=STATUS_INTERVAL,
+                    help="re-send the last status with the current far-tile backlog at most every S seconds "
+                         "while it changes (0 = status on events only, as v1.3.1; tools/drive.py runs use 1)")
     ap.add_argument("-v", "--verbose", action="store_true")
     args = ap.parse_args()
+    if args.cells != 32 and args.near_visual != "mesh":
+        ap.error("--cells 64 needs --near-visual mesh (terrain mode is frozen at the v1.3.1 layout)")
     logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO,
                         format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     if args.nice:

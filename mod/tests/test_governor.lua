@@ -174,4 +174,29 @@ do
   T.check(u == 0 or s <= g.b + g:maxUnit() + 1e-9, 'motion counts against the frame cap')
 end
 
+-- M1 (docs/V1_4_SPEC.md 3.1): textured 64-cell tiles carry their texture size (far_tile.tex), and the
+-- unit kind follows it; priors scale today's cdaeTex by texture area until probe P8 measures them
+do
+  T.check(governor.texKind(128) == 'cdaeTex128' and governor.texKind(256) == 'cdaeTex256'
+    and governor.texKind(512) == 'cdaeTex512', 'kind from tex: cdaeTex128/256/512')
+  T.check(governor.texKind(nil) == 'cdaeTex', 'no tex (FORMAT 3): cdaeTex')
+  T.check(governor.texKind(1024) == 'cdaeTex' and governor.texKind(256.5) == 'cdaeTex' and governor.texKind('x') == 'cdaeTex',
+    'a size without a prior: cdaeTex')
+  T.check(governor.texKind('512') == 'cdaeTex512' and governor.texKind(256.0) == 'cdaeTex256', 'numeric forms')
+  local P = governor.PRIOR
+  T.near(P.cdaeTex128, P.cdaeTex / 4, 1e-12, '128 px prior = cdaeTex x 1/4 (texture area)')
+  T.near(P.cdaeTex256, P.cdaeTex, 1e-12, '256 px prior = cdaeTex')
+  T.near(P.cdaeTex512, P.cdaeTex * 4, 1e-12, '512 px prior = cdaeTex x 4')
+  local g = governor.new({ clock = clock })
+  local s = g:snapshot()
+  T.check(s.estCdaeTex128 == P.cdaeTex128 and s.estCdaeTex256 == P.cdaeTex256 and s.estCdaeTex512 == P.cdaeTex512
+    and s.estCdaeTex == P.cdaeTex, 'snapshot reports every textured kind')
+  -- each kind keeps its own estimate, and a 512 px unit in use sets maxUnit
+  for _ = 1, 100 do frame(g, { kind = 'cdaeTex256', cost = 5 }) end
+  T.near(g.est.cdaeTex256, 5, 0.01, 'cdaeTex256 estimate learns its cost')
+  T.check(g.est.cdaeTex512 == P.cdaeTex512 and g.est.cdaeTex == P.cdaeTex, 'other kinds untouched')
+  g:try('cdaeTex512')
+  T.near(g:maxUnit(), P.cdaeTex512, 1e-12, 'maxUnit includes the 512 px kind once used')
+end
+
 T.done('test_governor')

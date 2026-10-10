@@ -13,6 +13,7 @@ local framing = require('beamngEarth/framing')
 local geodesy = require('beamngEarth/geodesy')
 local follow = require('beamngEarth/follow')
 local farfield = require('beamngEarth/farfield')
+local crossover = require('beamngEarth/crossover')
 local calls, objects = S.calls, S.objects
 
 -- JSON stubs: payloads are opaque keys into a table on both directions
@@ -189,8 +190,8 @@ T.check(tb and tb.lastImport.flip == false, 'flipY false')
 T.check(tb and tb.lastImport.sq == SQ and tb.pos.x == -1024 and tb.pos.y == -1024, 'flat block 2048 m centred on the origin')
 
 frames(3)
-T.check(#received('hello') == 1 and received('hello')[1].protocol == 4 and received('hello')[1].format == 3,
-  'hello (protocol 4, format 3) sent on connect')
+T.check(#received('hello') == 1 and received('hello')[1].protocol == 4 and received('hello')[1].format == 4,
+  'hello (protocol 4, format 4: the newest the mod reads) sent on connect')
 T.check(calls.safeTeleport == 1, 'player placed on flat ground')
 
 -- capture the mod's warnings (the stub log() drops everything)
@@ -211,6 +212,8 @@ end
 frames(1)
 T.check(uiShows('Imagery: test credits'), 'the server\'s attribution line is shown (hello.attribution)')
 T.check(not warned('material'), 'hello: the server\'s far-tile material is the one the mod ships')
+T.check(crossover.cells() == 32 and farfield.stats().exactLevel == -2,
+  'FORMAT 3 hello (no cells): 32-cell tiles, exact level L-2 (v1.3.1)')
 local req = received('prepare_anchor')[1]
 T.near(req.lat, 36.5785, 1e-9, 'default lat'); T.near(req.lon, -118.2923, 1e-9, 'default lon')
 T.check(req.cx == 0 and req.cy == 0, 'teleport terrain centred at (0,0)')
@@ -552,6 +555,26 @@ T.check(uiShows('Imagery: USGS The National Map') and uiShows('EOX') and uiShows
 T.check(core.teleport(91, 0) == false, 'invalid lat rejected')
 T.check(core.teleport(46.5, 7.9) == true, 'console teleport accepted')
 T.check(core.setFarBudget(3) == 3 and core.setFarBudget(10) == 4, 'far budget setter (governor target, 1-4 ms)')
+
+-- M1 (docs/V1_4_SPEC.md 3.1): a FORMAT 4 server sends hello.cells; the mod reads formats 3 and 4
+local infos = {}
+log = function(level, tag, text) if level == 'I' then infos[#infos + 1] = tostring(text) end end
+local function said(pat)
+  for _, w in ipairs(infos) do if w:match(pat) then return true end end
+  return false
+end
+serverSend({ type = 'hello', protocol = 4, format = 4, cells = 64, serverVersion = '0.4.0', sessionId = 's3',
+  farFormat = 'cdae', material = 'bngEarthFar_v3', nearVisual = 'mesh' })
+frames(2)
+T.check(crossover.cells() == 64 and crossover.defaultErr(0) == 1, 'hello.cells 64: crossover.defaultErr from it')
+T.check(farfield.stats().exactLevel == -1, 'hello.cells 64: the exact level (exactMiss metric) is L-1')
+T.check(not said('Format mismatch'), 'FORMAT 4 accepted')
+serverSend({ type = 'hello', protocol = 4, format = 5, serverVersion = '0.4.0', sessionId = 's4', farFormat = 'cdae',
+  material = 'bngEarthFar_v3', nearVisual = 'mesh' })
+frames(2)
+T.check(said('Format mismatch: server 5, mod 3/4'), 'an unknown format is reported')
+T.check(crossover.cells() == 32 and farfield.stats().exactLevel == -2, 'no hello.cells: back to 32 cells, L-2')
+log = stubLog
 
 core.onExtensionUnloaded()
 T.check(scenetree.findObject('bngEarthTerrain') == nil, 'terrain deleted on unload')

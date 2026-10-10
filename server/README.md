@@ -25,16 +25,19 @@ python3 server/earthd.py --port 47613 --user-dir ~/.local/share/BeamNG/BeamNG.dr
 | `--cache-dir` | `~/.cache/beamng-earth` | Download cache root. DEM tiles: `<cache-dir>/dem/<source>/<z>/<x>/<y>.<ext>` |
 | `--workers` | `3` | Far-tile worker threads. Keep ≤ 3 so tile building cannot starve the game (§4.5) |
 | `--far-format` | `cdae` | `cdae`: server-written binary shapes (default). `dae`: Collada fallback (the engine then compiles each tile itself, ~5× slower to load) |
-| `--lod-k` | per level | One K for every level. Default K(L1) = K(L2) = 3, K(L3+) = 2.5 (§3) |
+| `--lod-k` | per level | One K for every level. Default: the layout's K table, K(L1) = K(L2) = 3, K(L3+) = 2.5 with 32 cells (§3); K' = {L1 0.75, L2 1.5, L3 1.5, L4+ 1.25} with 64 |
 | `--hysteresis` | `0.25` | A refined node stays refined until d ≥ (1 + h) × its switch distance (v1.3 §D: band ≥ 25 %) |
 | `--far-radius` | `80000` | Far field half-size (m) around the player |
 | `--nice` | `10` | Niceness increment of the whole process (0 = leave as is) |
 | `--imagery` | `usgs,eox2023,eox2016` | Satellite imagery source chain (first source with data wins, per source tile), or `off` for the v1.2 palette look (tiles without `material`) |
 | `--near-visual` | `mesh` | `mesh`: the ground near the player is drawn by L-2 (64 m) / L-1 (128 m) tiles and the TerrainBlock is physics only; `terrain`: the v1.2 look (the block is drawn, L0 tiles under it are covered) |
-| `--tex-near` | `512` | Texture edge (px) of the two finest levels (mesh: L-2, L-1; terrain: L0, L1) |
-| `--tex-far` | `256` | Texture edge (px) of every other level |
+| `--cells` | `32` | Tile cells per edge (docs/V1_4_SPEC.md §3.1, M1). `32`: the v1.3.1 layout, FORMAT 3. `64` (mesh mode only): 8704-tri tiles, FORMAT 4, exact level L-1 (128 m, the 2 m lattice), L0 within 400 m, `hello.cells`, `far_tile.tex`, tile cache 2500. The default stays 32 until the in-game probe P8 passes |
+| `--tex` | per layout | Texture edge (px) per level from the finest, the last value repeating. Default with 64 cells `256,256,256,512` (L-1, L0, L1 256 px; L2+ 512 px); with 32 cells from `--tex-near` / `--tex-far` |
+| `--tex-near` | `256` | 32 cells: texture edge (px) of the two finest levels (mesh: L-2, L-1; terrain: L0, L1) |
+| `--tex-far` | `256` | 32 cells: texture edge (px) of every other level |
 | `--tone` | `1.0` | Strength of the imagery tone curve (0 = imagery as downloaded) |
-| `--near-radii` | `150,400` | Mesh mode: everything within 150 m of the player is L-2, within 400 m at least L-1 |
+| `--near-radii` | `150,400` | Mesh mode: everything within 150 m of the player is the exact level, within 400 m at least the next one (32 cells: L-2, L-1; 64 cells: L-1, L0) |
+| `--status-interval` | `0` | Re-send the last status with the current far-tile backlog every S s while it changes (0 = v1.3.1: on events only; `tools/drive.py` runs use 1) |
 | `-v` | off | Debug logging |
 
 Requirements: Python 3 (3.10+), numpy, Pillow (≥ 11, for its DXT1 encoder) with WebP support. No
@@ -66,7 +69,7 @@ as JSON floats (`512.0`). All positions are in the ENU plane of the anchor named
 
 | Message | Notes |
 |---|---|
-| `{"type":"hello","protocol":4,"format":3,"modVersion":"…"}` | A different `protocol` or `format` gets a `status` warning. |
+| `{"type":"hello","protocol":4,"format":4,"modVersion":"…"}` | `format` = the newest tile format the mod reads (the v1.4 mod reads 3 and 4; a v1.3.1 mod sends 3). A different `protocol`, or a `format` below the server's, gets a `status` warning. |
 | `{"type":"prepare_anchor","requestId":N,"lat":d,"lon":d,"cx":m,"cy":m}` | `cx`,`cy` optional (default 0): centre of the anchor's first terrain in the **new** anchor's frame, snapped to 256 m (clamped to ±30 km). |
 | `{"type":"commit_anchor","anchorId":A}` | Switches the far field to A and commits A's first terrain (from `anchor_ready`). Tiles of the previous anchor that were sent but never swapped in are forgotten: the mod drops them. |
 | `{"type":"prepare_terrain","requestId":N,"anchorId":A,"cx":m,"cy":m}` | `cx`,`cy` multiples of 256 (other values are snapped). For the active anchor this block becomes the **pending** block: in terrain mode the far field is refined to L0 over it at once and its 64 L0 tiles are built first (mesh mode: no tile depends on a block). |
@@ -77,13 +80,13 @@ as JSON floats (`512.0`). All positions are in the ENU plane of the anchor named
 
 | Message | Notes |
 |---|---|
-| `{"type":"hello","protocol":4,"format":3,"serverVersion":"0.4.0","sessionId":"…","farFormat":"cdae"\|"dae","material":"bngEarthFar_v3","nearVisual":"mesh"\|"terrain","attribution":"…"}` | `farFormat` tells which shape type the tiles are; `material` is the static palette material (tiles without imagery). `nearVisual`: `mesh` = disable the TerrainBlock's rendering (physics only), the tiles draw all the ground; `terrain` = v1.2. `attribution`: the credit line for the sources in use, e.g. "Imagery: USGS The National Map (public domain); Sentinel-2 cloudless by EOX (CC BY-NC-SA 4.0 / CC BY 4.0); Elevation: Mapterhorn (see mapterhorn.com/attribution), AWS Terrain Tiles / Mapzen". |
-| `{"type":"status","text":"…"}` | Progress text, and protocol/format mismatch warnings. |
+| `{"type":"hello","protocol":4,"format":3,"serverVersion":"0.4.0","sessionId":"…","farFormat":"cdae"\|"dae","material":"bngEarthFar_v3","nearVisual":"mesh"\|"terrain","attribution":"…","cells":64}` | `format`: 3 with `--cells 32` (v1.3.1), 4 with `--cells 64`; `cells` (v1.4 M1) only with format 4: the tiles' cells per edge (the mod's crossover fallback error and the exact level of its `exactMiss` metric; 32 without it). `farFormat` tells which shape type the tiles are; `material` is the static palette material (tiles without imagery). `nearVisual`: `mesh` = disable the TerrainBlock's rendering (physics only), the tiles draw all the ground; `terrain` = v1.2. `attribution`: the credit line for the sources in use, e.g. "Imagery: USGS The National Map (public domain); Sentinel-2 cloudless by EOX (CC BY-NC-SA 4.0 / CC BY 4.0); Elevation: Mapterhorn (see mapterhorn.com/attribution), AWS Terrain Tiles / Mapzen". |
+| `{"type":"status","text":"…","backlog":n}` | Progress text, and protocol/format mismatch warnings. `backlog` (v1.4 M0): desired far tiles of the current anchor not shown yet; with `--status-interval S` the last status is re-sent every S s while it changes. |
 | `{"type":"anchor_ready","requestId":N,"anchorId":A,"lat":d,"lon":d,"groundZ":m,"terrain":{"cx","cy","heightmap","size":1024,"squareSize":2.0,"zBase","maxHeight","q"}}` | `groundZ` = terrain height at (0, 0) of the new frame (bilinear on the quantised grid, i.e. what the game will report), or `null` if (0, 0) is outside the block. `q` = height quantum, `maxHeight = q·65536`, `zBase` a multiple of 64 m (so of `q`). No `anchorKey` yet (lattice anchors are phase 5). |
 | `{"type":"anchor_error","requestId":N,"error":"…"}` | |
 | `{"type":"terrain_ready","requestId":N,"anchorId":A,"cx","cy","heightmap","size":1024,"squareSize":2.0,"zBase","maxHeight","q"}` | Same terrain fields as in `anchor_ready`. |
 | `{"type":"terrain_error","requestId":N,"anchorId":A,"error":"…"}` | Unknown anchor, bad fields or a DEM failure (so a request never hangs). |
-| `{"type":"far_tile","anchorId":A,"key":"L_i_j","level":L,"shape":"/temp/beamngEarth/<sid>/far_<A>_<L_i_j>.cdae","pos":[x,y,z],"err":m,"skirt":m,"sink":m,"state":"group","material":"bngEarthSat_<A>_<key>","texture":"/temp/beamngEarth/<sid>/far_<A>_<L_i_j>.dds","detail":true}` | A tile to **load hidden**; it becomes visible only through a `far_swap`. `level` −2…9 (−2, −1 in mesh mode only); footprint `[pos.x, pos.x + 256·2^level]²`. `pos` = SW corner, z = rounded mean height (an integer, so L-2 vertex heights stay exact multiples of `q`). `err` = max deviation of the tile from a 2× finer DEM reference (m). `skirt` = its skirt depth, `max(2, 0.02·S, 2.5·err + 1)`. `sink` (**L0 in terrain mode only**) = how far to lower the tile so it lies ≥ 0.3 m under the terrain block everywhere (measured against the block's own 2 m Q-rounded lattice). `state` is always `"group"` (`"prefetch"` is phase 4). Keys never depend on the terrain block. **Imagery** (all three or none): `material` = the material name written into the shape (create a Material with `mapTo` = it and `colorMap` = `texture` before the tile; the key's `-` signs are written `m`, e.g. `bngEarthSat_3_m2_10_m4`); `texture` = DDS DXT1 with a full mip chain next to the shape, row 0 = the tile's north edge; `detail` = the shape has UV1 (world-locked detail coordinates, one unit per `DETAIL_M` = 2 m). Without them the shape references the static `bngEarthFar_v3` palette material. |
+| `{"type":"far_tile","anchorId":A,"key":"L_i_j","level":L,"shape":"/temp/beamngEarth/<sid>/far_<A>_<L_i_j>.cdae","pos":[x,y,z],"err":m,"skirt":m,"sink":m,"state":"group","material":"bngEarthSat_<A>_<key>","texture":"/temp/beamngEarth/<sid>/far_<A>_<L_i_j>.dds","detail":true,"tex":256}` | A tile to **load hidden**; it becomes visible only through a `far_swap`. `level` −2…9 (−2, −1 in mesh mode only); footprint `[pos.x, pos.x + 256·2^level]²`. `pos` = SW corner, z = rounded mean height (an integer, so L-2 vertex heights stay exact multiples of `q`). `err` = max deviation of the tile from a 2× finer DEM reference (m). `skirt` = its skirt depth, `max(2, 0.02·S, 2.5·err + 1)`. `sink` (**L0 in terrain mode only**) = how far to lower the tile so it lies ≥ 0.3 m under the terrain block everywhere (measured against the block's own 2 m Q-rounded lattice). `state` is always `"group"` (`"prefetch"` is phase 4). Keys never depend on the terrain block. **Imagery** (all three or none): `material` = the material name written into the shape (create a Material with `mapTo` = it and `colorMap` = `texture` before the tile; the key's `-` signs are written `m`, e.g. `bngEarthSat_3_m2_10_m4`); `texture` = DDS DXT1 with a full mip chain next to the shape, row 0 = the tile's north edge; `detail` = the shape has UV1 (world-locked detail coordinates, one unit per `DETAIL_M` = 2 m). Without them the shape references the static `bngEarthFar_v3` palette material. `tex` (v1.4 M1, format 4 only, with the material) = the texture's edge in px: the mod's governor unit kind (`cdaeTex128/256/512`). |
 | `{"type":"far_swap","anchorId":A,"id":G,"add":[keys],"remove":[keys],"dIn":m,"dOut":m}` | A swap group, sent once every `add` has been sent as `far_tile`. Run it once all adds are loaded: show the adds, remove the removes (C2 crossover: spawn adds at z − dIn, raise them, then sink the removes by dOut, then delete). `add` and `remove` cover exactly the same footprint (a parent and its descendants). One-sided groups: `remove: []` for the initial load / tiles entering the 80 km radius, `add: []` for tiles leaving it. `dIn` = max(new − old), `dOut` = max(old − new) over the group (both ≥ 0, evaluated at every vertex of both sides, +0.1 m). Group ids increase per connection. |
 | `{"type":"far_remove","anchorId":A,"key":"L_i_j"}` | For the **active** anchor: eviction of a tile sent as `far_tile` that no group needs any more (the desired set changed before its swap); delete it, it was never shown. For a **previous** anchor (after a rebase): remove that shown tile; it is sent only after every `far_swap` whose adds cover its area (footprints compared in the new frame), so apply it once the swaps received before it have run. |
 | `{"type":"far_done","anchorId":A,"count":K}` | Every swap group for the current desired set has been sent. K = number of tiles the mod shows once those swaps have run. Sent again after each later change completes. |
@@ -135,7 +138,12 @@ build.
   2 s. Everything intersecting the 80 km square around the player is kept; tiles cover it exactly
   once. About 700 tiles near a block in terrain mode (64 of them under it); 784 in mesh mode
   (48 L-2, 52 L-1, 128 L0, 108 L1, 92 L2, 96 each L3–L5, 64 L6, 4 L7 around the origin).
-- Each tile: 32×32 cells (2048 tris) + outward-facing skirts on all four edges (2304 tris).
+- Each tile: 32×32 cells (2048 tris) + outward-facing skirts on all four edges (2304 tris). With
+  `--cells 64` (v1.4 M1, `farfield.Layout(64)`): 64×64 cells (8704 tris, 4485 verts, 348 KB textured),
+  every level keeps its size so its vertex spacing halves, the K' table and the radii L-1 ≤ 150 m /
+  L0 ≤ 400 m keep the vertex spacing at a distance (300 tiles at a pose instead of 784; L-1 is the
+  exact level: every lattice sample, L0 every 2nd). The server makes one `Layout` and passes it to
+  `select`, `build_tile`, `zoom_for_level` and `heightmap`; no module setting is read at call time.
   Tiles of level ≤ 0 use the heightmap's DEM zoom and Q rounding, so their vertices (every 4th / 2nd /
   every lattice sample for L0 / L-1 / L-2) equal the terrain's samples bit for bit; an L-2 tile's
   vertices are exactly the terrain PNG's heights (also in the engine's float32 arithmetic). DEM zoom
@@ -306,6 +314,16 @@ with imagery off (v1.2) in both `cdae` and `dae` formats, and mesh mode with syn
 cover at every step, hysteresis near the 150 m threshold, palette fallback when imagery fails). `test_e2e.py` and `test_integration_drive.py` start
 a real server and download real tiles, so they need network access; their DEM cache is
 `<tmp>/beamng-earth-test-cache`.
+`test_demand.py` (v1.4 M0, M1) reproduces table 2.1 of docs/V1_4_SPEC.md (tiles added per second along a
+straight drive at 4 Hz poses with hysteresis and HOLD_S), the v1.3.1 and the 64-cell (M1) rows; hooks
+for the M3a / M5 rows. The layout-dependent tests (`test_farfield`, `test_mesh`, `test_server`,
+`test_protocol_agreement`, `test_integration_drive` mesh) run for both 32 and 64 cells.
+`test_drive_tool.py` checks `tools/drive.py` and `tools/drive_driver.lua` offline (profile rule on both
+sides, nominal speed, the summary, the driver under luajit, `run_ge` with a fake MCP: polls >= 1 s
+apart and an uninstall on every failure path). `test_v131_default.py` checks that a default
+`earthd.Server` reproduces the v1.3.1 selection, geometry and heightmap (`fixtures/v131_golden.json`,
+written by the v1.3.1 code). `bench_build.py` (not discovered: run it
+by hand, it downloads unless `--synthetic`) times `Server.make_tile` per level, cold and warm.
 
 Cross-component (server ↔ mod):
 - `test_protocol_agreement.py`: the protocol 4 table above as data (sessions in both terrain/no

@@ -1,6 +1,10 @@
 -- BeamNG.Earth dev tool: frame-time sampler. Not loaded by default; load with
 --   extensions.load('beamngEarth_perfmon')
 -- and poll beamngEarth_perfmon.snapshot() (returns stats since the previous snapshot).
+-- Harness frames (docs/V1_4_SPEC.md 3.0): a test harness calls tagHarness() from the code it runs
+-- through MCP; the next measured frame interval (the one that contains that MCP work, whichever
+-- order the hooks run in) is counted in harnessFrames / harnessMaxMs and left out of every other
+-- statistic.
 
 local M = {}
 
@@ -17,17 +21,28 @@ local timer = hptimer and hptimer() or nil
 -- Sim-time vs real-time per frame (onPreRender gets both): detects "time warp" where the engine
 -- advances simulation less than real time on long frames.
 local simSum, realSum, slowFrames, minRatio = 0, 0, 0, 1
+local harnessTag = false
+local harnessFrames, harnessMax = 0, 0
 
 local function reset()
   simSum, realSum, slowFrames, minRatio = 0, 0, 0, 1
   n, sum, maxDt = 0, 0, 0
   over33, over50, over100 = 0, 0, 0
   worst = {}
+  harnessFrames, harnessMax = 0, 0
 end
+
+function M.tagHarness() harnessTag = true end
 
 function M.onUpdate(dtReal)
   local ms = timer and timer:stopAndReset() or (dtReal or 0) * 1000
   clock = clock + ms / 1000
+  if harnessTag then
+    harnessTag = false
+    harnessFrames = harnessFrames + 1
+    if ms > harnessMax then harnessMax = ms end
+    return
+  end
   n = n + 1
   sum = sum + ms
   ring[(n - 1) % RING + 1] = ms
@@ -62,6 +77,7 @@ function M.snapshot()
     over33 = over33, over50 = over50, over100 = over100, clock = clock,
     worst = worst,
     simRatio = realSum > 0 and simSum / realSum or 1, slowSimFrames = slowFrames, minSimRatio = minRatio,
+    harnessFrames = harnessFrames, harnessMaxMs = harnessMax,
   }
   reset()
   return out

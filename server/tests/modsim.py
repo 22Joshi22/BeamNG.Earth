@@ -7,7 +7,7 @@ ports of:
   rebase.lua    decide, core.lua rebaseHint
   governor.lua  the per-frame streaming budget and heavy-slot isolation (Governor)
   crossover.lua the C1/C2 mode choice (in view at any distance, the cap where near in-view groups
-                wait for a slot) and phase lengths
+                wait for a slot) and phase lengths; defaultErr from the server's hello.cells (M1)
   farfield.lua  the tile state machine (FarField): hidden preload, swap groups that run once
                 every add is loaded, groups sharing a key in arrival order, far_remove ordering,
                 the previous anchor's leftovers at far_done, cover state (edge ring sunk by the
@@ -16,6 +16,8 @@ ports of:
                 nearest-first imports, previous-anchor tiles dropped once covered.
   satmat.lua    per-tile imagery materials: created (unit 'material') before the first tile using
                 them, reference-counted, deleted (unit 'matDelete') after their last tile object.
+  governor.lua  texKind: the unit kind of a textured import from far_tile.tex (FORMAT 4, M1:
+                cdaeTex128/256/512; 'cdaeTex' without it).
 test_modsim.py runs governor.lua and follow.lua under luajit against these ports.
 Engine calls are replaced by a cost model (ms per unit kind) supplied by the caller.
 """
@@ -347,8 +349,47 @@ def xo_delta(err_new, err_old):
     return 1.2 * (err_new + err_old) + 0.2
 
 
-def default_err(level):
-    return 256 * 2 ** level / XO["CELLS"] / 4
+def default_err(level, cells=None):
+    """crossover.defaultErr with the server's cell count (hello.cells; XO CELLS = 32 without it)."""
+    return 256 * 2 ** level / (cells or XO["CELLS"]) / 4
+
+
+def _tonumber(v):
+    """Lua tonumber for the values a JSON message can carry: numbers, numeric strings, else None."""
+    if isinstance(v, bool):
+        return None
+    if isinstance(v, str):
+        try:
+            return float(v.strip())
+        except ValueError:
+            return None
+    return v if isinstance(v, (int, float)) else None
+
+
+def _integral(n):
+    """Lua n == math.floor(n) (true for +-inf, false for nan)."""
+    return n is not None and (math.isinf(n) or (n == n and n == math.floor(n)))
+
+
+def set_cells(n):
+    """crossover.setCells: a positive integer (tonumber), else the FORMAT 3 default."""
+    n = _tonumber(n)
+    return n if n is not None and n >= 1 and _integral(n) else XO["CELLS"]
+
+
+def exact_level_for(cells):
+    """farfield.exactLevelFor: the level whose tile is `cells` lattice squares wide."""
+    return math.floor(math.log((cells or 32) * LATTICE["SQUARE"] / LATTICE["L0"]) / math.log(2) + 0.5)
+
+
+def tex_kind(px):
+    """governor.texKind: cdaeTex<px> for a texture size with a prior, else 'cdaeTex'."""
+    px = _tonumber(px)
+    if _integral(px) and not math.isinf(px):      # (inf formats to no size with a prior in Lua)
+        k = f"cdaeTex{int(px)}"
+        if k in GOV["PRIOR"]:
+            return k
+    return "cdaeTex"
 
 
 # --- farfield.lua ----------------------------------------------------------------------
@@ -360,7 +401,7 @@ class Inst:
                  "prefetch", "kind", "path", "queued", "loaded", "failed", "shown", "doomed", "removing",
                  "cover", "cover_hide", "anim_end", "grp", "material", "mat", "mat_failed")
 
-    def __init__(self, msg, seq, path):
+    def __init__(self, msg, seq, path, cells=None):
         self.key, self.aid = str(msg["key"]), msg["anchorId"]
         self.level = int(msg.get("level", 0))
         size = FOLLOW["GRID"] * 2 ** self.level
@@ -368,7 +409,7 @@ class Inst:
         self.bbox0 = (x, y, x + size, y + size)
         self.x0, self.y0, self.x1, self.y1 = self.bbox0
         self.z = z
-        self.err = float(msg["err"]) if msg.get("err") is not None else default_err(self.level)
+        self.err = float(msg["err"]) if msg.get("err") is not None else default_err(self.level, cells)
         self.sink = float(msg["sink"]) if msg.get("sink") is not None else None
         self.seq = seq
         self.prefetch = msg.get("state") == "prefetch"
@@ -378,7 +419,7 @@ class Inst:
         if not msg["shape"].lower().endswith(".cdae"):
             self.kind = "dae"
         else:
-            self.kind = "cdaeTex" if self.material else "cdae"
+            self.kind = tex_kind(msg.get("tex")) if self.material else "cdae"
         self.path = path
         self.queued, self.loaded, self.failed, self.shown = True, False, False, False
         self.doomed = self.removing = False
@@ -410,9 +451,14 @@ class FarField:
     # costs not given by the caller (ms): a per-tile Material (p_sat.lua 0.13-0.46 ms), a textured
     # .cdae import (2.5-3.5 ms incl. its texture), a Material delete (unmeasured)
     DEFAULT_COSTS = {"material": 0.3, "cdaeTex": 3.0, "matDelete": 0.2, "motion": 0.0}
+    IMPORT_KINDS = ("cdae", "dae", "cdaeTex", "cdaeTex128", "cdaeTex256", "cdaeTex512")
 
-    def __init__(self, costs, path_of):
+    def __init__(self, costs, path_of, cost_scale=None):
+        """cost_scale: None, or n -> factor applied to the cost of an import with n objects in the
+        scene (live + old + deleting; docs/V1_4_SPEC.md R3: c(n) = c(n0) (1 + alpha (n - n0)))."""
         self.costs, self.path_of = {**self.DEFAULT_COSTS, **costs}, path_of
+        self.cost_scale = cost_scale
+        self.cells = XO["CELLS"]          # crossover.setCells(hello.cells)
         self.pending, self.live, self.old = {}, {}, {}
         self.main_q, self.pre_q = deque(), deque()
         self.n_queued = 0
@@ -436,7 +482,7 @@ class FarField:
         self.mat_del = []                 # names whose references reached 0 (FIFO)
         self.mat_queued = set()
         self.unknown_removes = []
-        self.frame = dict(units=0, imports=0, est=0.0, spent=0.0)
+        self.frame = dict(units=0, imports=0, est=0.0, spent=0.0, excess=0.0)
         self.on_import = None             # test hook: called with each instance the "engine" loaded
 
     # --- cover ---
@@ -740,7 +786,7 @@ class FarField:
         if prev is not None:
             self.doom(prev)
         self.seq_n += 1
-        inst = Inst(msg, self.seq_n, self.path_of(msg["shape"]))
+        inst = Inst(msg, self.seq_n, self.path_of(msg["shape"]), self.cells)
         if inst.material:
             self.counters["textured"] += 1
         self.pending[key] = inst
@@ -862,15 +908,25 @@ class FarField:
     def pending_main(self):
         return sum(1 for i in self.pending.values() if not i.prefetch)
 
+    def objects(self):
+        """Tile objects in the scene (live + old + deleting), the R3 cost term's n."""
+        return len(self.live) + len(self.old) + len(self.doomed)
+
+    def import_cost(self, kind):
+        ms = self.costs[kind]
+        return ms * self.cost_scale(self.objects()) if self.cost_scale is not None else ms
+
     def _unit(self, gov, kind, ms):
-        self.frame["est"] += gov.est.get(kind, 1.0)
+        e = gov.est.get(kind, 1.0)
+        self.frame["est"] += e
+        self.frame["excess"] = max(self.frame["excess"], ms - e)     # over the estimate it was granted on
         gov.charge(kind, ms)
         self.frame["units"] += 1
         self.frame["spent"] += ms
 
     def update(self, gov, dt, cam):
         """farfield.update for one frame; fills self.frame with its units and costs."""
-        self.frame = dict(units=0, imports=0, est=0.0, spent=0.0)
+        self.frame = dict(units=0, imports=0, est=0.0, spent=0.0, excess=0.0)
         self.clock += min(max(dt, 0.0), FAR["MAX_DT"])
         # 1. motion
         for g in self.groups:
@@ -950,7 +1006,7 @@ class FarField:
             inst.queued = False
             self.n_queued -= 1
             self.frame["imports"] += 1
-            self._unit(gov, inst.kind, self.costs[inst.kind])
+            self._unit(gov, inst.kind, self.import_cost(inst.kind))
             imported = True
         # 5. the previous anchor's leftovers once far_done came and everything received is shown
         if self.done and self.old and not self.groups and self.pending_main() == 0:

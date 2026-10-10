@@ -6,8 +6,8 @@
 --   A aid keepOld cx cy        switchAnchor(aid, keepOld == 1, {cx, cy})
 --   B cx cy                    onBlockCommit(cx, cy)
 --   C x y z fx fy fz fov       camera for the next frames
---   T aid key level x y z err sink|- [material|-]   far_tile (shape <key>.cdae, state 'group'; with a
---                              material: texture <key>.dds, detail = true)
+--   T aid key level x y z err sink|- [material|- [tex]]   far_tile (shape <key>.cdae, state 'group'; with
+--                              a material: texture <key>.dds, detail = true; tex: FORMAT 4 texture px)
 --   S aid id dIn|- dOut|- nAdd adds... nRem removes...                far_swap
 --   R aid key                  far_remove        D aid    far_done
 --   U ocx ocy ncx ncy          print uncoverReady
@@ -62,7 +62,7 @@ for line in io.lines(script) do
     farfield.onTile({ type = 'far_tile', anchorId = tonumber(w[2]), key = key, level = tonumber(w[4]),
       shape = '/temp/x/far_' .. key .. '.cdae', pos = { tonumber(w[5]), tonumber(w[6]), tonumber(w[7]) },
       err = tonumber(w[8]), sink = num(w[9]), state = 'group', material = mat,
-      texture = mat and ('/temp/x/far_' .. key .. '.dds') or nil, detail = mat ~= nil })
+      texture = mat and ('/temp/x/far_' .. key .. '.dds') or nil, detail = mat ~= nil, tex = num(w[11] or '-') })
   elseif c == 'S' then
     local i, add, rem = 6, {}, {}
     for _ = 1, tonumber(w[i]) do i = i + 1; add[#add + 1] = w[i] end

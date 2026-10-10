@@ -4,13 +4,16 @@ rules (modsim.py: ports of core.lua updateWorld, follow.lua, rebase.lua, governo
 crossover.lua, farfield.lua and satmat.lua, every threshold read from the Lua files;
 test_modsim.py checks the ports against the Lua under luajit).
 
-Two drives over the same route:
+Three drives over the same route:
   TerrainDriveTest  --near-visual terrain --imagery off: the v1.2 path (the terrain block is
                     drawn, far tiles use the static palette material, L0 tiles carry `sink`);
   MeshDriveTest     --near-visual mesh with imagery (the v1.3 defaults): the block is physics only,
                     L-2 / L-1 tiles draw the ground near the player, every tile has its own texture
                     and material. Imagery comes from a deterministic offline source
-                    (fake_imagery_earthd.py), so the drive needs no imagery network access.
+                    (fake_imagery_earthd.py), so the drive needs no imagery network access;
+  MeshDrive64Test   the same with --cells 64 (docs/V1_4_SPEC.md §3.1, M1): FORMAT 4, 8704-tri tiles
+                    down to L-1 (the exact level), far_tile.tex and the textured kinds
+                    cdaeTex128/256/512, with the cost model per kind and object count of §3.4.
 
 Route: teleport to 36.5785, -118.2923 -> stand until the first far_done -> drive at 30 m/s,
 east for 3 km, a 1 km bend to 50 deg (north-east, so blocks move on both axes and the uncovered
@@ -25,6 +28,10 @@ commit 44 (P7: importMaps ~42 + reloadCollision 1.6), the rebase 65, the telepor
 frame of 16.7 ms (60 fps; BNGE_DRIVE_BASE_MS). The governor sees these as its measured costs and
 frame times, and each frame's simulated length (dtReal) is the previous frame's modelled wall
 time, as in the game.
+64-cell drive (§3.4 Tests): c(kind, n) = prior(kind) (1 + alpha (n - 300)), n = live + old + deleting
+tile objects, alpha = BNGE_DRIVE_ALPHA (0.0016, R3); the 256 px textured import BNGE_DRIVE_TEX_IMPORT_MS
+(default 6 for 64 cells, a planning value until P8), the texture part scaling with its area
+(BNGE_DRIVE_DDS_MS = 1.5 ms of it at 256 px: 128 px 4.9 ms, 512 px 10.5 ms).
 
 Asserted (design §9 acceptance and V1_3_SPEC acceptance, the parts checkable offline):
   (a) overlapping terrain samples are bit-identical across every terrain-follow commit: the two
@@ -45,7 +52,7 @@ Asserted (design §9 acceptance and V1_3_SPEC acceptance, the parts checkable of
       transient gap at all;
   (d) every far tile is a .cdae that exists when it arrives, when the mod imports it and as long
       as the mod has a TSStatic for it, and a sample parses with the server's own reader
-      (cdae.read) into one 2304-triangle mesh with the right material (the static one, or in
+      (cdae.read) into one 2304-triangle (64 cells: 8704) mesh with the right material (the static one, or in
       mesh mode the tile's own bngEarthSat_<anchorId>_<key> with UV1); mesh mode: every tile has
       a texture (DDS DXT1, full mip chain) that exists while a Material refers to it;
   (e) time-warp proxy: the governor's per-frame budget replayed against the server's stream:
@@ -54,9 +61,12 @@ Asserted (design §9 acceptance and V1_3_SPEC acceptance, the parts checkable of
       (import, material, reveal, delete, material delete) within QUIET_BEFORE / QUIET_AFTER
       frames of a terrain commit or rebase;
   (f) mesh mode: the visible ground near the player is the physics surface: the tile under the
-      player is L-2 at every pose, and the vertices of every shown L-2 tile over the committed
-      block equal the block's heightmap samples (float64 exactly, float32 as the engine adds
-      them), with the TerrainBlock's diagonal pattern; tiles within NEAR_RADII[-2] are L-2 at
+      player is the exact level (L-2; L-1 with 64 cells) at every pose, and the vertices of every
+      shown exact tile over the committed block equal the block's heightmap samples (float64
+      exactly, float32 as the engine adds them), with the TerrainBlock's diagonal pattern; between
+      the vertices the mesh height at random points under the player differs from the engine's
+      bilinear collision (the heightmap samples) by p99 <= 5 cm and at most |twist|/4 of its 2 m
+      square (V1_4_SPEC Targets, E7; >= 200 points); tiles within the exact radius are exact at
       the end;
   (g) materials do not leak (every Material is referenced by a tile object, a deleted
       material's tiles are gone, none left over at the end), and the server deletes no burst of
@@ -72,9 +82,11 @@ Environment:
   BNGE_DRIVE_SPEEDUP    simulated seconds per wall second (default 4)
   BNGE_DRIVE_REBASE_M   rebase distance (default: rebase.lua DEFAULT_DISTANCE, 10 km)
   BNGE_DRIVE_IMPORT_MS  modelled cost of one .cdae import (default 2.0)
-  BNGE_DRIVE_TEX_IMPORT_MS  ... of one textured .cdae import (default 3.0)
+  BNGE_DRIVE_TEX_IMPORT_MS  ... of one textured .cdae import (default 3.0; 64 cells: 6, the 256 px kind)
+  BNGE_DRIVE_DDS_MS     64 cells: the texture part of the 256 px import (default 1.5; scales with area)
+  BNGE_DRIVE_ALPHA      64 cells: the object-count term (default 0.0016 per object over 300)
   BNGE_DRIVE_KEEP_LOG   copy the server log to this file at the end (<name>.<mode> per drive)
-  BNGE_DRIVE_MODES      comma list of drives to run (default terrain,mesh)
+  BNGE_DRIVE_MODES      comma list of drives to run (default terrain,mesh,mesh64)
   BNGE_SKIP_DRIVE=1     skip both drives
 """
 import math
@@ -97,6 +109,7 @@ import cdae  # noqa: E402
 import earthd  # noqa: E402
 import farfield as ff  # noqa: E402
 import geodesy  # noqa: E402
+import heightmap  # noqa: E402
 import imagery  # noqa: E402
 import modsim  # noqa: E402
 from modsim import CORE, FOLLOW, GOV, LATTICE, REBASE, cheb  # noqa: E402
@@ -118,8 +131,30 @@ COSTS = {"cdae": float(os.environ.get("BNGE_DRIVE_IMPORT_MS", "2.0")), "dae": 8.
          # each range; a material delete is unmeasured: as an object delete, above its prior)
          "cdaeTex": float(os.environ.get("BNGE_DRIVE_TEX_IMPORT_MS", "3.0")), "material": 0.3,
          "matDelete": 0.3}
+# 64-cell drive (§3.4 Tests): per-kind costs and the object-count term
+ALPHA = float(os.environ.get("BNGE_DRIVE_ALPHA", "0.0016"))
+OBJECTS_N0 = 300
+TEX256_64_MS = float(os.environ.get("BNGE_DRIVE_TEX_IMPORT_MS", "6.0"))
+DDS256_MS = float(os.environ.get("BNGE_DRIVE_DDS_MS", "1.5"))
+COSTS_64 = {**COSTS, **{f"cdaeTex{px}": TEX256_64_MS + DDS256_MS * ((px / 256) ** 2 - 1) for px in (128, 256, 512)}}
+# a 64-cell .cdae is 348 KB textured (§3.1); a 32-cell one 94 KB (100 with margin), 90 untextured (§6.4)
+CDAE_MAX_KB = {(32, False): 90, (32, True): 100, (64, True): 360}
+# |mesh - bilinear collision| under the player (V1_4_SPEC Targets, E7): every point within |twist|/4 of
+# its 2 m square, and p99 <= 5 cm. The 5 cm (and the 31 cm max) were measured on the v1.3 p_diag
+# block (145 m relief); where the route's own terrain has more twist than that (p99 of |twist|/4
+# over the same points above 5 cm) the bound is the terrain's, not the tiles': the deviation is
+# exactly the triangulation's |twist|/4 at a square centre, the same for any layout (the
+# centre-vertex option of §3.1 would cut it to |twist|/16).
+BILINEAR_P99_M, BILINEAR_MIN_POINTS, BILINEAR_PER_POSE = 0.05, 200, 4
 COMMIT_MS, REBASE_MS, TELEPORT_MS = 44.0, 65.0, 67.0
 SLOW_MS = 4.0                   # a frame this much over base counts as slow (§5.7 "p99 <= base + 4 ms")
+# 64 cells: one import unit is 5-10 ms by itself (§3.1 Risks), so the streaming-frame p99 rule is the
+# governor's own bound: the target budget plus one unit at its modelled cost (the in-game rule, p99 frame
+# <= 25 ms, docs/V1_4_SPEC.md §3.1, depends on the real unit costs: gate P8). Back-to-back import
+# frames (each over base + 4 ms) are allowed up to 1 % of the steady streaming frames: the dt filter's
+# median of 3 rejects single ones, and M3b's adaptive budget replaces this rule.
+P99_FRAME_MS_64 = 25.0
+SLOW_PAIRS_64 = 0.01
 TRANSIENT_MAX_S = 2.0           # a vacated area must be covered again within this (simulated) time
 WINDOW_S = 2.0                  # (b): far messages within this after / around a commit
 CHECK_AFTER_COMMIT = 30         # (c): frames after a commit checked one by one
@@ -140,7 +175,7 @@ OBSERVE_MAX_S = 75.0            # ... waiting at most this long (wall) after the
 EXCESS_MS = max(0.0, *(COSTS[k] - GOV["PRIOR"][k] for k in COSTS if k in GOV["PRIOR"]))
 MATERIAL = modsim.lua_string("farfield.lua", "MATERIAL")
 MOD_VERSION = re.search(r"MOD_VERSION = '([^']+)'", (modsim.MOD_DIR / "core.lua").read_text()).group(1)
-MODES = os.environ.get("BNGE_DRIVE_MODES", "terrain,mesh").split(",")
+MODES = os.environ.get("BNGE_DRIVE_MODES", "terrain,mesh,mesh64").split(",")
 N = int(LATTICE["N"])
 SQ = LATTICE["SQUARE"]
 
@@ -161,13 +196,32 @@ def tile_bbox(key):
 
 
 def cells(keys):
-    """The footprint of tiles as a set of finest-level (L-2, 64 m) cells."""
+    """The footprint of tiles as a set of 64 m cells (the finest tile of either layout or smaller)."""
     out = set()
     for k in keys:
         t = ff.tile_of(k)
-        n = 1 << (t.level - ff.MESH_MIN_LEVEL)
+        n = 1 << (t.level + 2)
         out |= {(t.i * n + a, t.j * n + b) for a in range(n) for b in range(n)}
     return out
+
+
+def radius_edge_group(adds, removes, focus, slack=2000.0):
+    """A swap group whose two sides differ only beyond the far radius: a node refined or merged at
+    the radius edge keeps only its part inside the radius square, so one side's footprint is the
+    other's minus area at least RADIUS - slack (Chebyshev) from the player (the server selected
+    around its own, slightly older, focus). Seen with 64-cell tiles (an L8 parent, one L7 child)."""
+    for small, big in ((adds, removes), (removes, adds)):
+        sb, bb = [tile_bbox(k) for k in small], [tile_bbox(k) for k in big]
+        if not all(any(b[0] <= a[0] and a[2] <= b[2] and b[1] <= a[1] and a[3] <= b[3] for b in bb) for a in sb):
+            continue
+        rest = bb
+        for a in sb:
+            rest = [r for box in rest for r in subtract(box, a)]
+        fx, fy = focus
+        if all(max(max(r[0] - fx, 0.0, fx - r[2]), max(r[1] - fy, 0.0, fy - r[3])) >= ff.RADIUS - slack
+               for r in rest):
+            return True
+    return False
 
 
 def subtract(a, b):
@@ -309,17 +363,17 @@ def _fill(cov, xs, ys, boxes):
         cov[d:e, a:c] = True
 
 
-def tile_vertex_heights(path, pos_z):
+def tile_vertex_heights(path, pos_z, n_cells):
     """(heights float64 [j, i], heights float32 [j, i], surface triangles ok) of a .cdae tile's
-    33 x 33 surface vertices (pos z + vertex z) as the engine sees them. The writer orders the
+    (n_cells + 1)² surface vertices (pos z + vertex z) as the engine sees them. The writer orders the
     vertices its own way, so they are put on the grid by their x, y; a skirt vertex shares an
     edge vertex's x, y and lies lower. The surface triangles (all three corners on the surface)
     must be exactly grid_triangles(): the TerrainBlock's diagonals, counter-clockwise from +Z
     (the .cdae stores them reversed, clockwise from outside, as the engine does)."""
     m = cdae.mesh_arrays(cdae.read(path)["meshes"][0])
-    n = ff.CELLS + 1
+    n = n_cells + 1
     v = m["verts"]
-    sp = float(v[:, 0].max()) / ff.CELLS
+    sp = float(v[:, 0].max()) / n_cells
     gi, gj = np.rint(v[:, 0] / sp).astype(int), np.rint(v[:, 1] / sp).astype(int)
     order = np.lexsort((v[:, 2], gj * n + gi))          # by cell, highest z last
     top = np.full(n * n, -1)
@@ -328,7 +382,7 @@ def tile_vertex_heights(path, pos_z):
     grid_of = np.full(len(v), -1)
     grid_of[top] = np.arange(n * n)
     t = grid_of[m["indices"].reshape(-1, 3)]
-    tris_ok = _cyclic(t[(t >= 0).all(axis=1)][:, ::-1]) == _cyclic(ff.grid_triangles(ff.CELLS))
+    tris_ok = _cyclic(t[(t >= 0).all(axis=1)][:, ::-1]) == _cyclic(ff.grid_triangles(n_cells))
     return pos_z + vz.astype(np.float64), np.float32(pos_z) + vz, tris_ok
 
 
@@ -347,10 +401,11 @@ def block_heights(blk, x0, y0, n):
 
 
 class DriveBase(unittest.TestCase):
-    """The drive; subclasses pick the server's near-visual mode and imagery."""
+    """The drive; subclasses pick the server's near-visual mode, imagery and tile layout (cells)."""
     near_visual = "terrain"
     server_args = ("--near-visual", "terrain", "--imagery", "off")
     launcher = "earthd.py"
+    cells = 32
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.user = self.tmp.name
@@ -372,7 +427,7 @@ class DriveBase(unittest.TestCase):
         self.errlog.close()
         keep = os.environ.get("BNGE_DRIVE_KEEP_LOG")
         if keep:
-            Path(f"{keep}.{self.near_visual}").write_text(Path(self.errlog.name).read_text())
+            Path(f"{keep}.{self.near_visual}{'' if self.cells == 32 else self.cells}").write_text(Path(self.errlog.name).read_text())
         self.tmp.cleanup()
 
     def fs(self, vfs):
@@ -381,9 +436,14 @@ class DriveBase(unittest.TestCase):
     def run_drive(self):
         self.assertTrue(REBASE["MIN_DISTANCE"] <= REBASE_M <= REBASE["MAX_DISTANCE"])
         mesh = self.near_visual == "mesh"
+        lay = ff.Layout(self.cells, mesh=mesh)       # what the server runs with (its --cells)
+        ex = lay.exact_level
         c = self.c
         frames = {}                                  # anchorId -> EnuFrame
-        far = modsim.FarField(COSTS, self.fs)
+        costs = COSTS_64 if self.cells == 64 else COSTS
+        # 64 cells: the object-count term of the cost model (§3.4 Tests)
+        scale = (lambda n: 1.0 + ALPHA * (n - OBJECTS_N0)) if self.cells == 64 else None
+        far = modsim.FarField(costs, self.fs, cost_scale=scale)
         far.on_import = lambda inst: on_import(inst)
         gov = modsim.Governor()
         st = {"anchor": None, "block": None, "pending": None, "tp": None, "next": 1, "clock": 0.0,
@@ -395,7 +455,10 @@ class DriveBase(unittest.TestCase):
                  "cdae_bad": [], "tile_bad": [], "terrain_bad": [], "max_lag_s": 0.0, "coverage_checks": 0,
                  "strip_checks": 0, "near_checks": 0, "near_holes": [], "tex_bad": [], "dds_checked": 0,
                  "l2_checked": 0, "l2_bad": [], "l2_d64": 0.0, "l2_d32": 0.0, "under_not_l2": [],
-                 "mat_bad": [], "max_mats": 0, "budget_over": []}
+                 "mat_bad": [], "max_mats": 0, "budget_over": [], "bilinear": [], "bilinear_over": [],
+                 "max_unit_ms": 0.0, "objects_max": 0}
+        exact_grids = {}                             # (anchorId, key, shape) -> float64 vertex heights
+        rng = np.random.default_rng(1234)
         textures = {}                                # material name -> local texture path
         l2_done = set()                              # (anchorId, key, shape) of checked L-2 tiles
         files = {"dir": None, "seen": set(), "loaded": set(), "deleted": []}  # (g)
@@ -431,7 +494,7 @@ class DriveBase(unittest.TestCase):
             ok = (os.path.exists(path) and m["shape"].endswith(".cdae") and m["level"] == t.level
                   and (m["pos"][0], m["pos"][1]) == t.bbox[:2] and m["err"] >= 0 and m.get("state") == "group"
                   and abs(m["skirt"] - ff.skirt_depth(t.size, m["err"])) <= 0.01
-                  and (ff.MESH_MIN_LEVEL if mesh else 0) <= t.level <= ff.MAX_LEVEL)
+                  and lay.min_level <= t.level <= ff.MAX_LEVEL)
             if t.level == 0 and not mesh:   # the mod hides a covered tile without `sink`: the N/E strip needs it
                 ok = ok and m.get("sink") is not None and m["sink"] >= ff.SINK_MARGIN - 0.005
             elif mesh:                      # nothing is covered or sunk in mesh mode
@@ -439,6 +502,8 @@ class DriveBase(unittest.TestCase):
             # imagery: the offline source never fails, so every mesh-mode tile is textured
             want_mat = f"bngEarthSat_{m['anchorId']}_{m['key'].replace('-', 'm')}" if mesh else None
             ok = ok and m.get("material") == want_mat and ("texture" in m) == mesh and ("detail" in m) == mesh
+            # M1: the texture size rides on FORMAT 4 tiles only (the mod's governor kind)
+            ok = ok and m.get("tex") == (lay.tex_size(t.level) if mesh and lay.format >= 4 else None)
             if mesh and ok:
                 tex = self.fs(m["texture"])
                 textures[want_mat] = tex
@@ -449,7 +514,7 @@ class DriveBase(unittest.TestCase):
                         w, h, mips, fourcc, sizes = imagery.read_dds_info(f.read(imagery.DDS_HEADER))
                     stats["dds_checked"] += 1
                     full = w.bit_length()                   # mips down to 1 x 1
-                    if not (w == h and fourcc == b"DXT1" and mips == full
+                    if not (w == h == lay.tex_size(t.level) and fourcc == b"DXT1" and mips == full
                             and os.path.getsize(tex) == imagery.DDS_HEADER + sum(sizes)):
                         stats["tex_bad"].append((m["texture"], w, h, mips, fourcc))
             if not ok:
@@ -458,16 +523,16 @@ class DriveBase(unittest.TestCase):
                 try:
                     d = cdae.read(path)
                     mesh_ = cdae.mesh_arrays(d["meshes"][0])
-                    nv = (ff.CELLS + 1) ** 2 + 4 * (ff.CELLS + 1)
+                    nv = (lay.cells + 1) ** 2 + 4 * (lay.cells + 1)
                     good = (d["version"] == cdae.VERSION_WORD and len(d["meshes"]) == 1
                             and [x["name"] for x in d["materials"]] == [m.get("material") or MATERIAL]
                             and len(mesh_["verts"]) == nv
-                            and len(mesh_["indices"]) == 3 * (2 * ff.CELLS ** 2 + 4 * 2 * ff.CELLS)
+                            and len(mesh_["indices"]) == 3 * lay.tris      # 2304; 8704 with 64 cells
                             and abs(d["bounds"][3] - d["bounds"][0] - t.size) < 1e-3
                             # UV1 (detail map) exactly on textured tiles
                             and len(mesh_["tverts2"]) == (nv if mesh else 0)
-                            # textured shapes carry UV1: 94 KB (V1_3 server report)
-                            and os.path.getsize(path) <= (100 if mesh else 90) * 1024)
+                            # textured shapes carry UV1: 94 KB (V1_3 server report), 348 KB with 64 cells
+                            and os.path.getsize(path) <= CDAE_MAX_KB[(lay.cells, mesh)] * 1024)
                     stats["cdae_parsed"] += 1
                     if not good:
                         stats["cdae_bad"].append((m["shape"], d["bounds"], d["materials"]))
@@ -482,7 +547,13 @@ class DriveBase(unittest.TestCase):
             elif t == "status" and "mismatch" in m["text"]:
                 stats["errors"].append(m)
             elif t == "hello":
-                self.assertEqual((m["protocol"], m["format"]), (CORE["PROTOCOL"], CORE["FORMAT"]))
+                # the server's format is its layout's; the mod reads it (FORMATS) and takes the
+                # cell count from hello.cells (crossover.setCells, farfield.exactLevelFor)
+                self.assertEqual((m["protocol"], m["format"]), (CORE["PROTOCOL"], lay.format))
+                self.assertIn(m["format"], CORE["FORMATS"])
+                self.assertEqual(m.get("cells"), 64 if self.cells == 64 else None)
+                far.cells = modsim.set_cells(m.get("cells"))
+                self.assertEqual(modsim.exact_level_for(far.cells), ex)
                 self.assertEqual((m["farFormat"], m["material"]), ("cdae", MATERIAL))
                 # core.lua: hello.nearVisual sets the mode of the terrain and the far field
                 self.assertEqual(m["nearVisual"], self.near_visual)
@@ -525,7 +596,8 @@ class DriveBase(unittest.TestCase):
                     events.append((clock["sim"], t, [m["key"]]))
                 elif t == "far_swap":
                     events.append((clock["sim"], t, m["add"] + m["remove"]))
-                    if m["add"] and m["remove"] and cells(m["add"]) != cells(m["remove"]):
+                    if (m["add"] and m["remove"] and cells(m["add"]) != cells(m["remove"])
+                            and not radius_edge_group(m["add"], m["remove"], player["p"][:2])):
                         stats.setdefault("bad_swaps", []).append(m)
                 getattr(far, {"far_tile": "on_tile", "far_swap": "on_swap", "far_remove": "on_remove",
                               "far_done": "on_done"}[t])(m)
@@ -651,27 +723,29 @@ class DriveBase(unittest.TestCase):
             files["seen"] = now
 
         def check_near_ground():
-            """(f) mesh mode, at each pose: the tile under the player is L-2, and every shown L-2
-            tile over the committed block has the block's heights and diagonals."""
+            """(f) mesh mode, at each pose: the tile under the player is the exact level, every shown
+            exact tile over the committed block has the block's heights and diagonals, and between
+            the vertices the mesh under the player is within |twist|/4 of the bilinear collision."""
             x, y = player["p"][:2]
             # (right after a rebase the previous anchor's tiles, at their footprint in this frame)
             under = [i for i in list(far.live.values()) + list(far.old.values())
                      if not far.hidden(i) and i.x0 <= x < i.x1 and i.y0 <= y < i.y1]
-            if not under or any(i.level != ff.MESH_MIN_LEVEL for i in under):
+            if not under or any(i.level != ex for i in under):
                 stats["under_not_l2"].append((round(clock["sim"], 2), [i.key for i in under]))
             blk = hm.get((st["anchor"], *st["block"]))
             if blk is None:
                 return
-            n = ff.CELLS + 1
+            n = lay.cells + 1
             for i in list(far.live.values()):
                 ck = (i.aid, i.key, i.path)
-                if i.level != ff.MESH_MIN_LEVEL or not i.loaded or ck in l2_done:
+                if i.level != ex or not i.loaded or ck in l2_done:
                     continue
                 ref = block_heights(blk, i.bbox0[0], i.bbox0[1], n)
                 if ref is None:
                     continue                    # not over the committed block (yet)
                 l2_done.add(ck)
-                h64, h32, tris_ok = tile_vertex_heights(i.path, i.z)
+                h64, h32, tris_ok = tile_vertex_heights(i.path, i.z, lay.cells)
+                exact_grids[ck] = h64
                 d64 = float(np.abs(h64 - ref[0]).max())
                 d32 = float(np.abs(h32 - ref[1]).max())
                 stats["l2_checked"] += 1
@@ -680,6 +754,27 @@ class DriveBase(unittest.TestCase):
                 # the tile's cell (i, j) is block square (gx0 + i, gy0 + j): same split when gx0, gy0 are even
                 if d64 > 1e-9 or d32 > 1e-3 or gx0 % 2 or gy0 % 2 or not tris_ok:
                     stats["l2_bad"].append((i.key, d64, d32, (gx0, gy0)))
+            # the visible surface between vertices against the engine's bilinear collision (E7):
+            # random points in the current-anchor exact tile under the player
+            cur = [i for i in under if i.aid == st["anchor"] and i.level == ex and i.loaded]
+            grid = exact_grids.get((cur[0].aid, cur[0].key, cur[0].path)) if cur else None
+            if grid is None:
+                return
+            cx, cy, q16, zb, mh = blk
+            tx0, ty0 = cur[0].bbox0[:2]
+            size = ff.level_size(ex)
+            for px_, py_ in rng.random((BILINEAR_PER_POSE, 2)) * size:
+                bil = heightmap.height_at(q16, zb, mh, cx, cy, tx0 + px_, ty0 + py_)
+                if bil is None:
+                    continue                    # the block's 2 m N/E strip: no collision there
+                z = float(ff.surface_at(grid, heightmap.SQUARE, px_, py_))
+                gi, gj = min(int(px_ // 2), lay.cells - 1), min(int(py_ // 2), lay.cells - 1)
+                twist = abs(grid[gj, gi] - grid[gj, gi + 1] - grid[gj + 1, gi] + grid[gj + 1, gi + 1])
+                d = abs(z - bil)
+                stats["bilinear"].append(d)
+                stats.setdefault("bilinear_bound", []).append(twist / 4)
+                if d > twist / 4 + 1e-6:
+                    stats["bilinear_over"].append((cur[0].key, round(px_, 2), round(py_, 2), d, twist / 4))
 
         def check_coverage():
             if not stats.get("loaded"):
@@ -827,8 +922,12 @@ class DriveBase(unittest.TestCase):
                 mu0 = gov.max_unit()
                 far.update(gov, dt, camera())
                 far_units, imports, est = far.frame["units"], far.frame["imports"], far.frame["est"]
-                # (e) the frame's budget: every unit was granted while frame_spent + est <= b + max unit
-                cap = gov.b + max(mu0, gov.max_unit()) + EXCESS_MS
+                stats["objects_max"] = max(stats["objects_max"], far.objects())
+                # (e) the frame's budget: every unit was granted while frame_spent + est <= b + max unit;
+                # the last one may overshoot by its cost's excess over its estimate (64 cells: costs
+                # move with the object count, so the frame's own excess)
+                cap = gov.b + max(mu0, gov.max_unit()) + max(EXCESS_MS, far.frame["excess"])
+                stats["max_unit_ms"] = max(stats["max_unit_ms"], gov.max_unit())
                 if gov.frame_spent > cap + 1e-9:
                     stats["budget_over"].append((clock["frame"], gov.frame_spent, cap))
                 if clock["frame"] <= st["check_until"] or transient["open"]:
@@ -958,16 +1057,19 @@ class DriveBase(unittest.TestCase):
               f"{len(stats['tile_bad'])}; imports {far.counters['imports']}, failed {far.counters['failed']}; "
               f"shape files of loaded tiles checked {stats.get('files_checked', 0)}, vanished "
               f"{len(stats.get('vanished', []))}\n"
-              f"  (e) governor (import {COSTS['cdae']:g} ms, base {BASE_MS:g} ms): max per frame "
+              f"  layout: {lay.cells} cells (format {lay.format}, exact level L{ex}); tile objects max "
+              f"{stats['objects_max']}\n"
+              f"  (e) governor (import {costs['cdae']:g} ms, base {BASE_MS:g} ms): max per frame "
               f"{int(imps.max())} imports / est {ests.max():.2f} ms / spent {spent.max():.2f} ms; driving: max "
               f"{int(imps[drive_sl].max())} imports, spent {spent[drive_sl].max():.2f} ms; steady streaming frames "
               f"{int(stream.sum())}, spend p99 {p99:.2f} ms; heavy slots {len(heavy_frames)}, isolation "
               f"violations {len(isolation)}; slow ({SLOW_MS:g} ms over base) adjacent pairs {slow_pairs}; "
               f"drive-off ramp from loading mode {int(ramp.sum())} frames, max spent "
               f"{spent[ramp].max() if ramp.any() else 0:.2f} ms\n"
-              f"      textured import {COSTS['cdaeTex']:g} ms / material {COSTS['material']:g} ms, learnt estimates "
-              f"{ {k: round(v, 2) for k, v in gov.est.items() if k in gov.used} }; frames over budget "
-              f"{len(stats['budget_over'])}\n"
+              f"      textured import {', '.join(f'{k} {v:g}' for k, v in costs.items() if k.startswith('cdaeTex'))} ms"
+              f"{' x (1 + %g (n - %d))' % (ALPHA, OBJECTS_N0) if scale else ''} / material {costs['material']:g} ms, "
+              f"learnt estimates { {k: round(v, 2) for k, v in gov.est.items() if k in gov.used} }; max unit "
+              f"{stats['max_unit_ms']:.2f} ms; frames over budget {len(stats['budget_over'])}\n"
               f"  far: crossovers {far.counters['crossovers']}, instant {far.counters['instant']}, pops "
               f"{far.counters['pops']}, cap waits {far.counters['cap_waits']}, deletes {far.counters['deletes']}\n"
               f"  (g) materials created {far.counters['materials']}, deleted {far.counters['mat_deletes']}, max "
@@ -980,12 +1082,20 @@ class DriveBase(unittest.TestCase):
               f"  late tiles (other anchor) {far.counters['late_tiles']}, superseded {stats['superseded_tiles']}, "
               f"unknown removes {len(far.unknown_removes)}, bad swaps {len(stats.get('bad_swaps', []))}, "
               f"server log issues {len(bad)}", file=sys.stderr)
+        bl = np.array(stats["bilinear"]) if stats["bilinear"] else np.zeros(1)
+        bb = np.array(stats.get("bilinear_bound") or [0.0])
+        wall_p99 = float(np.percentile(walls[steady & not_heavy], 99)) if (steady & not_heavy).any() else 0.0
         if mesh:
             print(f"  (f) mesh: {stats['near_checks']} per-frame checks within {NEAR_HALF:g} m, holes "
-                  f"{len(stats['near_holes'])}; poses without an L-2 tile under the player "
-                  f"{len(stats['under_not_l2'])} {stats['under_not_l2'][:4]}; L-2 tiles checked against the block {stats['l2_checked']}, "
+                  f"{len(stats['near_holes'])}; poses without an L{ex} tile under the player "
+                  f"{len(stats['under_not_l2'])} {stats['under_not_l2'][:4]}; L{ex} tiles checked against the block {stats['l2_checked']}, "
                   f"max |dz| float64 {stats['l2_d64']:.3g} m, float32 {stats['l2_d32']:.3g} m, bad "
-                  f"{len(stats['l2_bad'])}; textures checked {stats['dds_checked']}, bad {len(stats['tex_bad'])}",
+                  f"{len(stats['l2_bad'])}; textures checked {stats['dds_checked']}, bad {len(stats['tex_bad'])}\n"
+                  f"      mesh vs bilinear collision under the player: {len(stats['bilinear'])} points, median "
+                  f"{100 * np.median(bl):.2f} cm, p99 {100 * np.percentile(bl, 99):.2f} cm, max {100 * bl.max():.2f} cm "
+                  f"(the points' |twist|/4: p99 {100 * np.percentile(bb, 99):.2f} cm, max {100 * bb.max():.2f} cm), "
+                  f"over |twist|/4 {len(stats['bilinear_over'])}; steady frame wall p99 {wall_p99:.1f} ms "
+                  f"(in-game M1 rule <= {P99_FRAME_MS_64:g})",
                   file=sys.stderr)
 
         # protocol and process
@@ -1047,18 +1157,26 @@ class DriveBase(unittest.TestCase):
         # (e)
         self.assertFalse(isolation, isolation[:3])
         self.assertFalse(stats["budget_over"], stats["budget_over"][:3])
-        self.assertLessEqual(p99, SLOW_MS)
-        self.assertEqual(slow_pairs, 0)
+        if self.cells == 32:
+            self.assertLessEqual(p99, SLOW_MS)
+            self.assertEqual(slow_pairs, 0)
+        else:
+            unit_max = max(v for k, v in costs.items() if k.startswith("cdaeTex")) * scale(stats["objects_max"])
+            self.assertLessEqual(p99, GOV["DEFAULT_TARGET_MS"] + unit_max)
+            self.assertLessEqual(slow_pairs, SLOW_PAIRS_64 * max(1, int(stream.sum())))
         self.assertEqual(far.counters["pops"], 0)
         # (f)
         if mesh:
             self.assertFalse(stats["under_not_l2"], stats["under_not_l2"][:3])
             self.assertGreater(stats["l2_checked"], 100)
             self.assertFalse(stats["l2_bad"], stats["l2_bad"][:3])
+            self.assertGreaterEqual(len(stats["bilinear"]), BILINEAR_MIN_POINTS)
+            self.assertFalse(stats["bilinear_over"], stats["bilinear_over"][:3])
+            self.assertLessEqual(float(np.percentile(bl, 99)), max(BILINEAR_P99_M, float(np.percentile(bb, 99))))
             x, y = player["p"][:2]
-            close = [k for k in far.live if ff.tile_of(k).distance(x, y) < ff.NEAR_RADII[ff.MESH_MIN_LEVEL]]
+            close = [k for k in far.live if ff.tile_of(k).distance(x, y) < lay.near_radii[ex]]
             self.assertTrue(close)
-            self.assertTrue(all(ff.tile_of(k).level == ff.MESH_MIN_LEVEL for k in close),
+            self.assertTrue(all(ff.tile_of(k).level == ex for k in close),
                             sorted({ff.tile_of(k).level for k in close}))
         # (g)
         self.assertFalse(stats["mat_bad"], stats["mat_bad"][:3])
@@ -1088,6 +1206,21 @@ class MeshDriveTest(DriveBase):
     near_visual = "mesh"
     server_args = ("--near-visual", "mesh")
     launcher = "fake_imagery_earthd.py"
+
+    def test_drive_and_rebase(self):
+        self.run_drive()
+
+
+@unittest.skipIf(os.environ.get("BNGE_SKIP_DRIVE") == "1", "BNGE_SKIP_DRIVE=1")
+@unittest.skipUnless("mesh64" in MODES, "BNGE_DRIVE_MODES")
+class MeshDrive64Test(DriveBase):
+    """docs/V1_4_SPEC.md §3.1 (M1): the mesh drive with --cells 64 (FORMAT 4, L-1 exact, 8704 tris,
+    far_tile.tex) and the per-kind, per-object-count cost model. (Not a MeshDriveTest subclass:
+    it would inherit that class's skip flag.)"""
+    near_visual = "mesh"
+    server_args = ("--near-visual", "mesh", "--cells", "64")
+    launcher = "fake_imagery_earthd.py"
+    cells = 64
 
     def test_drive_and_rebase(self):
         self.run_drive()

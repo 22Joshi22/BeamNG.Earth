@@ -20,7 +20,9 @@
 -- Clock: the wall time between beginFrame() calls (hptimer, not the smoothed dtReal). base = median
 -- of the last 64 non-heavy frames.
 -- Unit cost estimates are an EMA per unit kind of the measured cost. (Design 5.4 also scales them by
--- triangle count; every far tile has the same 32x32 grid, so one estimate per kind suffices.)
+-- triangle count; every far tile of a session has the same grid, so one estimate per kind suffices.
+-- 64-cell tiles (docs/V1_4_SPEC.md 3.1 M1, FORMAT 4) carry their texture size, and the kind is
+-- cdaeTex128/256/512 by that size: texKind.)
 
 local stopwatch = require('beamngEarth/stopwatch')
 
@@ -46,7 +48,21 @@ M.EST_ALPHA = 0.2          -- cost EMA gain
 -- ~0.006 ms (p6). v1.3 satellite imagery (lead probe p_sat.lua): a Lua-created per-tile Material
 -- 0.13-0.46 ms ('material'), a .cdae tile spawn including its own texture 2.5-3.5 ms ('cdaeTex');
 -- deleting such a Material (frees its texture) is not measured yet ('matDelete', a guess).
-M.PRIOR = { cdae = 3.0, dae = 8.0, reveal = 0.05, delete = 0.3, cdaeTex = 3.0, material = 0.3, matDelete = 0.2 }
+-- 64-cell textured tiles (M1, far_tile.tex): cdaeTex scaled by texture area until probe P8 measures
+-- them (128 px 0.25x, 256 px 1x, 512 px 4x); 'cdaeTex' stays the kind of FORMAT 3 tiles.
+-- (One line: server/tests/modsim.py lua_consts reads flat tables line by line.)
+M.PRIOR = { cdae = 3.0, dae = 8.0, reveal = 0.05, delete = 0.3, cdaeTex = 3.0, material = 0.3, matDelete = 0.2, cdaeTex128 = 0.75, cdaeTex256 = 3.0, cdaeTex512 = 12.0 }
+
+-- Unit kind of a textured .cdae import from its far_tile.tex (px): cdaeTex<px> for a size with a
+-- prior, else (FORMAT 3 tiles have no tex) 'cdaeTex'.
+function M.texKind(px)
+  px = tonumber(px)
+  if px and px == math.floor(px) then
+    local k = 'cdaeTex' .. string.format('%d', px)
+    if M.PRIOR[k] then return k end
+  end
+  return 'cdaeTex'
+end
 
 local Gov = {}
 Gov.__index = Gov
@@ -222,6 +238,7 @@ function Gov:isHeavyFrame() return self.heavyFrame == self.frame end
 function Gov:snapshot()
   return { b = self.b, tokens = self.tokens, target = self:targetNow(), loading = self.loading, base = self.base,
     heavyPending = self.heavyPending, estCdae = self.est.cdae, estDae = self.est.dae, estCdaeTex = self.est.cdaeTex,
+    estCdaeTex128 = self.est.cdaeTex128, estCdaeTex256 = self.est.cdaeTex256, estCdaeTex512 = self.est.cdaeTex512,
     estMaterial = self.est.material, estMatDelete = self.est.matDelete, heavy = self.stats.heavy,
     units = self.stats.units, maxFrameSpent = self.stats.maxFrameSpent }
 end

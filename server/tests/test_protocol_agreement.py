@@ -10,6 +10,9 @@ docs/V1_2_DESIGN.md §7 as amended by §12; server/README.md documents the same 
     reads (msg.X / tr.X in its Lua) is in the table;
   - the constants both sides must share (protocol/format, lattice, quantum, terrain-follow rule,
     tile grid, material name and file, paths), and the material loading order in the mod;
+  - the tile layouts (docs/V1_4_SPEC.md §3.1 M1): FORMAT 3 (32 cells) and 4 (64 cells) on both
+    sides, hello.cells and far_tile.tex with FORMAT 4 only, crossover.defaultErr (under luajit) and
+    the exact level for both cell counts, the governor kind of every texture size;
   - protocol 4 (docs/V1_3_SPEC.md E): hello.nearVisual values; a textured far_tile's material
     name (bngEarthSat_<anchorId>_<key, '-' as 'm'>) is the one inside its .cdae (the mod's
     Material maps onto it by mapTo), its texture is a DXT1 DDS with a full mip chain next to the
@@ -22,6 +25,8 @@ import math
 import os
 import struct
 import re
+import shutil
+import subprocess
 import zipfile
 import sys
 import unittest
@@ -66,8 +71,10 @@ TERRAIN = {"cx": F(NUM), "cy": F(NUM), "heightmap": F(str), "size": F(int), "squ
 SERVER_TO_MOD = {
     "hello": {"protocol": F(int), "format": F(int), "serverVersion": F(str), "sessionId": F(str),
               "farFormat": F(str), "material": F(str),
-              "nearVisual": F(str), "attribution": F(str)},          # protocol 4
-    "status": {"text": F(str)},
+              "nearVisual": F(str), "attribution": F(str),          # protocol 4
+              "cells": F(int, OPT)},            # v1.4 M1: cells per tile edge, FORMAT 4 only
+    "status": {"text": F(str),
+               "backlog": F(int)},          # v1.4 M0: desired - shown far tiles of the current anchor
     "anchor_ready": {"requestId": F(int), "anchorId": F(int), "lat": F(NUM), "lon": F(NUM),
                      "groundZ": F(NUM, NULL), "terrain": F(dict),
                      "anchorKey": F(str, OPT)},            # phase 5 (lattice anchors): not sent yet
@@ -77,7 +84,8 @@ SERVER_TO_MOD = {
     "far_tile": {"anchorId": F(int), "key": F(str), "level": F(int), "shape": F(str), "pos": F(list),
                  "err": F(NUM), "skirt": F(NUM), "sink": F(NUM, OPT), "state": F(str),   # sink: exactly on L0
                  # protocol 4, satellite imagery: the tile's own material (all three, or none)
-                 "material": F(str, OPT), "texture": F(str, OPT), "detail": F(bool, OPT)},
+                 "material": F(str, OPT), "texture": F(str, OPT), "detail": F(bool, OPT),
+                 "tex": F(int, OPT)},           # v1.4 M1: texture px (FORMAT 4, with the material)
     "far_swap": {"anchorId": F(int), "id": F(int), "add": F(list), "remove": F(list), "dIn": F(NUM),
                  "dOut": F(NUM)},
     "far_remove": {"anchorId": F(int), "key": F(str)},
@@ -184,7 +192,19 @@ class AgreementTableTest(unittest.TestCase):
 
 class ConstantsTest(unittest.TestCase):
     def test_protocol_and_format(self):
-        self.assertEqual((modsim.CORE["PROTOCOL"], modsim.CORE["FORMAT"]), (earthd.PROTOCOL, earthd.FORMAT))
+        """Protocol 4; the mod reads FORMAT 3 and 4 and says the newest in its hello; the server's
+        format is its layout's (32 cells: 3, the default; 64: 4)."""
+        self.assertEqual(modsim.CORE["PROTOCOL"], earthd.PROTOCOL)
+        self.assertEqual(modsim.CORE["FORMAT"], ff.Layout(64).format)
+        self.assertEqual(modsim.CORE["FORMAT"], max(modsim.CORE["FORMATS"]))
+        self.assertEqual(set(modsim.CORE["FORMATS"]), set(ff.CONTENT_FORMAT.values()))
+        self.assertEqual((ff.V131.format, ff.Layout(64).format), (3, 4))
+        self.assertEqual(ff.Layout(earthd.CELLS_DEFAULT).format, 3)            # default: v1.3.1 until P8
+        core = (LUA / "core.lua").read_text()
+        on_msg = lua_function(core, "onMessage")
+        self.assertIn("crossover.setCells(msg.cells)", on_msg)
+        self.assertIn("farfield.setExactLevel(farfield.exactLevelFor(cells))", on_msg)
+        self.assertIn("not formatKnown(msg.format)", on_msg)
 
     def test_lattice_and_quantum(self):
         L = modsim.LATTICE
@@ -196,8 +216,57 @@ class ConstantsTest(unittest.TestCase):
             self.assertEqual(heightmap.block_params(1000.0, 1100.0, q)[2], q * L["Q_SCALE"])
         self.assertEqual(L["L0"], ff.BASE)
         self.assertEqual(2 * L["HALF"], 8 * ff.BASE)                        # a block sits on 8 x 8 L0 tiles
-        self.assertEqual(modsim.XO["CELLS"], ff.CELLS)
+        self.assertEqual(modsim.XO["CELLS"], ff.V131.cells)             # without hello.cells (FORMAT 3)
         self.assertLess(modsim.FAR["EDGE_BAND"], ff.BASE)                   # the edge ring is one L0 tile deep
+
+    def test_exact_level(self):
+        """The mod's exactMiss metric (farfield.lua, V1_4_SPEC 3.0 M0): the exact level is the finest
+        mesh level, whose vertices are the physics lattice, and the lookup reaches the coarsest
+        level. (M1: the 64-cell layout makes L-1 exact; the mod's setExactLevel(-1) from hello.cells.)"""
+        self.assertEqual(modsim.FAR["EXACT_LEVEL"], ff.MESH_MIN_LEVEL[32])
+        self.assertEqual(modsim.FAR["MAX_LEVEL"], ff.MAX_LEVEL)
+        for cells in ff.CELL_COUNTS:
+            lay = ff.Layout(cells)
+            self.assertEqual(ff.level_size(lay.exact_level), cells * heightmap.SQUARE)
+            self.assertEqual(modsim.exact_level_for(cells), lay.exact_level)      # farfield.exactLevelFor
+            self.assertEqual(lay.exact_level, lay.min_level)
+        far = (LUA / "farfield.lua").read_text()
+        # the lookup key is the server's tile key (Tile.key: L_i_j, i = floor(x / S))
+        self.assertIn("local k = l .. '_' .. floor(x / s) .. '_' .. floor(y / s)", lua_function(far, "shownAt"))
+        self.assertEqual(ff.Tile(-2, 3, -1).key, "-2_3_-1")
+        core = (LUA / "core.lua").read_text()
+        self.assertIn("farfield.update(gov, (gov.w1 or dtReal * 1000) / 1000, st.cam, st.player)", core)
+
+    @unittest.skipIf(shutil.which("luajit") is None, "luajit not installed")
+    def test_default_err_and_exact_level_in_lua(self):
+        """crossover.defaultErr after setCells (from hello.cells) and farfield.exactLevelFor agree
+        with the server's layout for both cell counts: a quarter of the layout's vertex spacing,
+        and the level on the physics lattice."""
+        lua = (f"package.path = '{modsim.MOD_DIR.parent}/?.lua;' .. package.path\n"
+               f"dofile('{modsim.MOD_ROOT.parent / 'tests' / 'stubs.lua'}')\n"
+               "local X = require('beamngEarth/crossover')\n"
+               "local F = require('beamngEarth/farfield')\n"
+               "for _, c in ipairs({ 32, 64 }) do\n"
+               "  X.setCells(c)\n"
+               "  for l = -2, 9 do print(c, l, string.format('%.9f', X.defaultErr(l))) end\n"
+               "  print(c, 'exact', F.exactLevelFor(c))\n"
+               "end\n"
+               "X.setCells(nil)\n"
+               "print(0, 0, string.format('%.9f', X.defaultErr(0)))\n")
+        out = subprocess.run(["luajit", "-e", lua], capture_output=True, text=True, timeout=60)
+        self.assertEqual(out.returncode, 0, out.stderr)
+        rows = [ln.split("\t") for ln in out.stdout.splitlines()]
+        for c, lvl, v in rows:
+            c = int(c)
+            if lvl == "exact":
+                self.assertEqual(int(v), ff.Layout(c).exact_level)
+            elif c == 0:                            # no hello.cells: the FORMAT 3 layout
+                self.assertAlmostEqual(float(v), ff.V131.spacing(0) / 4, places=9)
+            else:
+                lay = ff.Layout(c)
+                self.assertAlmostEqual(float(v), lay.spacing(int(lvl)) / 4, places=9)
+                self.assertAlmostEqual(float(v), modsim.default_err(int(lvl), c), places=9)
+        self.assertEqual(len(rows), 2 * 13 + 1)
 
     def test_terrain_follow_rule(self):
         F = modsim.FOLLOW
@@ -273,6 +342,19 @@ class ConstantsTest(unittest.TestCase):
         self.assertLessEqual({"cdae", "dae"}, set(modsim.GOV["PRIOR"]))
         self.assertEqual(set(ff.FORMATS), {"cdae", "dae"})
 
+    def test_texture_kinds(self):
+        """M1: far_tile.tex picks the governor kind; every texture size a layout uses by default has
+        its own prior (cdaeTex128/256/512, today's cdaeTex scaled by area until P8), and a FORMAT 3
+        tile (no tex) stays 'cdaeTex'."""
+        far = (LUA / "farfield.lua").read_text()
+        self.assertIn("inst.material and governor.texKind(inst.tex) or 'cdae'", lua_function(far, "kindOf"))
+        self.assertIn("tex = tonumber(msg.tex)", far)
+        prior = modsim.GOV["PRIOR"]
+        for px in sorted({p for t in ff.TEX_DEFAULT.values() for p in t} | {128}):
+            self.assertEqual(modsim.tex_kind(px), f"cdaeTex{px}")
+            self.assertAlmostEqual(prior[f"cdaeTex{px}"], prior["cdaeTex"] * (px / 256) ** 2)
+        self.assertEqual(modsim.tex_kind(None), "cdaeTex")
+
 
 L_VALID_EDGE = modsim.LATTICE["VALID_W"] - modsim.LATTICE["HALF"]      # +1022 m from the centre
 
@@ -304,6 +386,11 @@ class ServerMessagesTest(test_server.ServerHarness):
             self.assertEqual(m["level"] == 0 and self.near_visual == "terrain", "sink" in m, m)
             # imagery: every tile carries its material, unless imagery is off
             self.assertEqual("material" in m, self.with_imagery, m)
+            # M1: the texture size with FORMAT 4 (the governor kind), never with FORMAT 3
+            self.assertEqual("tex" in m, self.with_imagery and self.cells == 64, m)
+            if "tex" in m:
+                self.assertEqual(m["tex"], self.server.tex_size(m["level"]))
+                self.assertGreaterEqual(m["level"], ff.MESH_MIN_LEVEL[64])
             self.assertEqual(m["key"], ff.tile_of(m["key"]).key)
         if kind in ("anchor_ready", "terrain_ready"):
             t = m["terrain"] if kind == "anchor_ready" else {f: m[f] for f in TERRAIN}
@@ -326,6 +413,9 @@ class ServerMessagesTest(test_server.ServerHarness):
             self.assertIs(m["detail"], True)
         if kind == "hello":
             self.assertIn(m["nearVisual"], ("mesh", "terrain"))
+            self.assertEqual(m["format"], self.server.layout.format)
+            self.assertIn(m["format"], modsim.CORE["FORMATS"])
+            self.assertEqual(m.get("cells"), 64 if self.cells == 64 else None)
             self.assertEqual(m["material"], modsim.lua_string("farfield.lua", "MATERIAL"))
             self.assertIn(m["farFormat"], ff.FORMATS)
 
@@ -411,6 +501,11 @@ class MeshImageryMessagesTest(ServerMessagesTest):
     """The same session with the v1.3 defaults: --near-visual mesh, imagery on (synthetic)."""
     near_visual = "mesh"
     with_imagery = True
+
+
+class MeshImagery64MessagesTest(MeshImageryMessagesTest):
+    """The same with --cells 64 (docs/V1_4_SPEC.md §3.1 M1): FORMAT 4, hello.cells, far_tile.tex."""
+    cells = 64
 
 
 if __name__ == "__main__":

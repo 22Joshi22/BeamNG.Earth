@@ -46,7 +46,8 @@ local function tile(a, l, i, j, opts)
   return { type = 'far_tile', anchorId = a, key = key(l, i, j), level = l,
     shape = '/temp/beamngEarth/t/far_' .. a .. '_' .. key(l, i, j) .. '.cdae',
     pos = { i * size(l), j * size(l), opts.z or 100 }, err = opts.err or 0.5, sink = opts.sink,
-    state = opts.state or 'group', material = opts.material, texture = opts.texture, detail = opts.detail }
+    state = opts.state or 'group', material = opts.material, texture = opts.texture, detail = opts.detail,
+    tex = opts.tex }
 end
 local function sat(a, l, i, j, opts)
   opts = opts or {}
@@ -152,6 +153,28 @@ do
     'measured costs update the estimates')
   T.check(governor.PRIOR.material == 0.3 and governor.PRIOR.cdaeTex == 3.0, 'priors from the in-game measurements')
   T.check(gov.stats.maxFrameSpent <= governor.DEFAULT_TARGET_MS + gov:maxUnit() + 1e-9, 'within the frame budget')
+end
+-- FORMAT 4 (docs/V1_4_SPEC.md 3.1 M1): far_tile.tex picks the unit kind; an untextured tile stays 'cdae'
+do
+  local gov = governor.new({ clock = clock })
+  local kinds = {}
+  local realCharge = gov.charge
+  function gov:charge(kind, ms) kinds[kind] = (kinds[kind] or 0) + 1; return realCharge(self, kind, ms) end
+  farfield.onTile(sat(1, 0, 20, 16, { tex = 512 }))
+  farfield.onTile(sat(1, 0, 21, 16, { tex = 256 }))
+  farfield.onTile(sat(1, -1, 44, 32, { tex = 128 }))
+  farfield.onTile(tile(1, 0, 22, 16, { tex = 512 }))       -- no material (imagery failed): 'cdae'
+  for _ = 1, 400 do
+    gov:beginFrame(farfield.hasWork(), 11.5)
+    step(gov, camNorth)
+    if farfield._pending('0_20_16').loaded and farfield._pending('0_21_16').loaded
+      and farfield._pending('-1_44_32').loaded and farfield._pending('0_22_16').loaded then break end
+  end
+  T.check(kinds.cdaeTex512 == 1 and kinds.cdaeTex256 == 1 and kinds.cdaeTex128 == 1 and kinds.cdae == 1
+    and kinds.cdaeTex == nil, 'tex 512/256/128 -> cdaeTex512/256/128; no material -> cdae')
+  T.check(gov.stats.maxFrameSpent <= governor.DEFAULT_TARGET_MS + gov:maxUnit() + 1e-9, 'within the frame budget')
+  farfield.onSwap(swap(1, 90, { '0_20_16', '0_21_16', '-1_44_32', '0_22_16' }))
+  step(free, camNorth, 60)
 end
 -- out of budget for a material: neither the material nor the tile runs
 do

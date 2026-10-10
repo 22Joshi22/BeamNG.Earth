@@ -18,8 +18,8 @@
 
 local M = {}
 
-local max, min, sqrt, atan, tan, rad, deg, acos, asin = math.max, math.min, math.sqrt, math.atan, math.tan,
-  math.rad, math.deg, math.acos, math.asin
+local max, min, sqrt, atan, tan, rad, deg, acos, asin, floor = math.max, math.min, math.sqrt, math.atan, math.tan,
+  math.rad, math.deg, math.acos, math.asin, math.floor
 
 M.PHASE1_S = 0.25          -- new tiles rise
 M.PHASE2_S = 0.25          -- old tiles sink
@@ -29,7 +29,11 @@ M.MARGIN_DEG = 10          -- frustum margin for the off-screen test
 M.NEAR_POP_M = 5000        -- at the cap, an in-view group nearer than this waits instead of popping
                            -- (a farther one swaps instantly: counted in farfield stats().pops)
 M.ASPECT_MAX = 2.4         -- widest screen assumed by the frustum cone (21:9)
-M.CELLS = 32               -- far tile grid (cells per side)
+M.CELLS = 32               -- far tile grid (cells per side) of a FORMAT 3 server (no hello.cells)
+
+-- The connected server's tile grid: hello.cells (docs/V1_4_SPEC.md 3.1 M1: 64 with FORMAT 4), set by
+-- core.lua on every hello; M.CELLS when the server sends none.
+local cells = M.CELLS
 
 -- 6t^5 - 15t^4 + 10t^3 on [0, 1], clamped.
 function M.smootherstep(t)
@@ -38,9 +42,18 @@ function M.smootherstep(t)
   return t * t * t * (t * (t * 6 - 15) + 10)
 end
 
+-- The server's cells per tile edge (hello.cells; nil or invalid: M.CELLS). Returns the value in use.
+function M.setCells(n)
+  n = tonumber(n)
+  cells = (n and n >= 1 and n == floor(n)) and n or M.CELLS
+  return cells
+end
+
+function M.cells() return cells end
+
 -- Fallback geometric error for a tile without 'err': a quarter of its cell size.
 function M.defaultErr(level)
-  return 256 * 2 ^ (level or 0) / M.CELLS / 4
+  return 256 * 2 ^ (level or 0) / cells / 4
 end
 
 -- Crossover amplitude for a group (max err of its visible adds / removes).

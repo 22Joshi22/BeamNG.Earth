@@ -760,4 +760,97 @@ do
   T.check(st.crossovers > 5 and st.instant > 5, 'both C2 and C1 swaps exercised (' .. st.crossovers .. '/' .. st.instant .. ')')
 end
 
+------------------------------------------------------------------------------------------
+-- ground under the player (V1_4_SPEC 3.0 M0, the exactMiss metric): key lookup from the exact
+-- level up; a miss when no tile, a coarser one, or the exact tile still crossing over (> 1 cm off);
+-- a previous anchor's exact tile (looked up through the inverse rebase transform) counts as exact;
+-- terrain mode counts nothing; no player, no update
+do
+  local camHere = { x = 64, y = -200, z = 150, fx = 0, fy = 1, fz = -0.3, fovDeg = 60 }
+  local pl = { x = 10, y = 10, z = 100 }
+  local function upd(n, cam, p)
+    for _ = 1, n or 1 do farfield.update(free, DT, cam or camHere, p == nil and pl or p or nil) end
+  end
+  farfield.setNearVisual('mesh')
+  farfield.switchAnchor(60, false, { cx = 100000, cy = 0 })
+  local s0 = farfield.stats()
+  upd()
+  local s1 = farfield.stats()
+  local lvl, isOld, miss = farfield.exactState()
+  T.check(lvl == nil and not isOld and miss, 'no tile under the player: a miss')
+  T.check(s1.exactFrames == s0.exactFrames + 1 and s1.exactMiss == s0.exactMiss + 1, 'miss counted')
+  T.check(s1.underLevel == nil and s1.exactLevel == -2 and s1.waitingGroups == s1.groups, 'stats fields')
+  farfield.onTile(tile(60, -1, 0, 0))
+  upd()
+  farfield.onSwap(swap(60, 1, { '-1_0_0' }))
+  upd()
+  lvl, isOld, miss = farfield.exactState()
+  T.check(lvl == -1 and miss, 'an L-1 tile under the player is a miss (exact = L-2)')
+  -- split into the four L-2 tiles, in view: a crossover; the exact tile counts once settled
+  local quarter = { '-2_0_0', '-2_1_0', '-2_0_1', '-2_1_1' }
+  for _, k in ipairs(quarter) do
+    local l, i, j = k:match('^(-?%d+)_(-?%d+)_(-?%d+)$')
+    farfield.onTile(tile(60, tonumber(l), tonumber(i), tonumber(j)))
+  end
+  upd()
+  farfield.onSwap(swap(60, 2, quarter, { '-1_0_0' }, 2, 2))
+  upd()
+  T.check(farfield.stats().transitions == 1, 'crossover running')
+  lvl, isOld, miss = farfield.exactState()
+  T.check(lvl == -2 and miss, 'exact tile still rising: a miss')
+  local m0 = farfield.stats().exactMiss
+  upd(40)
+  lvl, isOld, miss = farfield.exactState()
+  T.check(lvl == -2 and not miss and farfield.stats().transitions == 0, 'settled exact tile: no miss')
+  local s2 = farfield.stats()
+  T.check(s2.exactMiss - m0 < 40 and s2.underLevel == -2 and not s2.underOld, 'misses stop once settled')
+  -- a rebase 10 km east: the player's new-frame position maps back onto the old exact tile
+  local b1 = geodesy.newAnchor(36.5785, -118.2923)
+  local b2 = geodesy.newAnchor(b1:enuToGeodetic(10000, 300, 0))
+  local xf1 = b1:transformTo(b2)
+  farfield.transform(xf1)
+  farfield.switchAnchor(61, true, { cx = 100000, cy = 0 })
+  local nx, ny, nz = xf1:apply(pl.x, pl.y, pl.z)
+  local pl2 = { x = nx, y = ny, z = nz }
+  upd(1, camHere, pl2)
+  lvl, isOld, miss = farfield.exactState()
+  T.check(lvl == -2 and isOld and not miss, 'old anchor exact tile under the player counts as exact')
+  -- a second rebase: two inverse transforms back to anchor 60's plane
+  local b3 = geodesy.newAnchor(b2:enuToGeodetic(-9000, 2000, 0))
+  local xf2 = b2:transformTo(b3)
+  farfield.transform(xf2)
+  farfield.switchAnchor(62, true, { cx = 100000, cy = 0 })
+  local mx, my, mz = xf2:apply(nx, ny, nz)
+  upd(1, camHere, { x = mx, y = my, z = mz })
+  lvl, isOld, miss = farfield.exactState()
+  T.check(lvl == -2 and isOld and not miss, 'two rebases back: still found')
+  upd(1, camHere, { x = mx + 200, y = my, z = mz })
+  lvl, isOld, miss = farfield.exactState()
+  T.check(lvl == nil and miss, 'beside the old tiles: nothing under the player')
+  -- exactLevelFor: the level whose tile is `cells` lattice squares wide (core.lua, from hello.cells)
+  T.check(farfield.exactLevelFor(32) == -2 and farfield.exactLevelFor(64) == -1 and farfield.exactLevelFor(nil) == -2,
+    'exact level: L-2 for 32 cells, L-1 for 64')
+  -- setExactLevel (M1's 64-cell layout: L-1 is exact)
+  T.check(farfield.setExactLevel(-1) == -1 and farfield.stats().exactLevel == -1, 'setExactLevel')
+  farfield.switchAnchor(63, false, { cx = 100000, cy = 0 })
+  farfield.onTile(tile(63, -1, 0, 0))
+  upd()
+  farfield.onSwap(swap(63, 1, { '-1_0_0' }))
+  upd()
+  lvl, isOld, miss = farfield.exactState()
+  T.check(lvl == -1 and not isOld and not miss, '64-cell layout: an L-1 tile is exact')
+  farfield.setExactLevel(nil)
+  T.check(farfield.stats().exactLevel == farfield.EXACT_LEVEL, 'setExactLevel(nil): back to the default')
+  -- terrain mode (the block is the visible ground) and no player: nothing counted
+  local s3 = farfield.stats()
+  farfield.setNearVisual('terrain')
+  upd(3)
+  farfield.update(free, DT, camHere)
+  local s4 = farfield.stats()
+  T.check(s4.exactFrames == s3.exactFrames and s4.exactMiss == s3.exactMiss, 'terrain mode / no player: not counted')
+  T.check(s4.underLevel == -1, 'terrain mode still reports the level under the player')
+  farfield.switchAnchor(64, false, { cx = 0, cy = 0 })
+  step(free, nil, 100)
+end
+
 T.done('test_farfield')

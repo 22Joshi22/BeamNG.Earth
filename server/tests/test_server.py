@@ -1,6 +1,8 @@
 """Protocol 4 end-to-end against an in-process server with a synthetic DEM and synthetic
 imagery (no network): anchors, terrain-follow, far-field swap groups, rebase, in terrain
-near-visual mode with imagery off (the v1.2 behaviour) and in mesh mode with imagery."""
+near-visual mode with imagery off (the v1.2 behaviour) and in mesh mode with imagery, the mesh
+mode with both tile layouts (docs/V1_4_SPEC.md §3.1 M1: 32 cells = v1.3.1, FORMAT 3, the default;
+64 cells = FORMAT 4 with hello.cells and far_tile.tex)."""
 import asyncio
 import glob
 import math
@@ -74,15 +76,19 @@ class FakeImagery(imagery.Imagery):
 class ServerHarness(unittest.TestCase):
     """An in-process server with the synthetic DEM and a connected client, plus protocol helpers
     (no tests here; also used by test_protocol_agreement.py). Defaults: the v1.2 behaviour
-    (--near-visual terrain --imagery off)."""
+    (--near-visual terrain --imagery off); cells: the tile layout (--cells)."""
     far_format = "cdae"
     near_visual = "terrain"
     with_imagery = False
+    cells = 32
+    MOD_FORMAT = 4              # the mod's hello.format (core.lua FORMAT: the newest it reads)
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.server = earthd.Server(self.tmp.name, os.path.join(self.tmp.name, "cache"), tile_workers=3,
-                                    far_format=self.far_format, imagery=None, near_visual=self.near_visual)
+                                    far_format=self.far_format, imagery=None, near_visual=self.near_visual,
+                                    cells=self.cells)
+        self.layout = self.server.layout
         if self.with_imagery:
             self.server.imagery = FakeImagery(os.path.join(self.tmp.name, "cache", "imagery"))
         self.server.dem = FakeDem()
@@ -126,11 +132,13 @@ class ServerHarness(unittest.TestCase):
         self.assertTrue(vfs.startswith(f"/temp/beamngEarth/{self.server.sid}/"))
         return os.path.join(self.tmp.name, vfs.lstrip("/"))
 
-    def hello(self):
-        self.c.send({"type": "hello", "protocol": 4, "format": 3, "modVersion": "0.4.0"})
+    def hello(self, mod_format=None):
+        self.c.send({"type": "hello", "protocol": 4, "format": mod_format or self.MOD_FORMAT, "modVersion": "0.4.0"})
         m, seen = self.c.until(lambda m: m["type"] == "hello", timeout=10)
         self.assertFalse([s for s in seen if s["type"] == "status" and "mismatch" in s["text"]])
-        self.assertEqual((m["protocol"], m["format"]), (4, 3))
+        self.assertEqual((m["protocol"], m["format"]), (4, {32: 3, 64: 4}[self.cells]))
+        # M1: hello.cells with FORMAT 4 only (a FORMAT 3 hello is exactly v1.3.1's)
+        self.assertEqual(m.get("cells"), 64 if self.cells == 64 else None)
         self.assertEqual(m["sessionId"], self.server.sid)
         self.assertEqual(m["farFormat"], self.far_format)
         self.assertEqual(m["material"], ff.MATERIAL)
@@ -179,6 +187,9 @@ class ServerHarness(unittest.TestCase):
                 keys.add("sink")
             if self.with_imagery:
                 keys |= {"material", "texture", "detail"}
+                if self.layout.format >= 4:             # M1: the texture size (the mod's unit kind)
+                    keys.add("tex")
+                    self.assertEqual(m["tex"], self.layout.tex_size(m["level"]))
                 self.assertEqual(m["material"], earthd.sat_material(aid, m["key"]))
                 self.assertEqual(m["texture"], f"/temp/beamngEarth/{self.server.sid}/far_{aid}_{m['key']}.dds")
                 self.assertIs(m["detail"], True)
@@ -537,21 +548,18 @@ class ServerTest(ServerHarness):
         """Regression (in-game 2026-10-10): with the cache over TILE_CACHE, eviction must not pick
         tiles of the active anchor that are desired but not sent yet: their files were deleted
         right before the far_tile went out, and the mod's import failed ("No Mesh")."""
-        cap = earthd.TILE_CACHE
-        earthd.TILE_CACHE = 40      # far below the ~700-tile initial set
-        try:
-            c, far = self.c, FarState()
-            self.hello()
-            aid = self.prepare_anchor(1, LAT, LON)["anchorId"]
-            c.send({"type": "commit_anchor", "anchorId": aid})
-            c.send({"type": "commit_terrain", "anchorId": aid, "cx": 0, "cy": 0})
-            self.pose(aid, 0, 0)
-            done, seen = self.stream_until_done(far, aid)
-            missing = [m["shape"] for m in seen if m["type"] == "far_tile"
-                       and not os.path.exists(os.path.join(self.server.out_dir, os.path.basename(m["shape"])))]
-            self.assertEqual(missing, [])
-        finally:
-            earthd.TILE_CACHE = cap
+        self.assertEqual(self.server.tile_cache, earthd.TILE_CACHE[self.cells])
+        self.server.tile_cache = 40     # far below the ~700-tile initial set (this server only)
+        c, far = self.c, FarState()
+        self.hello()
+        aid = self.prepare_anchor(1, LAT, LON)["anchorId"]
+        c.send({"type": "commit_anchor", "anchorId": aid})
+        c.send({"type": "commit_terrain", "anchorId": aid, "cx": 0, "cy": 0})
+        self.pose(aid, 0, 0)
+        done, seen = self.stream_until_done(far, aid)
+        missing = [m["shape"] for m in seen if m["type"] == "far_tile"
+                   and not os.path.exists(os.path.join(self.server.out_dir, os.path.basename(m["shape"])))]
+        self.assertEqual(missing, [])
 
     def test_heightmap_cleanup_and_errors(self):
         c = self.c
@@ -586,6 +594,58 @@ class ServerTest(ServerHarness):
         self.c.send({"type": "hello", "protocol": 3, "modVersion": "0.3.0"})
         m, _ = self.c.until(lambda m: m["type"] == "status", timeout=10)
         self.assertIn("protocol mismatch", m["text"])
+        self.assertEqual(m["backlog"], 0)               # no anchor yet
+        # a v1.3.1 mod (format 3) is fine with the 32-cell server; any newer format too (it reads 3)
+        self.hello(3)
+        self.hello(4)
+
+    def test_status_backlog(self):
+        """status.backlog (V1_4_SPEC §4, M0) = desired - shown of the current anchor. Status goes out
+        on events only by default (v1.3.1); --status-interval re-sends it while the backlog changes."""
+        c, far = self.c, FarState()
+        self.hello()
+        aid = self.prepare_anchor(1, LAT, LON)["anchorId"]
+        c.send({"type": "commit_anchor", "anchorId": aid})
+        self.pose(aid, 0, 0)
+        _, seen = self.stream_until_done(far, aid)
+        rest = c.drain(1.0)                 # the set around the predicted block follows; then quiet
+        far.apply(rest)
+        seen += rest
+        status = [m for m in seen if m["type"] == "status"]
+        ready = [m for m in status if m["text"].startswith("Far field ready")]
+        self.assertTrue(ready)
+        self.assertEqual(status[-1], ready[-1])
+        self.assertEqual(ready[-1]["backlog"], 0)
+        loading = [m for m in status if m["text"].startswith("Far field loading")]
+        self.assertTrue(loading and all(m["backlog"] > 0 for m in loading), loading[:2])
+        # default: poses alone send no status (v1.3.1)
+        for _ in range(3):                  # (0, 0) sits exactly on the 1536 m L1 split distance
+            self.pose(aid, 0, 0)
+        self.assertFalse([m for m in c.drain(0.4) if m["type"] == "status"])
+        # --status-interval: a move far enough to change the far set reports the backlog, which the
+        # streaming then drains back to 0
+        self.server.status_interval = 0.01
+        conn = self.conn()
+        self.pose(aid, 3000, 0)
+        backlogs = []
+        for _ in range(400):
+            m, seen = c.until(lambda m: m["type"] in ("status", "far_done"), timeout=60)
+            far.apply(seen + [m])
+            if m["type"] == "status":
+                backlogs.append(m["backlog"])
+            elif m["anchorId"] == aid:
+                break
+            self.pose(aid, 3000, 0)
+        self.assertGreater(max(backlogs), 20)
+        self.pose(aid, 3000, 0)
+        time.sleep(0.05)
+        self.pose(aid, 3000, 0)
+        m, _ = c.until(lambda m: m["type"] == "status", timeout=10)
+        self.assertEqual(m["backlog"], 0)
+        self.assertEqual(conn.backlog(), 0)
+        self.assertEqual(m["text"], conn.last_status)       # the last text, re-sent
+        self.pose(aid, 3000, 0)                             # unchanged backlog: nothing re-sent
+        self.assertFalse([m for m in c.drain(0.3) if m["type"] == "status"])
 
 
 class DaeServerTest(ServerTest):
@@ -595,12 +655,12 @@ class DaeServerTest(ServerTest):
     # One full session is enough for the fallback.
     test_hysteresis_no_churn = test_pending_block_streams_first = None
     test_resync_hint_far_from_origin_not_clamped = test_teleport_streams_around_new_origin = None
-    test_heightmap_cleanup_and_errors = test_protocol_mismatch = None
+    test_heightmap_cleanup_and_errors = test_protocol_mismatch = test_status_backlog = None
 
 
 class MeshServerTest(ServerHarness):
-    """--near-visual mesh with imagery (the v1.3 default): tiles down to L-2, no block forcing,
-    no sink, every tile with its own material and DDS texture."""
+    """--near-visual mesh with imagery (the v1.3 default): tiles down to the exact level (L-2; L-1
+    with 64 cells), no block forcing, no sink, every tile with its own material and DDS texture."""
     near_visual = "mesh"
     with_imagery = True
 
@@ -623,26 +683,35 @@ class MeshServerTest(ServerHarness):
               "per level build/texture ms: " + ", ".join(
                   f"L{lvl} {1000 * np.median([v[0] for v in st]):.0f}/{1000 * np.median([v[1] for v in st]):.0f}"
                   for lvl, st in sorted(stats.items())), file=sys.stderr)
-        want, _ = ff.select(0.0, 0.0, [], min_level=ff.MESH_MIN_LEVEL)
+        lay = self.layout
+        ex = lay.exact_level
+        want, _ = ff.select(0.0, 0.0, [], min_level=lay.min_level, layout=lay)
         self.assertEqual(far.keys(aid), set(want))
         self.assertEqual(done["count"], len(want))
-        self.assertEqual(min(ff.tile_of(k).level for k in want), -2)
+        self.assertEqual(min(ff.tile_of(k).level for k in want), ex)
         tiles = [m for m in seen if m["type"] == "far_tile"]
         self.check_tile_msgs(seen, aid)
         self.check_swaps(seen, aid)
         self.check_cover(far, aid, 0, 0, [])
         self.assertFalse([m for m in tiles if "sink" in m])
-        # nearest first: the L-2 tiles around the player come first
-        self.assertTrue(all(m["level"] == -2 for m in tiles[:8]))
-        # textures: DXT1 with mips, TEX_NEAR px for L-2 / L-1, TEX_FAR beyond; shapes name the material
-        for m in tiles[:3] + [t for t in tiles if t["level"] >= 0][:3]:
+        # nearest first: the exact tiles around the player come first
+        self.assertTrue(all(m["level"] == ex for m in tiles[:8]))
+        # textures: DXT1 with mips, the layout's size per level (32 cells: TEX_NEAR for the two
+        # finest levels, TEX_FAR beyond; 64: 256 px to L1, 512 from L2); shapes name the material
+        # and have the layout's triangle count (8704 with 64 cells)
+        for m in tiles[:3] + [t for t in tiles if t["level"] >= 0][:3] + [t for t in tiles if t["level"] >= 2][:2]:
             with open(self.fs(m["texture"]), "rb") as f:
                 w, h, mips, fourcc, _ = imagery.read_dds_info(f.read())
-            px = earthd.TEX_NEAR if m["level"] <= -1 else earthd.TEX_FAR
+            px = lay.tex_size(m["level"])
+            if self.cells == 32:
+                self.assertEqual(px, earthd.TEX_NEAR if m["level"] <= -1 else earthd.TEX_FAR)
+            else:
+                self.assertEqual(px, 512 if m["level"] >= 2 else 256)
             self.assertEqual((w, h, mips, fourcc), (px, px, int(math.log2(px)) + 1, b"DXT1"))
             shape = cdae.read(self.fs(m["shape"]))
             self.assertEqual(shape["materials"][0]["name"], m["material"])
             self.assertEqual(shape["meshes"][0]["tverts2"][0], shape["meshes"][0]["verts"][0])
+            self.assertEqual(shape["meshes"][0]["indices"][0], 3 * lay.tris)
         # the terrain block is physics only: following it changes no tile
         c.send({"type": "prepare_terrain", "requestId": 5, "anchorId": aid, "cx": 512, "cy": 0})
         tr, seen = c.until(lambda m: m["type"] == "terrain_ready", timeout=60)
@@ -651,28 +720,46 @@ class MeshServerTest(ServerHarness):
         quiet = c.drain(0.5)
         self.assertFalse([m for m in seen + quiet if m["type"].startswith("far_")])
         # driving: every step covers the radius square exactly once, swaps replace footprints
+        changes = 0
         for x in range(30, 331, 60):
             self.pose(aid, float(x), 10.0, vx=30.0)
-            done, seen = self.stream_until_done(far, aid)
+            conn = self.conn()
+            t0 = time.monotonic()
+            while conn.focus != (float(x), 10.0) and time.monotonic() - t0 < 10:   # pose handled
+                time.sleep(0.005)
+            if set(conn.desired) == far.keys(aid):
+                # a step inside the hysteresis band changes nothing (64 cells: 60 m is under half the
+                # exact tile), so no far_done follows; nothing may be streamed either
+                seen = c.drain(0.3)
+                far.apply(seen)
+                self.assertFalse([m for m in seen if m["type"].startswith("far_")], seen[:2])
+            else:
+                changes += 1
+                done, seen = self.stream_until_done(far, aid)
             self.check_tile_msgs(seen, aid)
             self.check_swaps(seen, aid)
             self.check_cover(far, aid, float(x), 10.0, [])
             self.assertEqual(far.keys(aid), set(self.conn().desired))
+            r = lay.near_radii[ex]
             for k in far.keys(aid):
                 t = ff.tile_of(k)
-                if t.distance(x, 10.0) < ff.NEAR_RADII[-2] - 0.25 * ff.NEAR_RADII[-2]:
-                    self.assertEqual(t.level, -2, k)
+                if t.distance(x, 10.0) < r - 0.25 * r:
+                    self.assertEqual(t.level, ex, k)
+        self.assertGreaterEqual(changes, 2)
         self.assertFalse(far.held)
 
     def test_hysteresis_no_churn_near(self):
-        """+-20 m around the 150 m L-1 -> L-2 threshold: no tile changes after the first swap."""
-        far, aid, _, _, _ = self.start(-60.0, 30.0)
-        # node -1_1_0 (x 128..256) refines at d < 150 m, i.e. x > -22
-        self.pose(aid, -2.0, 30.0)
+        """+-20 m around the 150 m threshold to the exact level: no tile changes after the first
+        swap. (32 cells: node -1_1_0, x 128..256, refines at d < 150 m, i.e. x > -22; 64 cells:
+        node 0_1_0, x 256..512, at x > 106.)"""
+        node = ff.Tile(self.layout.exact_level + 1, 1, 0)
+        thr = node.bbox[0] - self.layout.near_radii[self.layout.exact_level]
+        far, aid, _, _, _ = self.start(thr - 38.0, 30.0)
+        self.pose(aid, thr + 20.0, 30.0)
         _, seen = self.stream_until_done(far, aid)
-        self.assertTrue([m for m in seen if m["type"] == "far_swap" and "-1_1_0" in m["remove"]])
+        self.assertTrue([m for m in seen if m["type"] == "far_swap" and node.key in m["remove"]])
         time.sleep(0.3)
-        for x in (-42, -2, -42, -2, -42):
+        for x in (thr - 20.0, thr + 20.0, thr - 20.0, thr + 20.0, thr - 20.0):
             self.pose(aid, float(x), 30.0)
         quiet = self.c.drain(0.6)
         self.assertFalse([m for m in quiet if m["type"].startswith("far_")], quiet[:3])
@@ -683,17 +770,75 @@ class MeshServerTest(ServerHarness):
                 raise imagery.ImageryError("offline")
         self.server.imagery = Broken(os.path.join(self.tmp.name, "cache", "broken"))
         far = FarState()
-        self.c.send({"type": "hello", "protocol": 4, "format": 3, "modVersion": "0.4.0"})
+        self.c.send({"type": "hello", "protocol": 4, "format": self.MOD_FORMAT, "modVersion": "0.4.0"})
         aid = self.prepare_anchor(1, LAT, LON)["anchorId"]
         self.c.send({"type": "commit_anchor", "anchorId": aid})
         self.pose(aid, 0, 0)
         _, seen = self.stream_until_done(far, aid)
         tiles = [m for m in seen if m["type"] == "far_tile"]
         self.assertTrue(tiles)
-        self.assertFalse([m for m in tiles if "material" in m or "texture" in m])
+        self.assertFalse([m for m in tiles if "material" in m or "texture" in m or "tex" in m])
         shape = cdae.read(self.fs(tiles[0]["shape"]))
         self.assertEqual(shape["materials"][0]["name"], ff.MATERIAL)
         self.assertEqual(shape["meshes"][0]["tverts2"][0], 0)
+
+
+class MeshServer64Test(MeshServerTest):
+    """The same with --cells 64 (docs/V1_4_SPEC.md §3.1, M1): FORMAT 4, hello.cells, far_tile.tex,
+    tiles down to L-1 (the physics lattice), 8704 tris, 512 px from L2."""
+    cells = 64
+
+    def test_old_mod_format_mismatch(self):
+        """A v1.3.1 mod (format 3) cannot read 64-cell tiles: the server says so."""
+        self.c.send({"type": "hello", "protocol": 4, "format": 3, "modVersion": "0.4.0"})
+        m, _ = self.c.until(lambda m: m["type"] == "status", timeout=10)
+        self.assertIn("format mismatch: mod 3, server 4", m["text"])
+        h, _ = self.c.until(lambda m: m["type"] == "hello", timeout=10)
+        self.assertEqual((h["format"], h["cells"]), (4, 64))
+
+
+class LayoutServerTest(unittest.TestCase):
+    """Server construction per layout; the default is exactly v1.3.1's (docs/V1_4_SPEC.md §3.1:
+    --cells stays 32 until the in-game gate P8 passes)."""
+
+    def make(self, **kw):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        s = earthd.Server(tmp.name, os.path.join(tmp.name, "cache"), imagery=None, **kw)
+        self.addCleanup(s.hm_pool.shutdown)
+        self.addCleanup(s.tile_pool.shutdown)
+        return s
+
+    def test_default_is_v131(self):
+        self.assertEqual(earthd.CELLS_DEFAULT, 32)
+        s = self.make()
+        self.assertEqual(s.layout, ff.V131)
+        self.assertEqual((s.layout.format, s.min_level, s.near_radii, s.tile_cache), (3, -2, {-2: 150.0, -1: 400.0}, 6000))
+        self.assertEqual([s.tex_size(lvl) for lvl in range(-2, 3)], [256] * 5)
+        self.assertIs(s.kfun.__self__, s.layout)                        # the layout's K table
+        t = self.make(near_visual="terrain")
+        self.assertEqual((t.layout.cells, t.min_level, t.near_radii), (32, 0, {}))
+        self.assertEqual([t.tex_size(lvl) for lvl in (0, 1, 2)], [256] * 3)
+        a = s.new_anchor(LAT, LON)
+        self.assertEqual([a.zooms[lvl] for lvl in range(1, 4)], [13, 12, 11])
+
+    def test_cells_64(self):
+        s = self.make(cells=64)
+        self.assertEqual((s.layout.cells, s.layout.format, s.min_level, s.tile_cache), (64, 4, -1, 2500))
+        self.assertEqual(s.near_radii, {-1: 150.0, 0: 400.0})
+        self.assertEqual([s.tex_size(lvl) for lvl in range(-1, 4)], [256, 256, 256, 512, 512])
+        self.assertEqual([s.kfun(lvl) for lvl in range(1, 6)], [0.75, 1.5, 1.5, 1.25, 1.25])
+        a = s.new_anchor(LAT, LON)
+        self.assertEqual([a.zooms[lvl] for lvl in range(1, 4)], [14, 13, 12])
+        # a second server with the other layout in the same process changes nothing here
+        b = self.make().new_anchor(LAT, LON)
+        self.assertEqual([b.zooms[lvl] for lvl in range(1, 4)], [13, 12, 11])
+        self.assertEqual([s.new_anchor(LAT, LON).zooms[lvl] for lvl in range(1, 4)], [14, 13, 12])
+        self.assertEqual([self.make(cells=64, tex=(128, 256)).tex_size(lvl) for lvl in (-1, 0, 4)], [128, 256, 256])
+        with self.assertRaises(ValueError):
+            self.make(cells=64, near_visual="terrain")              # terrain mode is frozen at 32
+        with self.assertRaises(ValueError):
+            self.make(cells=48)
 
 
 class SessionCleanupTest(unittest.TestCase):
@@ -779,9 +924,19 @@ class FlagsTest(unittest.TestCase):
         for bad in ("300", "8", "4096", "0"):
             with self.assertRaises(argparse.ArgumentTypeError):
                 earthd.parse_tex_px(bad)
-        self.assertEqual(earthd.parse_radii("150,400"), {-2: 150.0, -1: 400.0})
+        self.assertEqual(earthd.parse_radii("150,400"), (150.0, 400.0))
         with self.assertRaises(argparse.ArgumentTypeError):
             earthd.parse_radii("400,150")
+        self.assertEqual(earthd.parse_tex_list("256,256,256,512"), (256, 256, 256, 512))
+        self.assertEqual(earthd.parse_tex_list("128"), (128,))
+        with self.assertRaises(argparse.ArgumentTypeError):
+            earthd.parse_tex_list("256,300")
+        # --cells 64 is mesh mode only (the argument check runs before anything starts)
+        import subprocess
+        r = subprocess.run([sys.executable, str(Path(earthd.__file__)), "--cells", "64", "--near-visual", "terrain"],
+                           capture_output=True, text=True, timeout=60)
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("--cells 64 needs --near-visual mesh", r.stderr)
 
 
 class AnchorQTest(unittest.TestCase):

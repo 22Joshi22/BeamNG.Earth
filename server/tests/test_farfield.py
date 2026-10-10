@@ -254,40 +254,93 @@ class SelectionTest(unittest.TestCase):
         np.testing.assert_allclose(out, (e.min(), n.min(), e.max(), n.max()), atol=1e-6)
 
 
+class LayoutTest(unittest.TestCase):
+    """docs/V1_4_SPEC.md §3.1 (M1): the layout object; nothing reads a module setting."""
+
+    def test_layouts(self):
+        v, m = ff.V131, ff.Layout(64)
+        self.assertEqual((v.cells, v.block, v.min_level, v.exact_level, v.format, v.tris), (32, 1024, -2, -2, 3, 2304))
+        self.assertEqual((m.cells, m.block, m.min_level, m.exact_level, m.format, m.tris), (64, 1024, -1, -1, 4, 8704))
+        self.assertEqual(ff.Layout(32, mesh=False).min_level, 0)
+        self.assertEqual(ff.Layout(32, mesh=False).near_radii, {})
+        self.assertEqual(v.near_radii, {-2: 150.0, -1: 400.0})
+        self.assertEqual(m.near_radii, {-1: 150.0, 0: 400.0})
+        # K' = {1: 0.75, 2: 1.5, 3: 1.5, >=4: 1.25}; v1.3.1: K(1) = K(2) = 3, K(>=3) = 2.5
+        self.assertEqual([m.k(lvl) for lvl in range(1, 8)], [0.75, 1.5, 1.5, 1.25, 1.25, 1.25, 1.25])
+        self.assertEqual([v.k(lvl) for lvl in range(1, 6)], [3.0, 3.0, 2.5, 2.5, 2.5])
+        self.assertEqual([ff.k_default(lvl) for lvl in range(1, 6)], [v.k(lvl) for lvl in range(1, 6)])
+        # textures: 64 cells 256 px to L1, 512 from L2; v1.3.1 256 everywhere; --tex repeats its last value
+        self.assertEqual([m.tex_size(lvl) for lvl in range(-1, 6)], [256, 256, 256, 512, 512, 512, 512])
+        self.assertEqual({v.tex_size(lvl) for lvl in range(-2, 10)}, {256})
+        self.assertEqual([ff.Layout(64, tex=(128, 256)).tex_size(lvl) for lvl in (-1, 0, 5)], [128, 256, 256])
+        self.assertEqual([ff.Layout(32, mesh=False, tex=(512, 512, 256)).tex_size(lvl) for lvl in (0, 1, 2)],
+                         [512, 512, 256])
+        for bad in (dict(cells=48), dict(cells=64, mesh=False), dict(block=512), dict(tex=())):
+            with self.assertRaises(ValueError, msg=bad):
+                ff.Layout(**bad)
+        with self.assertRaises(Exception):
+            v.cells = 64                                    # frozen
+        # the exact level's tile is `cells` physics lattice squares wide
+        for lay in (v, m):
+            self.assertEqual(ff.level_size(lay.exact_level), lay.cells * heightmap.SQUARE)
+
+    def test_switch_distances_shift_one_level(self):
+        """64 cells: level L splits where the v1.3.1 layout split level L - 1, so the vertex spacing
+        at a distance is the same (the K' table and the shifted near radii)."""
+        v, m = ff.V131, ff.Layout(64)
+        for lvl in range(m.min_level, ff.MAX_LEVEL + 1):
+            self.assertEqual(ff.switch_distance(lvl, min_level=m.min_level, layout=m),
+                             ff.switch_distance(lvl - 1, min_level=v.min_level, layout=v), lvl)
+
+    def test_no_module_globals(self):
+        """No module-level CELLS (or other per-layout scalar) is left to set."""
+        for name in ("CELLS", "K_NEAR", "K_FAR"):
+            self.assertFalse(hasattr(ff, name), name)
+        for table in (ff.K_TABLE, ff.NEAR_RADII, ff.MESH_MIN_LEVEL, ff.CONTENT_FORMAT, ff.TEX_DEFAULT):
+            self.assertEqual(set(table), set(ff.CELL_COUNTS))
+
+
 class TileGeometryTest(unittest.TestCase):
+    """Tile shapes; parametrised over the layouts (subclasses set LAYOUT)."""
+    LAYOUT = ff.V131
+
     @classmethod
     def setUpClass(cls):
         cls.frame = g.EnuFrame(LAT0, LON0)
         cls.dem = FakeDem()
+        cls.n = cls.LAYOUT.cells
 
     def build(self, tile, dem=None, q=None, zoom=None):
-        z = ff.zoom_for_level(LAT0, max(tile.level, 1)) if zoom is None else zoom
-        b = ff.build_tile(self.frame, dem or self.dem, tile, z, q)
+        z = ff.zoom_for_level(self.LAYOUT, LAT0, max(tile.level, 1)) if zoom is None else zoom
+        b = ff.build_tile(self.frame, dem or self.dem, tile, z, q, layout=self.LAYOUT)
         return b, np.array(b.pos), b.positions + b.pos
 
     def surface(self, x, y, level, dem=None):
-        z = ff.zoom_for_level(LAT0, max(level, 1))
+        z = ff.zoom_for_level(self.LAYOUT, LAT0, max(level, 1))
         return self.frame.surface_enu(np.asarray(x, float), np.asarray(y, float),
                                       lambda la, lo: (dem or self.dem).sample(la, lo, z))[5]
 
     def test_tile_geometry(self):
+        nc, nv = self.n, (self.n + 1) ** 2
         for tile in (ff.Tile(0, 4, 0), ff.Tile(3, -2, 1), ff.Tile(7, 1, -2)):
             b, pos, P = self.build(tile)
             nrm, uv, tris = b.normals, b.uvs, b.tris
-            self.assertEqual(len(tris), 2048 + 4 * 64)
+            self.assertEqual(len(tris), 2 * nc * nc + 4 * 2 * nc)
+            self.assertEqual(len(tris), self.LAYOUT.tris)
             self.assertEqual(tuple(pos[:2]), tile.bbox[:2])
-            grid = P[:33 * 33].reshape(33, 33, 3)
+            grid = P[:nv].reshape(nc + 1, nc + 1, 3)
             x0, y0, x1, y1 = tile.bbox
-            np.testing.assert_allclose(grid[0, :, 0], np.linspace(x0, x1, 33), atol=1e-6)
-            np.testing.assert_allclose(grid[:, 0, 1], np.linspace(y0, y1, 33), atol=1e-6)
+            np.testing.assert_allclose(grid[0, :, 0], np.linspace(x0, x1, nc + 1), atol=1e-6)
+            np.testing.assert_allclose(grid[:, 0, 1], np.linspace(y0, y1, nc + 1), atol=1e-6)
             np.testing.assert_allclose(grid[..., 2], self.surface(grid[..., 0], grid[..., 1], tile.level), atol=1e-6)
             np.testing.assert_allclose(b.grid, grid[..., 2], atol=1e-3)
+            self.assertEqual(b.grid.shape, (nc + 1, nc + 1))
             # Winding: every grid triangle faces up (CCW seen from +Z).
-            main = tris[:2048]
+            main = tris[:2 * nc * nc]
             v0, v1, v2 = P[main[:, 0]], P[main[:, 1]], P[main[:, 2]]
             self.assertTrue((np.cross(v1 - v0, v2 - v0)[:, 2] > 0).all())
             # Skirts face outwards and hang skirt_depth(size, err) below the edge.
-            sk = tris[2048:]
+            sk = tris[2 * nc * nc:]
             v0, v1, v2 = P[sk[:, 0]], P[sk[:, 1]], P[sk[:, 2]]
             n = np.cross(v1 - v0, v2 - v0)
             c = (v0 + v1 + v2) / 3 - [(x0 + x1) / 2, (y0 + y1) / 2, 0]
@@ -310,25 +363,29 @@ class TileGeometryTest(unittest.TestCase):
         self.assertLess(rough.err, 12.0)
 
     def test_neighbours_share_edges(self):
+        m = self.n + 1
         _, _, a = self.build(ff.Tile(2, 0, 0))
         _, _, b = self.build(ff.Tile(2, 1, 0))
-        ea = a[:33 * 33].reshape(33, 33, 3)[:, -1]
-        wb = b[:33 * 33].reshape(33, 33, 3)[:, 0]
+        ea = a[:m * m].reshape(m, m, 3)[:, -1]
+        wb = b[:m * m].reshape(m, m, 3)[:, 0]
         np.testing.assert_allclose(ea, wb, atol=1e-6)
 
     def test_l0_on_terrain_lattice(self):
-        """§1.4: L0 vertices are Q-rounded terrain samples, bit-identical to the heightmap's."""
+        """§1.4: L0 vertices are Q-rounded terrain samples, bit-identical to the heightmap's (every
+        4th sample with 32 cells, every 2nd with 64)."""
         q = 1 / 64
         zoom = 15
         tile = ff.Tile(0, 1, -2)        # x 256..512, y -512..-256: inside the block at (0, 0)
         b, pos, _ = self.build(tile, RoughDem(), q=q, zoom=zoom)
         u = heightmap.grid_u(self.frame, lambda la, lo: RoughDem().sample(la, lo, zoom), 0.0, 0.0)
         hq = heightmap.quantise(u, q) * q
-        # Block sample gx = (x + 1024) / 2; the tile's vertices are every 4th sample.
+        # Block sample gx = (x + 1024) / 2; the tile's vertices are every (128 / cells)-th sample.
         gx0, gy0 = (256 + 1024) // 2, (-512 + 1024) // 2
-        expect = hq[gy0:gy0 + 129:4, gx0:gx0 + 129:4]
+        st, m = 128 // self.n, self.n + 1
+        expect = hq[gy0:gy0 + 129:st, gx0:gx0 + 129:st]
+        self.assertEqual(expect.shape, (m, m))
         self.assertTrue((b.grid.astype(np.float64) == expect.astype(np.float32).astype(np.float64)).all())
-        rel = b.positions[:33 * 33, 2].reshape(33, 33) + pos[2]
+        rel = b.positions[:m * m, 2].reshape(m, m) + pos[2]
         np.testing.assert_allclose(rel, expect, atol=1e-9)
 
     def test_sink_v_valley(self):
@@ -341,7 +398,7 @@ class TileGeometryTest(unittest.TestCase):
         u = heightmap.surface_u(self.frame, lambda la, lo: dem.sample(la, lo, 15), lat, lat)
         terrain = heightmap.quantise(u, q) * q
         X, Y = np.meshgrid(lat, lat)
-        tile_z = ff.surface_at(b.grid.astype(np.float64), 8.0, X, Y)
+        tile_z = ff.surface_at(b.grid.astype(np.float64), 256.0 / self.n, X, Y)
         over = (tile_z - terrain).max()
         self.assertGreater(over, 0.5)           # the tile does bridge the valley
         self.assertGreaterEqual(b.sink, over + ff.SINK_MARGIN - 1e-6)
@@ -360,12 +417,12 @@ class TileGeometryTest(unittest.TestCase):
         # Brute force on a 1 m grid.
         xs = np.arange(0, 513, 1.0)
         X, Y = np.meshgrid(xs, xs)
-        old = ff.surface_at(bp.grid.astype(float), 16.0, X, Y)
+        old = ff.surface_at(bp.grid.astype(float), 512.0 / self.n, X, Y)
         new = np.zeros_like(old)
         for k, b in zip(kids, bk):
             x0, y0, x1, y1 = k.bbox
             m = (X >= x0) & (X <= x1) & (Y >= y0) & (Y <= y1)
-            new[m] = ff.surface_at(b.grid.astype(float), 8.0, X[m] - x0, Y[m] - y0)
+            new[m] = ff.surface_at(b.grid.astype(float), 256.0 / self.n, X[m] - x0, Y[m] - y0)
         self.assertGreater(d_in, 0.5)
         self.assertGreater(d_out, 0.5)
         self.assertGreaterEqual(d_in + 0.1, (new - old).max())
@@ -375,25 +432,71 @@ class TileGeometryTest(unittest.TestCase):
         bound = 1.2 * (max(b.err for b in bk) + bp.err) + 0.2
         self.assertLessEqual(max(d_in, d_out), bound)
 
+    # .cdae size bounds: palette tiles v1.3.1 §6.4 (90 KB); textured (UV1) 94 KB (V1_3 report) and, with
+    # 64 cells, 348 KB (§3.1)
+    MAX_KB = {32: 90, 64: 360}
+    MAX_TEX_KB = {32: 100, 64: 360}
+
     def test_cdae_and_dae_written(self):
+        tris, nv = self.LAYOUT.tris, (self.n + 1) ** 2 + 4 * (self.n + 1)
         with tempfile.TemporaryDirectory() as d:
-            b = ff.write_tile(os.path.join(d, "t.cdae"), self.frame, self.dem, ff.Tile(5, 0, 2), 9)
+            b = ff.write_tile(os.path.join(d, "t.cdae"), self.frame, self.dem, ff.Tile(5, 0, 2), 9, layout=self.LAYOUT)
             self.assertEqual(len(b.pos), 3)
             shape = cdae.read(os.path.join(d, "t.cdae"))
             self.assertEqual(shape["materials"][0]["name"], ff.MATERIAL)
             m = shape["meshes"][0]
-            self.assertEqual(m["indices"][0], 2304 * 3)
-            self.assertEqual(m["verts"][0], 33 * 33 + 4 * 33)
-            self.assertLessEqual(os.path.getsize(os.path.join(d, "t.cdae")), 90 * 1024)     # §6.4
-            ff.write_tile(os.path.join(d, "t.dae"), self.frame, self.dem, ff.Tile(5, 0, 2), 9, fmt="dae")
+            self.assertEqual(m["indices"][0], tris * 3)
+            self.assertEqual(m["verts"][0], nv)
+            self.assertLessEqual(os.path.getsize(os.path.join(d, "t.cdae")), self.MAX_KB[self.n] * 1024)
+            ff.write_tile(os.path.join(d, "t.dae"), self.frame, self.dem, ff.Tile(5, 0, 2), 9, fmt="dae",
+                          layout=self.LAYOUT)
             root = ET.parse(os.path.join(d, "t.dae")).getroot()
             ns = {"c": "http://www.collada.org/2005/11/COLLADASchema"}
             tri = root.find(".//c:triangles", ns)
-            self.assertEqual(int(tri.get("count")), 2304)
+            self.assertEqual(int(tri.get("count")), tris)
             self.assertEqual(root.find(".//c:material", ns).get("name"), ff.MATERIAL)
 
+    def test_textured_cdae_round_trip(self):
+        """A textured tile (UV0 + UV1, its own material) round-trips through cdae.read: 2304 tris with
+        32 cells, 8704 with 64 (§3.1), every triangle and vertex back as written."""
+        b, _, _ = self.build(ff.Tile(-1, 3, -2), q=1 / 64, zoom=15)
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "t.cdae")
+            size = ff.write_built(path, b, "cdae", material="bngEarthSat_1_m1_3_m2", textured=True, tex_px=256)
+            self.assertLessEqual(size, self.MAX_TEX_KB[self.n] * 1024)
+            shape = cdae.read(path)
+            self.assertEqual([x["name"] for x in shape["materials"]], ["bngEarthSat_1_m1_3_m2"])
+            m = cdae.mesh_arrays(shape["meshes"][0])
+            self.assertEqual(len(m["indices"]) // 3, self.LAYOUT.tris)
+            self.assertEqual(len(m["verts"]), len(b.positions))
+            self.assertEqual(len(m["tverts2"]), len(b.positions))
+            # the same vertex set and the same triangles (by position), wound as the engine stores them
+            got = {tuple(np.round(v, 3)) for v in m["verts"]}
+            self.assertEqual(got, {tuple(np.round(v, 3)) for v in b.positions.astype(np.float32)})
+            tri_pos = lambda P, T: {tuple(sorted(tuple(np.round(P[i], 3)) for i in t)) for t in T}  # noqa: E731
+            self.assertEqual(tri_pos(m["verts"], m["indices"].reshape(-1, 3)),
+                             tri_pos(b.positions.astype(np.float32), b.tris))
+        self.assertLessEqual(self.LAYOUT.tris, ff.TRIS_MAX)
+
+    DEM_ZOOMS = {32: [13, 12, 11, 10, 9, 8, 7, 6, 5],       # v1.3.1
+                 64: [14, 13, 12, 11, 10, 9, 8, 7, 6]}      # half the spacing: one zoom finer (cap 14)
+
     def test_dem_zooms(self):
-        self.assertEqual([ff.zoom_for_level(LAT0, lvl) for lvl in range(1, 10)], [13, 12, 11, 10, 9, 8, 7, 6, 5])
+        self.assertEqual([ff.zoom_for_level(self.LAYOUT, LAT0, lvl) for lvl in range(1, 10)], self.DEM_ZOOMS[self.n])
+        self.assertEqual([self.LAYOUT.dem_zoom(LAT0, lvl) for lvl in range(1, 10)], self.DEM_ZOOMS[self.n])
+        # anchors made before and after another server's layout get the same zooms (no module state)
+        self.assertEqual([ff.zoom_for_level(ff.V131, LAT0, lvl) for lvl in range(1, 10)], self.DEM_ZOOMS[32])
+
+    def test_finer_than_exact_level_refused(self):
+        with self.assertRaises(ValueError):
+            ff.build_tile(self.frame, self.dem, ff.Tile(self.LAYOUT.exact_level - 1, 0, 0), 15, 1 / 64,
+                          layout=self.LAYOUT)
+
+
+class TileGeometry64Test(TileGeometryTest):
+    """The same with 64 cells (M1). The L0 sink is terrain-mode only (frozen at 32 cells)."""
+    LAYOUT = ff.Layout(64)
+    test_sink_v_valley = None
 
 
 class AssetsTest(unittest.TestCase):
