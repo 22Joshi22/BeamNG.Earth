@@ -894,8 +894,8 @@ near-car rules apply only to prio-0 tiles, so a server that sends no prio disabl
     level (zmax from the tile's coarse grid, or a coarse regional max for tiles not built yet). This is
     exact for the earth's bulge; terrain in between can still hide a tile (no viewshed: the depth buffer
     handles occlusion, and occluded coarse tiles cost little).
-  - RADIUS = clamp(sqrt(2R'·h_eye) + sqrt(2R'·zmax_region), 80 km, 700 km), zmax_region = max height
-    within 700 km from a coarse (z5-z6) DEM pass, cached per anchor. Examples: Whitney summit ~480 km
+  - RADIUS = clamp(sqrt(2R'·h_eye) + sqrt(2R'·zmax_region), 80 km, 1500 km), zmax_region = max height
+    within RADIUS from a coarse (z5-z6) DEM pass, cached per anchor. Examples: Whitney summit ~480 km
     bound (actual ~308 km, the per-tile test trims the rest); Central Valley floor (h_eye ~110 m) with the
     Sierra (4.4 km) ~ 280 km; open ocean at sea level ~ 5 km + nothing; Everest-region extremes ~690 km.
   - Selection within a **disc** (not a square: a square put 49-64 L9 roots at 400 km with corners at
@@ -905,7 +905,17 @@ near-car rules apply only to prio-0 tiles, so a server that sends no prio disabl
     pixel on screen is ~100 m, so the texture is never the limit). Count beyond 80 km: ~40-90 tiles,
     each one draw call; built once per anchor, rarely swapped (they change only with large moves).
   - Float32: tile origins at 700 km have a ULP of 6 cm; vertices are tile-relative: fine.
-  - `visibleDistance` = RADIUS + 10 %, set at runtime when the radius changes (probe P12 checks cost,
+  - **Engine finding (in-game 2026-10-10, docs/research/view_distance/):** assigning
+    `scenetree.theLevelInfo.visibleDistance` at runtime does NOTHING by itself: the engine keeps the
+    level file's value (100 km) until `scenetree.theLevelInfo:postApply()` is called. With postApply,
+    markers 200 / 400 / 800 / 1600 / 3200 km away render (crisp, haze-tinted, no depth artefacts) from
+    10 km altitude; without it everything past ~100-150 km is cut. Fog density (4e-5) was not the cause.
+    So every visibleDistance change must be followed by postApply (also today's 100 km assignment in
+    core.lua activateWorld is a no-op beyond the level value).
+  - Radius cap raised from 700 km to **1500 km** (user: planes see much farther): 10 km altitude ->
+    ~360 km to the sea-level horizon, ~500 km to mountain tops; 20 km -> ~800 km; 1500 km covers eyes
+    up to ~40 km. Above that the far field stays at 1500 km.
+  - `visibleDistance` = RADIUS + 10 %, set at runtime (then postApply) when the radius changes (probe P12 checks cost,
     shadow cascade fit and depth artefacts with nearClip 0.1 at 300-700 km).
   - **Sky horizon = ground horizon** (user, 2026-10-10). The 0.39 sky is a physical atmosphere around a
     sphere: it places the camera at altitude camPos.z above a planet of `ScatterSky.atmoPlanetRadius`
