@@ -36,6 +36,8 @@ The repository contains only code; all map data is downloaded at runtime and cac
   release CC BY-NC-SA 4.0, non-commercial).
 - Elevation: Mapterhorn (see https://mapterhorn.com/attribution), AWS Terrain Tiles / Mapzen.
 Each source's terms apply to the downloaded data; the in-game window shows the attribution line.
+The full list of data sources, services, libraries, tools and references, with licences and the
+credit each one asks for, is in [CREDITS.md](CREDITS.md).
 
 ## License
 Code: MIT, see [LICENSE](LICENSE). BeamNG.drive is a trademark of BeamNG GmbH; this is an unofficial

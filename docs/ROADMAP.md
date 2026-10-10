@@ -143,6 +143,21 @@ same tools as docs/research/2026-10-10-official-map-look.md; take matching scree
 similar viewpoint) in the official map and at the real place in our world; tune the generator until
 they compare well, then check the result against street-level photos (v1.9 loop).
 
+## Off-road and rock-crawling trails as references (user, 2026-10-10)
+Popular trails are where players will test the terrain hardest, and they are well documented:
+- Find them from trail databases and OSM (highway=track with tracktype / 4wd_only / smoothness,
+  named trails), e.g. Moab (Hell's Revenge, Fins & Things, Golden Spike, Poison Spider Mesa), the
+  Rubicon Trail (CA), Johnson Valley's Hammers (King of the Hammers), Black Bear Pass (CO), Mount
+  Saint Helens / Gifford Pinchot forest roads, Moab's Shafer Trail, Alpine Loop (CO).
+- Use their public photos and videos (trail guides, clubs, YouTube) only as visual references to
+  judge and tune the generator: slickrock texture and colour, ledge heights, boulder size and
+  density, rut depth, surface types, vegetation along the trail. Nothing from them is shipped.
+- Check that the elevation data resolves the features drivers care about (ledges, steps, washes):
+  where 1-2 m DEM resolution smooths them away, add procedural rock/ledge detail on the physics
+  terrain near trails (bounded by the DEM so the shape stays real).
+- A "famous trails" list with start points goes into the saved places / level selector.
+- Credits for every reference go into CREDITS.md.
+
 ## v1.6 "Roads"
 - Overture transportation (GeoParquet via the STAC per-file index; 2.6-3.7 s per 30 km box cold).
 - Near roads: meshes on the 2 m lattice, ground graded under them on the server so physics and
