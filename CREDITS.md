@@ -14,7 +14,7 @@ only, nothing redistributed. Licence notes marked *(verify)* must be re-checked 
 | Data | Provider | Used for | Licence / terms | Attribution | Status |
 |---|---|---|---|---|---|
 | USGS National Map ImageryOnly (NAIP-based orthoimagery) | U.S. Geological Survey | ground imagery in the US | public domain (US federal) | "Imagery: USGS The National Map" | in use |
-| Sentinel-2 cloudless 2023 | EOX IT Services GmbH (s2maps.eu), contains modified Copernicus Sentinel data 2023 | ground imagery worldwide | CC BY-NC-SA 4.0 (non-commercial) | "Sentinel-2 cloudless - https://s2maps.eu by EOX IT Services GmbH (Contains modified Copernicus Sentinel data 2023)" | in use |
+| Sentinel-2 cloudless 2023 | EOX IT Services GmbH (s2maps.eu), contains modified Copernicus Sentinel data 2023 | ground imagery worldwide | CC BY-NC-SA 4.0 (non-commercial) | "EOxCloudless https://cloudless.eox.at by EOX IT Services GmbH (Contains modified Copernicus Sentinel data 2023)" (EOX changed the wording in June 2026; update imagery.py's attribution string too) | in use |
 | Sentinel-2 cloudless 2016 | EOX IT Services GmbH, contains modified Copernicus Sentinel data 2016 | imagery fallback | CC BY 4.0 | as above, 2016 | in use |
 | Mapterhorn terrain tiles | Mapterhorn (aggregating many national and global elevation sources) | elevation | per source, see https://mapterhorn.com/attribution | "Elevation: Mapterhorn (see mapterhorn.com/attribution)" | in use |
 | AWS Terrain Tiles (Terrarium) | Mapzen / Linux Foundation, hosted on AWS Open Data; sources incl. SRTM, GMTED2010, ETOPO1, USGS 3DEP/NED, and others | elevation fallback | per source, see https://github.com/tilezen/joerd/blob/master/docs/attribution.md | "AWS Terrain Tiles / Mapzen" + source list | in use |
