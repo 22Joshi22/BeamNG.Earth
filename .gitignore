@@ -16,3 +16,6 @@ docs/research/*.jsonl
 .idea/
 *.swp
 .DS_Store
+
+# agent worktrees
+.claude/
