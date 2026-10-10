@@ -53,5 +53,13 @@ for i = 0, 47 do
   check(t >= 0 and t < 1, 'time in [0,1) at step ' .. i)
 end
 
+-- clouds: the layer follows the ground; a rebase shifts the weather map by the world's move
+check(near(sky.cloudAltitudeKm(4417), 4.417 + sky.CLOUD_ABOVE_KM, 1e-9), 'Whitney: clouds above the summit')
+check(near(sky.cloudAltitudeKm(5), 0.005 + sky.CLOUD_ABOVE_KM, 1e-9), 'sea level: CLOUD_ABOVE_KM up')
+check(sky.cloudAltitudeKm(-1000) == sky.CLOUD_MIN_KM, 'far below sea level: the minimum altitude')
+check(sky.cloudAltitudeKm(nil) == nil, 'no ground: no change')
+local ox, oy, oz = sky.shiftedOffsetKm({ x = 1, y = 2, z = 0 }, 15000, 0, 0, 0)
+check(near(ox, 1 - 15 * sky.CLOUD_SHIFT_SIGN, 1e-9) and oy == 2 and oz == 0, 'rebase shifts the weather offset by the move (km)')
+
 print(string.format('test_sky: %d passed, %d failed', pass, fail))
 os.exit(fail == 0 and 0 or 1)

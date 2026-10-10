@@ -104,7 +104,101 @@ function M.status()
   }
 end
 
+------------------------------------------------------------------------------------------
+-- Clouds (2026-10-10: the level had no CloudLayer, so the sky was always clear).
+-- The 0.39 volumetric clouds come from a CloudLayer object (core/environment.lua:858-920 reads
+-- coverage, altitudeKm, windDirection, cirrusCoverage; every change needs postApply(), as for
+-- LevelInfo). altitudeKm is above the world's z = 0, which in our frame is ~ sea level, so a fixed
+-- altitude puts clouds under the player on high ground (the default 0.8 km was below Mount
+-- Whitney): the layer follows the ground under the player, CLOUD_ABOVE_KM above it. A rebase moves
+-- the world by kilometres; the weather map is shifted by the same amount so the clouds stay put
+-- (CloudLayer.setWeatherOffsetKm; CLOUD_SHIFT_SIGN checked in-game). Real weather (Open-Meteo) will
+-- drive coverage, altitude and wind later (docs/ROADMAP.md quick wins).
+
+M.CLOUDS_ENABLED = true
+M.CLOUD_NAME = 'bngEarthClouds'
+M.CLOUD_TEXTURE = 'art/skies/clouds/clouds_normal_displacement.png' -- shared art (west_coast_usa uses it)
+M.CLOUD_COVERAGE, M.CLOUD_CIRRUS = 0.5, 0.3
+M.CLOUD_ABOVE_KM = 1.8      -- cloud base above the ground under the player
+M.CLOUD_MIN_KM = 1.5        -- never lower than this above the world's z = 0
+M.CLOUD_RETUNE_KM = 0.4     -- re-set the altitude only when it is off by more than this
+M.CLOUD_CHECK_S = 5
+M.JUMP_M = 3000             -- a player move this large in one frame is a rebase/teleport
+M.CLOUD_SHIFT_SIGN = 1
+
+-- Pure: the cloud altitude (km above z = 0) for ground height groundZ (m), or nil without ground.
+function M.cloudAltitudeKm(groundZ)
+  if not groundZ then return nil end
+  return math.max(M.CLOUD_MIN_KM, groundZ / 1000 + M.CLOUD_ABOVE_KM)
+end
+
+-- Pure: the weather offset (km) after the world moved so that the player went from (ox, oy) to
+-- (nx, ny) without really moving (a rebase): the map shifts by the same displacement.
+function M.shiftedOffsetKm(off, ox, oy, nx, ny)
+  local s = M.CLOUD_SHIFT_SIGN / 1000
+  return off.x + s * (nx - ox), off.y + s * (ny - oy), off.z or 0
+end
+
+local cloudTimer, lastPos = M.CLOUD_CHECK_S, nil
+
+local function cloudObj()
+  local names = scenetree.findClassObjects('CloudLayer')
+  local o = names and names[1] and scenetree.findObject(names[1])
+  if o or not M.CLOUDS_ENABLED then return o end
+  o = createObject('CloudLayer')
+  o:setField('texture', 0, M.CLOUD_TEXTURE)
+  o:setField('exposure', 0, '1.45')
+  o:setField('windSpeed', 0, '0.1')
+  o:setField('baseColor', 0, '0.99 0.99 0.99 0.9')
+  o.canSave = false
+  o:registerObject(M.CLOUD_NAME)
+  scenetree.MissionGroup:addObject(o)
+  o.coverage, o.cirrusCoverage = M.CLOUD_COVERAGE, M.CLOUD_CIRRUS
+  o:postApply()
+  return o
+end
+
+local function groundUnder(p)
+  local d = castRayStatic(vec3(p.x, p.y, p.z + 50), vec3(0, 0, -1), 5000)
+  if d and d < 5000 then return p.z + 50 - d end
+end
+
+local function updateClouds(dt)
+  local veh = getPlayerVehicle and getPlayerVehicle(0)
+  if not veh or not scenetree.MissionGroup then return end
+  local p = veh:getPosition()
+  -- rebase: the player jumps by kilometres in one frame without moving; shift the weather map too
+  if lastPos and ((p.x - lastPos.x) ^ 2 + (p.y - lastPos.y) ^ 2) > M.JUMP_M * M.JUMP_M
+    and rawget(_G, 'CloudLayer') and CloudLayer.getWeatherOffsetKm and CloudLayer.setWeatherOffsetKm then
+    pcall(function()
+      local off = CloudLayer.getWeatherOffsetKm()
+      CloudLayer.setWeatherOffsetKm(Point3F(M.shiftedOffsetKm(off, lastPos.x, lastPos.y, p.x, p.y)))
+    end)
+  end
+  lastPos = { x = p.x, y = p.y }
+  cloudTimer = cloudTimer + (dt or 0)
+  if cloudTimer < M.CLOUD_CHECK_S then return end
+  cloudTimer = 0
+  local o = cloudObj()
+  if not o then return end
+  local alt = M.cloudAltitudeKm(groundUnder(p))
+  if alt and math.abs((tonumber(o.altitudeKm) or 0) - alt) > M.CLOUD_RETUNE_KM then
+    o.altitudeKm = alt
+    o:postApply()
+  end
+end
+
+function M.setClouds(on)
+  M.CLOUDS_ENABLED = on and true or false
+  local o = scenetree.findObject(M.CLOUD_NAME)
+  if not M.CLOUDS_ENABLED and o then o:delete() end
+  cloudTimer = M.CLOUD_CHECK_S
+  return 'clouds ' .. (M.CLOUDS_ENABLED and 'on' or 'off')
+end
+
 function M.onUpdate(dtReal)
+  local ok, err = pcall(updateClouds, dtReal)
+  if not ok then log('W', 'beamngEarth', 'clouds: ' .. tostring(err)) end
   if mode ~= 'real' then return end
   timer = timer + (dtReal or 0)
   if timer < RESYNC_S then return end
@@ -112,6 +206,6 @@ function M.onUpdate(dtReal)
   M.sync()
 end
 
-function M.onClientPostStartMission() timer = RESYNC_S end
+function M.onClientPostStartMission() timer, cloudTimer, lastPos = RESYNC_S, M.CLOUD_CHECK_S, nil end
 
 return M
