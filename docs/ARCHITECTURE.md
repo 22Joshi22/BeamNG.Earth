@@ -141,6 +141,11 @@ Physics geometry always comes from open data:
 - **Buildings and roads:** Overture and OpenStreetMap, from extracts the server
   holds itself. Never query the public Overpass API at runtime.
 - **Land cover and vegetation:** ESA WorldCover and Meta canopy height.
+- **Gravity:** WGS84 normal gravity (Somigliana + free air) plus the EGM2008 anomalies (NGA,
+  degree 2190, about 9 km; 74 MB once from GeographicLib's mirror of NGA's coefficients;
+  45 ms a point): `server/gravity.py`, described in server/README.md "Gravity". Real g runs
+  from 9.76 to 9.84 m/s²; the anomalies are −350 to +600 mGal. It is standalone until it is
+  merged with the weather branch's `setGravity`.
 
 **Google Photorealistic 3D Tiles** (v2, optional): visual only, the user's own
 key, fetched straight from the user's own companion, no shared cache, Google
