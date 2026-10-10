@@ -40,11 +40,13 @@ so every frame-cost number of this run is invalid; redo costs with the window fo
   over 8 s, which suggests wind does push cars. Confirm on flat ground.
 
 ## Third pass (flat Central Valley 35.40,-119.20, focused, no other mods) - tools/probe_weather3.py
-- **Ground wind does not push cars**: a Vivace coasting at ~5 m/s for 8 s on flat ground drifted
-  sideways -0.02 / +0.00 m with no wind and -0.22 / -0.04 m with a 25 m/s side wind (two runs each).
-  The summit "85 m" earlier was the slope. So real wind is visual/audio only (clouds, trees,
-  particles, rain), unless a vehicle's own aero code reads it (not seen); keep the setGroundWind call
-  for the visuals and the pause menu.
+- **Ground wind is physical, but tyres hold a coasting car**: core_environment.setGroundWind sends
+  `obj:setWind(x, y, z)` to every vehicle (core/environment.lua:46-51), i.e. the aerodynamic model
+  sees the wind (the stock "Winds" UI app, ui/modules/apps/Winds, calls the same function). A Vivace
+  coasting at ~5 m/s on flat ground drifted sideways -0.02 / +0.00 m without wind and -0.22 / -0.04 m
+  with a 25 m/s side wind (8 s, two runs each): the ~1 kN side force is absorbed by tyre lateral grip.
+  Expect it in handling/stability at speed (tall vehicles more) and strongly on aircraft. The summit
+  "85 m" earlier was the slope. Real weather sets it physically (it also shows in the Winds app).
 - **Cloud amount is set by the weather map, not by height/alpha**: at coverage 0.95, `height` 4/8/12
   and baseColor alpha 0.9/1.0 all gave 5.6 % sky fraction (25 deg up, north); regenerating the
   weather map gave 17 % (seed 1), 16 % (seed 77), 4 % (seed 4242). The clouds look good (well-formed
