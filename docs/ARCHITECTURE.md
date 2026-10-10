@@ -500,3 +500,15 @@ in 2026-10-10-weather-probe-results.md.
   gravity, rain objects, temperature curve, other levels untouched), `test_sky.lua` (real offset),
   `test_core_stubbed.lua` (forwarding). Still to check in-game: the temperature-curve setter form,
   `setPercentage` drops visible, coverage calibration above 0.95 (overcast), fog k = 1/H, wind push.
+## Dev tools and the pause-menu settings page (docs/DEVTOOLS.md; built offline 2026-10-10)
+- `dev.lua` (extension `beamngEarth_dev`): in-world overlays (per-tile LOD tint, tile outlines by
+  state, loading heat with the next imports numbered, physics block squares, rings, under-car
+  probe) and imgui panels (stats, 60 s graphs, mini-map with click-to-inspect, controls, event
+  log). Off by default; off = no per-frame work. Tiles come from `tileindex.lua`, kept current by
+  `farfield.setWatcher` only while the tools are on.
+- `settings.lua` (extension `beamngEarth_settings`) + `ui/ui-vue/mods/beamngEarth/` (index.js,
+  EarthSettings.vue): a "BeamNG.Earth" button in the pause menu's Mods tab, values in
+  `/settings/beamngEarth.json`, defaults = today's behaviour. With the page, the imgui window is a
+  compact HUD hidden at level start (setting "Status HUD").
+- Tests: `mod/tests/test_dev.lua`, `mod/tests/test_settings.lua`. The Vue files are checked
+  in-game only.

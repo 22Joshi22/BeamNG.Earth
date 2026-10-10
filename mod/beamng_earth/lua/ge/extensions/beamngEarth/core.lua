@@ -38,6 +38,7 @@ local camshift = require('beamngEarth/camshift')
 local stopwatch = require('beamngEarth/stopwatch')
 local horizon = require('beamngEarth/horizon')
 local ui = require('beamngEarth/ui')
+local settings = require('beamngEarth/settings') -- the pause-menu page's values (docs/DEVTOOLS.md)
 
 local LEVEL_ID = 'beamng_earth'
 local MOD_VERSION = '0.4.0'
@@ -768,8 +769,9 @@ local function onLevelStart()
   farfield.forget()
   terrain.onLevelChanged()
   st.inOurLevel = getCurrentLevelIdentifier() == LEVEL_ID
-  -- the window opens by itself only in our level; elsewhere use beamngEarth_core.toggleUI()
-  ui.visible = st.inOurLevel
+  -- the window opens by itself only in our level; elsewhere use beamngEarth_core.toggleUI(). With
+  -- the pause-menu settings page it is a compact HUD, hidden unless the settings show it.
+  ui.visible = st.inOurLevel and not settings.hudHiddenAtStart()
   if not st.inOurLevel then return end
 
   activateWorld()
@@ -904,6 +906,10 @@ function M.reconnect()
   onMessage({ type = '_disconnected', error = 'reconnect requested' })
 end
 
+-- The credits line in use (the settings page shows it).
+function M.attribution() return attributionText(farfield.stats()) end
+
+function M._state() return st end -- read-only: the dev tools and the settings page
 function M._rebaseLag() return rebaseLag end -- for tests
 function M._governor() return gov end
 

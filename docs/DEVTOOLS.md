@@ -97,3 +97,38 @@ player right now, e.g.:
   material exactly, spatial index add/remove/query).
 - In-game (when the user is not driving): toggle each overlay at the Kern River spot, screenshot,
   perfmon cost per overlay.
+
+## Built (2026-10-10, branch feature/devtools; offline-tested, in-game checks pending)
+- `beamngEarth/dev.lua` (extension `beamngEarth_dev`, loaded by the modScript, everything off):
+  overlays tint / outlines / loading / physics / physicsTerrain / rings / probe and panels
+  stats / graphs / map / controls / log in one imgui window "BeamNG.Earth Dev"; presets off, lod,
+  loading, physics, all; `toggleLast()` on an input action ("BeamNG.Earth: toggle dev overlays",
+  Options > Controls > Debug, unbound). With everything off `onUpdate` returns at its first line
+  and farfield has no watcher (test_dev "off: the hook touches nothing").
+- `beamngEarth/tileindex.lua`: per-level hash grids (cell = max(tile, 512 m)); a query visits
+  min(cells in range, occupied cells) per level (<= ~900 cells for 3 km, any tile count).
+- farfield.lua hooks (small, for the merge): `setWatcher` (onAdd in `spawn`, onRemove in
+  `deleteById`, onReset after `transform` and in `forget`), `setFrozen` (swap groups wait),
+  `eachTile`, `queuedTiles`, `counters`, `anchorId`, and `inst.importMs`.
+- Tint: Material `diffuseColor` slot 0 + `flush()` + `reload()` (as stock trackBuilder), the
+  original value kept per material (an empty field restores as '1 1 1 1'); at most 50 materials
+  and 0.25 ms per frame, never in a governor heavy or quiet frame. Deviation from the spec: not a
+  governor unit kind - the governor's budget ramps to 0 whenever streaming is idle, so a tint
+  through it would stall on a parked car; the tint keeps its own slice instead.
+- Probe: the visible height is the physics ground + the tile's crossover offset when the tile is
+  the exact level (exact tiles match the lattice bit for bit); otherwise only the level is shown.
+- Not done: the checker material on the shown physics terrain (it renders with its own dirt
+  material), "hide far tiles beyond X km" (it would fight farfield's own hide state), the motion
+  blur hold test and screenshot-with-overlays buttons, "reload far field" (Controls has
+  reconnect / resync instead).
+- Pause menu: `ui/ui-vue/mods/beamngEarth/index.js` registers the button "BeamNG.Earth" (id
+  `beamngEarth-settings`, icon globe) in the shared Mods tab and opens `EarthSettings.vue`
+  (structure and bridge pattern of taa_standalone: BngSwitch / BngSlider / BngButton, custom
+  dropdown, `bngApi.engineLua` with callbacks). `beamngEarth/settings.lua` (extension
+  `beamngEarth_settings`) persists rebase distance, view distance mode / fixed km, haze
+  (placeholder), sky mode, clouds, HUD, dev radii in `/settings/beamngEarth.json`; every default
+  is today's behaviour, the view distance is applied only in our level and only when it is not
+  the default. The dev overlays stay per session.
+- HUD: once the page exists (index.js says so, or the pause menu lists the button) the imgui
+  window is a compact status HUD, hidden at level start unless "Status HUD" is on; "Full window"
+  brings the old window back for the session. Without the page nothing changes.

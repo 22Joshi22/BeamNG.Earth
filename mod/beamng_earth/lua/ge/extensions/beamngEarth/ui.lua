@@ -1,10 +1,15 @@
 -- The "BeamNG.Earth" imgui window (docs/V1_SPEC.md "Mod UI (v1)", docs/V1_1_SPEC.md). Engine-only module.
 -- Plain strings go through TextUnformatted: Text/TextWrapped treat their argument as a
 -- printf format (common/extensions/ui/imgui_luaintf.lua:291-310).
+-- Once the pause-menu settings page exists (settings.lua, docs/DEVTOOLS.md) the window is a compact
+-- status HUD (status line + quick buttons), hidden at level start unless the settings say otherwise;
+-- "Full window" brings this window back for the session.
 
 local M = {}
 
 M.visible = true
+M.compact = false   -- set by settings.lua once the settings page exists
+M.hudHidden = false -- the window starts hidden at level start (settings: hudVisible off)
 
 local im = nil
 local openPtr, latPtr, lonPtr, rebaseKmPtr = nil, nil, nil, nil
@@ -24,6 +29,26 @@ end
 
 local function ms(v) return v and string.format('%.0f ms', v) or '-' end
 
+-- The compact HUD: one status line, the far-field line and quick buttons.
+local function drawCompact(view)
+  im.SetNextWindowSize(im.ImVec2(380, 0), im.Cond_FirstUseEver)
+  if im.Begin('BeamNG.Earth##hud', openPtr, im.WindowFlags_AlwaysAutoResize) then
+    text(string.format('%s  |  anchor %s  |  %s', view.connection, view.anchorId and ('#' .. view.anchorId) or 'none',
+      view.dist and string.format('rebase in %.1f km', math.max(0, view.toRebase) / 1000) or '-'))
+    if view.farText then text(view.farText) end
+    wrapped('Status: ' .. (view.status ~= '' and view.status or '-'))
+    local dev = rawget(_G, 'beamngEarth_dev')
+    if dev then
+      if im.Button(dev.isActive() and 'Dev tools off' or 'Dev tools') then dev.toggleLast() end
+      im.SameLine()
+    end
+    if im.Button('Full window') then M.compact = false end
+    im.SameLine()
+    text('Settings: pause menu > Mods > BeamNG.Earth')
+  end
+  im.End()
+end
+
 -- view: plain table of values to show; actions.teleport(lat, lon) is called on the button,
 -- actions.setRebaseDistance(m) when the rebase slider is released.
 function M.draw(view, actions)
@@ -37,6 +62,11 @@ function M.draw(view, actions)
     rebaseKmPtr = im.FloatPtr((view.rebaseDistance or 10000) / 1000)
   end
   openPtr[0] = true
+  if M.compact then
+    drawCompact(view)
+    if not openPtr[0] then M.visible = false end
+    return
+  end
 
   im.SetNextWindowSize(im.ImVec2(420, 0), im.Cond_FirstUseEver)
   if im.Begin('BeamNG.Earth', openPtr, im.WindowFlags_AlwaysAutoResize) then
@@ -71,6 +101,11 @@ function M.draw(view, actions)
     im.InputDouble('Latitude', latPtr, 0, 0, '%.6f')
     im.InputDouble('Longitude', lonPtr, 0, 0, '%.6f')
     if im.Button('Teleport') then actions.teleport(latPtr[0], lonPtr[0]) end
+    local dev = rawget(_G, 'beamngEarth_dev') -- dev tools (dev.lua): the last preset on / everything off
+    if dev then
+      im.SameLine()
+      if im.Button(dev.isActive() and 'Dev tools off' or 'Dev tools') then dev.toggleLast() end
+    end
     im.Separator()
     wrapped('Status: ' .. (view.status ~= '' and view.status or '-'))
     im.Separator()
