@@ -112,16 +112,17 @@ def parse_chain(text):
     return chain
 
 
-def tone_lut(strength=1.0):
+def tone_lut(strength=1.0, lift=1.0):
     """Mild global tone curve as a 256-entry LUT (applied per channel, sRGB values).
 
     Satellite images have the sun's shading and shadows baked in, and the engine lights the
     ground again, so the curve lifts the deepest shadows a little (+0.06 at black) and pulls
     the brightest highlights down (-0.10 at white, so bare rock and sand do not glow under the
     sun) while leaving mid-tones almost unchanged (-0.005 at 0.5). strength 0 = identity; the
-    curve stays monotonic for strength <= 3."""
+    curve stays monotonic for strength <= 3. lift scales the shadow lift alone (de-shadowed
+    texels, deshadow.FULL_TONE_LIFT)."""
     x = np.arange(256) / 255.0
-    y = x + strength * (0.06 * (1 - x) ** 3 - 0.10 * x ** 3)
+    y = x + strength * (lift * 0.06 * (1 - x) ** 3 - 0.10 * x ** 3)
     return np.clip(np.rint(y * 255), 0, 255).astype(np.uint8)
 
 
@@ -162,13 +163,19 @@ def as_tile(rgb):
 
 class Imagery:
     def __init__(self, cache_dir, chain=DEFAULT_CHAIN, fetch_workers=FETCH_WORKERS, mem_tiles=MEM_TILES,
-                 tone=1.0):
+                 tone=1.0, deshadow=None):
+        """deshadow: an optional deshadow.Deshadow (--deshadow lambert|full): _mosaic relights its
+        source's tiles; None = the imagery as served (byte-identical textures)."""
         self.cache_dir = cache_dir
         self.chain = tuple(SOURCES[s] if isinstance(s, str) else s for s in chain)
         self.pool = ThreadPoolExecutor(min(fetch_workers, FETCH_WORKERS), thread_name_prefix="img-fetch")
         self.mem_tiles = mem_tiles
         self.lut = tone_lut(tone)
         self.lut_table = self.lut.tolist() * 3          # Image.point: one LUT per band
+        self.deshadow = deshadow
+        if deshadow is not None:
+            deshadow.bind(self)
+            self.lut_ds = tone_lut(tone, deshadow.tone_lift)    # texels of relit source tiles
         self._lru = OrderedDict()           # (source, z, x, y) -> Tile, or None (404)
         self._inflight = {}
         self._lock = threading.RLock()     # RLock: a done future's callback runs at once
@@ -198,6 +205,8 @@ class Imagery:
             ms = sorted(self.fetch_ms)
             st = dict(sorted(self.stats.items()))
         lat = f"fetch {ms[len(ms) // 2]:.0f}/{ms[int(len(ms) * 0.95)]:.0f} ms (median/p95, n={len(ms)})" if ms else "no fetches"
+        if self.deshadow is not None:
+            return f"{lat}; {st}; {self.deshadow.summary()}"
         return f"{lat}; {st}"
 
     def _paths(self, src, z, x, y):
@@ -409,8 +418,8 @@ class Imagery:
     # --- sampling ----------------------------------------------------------------------------
     def _mosaic(self, src, z, fx, fy, last):
         """RGBA mosaic of src's tiles at zoom z covering global pixel coordinates fx, fy (A = 255
-        where the source has data); returns (image, origin x, origin y, any data) or None if
-        it would take more than MAX_MOSAIC tiles."""
+        where the source has data, 254 where a de-shadowed tile replaced it); returns (image,
+        origin x, origin y, any data) or None if it would take more than MAX_MOSAIC tiles."""
         n = 2 ** z
         tx0, tx1 = int(math.floor(fx.min() - 1)) // TILE, int(math.floor(fx.max() + 1)) // TILE
         ty0 = max(0, int(math.floor(fy.min() - 1)) // TILE)
@@ -427,8 +436,9 @@ class Imagery:
             if a is None or (not last and a.uniform):
                 continue                    # missing here: the next source fills it
             c, r = (tx - tx0) * TILE, (ty - ty0) * TILE
-            mosaic[r:r + TILE, c:c + TILE, :3] = a.rgb
-            mosaic[r:r + TILE, c:c + TILE, 3] = 255
+            relit = None if self.deshadow is None else self.deshadow.relight(k, a, self)
+            mosaic[r:r + TILE, c:c + TILE, :3] = a.rgb if relit is None else relit
+            mosaic[r:r + TILE, c:c + TILE, 3] = 255 if relit is None else 254
             any_data = True
         return Image.fromarray(mosaic, "RGBA"), tx0 * TILE, ty0 * TILE, any_data
 
@@ -452,6 +462,7 @@ class Imagery:
         zw = zoom_for(float(lat[cells // 2, cells // 2]), size / px)
         out = np.zeros((px, px, 3), np.uint8)
         filled = np.zeros((px, px), bool)
+        relit = None if self.deshadow is None else np.zeros((px, px), bool)
         used, error = {}, None
         for i, src in enumerate(self.chain):
             z = min(zw, src.max_zoom)
@@ -480,14 +491,19 @@ class Imagery:
                       qx[r + 1, c + 1], qy[r + 1, c + 1], qx[r, c + 1], qy[r, c + 1]))
                     for r in range(cells) for c in range(cells)]
             res = im.transform((px, px), Image.MESH, mesh, resample=Image.BILINEAR)
-            hit = np.asarray(res.getchannel("A")) == 255
+            alpha = np.asarray(res.getchannel("A"))
+            hit = alpha == 255 if relit is None else alpha >= 254
             if not used and hit.all():      # the usual case: one source covers the texture
                 out[:] = np.asarray(res.convert("RGB"))
                 filled[:] = True
+                if relit is not None:
+                    relit[:] = alpha == 254
             else:
                 hit &= ~filled
                 np.copyto(out, np.asarray(res)[..., :3], where=hit[..., None])
                 filled |= hit
+                if relit is not None:
+                    relit |= hit & (alpha == 254)
             if hit.any():
                 used[src.name] = int(hit.sum())
             if filled.all():
@@ -497,9 +513,16 @@ class Imagery:
                 raise error
             out[~filled] = FALLBACK_RGB
             used["none"] = int((~filled).sum())
+        if relit is not None and relit.any():
+            used["deshadow"] = int(relit.sum())
+            res = self.lut[out]
+            res[relit] = self.lut_ds[out[relit]]
+            return res, used
         return np.asarray(Image.fromarray(out, "RGB").point(self.lut_table)), used
 
     def close(self):
+        if self.deshadow is not None:
+            self.deshadow.close()
         self.pool.shutdown(wait=False, cancel_futures=True)
 
 

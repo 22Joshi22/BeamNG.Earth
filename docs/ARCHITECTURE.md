@@ -419,3 +419,34 @@ their chunk arrived.
   10 km: fps / p50 / p95 and perfmon with the distant tiles shown, objects, the L8-L10 import costs;
   screenshots of the horizon (the silhouette meets the sky's horizon band, no sky gap); read back
   atmoPlanetRadius and visibleDistance; no depth / shadow artefacts at 500-650 km; tune the haze.
+## De-shadowing of the USGS imagery (`--deshadow`; built offline 2026-10-10, behind a flag, default off)
+- Integration of docs/research/2026-10-10-deshadow-prototype.md, method A (method B dropped):
+  `server/deshadow.py`, hooked into `imagery.Imagery(..., deshadow=obj)` (`_mosaic` swaps each USGS
+  z12–z16 source tile for its relit copy; mosaic alpha 254 marks relit texels) and into
+  `earthd.Server.new_anchor` (`prepare`: queue the z12 regions within 16 km, nearest first).
+  `--deshadow off` builds no object: textures are byte-identical to the pre-hook code (sha256 of a
+  multi-source render set pinned in `test_deshadow.FlagOffTest`).
+- Per z12 region (~8 km), one background thread: z14 imagery + DEM z13 on the same pixel grid, sun
+  fit (r² + 0.5 MCC, el ≥ 25°), gates r² ≥ 0.25 and class separation ≥ 0.9, lit / lam / prior grids
+  (uint8 `.npz`), then classifier, halo-guard statistics, haze and sky/sun ratio from a few z16 tiles
+  at the shadow edges and interiors (z14 alone gave the wrong haze and a too-tight guard: blotches and
+  a dark rim in the relit shadow). Cached as `<cache>/deshadow/usgs/12/x/y.json`, shared by both modes.
+- Per tile: grids sampled at the tile's pixels, shadow mask snapped onto the photo (Bayes + guided
+  filter + linear mixing on the terminator + halo guard), gain capped at LAM_CAP 1.6 (slope part) and
+  GMAX 10 (total, hue kept), chroma smoothing where boosted; gain-1 pixels keep their exact bytes.
+  Relit tiles: memory LRU + `<cache>/imagery/usgs-ds1-<mode>/` (PNG, `.same` for unchanged tiles).
+  `full` gives relit texels half the tone curve's shadow lift (`tone_lut(lift=0.5)`).
+- Cost (16 cores shared with other builds, load ~6–8): region 2.5 s on the ravine with its tiles on
+  disk (fit 1.3 s); per 256 px tile 20 ms at a shadow edge, 4 ms elsewhere with a cast shadow
+  nearby, 7 ms lambert-only, ~1 ms unchanged (decided from the grids, before the neighbours are
+  fetched), plus the PNG write.
+- Real data (offline, tiles from the local cache): ravine 36.506,-118.402 fitted az 95 el 29
+  (r² 0.28, just over the gate; the prototype's 3 km window gave 93 / 33.5 at r² 0.63), cast on,
+  shadow lifted from sRGB ~(22,26,43) to ~(64,69,74) against ~(91,96,91) sunlit: cooler and flatter
+  than the sunlit side (the prototype's known limits: no sky-view / bounce light, LAM_CAP on the
+  steep shadowed wall). Central Valley flat 35.40,-119.20: gated off (r² 0.00). Kern Plateau
+  36.20,-118.30: gated off (r² 0.08 over the whole region).
+- Limits: a texture built before its region was ready keeps raw imagery until the tile is rebuilt
+  (no live texture swap message yet); regions are fitted separately, so two regions with different
+  suns can show a step in slope shading at their border; z ≤ 11 source tiles stay raw.
+- In-game check still to run: the ravine at 08:00 and 16:00 game time, `--deshadow full` against off.

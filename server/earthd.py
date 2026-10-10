@@ -5,6 +5,7 @@
     python3 server/earthd.py [--port 47613] [--user-dir DIR] [--cache-dir DIR] [--far-format cdae|dae]
                              [--imagery usgs,eox2023,eox2016|off] [--near-visual mesh|terrain]
                              [--cells 32|64] [--tex 256,256,256,512] [--block 1024|512] [--horizon]
+                             [--deshadow off|lambert|full]
 
 Listens on 127.0.0.1 for the mod, builds terrain-block heightmaps (1024² on a world-locked
 2 m lattice, 256 m-aligned centres; in mesh near-visual mode the block is physics only) and a
@@ -53,6 +54,7 @@ import numpy as np  # noqa: E402
 
 import cdae  # noqa: E402
 import dem as demmod  # noqa: E402
+import deshadow as deshadowmod  # noqa: E402
 import farfield  # noqa: E402
 import geodesy  # noqa: E402
 import heightmap  # noqa: E402
@@ -281,7 +283,7 @@ class Server:
                  hysteresis=farfield.HYSTERESIS, radius=farfield.RADIUS, far_format="cdae",
                  imagery=imagerymod.DEFAULT_CHAIN, near_visual="mesh", tex_near=TEX_NEAR, tex_far=TEX_FAR,
                  tone=1.0, near_radii=None, status_interval=STATUS_INTERVAL, cells=CELLS_DEFAULT, tex=None,
-                 block=BLOCK_DEFAULT, horizon=False):
+                 block=BLOCK_DEFAULT, horizon=False, deshadow="off"):
         """kfun: K(L) for every level (default: the layout's K table); near_radii: the min-level
         radii (default: the layout's); cells: 32 (v1.3.1) or 64 (M1, mesh mode only); tex: texture
         px per level from the finest (default: tex_near, tex_near, tex_far with 32 cells,
@@ -313,7 +315,12 @@ class Server:
         self.tile_cache = TILE_CACHE[cells]
         self.dem = demmod.Dem(os.path.join(cache_dir, "dem"))
         # Satellite imagery (§A); None = --imagery off (v3-style palette tiles).
-        self.imagery = (imagerymod.Imagery(os.path.join(cache_dir, "imagery"), imagery, tone=tone)
+        # De-shadowing of the USGS tiles (--deshadow lambert|full; off = the imagery as served).
+        self.deshadow = None
+        if deshadow != "off" and imagery and deshadowmod.SOURCE in [getattr(s, "name", s) for s in imagery]:
+            self.deshadow = deshadowmod.Deshadow(cache_dir, self.dem, deshadow)
+        self.imagery = (imagerymod.Imagery(os.path.join(cache_dir, "imagery"), imagery, tone=tone,
+                                           deshadow=self.deshadow)
                         if imagery else None)
         self.imagery_failures = 0           # tiles that fell back to the palette (network trouble)
         # Two heightmap workers so a mod request never waits behind a prefetch.
@@ -372,6 +379,8 @@ class Server:
         a.hm_zoom = demmod.zoom_for(lat, 2.5)       # ~2 m pixels where the data exists
         a.zooms = {lvl: self.layout.dem_zoom(lat, lvl) for lvl in range(1, farfield.HORIZON_MAX_LEVEL + 1)}
         a.zooms[0] = a.hm_zoom                      # L0 shares the terrain's DEM (§1.4)
+        if self.deshadow is not None:
+            self.deshadow.prepare(lat, lon)         # the regions around it, in the background
         self._next_anchor += 1
         return a
 
@@ -1378,7 +1387,7 @@ async def main_async(args):
                     imagery=args.imagery, near_visual=args.near_visual, tex_near=args.tex_near,
                     tex_far=args.tex_far, tone=args.tone, near_radii=radii,
                     status_interval=args.status_interval, cells=args.cells, tex=args.tex, block=args.block,
-                    horizon=args.horizon)
+                    horizon=args.horizon, deshadow=args.deshadow)
     srv = await asyncio.start_server(
         lambda r, w: Connection(server, r, w).run(), "127.0.0.1", args.port)
     port = srv.sockets[0].getsockname()[1]
@@ -1386,7 +1395,8 @@ async def main_async(args):
           f"(far tiles: {fmt}, near visual: {server.near_visual}, cells: {server.layout.cells} "
           f"(format {server.layout.format}), block: {server.layout.block}, "
           f"horizon: {'on' if server.horizon else 'off'}, "
-          f"imagery: {','.join(args.imagery) if args.imagery else 'off'})",
+          f"imagery: {','.join(args.imagery) if args.imagery else 'off'}"
+          f"{'' if server.deshadow is None else ', deshadow: ' + server.deshadow.mode})",
           flush=True)
     async with srv:
         await srv.serve_forever()
@@ -1458,6 +1468,10 @@ def main():
     ap.add_argument("--tex-far", type=parse_tex_px, default=TEX_FAR, help="32 cells: texture size (px) of the other levels")
     ap.add_argument("--tone", type=float, default=1.0,
                     help="strength of the imagery tone curve (0 = the imagery as downloaded)")
+    ap.add_argument("--deshadow", choices=deshadowmod.MODES, default="off",
+                    help="undo the capture sun's shading in the USGS imagery (docs/research/"
+                         "2026-10-10-deshadow-prototype.md): lambert = slopes only, full = slopes and cast "
+                         "shadows of the terrain; off = the imagery as served (default)")
     ap.add_argument("--near-radii", type=parse_radii, default=None,
                     help="mesh mode: radii in m around the player of the exact level and the next one "
                          "(L-2, L-1 with 32 cells; L-1, L0 with 64; default 150,400)")
