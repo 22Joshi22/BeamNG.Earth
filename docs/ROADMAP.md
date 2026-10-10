@@ -24,6 +24,28 @@ Monument Valley, the Kern River ravine or a famous trail are test cases, never s
 - Fixes like de-shadowing and colour matching are global methods with automatic gates (they switch
   themselves off where they do not apply), validated on places with and without the problem.
 
+## Principle: deterministic generation (user, 2026-10-10)
+The same place must come out the same every time it is generated with the same version: a rock,
+tree, building or road marking is always in the same spot, whichever way the player arrived, in
+whatever order tiles loaded, after any number of rebases, on any machine.
+- Every procedural choice (placement, species, rotation, size, colour variation, roof shape, filler
+  buildings in data-poor areas) is a pure function of (world position in a global frame, the input
+  data, a fixed per-feature salt, the generator version) - e.g. a hash of the global cell id or of
+  the feature's OSM/Overture id. Never of the anchor, tile key, LOD level, load order, thread timing,
+  time of day or an unseeded RNG.
+- Positions are computed in a global frame (lat/lon/height or ECEF, doubles) and only then
+  transformed into the current anchor frame, so a rebase or teleport cannot move anything.
+- LOD only changes how detailed something is drawn, never whether or where it exists: the coarse
+  version of a forest is the same trees, thinned by a stable rank (each object keeps one fixed
+  random rank; a level shows the objects below its threshold).
+- Inputs are versioned: generator version + data snapshot ids (imagery capture, DEM source, Overture
+  release, OSM date) are part of cache keys and the credits; a data update may change a place, a
+  restart or a different route never does. For identical results across players, pin data snapshots.
+- Things that are real-time by nature (weather, time of day, traffic) are exempt, but their random
+  details (cloud pattern seed, gust phase) are also derived from position + time slot, not from RNG.
+- Tests: generate the same area from different anchors, paths and load orders and compare a hash of
+  every placed object; a golden-hash test per release; float tolerance only where unavoidable.
+
 ## Done today (v1.3.1)
 - Server deleted a previous anchor's tile files while the mod still showed them (rebase reload
   outlasting the fixed 30 s prune delay): the engine logged `Could not open '...far_<a>_....cdae'`
