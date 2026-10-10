@@ -30,6 +30,13 @@ only, nothing redistributed. Licence notes marked *(verify)* must be re-checked 
 | National / state orthophotos (e.g. swisstopo, IGN, PNOA, PDOK, MD iMAP) | the respective agencies | sharper imagery outside / inside the US | per source (see docs/research/2026-10-10-imagery-sources-world.md) | per source | planned |
 | OSRM routing (FOSSGIS / project-osrm demo) | FOSSGIS e.V. / Project OSRM, on OpenStreetMap data | long-distance GPS | service terms (light, non-commercial use); data ODbL | "Routing: OSRM, © OpenStreetMap contributors" | planned |
 | Photon / Nominatim geocoding | Komoot (Photon), OSM Foundation (Nominatim) | place search | service usage policies; data ODbL | "Search: Photon / Nominatim, © OpenStreetMap contributors" | planned |
+| 3D BAG (LoD 2.2 buildings, Netherlands) | 3DBAG (TU Delft 3D geoinformation group) | building shapes and roofs | CC BY 4.0 | "3DBAG by tudelft3d and 3DGI" | planned |
+| German state LoD2 building models (NRW, Bavaria, Berlin, ...) | the state survey offices | building shapes and roofs | DL-DE Zero / DL-DE BY 2.0 / CC BY 4.0 per state *(verify Bavaria: CC BY vs BY-ND)* | per state | planned |
+| swissBUILDINGS3D | swisstopo | building shapes and roofs | open (swisstopo OGD terms) | "© swisstopo" | planned |
+| PLATEAU 3D city models | Japan MLIT | building shapes and roofs | PLATEAU terms (CC BY 4.0 compatible) | "PLATEAU (MLIT)" | planned |
+| DC Buildings 3D 2024 | DC Office of the CTO | benchmark near Baltimore | CC BY 4.0 | "DC OCTO" | planned (benchmark) |
+| USGS 3DEP lidar point clouds | U.S. Geological Survey | building heights/roofs and canopy in the US | public domain | "USGS 3DEP" | planned |
+| LiDAR HD | IGN France | buildings, canopy heights | Etalab Open Licence 2.0 | "IGN - LiDAR HD" | planned |
 | Mapillary street-level imagery | Mapillary (Meta) | tuning the city generator against real photos | CC BY-SA 4.0, free API token | "Street-level imagery: Mapillary" | planned (reference) |
 
 ## Software and libraries
@@ -65,6 +72,9 @@ only, nothing redistributed. Licence notes marked *(verify)* must be re-checked 
   terrain and surface generation (e.g. Moab's trails, the Rubicon Trail, Johnson Valley's Hammers);
   see docs/ROADMAP.md. Only used to judge the look; no imagery from them is shipped.
 - NAIP flight specifications (sun elevation rules) for the de-shadowing sun fit.
+- BeamNG maps built from real lidar, as drive-and-compare references only: "Pikes Peak - LIDAR Edition"
+  and "Road Atlanta - LIDAR Edition" (Ewanc), "Mount Coot-tha" (B25Mitch), "Sangerhausen"
+  (ElTacoLoco), "Roane County" (bob.blunderton).
 - "Polish Roads" by mcct (BeamNG resource 5846, summer and winter versions) and MuYe's video "They
   Added Seasons To BeamNG": visual reference for winter roads, snow, plowing and road surface quality
   by road use. Its assets are not used (the author does not allow reuse).
