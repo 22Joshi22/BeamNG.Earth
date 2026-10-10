@@ -178,6 +178,22 @@ User goals (2026-10-10):
 4. **Airports and runways** for plane mods (pairs with v1.4 M5 flight).
 All other candidates below are approved too ("all these look good") and get scheduled after these.
 
+## Sound design (user, 2026-10-10: "definitely something we should work on at some point")
+First step is in the next build (ambient room tone by climate zone, from the game's own sounds).
+Later, as content arrives:
+- **Ambience by place**, blended by what is around the player: wind on open ground and ridges
+  (louder with real wind and altitude), forest (birds by day, insects/crickets at night), city hum
+  and distant traffic near built-up areas, surf and gulls on coasts, water near rivers/lakes,
+  silence/wind in deserts and at high altitude; day/night and season variants.
+- **Weather sound**: rain on the car and ground, thunder rumble (no visual lightning in the game),
+  wind gusts tied to the real gust data.
+- **Acoustics**: reverb by surroundings (open plain vs canyon vs city street vs tunnel), using the
+  game's reverb zones placed by the server from terrain shape and buildings.
+- **Surface sound**: tyre noise per ground type (asphalt, gravel, sand, grass) comes with v1.5
+  surface physics; bridges and gratings with v1.6 roads.
+- **Life**: traffic (v1.8) and city sounds (v1.9), aircraft near airports.
+- All from stock game sounds where possible (no redistribution), positioned so they survive rebases.
+
 ## Several vehicles far apart (single player; needed before AI traffic and multiplayer)
 Today only the player has ground: the physics TerrainBlock follows the player, so any other vehicle
 (a second car the user parked, a trailer left behind, AI traffic, a car the user switched away
