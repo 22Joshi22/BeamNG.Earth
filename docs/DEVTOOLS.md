@@ -26,6 +26,21 @@ BeamNG.Earth uses that:
 - The existing imgui window becomes a compact HUD (status line + quick toggles), hidden by default
   once the settings page exists.
 
+## Data credits overlay (user, 2026-10-10)
+Small, unobtrusive text in a screen corner (default bottom-left, semi-transparent, ~11 px, no
+window chrome; corner, size and on/off in the settings page; on by default because CC BY and
+similar licences ask for visible attribution) naming the sources that built what is around the
+player right now, e.g.:
+  "Imagery: USGS NAIP 2022, Maryland iMAP 2024 · Elevation: Mapterhorn (USGS 3DEP 1 m) ·
+   Weather: Open-Meteo.com · Map data © OpenStreetMap contributors"
+- The server knows each tile's sources (imagery source and capture year per tile, the DEM tile's
+  underlying dataset from the provider's attribution data, weather, OSM/Overture once used). It
+  sends a compact `credits` message whenever the set for the tiles within ~2 km of the player (plus
+  a short "far: Sentinel-2 cloudless" part) changes; the mod draws it. No per-frame work beyond one
+  imgui text draw.
+- The full credit list stays in CREDITS.md and on the settings page.
+- Built after the dev tools branch is merged (shares ui.lua / settings.lua).
+
 ## Entry point
 - A **"Dev"** collapsible section / tab in the existing BeamNG.Earth window (ui.lua), plus a console
   API `beamngEarth_dev.set('<overlay>', true|false)` and `beamngEarth_dev.preset('lod'|'loading'|'off')`.
