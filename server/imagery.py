@@ -85,16 +85,17 @@ SOURCES = {
     "usgs": Source("usgs", "https://basemap.nationalmap.gov/arcgis/rest/services/USGSImageryOnly/MapServer/tile/{z}/{y}/{x}",
                    16, "USGS The National Map (public domain)", probe_zooms=(10, 12), min_zoom=10),
     "eox2023": Source("eox2023", "https://tiles.maps.eox.at/wmts/1.0.0/s2cloudless-2023_3857/default/g/{z}/{y}/{x}.jpg",
-                      14, "Sentinel-2 cloudless 2023 by EOX IT Services GmbH (Contains modified Copernicus "
-                          "Sentinel data 2023), CC BY-NC-SA 4.0"),
+                      14, "EOxCloudless https://cloudless.eox.at by EOX IT Services GmbH (Contains modified "
+                          "Copernicus Sentinel data 2023), CC BY-NC-SA 4.0"),
     "eox2016": Source("eox2016", "https://tiles.maps.eox.at/wmts/1.0.0/s2cloudless_3857/default/g/{z}/{y}/{x}.jpg",
-                      14, "Sentinel-2 cloudless 2016 by EOX IT Services GmbH (Contains modified Copernicus "
-                          "Sentinel data 2016), CC BY 4.0"),
+                      14, "EOxCloudless https://cloudless.eox.at by EOX IT Services GmbH (Contains modified "
+                          "Copernicus Sentinel data 2016 & 2017), CC BY 4.0"),
 }
 DEFAULT_CHAIN = ("usgs", "eox2023", "eox2016")
-# The line the mod shows (V1_3_SPEC §C), for the default chain.
-ATTRIBUTION = ("Imagery: USGS The National Map (public domain); Sentinel-2 cloudless by EOX "
-               "(CC BY-NC-SA 4.0 / CC BY 4.0)")
+# The line the mod shows (V1_3_SPEC §C), for the default chain: every source's own credit, EOX's in
+# its June 2026 wording (docs/research/2026-10-10-rate-limits.md: "EOxCloudless https://cloudless.eox.at
+# by EOX IT Services GmbH (Contains modified Copernicus Sentinel data 2023)", 2016: "... 2016 & 2017").
+ATTRIBUTION = "Imagery: " + "; ".join(SOURCES[n].attribution for n in DEFAULT_CHAIN)
 
 
 class ImageryError(IOError):

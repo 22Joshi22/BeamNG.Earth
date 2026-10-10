@@ -58,8 +58,8 @@ local SLOW_SPEED, SLOW_S = 1, 3    -- ... and while the player is below 1 m/s fo
 local DEFAULT_LAT, DEFAULT_LON = 36.5785, -118.2923 -- near Mt Whitney / Lone Pine, CA
 local ATTRIBUTION = 'Elevation: Mapterhorn (CC-BY etc., see mapterhorn.com), AWS Terrain Tiles / Mapzen'
 -- shown once satellite-textured tiles arrive (docs/V1_3_SPEC.md C; EOX's required wording)
-local IMAGERY_ATTRIBUTION = 'Imagery: USGS The National Map (public domain); Sentinel-2 cloudless 2016/2023 by '
-  .. 'EOX IT Services GmbH (contains modified Copernicus Sentinel data; CC BY 4.0 / CC BY-NC-SA 4.0)'
+local IMAGERY_ATTRIBUTION = 'Imagery: USGS The National Map (public domain); EOxCloudless https://cloudless.eox.at by '
+  .. 'EOX IT Services GmbH (Contains modified Copernicus Sentinel data 2023 / 2016 & 2017; CC BY-NC-SA 4.0 / CC BY 4.0)'
 
 local st -- all runtime state, see resetState()
 local rebaseLag = 0 -- frames between a vehicle move request and its visibility (measured, see commitRebase)

@@ -282,6 +282,13 @@ class ChainTest(unittest.TestCase):
             imagery.parse_chain("google")
         self.assertEqual(imagery.Imagery(self.tmp.name).attribution(), imagery.ATTRIBUTION)
         self.assertIn("CC BY 4.0", imagery.Imagery(self.tmp.name, ("eox2016",)).attribution())
+        # EOX's required wording (June 2026, docs/research/2026-10-10-rate-limits.md)
+        eox = "EOxCloudless https://cloudless.eox.at by EOX IT Services GmbH (Contains modified Copernicus Sentinel data "
+        self.assertEqual(imagery.SOURCES["eox2023"].attribution, eox + "2023), CC BY-NC-SA 4.0")
+        self.assertEqual(imagery.SOURCES["eox2016"].attribution, eox + "2016 & 2017), CC BY 4.0")
+        self.assertEqual(imagery.ATTRIBUTION, "Imagery: USGS The National Map (public domain); " + eox
+                         + "2023), CC BY-NC-SA 4.0; " + eox + "2016 & 2017), CC BY 4.0")
+        self.assertNotIn("Sentinel-2 cloudless", imagery.ATTRIBUTION)
 
 
 class GutterTest(unittest.TestCase):
