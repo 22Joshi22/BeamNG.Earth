@@ -15,7 +15,11 @@
 -- the engine's sea-level temperature every frame; the engine lowers it with height itself). The
 -- real UTC offset goes to beamngEarth_sky (its clock), and the cloud base above the ground too (sky
 -- owns the layer's ground-following altitude and the rebase weather-offset shift).
--- Gravity follows latitude and height (normal gravity, GRAVITY_ENABLED, independent of the mode).
+-- Gravity follows the player (GRAVITY_ENABLED, independent of the mode): the server's 'gravity'
+-- message (server/gravity.py: WGS84 normal + EGM2008 anomaly at the player, every 2 km / 200 m of
+-- height) with the free-air gradient for the height since; normal gravity by latitude and height
+-- until the first message (or with a server without it). Changes are written in steps of at most
+-- GRAVITY_STEP per check, so a new value is approached smoothly.
 -- Everything runs in the BeamNG.Earth level only.
 --
 -- Modes: 'real' = drive the weather; 'manual' = hands off (the game's own controls). The default is
@@ -82,6 +86,8 @@ M.GRAVITY_ENABLED = true
 M.GRAVITY_EPS = 1e-4       -- m/s^2; ~30 m of climb (setGravity queues Lua into every vehicle)
 M.GRAVITY_CHECK_S = 1
 M.GRAVITY_DEFAULT = 9.81   -- the level's value, restored when switched off
+M.GRAVITY_STEP = 1e-3      -- m/s^2 per check at most (100 mGal/s) once ours is set: a smooth approach
+M.FREE_AIR = 3.086e-6      -- m/s^2 per m of height (normal free-air gradient)
 
 -- core_environment's onEnvironmentChanged keys -> the group a manual change overrides
 M.OVERRIDE_GROUPS = {
@@ -158,7 +164,19 @@ end
 function M.gravityAt(latDeg, h)
   local s = math.sin(math.rad(tonumber(latDeg) or 0))
   local s2 = s * s
-  return 9.7803253359 * (1 + 0.00193185265241 * s2) / math.sqrt(1 - 0.00669437999013 * s2) - 3.086e-6 * (tonumber(h) or 0)
+  return 9.7803253359 * (1 + 0.00193185265241 * s2) / math.sqrt(1 - 0.00669437999013 * s2) - M.FREE_AIR * (tonumber(h) or 0)
+end
+
+-- The server's gravity msg (g at height msg.h) carried to height h by the free-air gradient.
+function M.gravityFrom(msg, h)
+  return msg.g - M.FREE_AIR * ((tonumber(h) or 0) - (tonumber(msg.h) or 0))
+end
+
+-- The next value to write from have towards want: at most step away from have (no step limit
+-- without a previous value of ours).
+function M.gravityToward(have, want, step)
+  if not have then return want end
+  return have + math.max(-step, math.min(step, want - have))
 end
 
 -- One step of the gust process (Ornstein-Uhlenbeck around 0, std GUST_STD, time constant tau);
@@ -245,6 +263,7 @@ end
 
 local mode, modeSource = 'real', 'auto' -- 'auto': follows BWM_Weather; 'user': setMode()
 local lastMsg = nil                     -- the latest message, kept across level loads
+local lastGravity = nil                 -- the latest 'gravity' message (server), kept the same way
 local applying = false                  -- our own core_environment calls (their hook is not an override)
 local S
 
@@ -447,10 +466,15 @@ local function applyGravity(e)
   local want = S.gravity
   if M.GRAVITY_ENABLED then
     local p = playerPos()
-    local names = scenetree.findClassObjects('TimeOfDay')
-    local tod = names and names[1] and scenetree.findObject(names[1])
-    if not p or not tod then return end
-    want = M.gravityAt(tonumber(tod.latitude) or 0, p.z)
+    if not p then return end
+    if lastGravity then
+      want = M.gravityFrom(lastGravity, p.z)
+    else
+      local names = scenetree.findClassObjects('TimeOfDay')
+      local tod = names and names[1] and scenetree.findObject(names[1])
+      if not tod then return end
+      want = M.gravityAt(tonumber(tod.latitude) or 0, p.z)
+    end
   elseif S.gravity == nil then
     return -- never set: nothing to restore
   else
@@ -461,6 +485,7 @@ local function applyGravity(e)
     if not M.GRAVITY_ENABLED then S.gravity = nil end
     return
   end
+  if M.GRAVITY_ENABLED then want = M.gravityToward(S.gravity, want, M.GRAVITY_STEP) end
   if envCall(e.setGravity, -want) then S.gravity = M.GRAVITY_ENABLED and want or nil end
 end
 
@@ -525,6 +550,24 @@ function M.onWeather(msg)
   local sk = sky()
   local off = tonumber(msg.utcOffsetS)
   if sk and sk.setRealUtcOffset and off then sk.setRealUtcOffset(off / 3600, tonumber(msg.lat), tonumber(msg.lon)) end
+end
+
+-- The server's real gravity at the player (server/gravity.py; beamngEarth_core hands it over).
+function M.onGravity(msg)
+  if type(msg) ~= 'table' or type(msg.g) ~= 'number' or msg.g < 9 or msg.g > 10.5 then return end
+  lastGravity = { g = msg.g, h = tonumber(msg.h) or 0, source = msg.source, lat = msg.lat, lon = msg.lon }
+  S.gravTimer = M.GRAVITY_CHECK_S -- applied on the next update
+end
+
+-- A new server session (core, on hello): back to normal gravity until its message arrives.
+function M.clearGravity() lastGravity = nil end
+
+-- One line for the settings page: the gravity in use and where it comes from.
+function M.gravityLine()
+  if not M.GRAVITY_ENABLED then return 'off (level default ' .. M.GRAVITY_DEFAULT .. ' m/s2)' end
+  local src = lastGravity and (lastGravity.source == 'egm2008' and 'EGM2008 (server)' or 'normal (server)')
+    or 'normal by latitude (no server value)'
+  return (S.gravity and string.format('%.5f m/s2', S.gravity) or 'not set yet') .. ', ' .. src
 end
 
 function M.onUpdate(dtReal)
@@ -601,7 +644,7 @@ function M.getMode() return mode end
 function M.setGravityEnabled(on)
   M.GRAVITY_ENABLED = on and true or false
   S.gravTimer = M.GRAVITY_CHECK_S
-  return 'gravity by latitude and height ' .. (M.GRAVITY_ENABLED and 'on' or 'off')
+  return 'real gravity ' .. (M.GRAVITY_ENABLED and 'on' or 'off')
 end
 
 -- One line for the BeamNG.Earth window.
@@ -621,7 +664,7 @@ function M.status()
   table.sort(overrides)
   return dumps({ mode = mode, modeSource = modeSource, bwmFighting = S.bwm, overrides = overrides,
     inOurLevel = S.inOurLevel, grace = math.max(0, S.graceUntil - S.clock), mission = S.mission,
-    groundZ = S.groundZ, gravity = S.gravity, temperatureCurve = S.temp.method, tempC = S.temp.value,
+    groundZ = S.groundZ, gravity = S.gravity, gravityMsg = lastGravity, temperatureCurve = S.temp.method, tempC = S.temp.value,
     msg = lastMsg, target = S.tgt, current = S.cur, line = M.statusLine() })
 end
 

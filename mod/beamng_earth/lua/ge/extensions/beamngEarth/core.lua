@@ -439,6 +439,9 @@ local function onMessage(msg)
     setStatus('Disconnected from companion server: ' .. tostring(msg.error))
   elseif t == 'hello' then
     st.sessionId = msg.sessionId
+    -- a new server session: its own gravity message follows the first pose (none with --gravity off)
+    local w = rawget(_G, 'beamngEarth_weather')
+    if w and w.clearGravity then w.clearGravity() end
     -- M4: the terrain block size first (everything below may use the lattice / follow table); a
     -- server without hello.blockSize has the v1.3.1 1024² block
     local size, okSize = M.setBlockSize(msg.blockSize or 1024)
@@ -525,6 +528,10 @@ local function onMessage(msg)
     -- real weather (server weather.py): applied by the separate beamngEarth_weather extension
     local w = rawget(_G, 'beamngEarth_weather')
     if w and w.onWeather then w.onWeather(msg) end
+  elseif t == 'gravity' then
+    -- real gravity at the player (server gravity.py): applied by beamngEarth_weather's setGravity path
+    local w = rawget(_G, 'beamngEarth_weather')
+    if w and w.onGravity then w.onGravity(msg) end
   end
 end
 

@@ -687,6 +687,16 @@ beamngEarth_weather = { onWeather = function(m) gotWeather = m end }
 serverSend({ type = 'weather', v = 1, code = 3, tempC = 20.5 })
 frames(2)
 T.check(gotWeather and gotWeather.code == 3 and gotWeather.tempC == 20.5, 'weather message handed to beamngEarth_weather')
+-- real gravity: the same hand-off; a new session (hello) clears the previous session's value
+local gotGravity, cleared = nil, 0
+beamngEarth_weather = { onGravity = function(m) gotGravity = m end, clearGravity = function() cleared = cleared + 1 end }
+serverSend({ type = 'gravity', v = 1, g = 9.7867, lat = 36.58, lon = -118.29, h = 4400, source = 'egm2008' })
+frames(2)
+T.check(gotGravity and gotGravity.g == 9.7867 and gotGravity.source == 'egm2008', 'gravity message handed to beamngEarth_weather')
+serverSend({ type = 'hello', protocol = 4, format = 4, cells = 64, horizon = true, serverVersion = '0.4.0',
+  sessionId = 's10', farFormat = 'cdae', material = 'bngEarthFar_v3', nearVisual = 'mesh' })
+frames(3)
+T.check(cleared == 1, 'hello: the previous session\'s gravity cleared')
 beamngEarth_weather = nil
 
 core.onExtensionUnloaded()

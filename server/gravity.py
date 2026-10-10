@@ -13,6 +13,8 @@ Three layers, each usable on its own:
   disturbance, the free-air anomaly, the deflection of the vertical and the geoid height follow.
 * ``gravity(lat, lon, h)`` / ``anomaly(lat, lon, h)`` / ``geoid_height(lat, lon)``: module-level
   helpers on a shared EGM2008 model (downloaded once, see ``load_egm2008``).
+* ``Provider`` / ``Tracker``: earthd's 'gravity' message (``--gravity on``): the player's |g| on a
+  worker thread, every 2 km or 200 m of height; normal gravity while EGM2008 downloads.
 
 Heights are ellipsoidal (WGS84) unless ``msl=True``: then h is above mean sea level (the DEM's
 heights) and the EGM2008 geoid height N is added (h_ell = H + N; N is -107 m .. +86 m, which
@@ -584,6 +586,146 @@ def anomaly(lat, lon, h=0.0, msl=False, model=None):
 def geoid_height(lat, lon, model=None):
     """EGM2008 geoid height N above the WGS84 ellipsoid, m (h_ellipsoid = H_msl + N)."""
     return gravity(lat, lon, 0.0, model=model).geoid
+
+
+# ================================================================================================
+# earthd: the 'gravity' message (the player's real g, sent to the mod's weather.lua)
+# ================================================================================================
+
+MSG_VERSION = 1             # gravity.v: the message layout
+RECOMPUTE_M = 2000.0        # a new value once the player moved this far from the last one ...
+RECOMPUTE_DH = 200.0        # ... or this much up or down (the mod follows the free-air gradient between)
+DOWNLOAD_RETRY_S = 600.0    # after a failed EGM2008 download
+
+
+def egm2008_cached(cache_dir=CACHE_DIR):
+    """Are the converted EGM2008 coefficients on disk (no download, no conversion needed)?"""
+    return all(os.path.exists(os.path.join(cache_dir, n)) for n in ("egm2008_rowmajor.npy", "egm2008_rowmajor.json"))
+
+
+def distance_m(lat1, lon1, lat2, lon2):
+    """Great-circle distance in m (spherical Earth; plenty for the recompute rule)."""
+    p1, p2 = math.radians(lat1), math.radians(lat2)
+    a = (math.sin((p2 - p1) / 2) ** 2
+         + math.cos(p1) * math.cos(p2) * math.sin(math.radians(lon2 - lon1) / 2) ** 2)
+    return 2 * 6371008.8 * math.asin(min(1.0, math.sqrt(a)))
+
+
+class Provider:
+    """earthd's gravity source, shared by every connection (--gravity on).
+
+    message() blocks (45 ms with EGM2008): run it on ``pool``, never on the event loop. It uses
+    EGM2008 (normal + anomaly at the point, MSL height) once the converted coefficients are on disk,
+    loading them on first use; until then the normal formula, while a daemon thread downloads and
+    converts them (74 MB, once; a failure is retried after DOWNLOAD_RETRY_S). Nothing here waits
+    for the network. ``model``: a ready GravityModel (tests); ``download=False``: never fetch."""
+
+    def __init__(self, cache_dir=CACHE_DIR, model=None, nmax=None, download=True, log=None):
+        import logging
+        from concurrent.futures import ThreadPoolExecutor
+        self.cache_dir = cache_dir
+        self.nmax = nmax or int(os.environ.get("BNGE_GRAVITY_NMAX", DEFAULT_NMAX))
+        self.model = model
+        self.download = download
+        self.log = log or logging.getLogger("earthd.gravity")
+        self.pool = ThreadPoolExecutor(1, thread_name_prefix="gravity")
+        self.lock = threading.Lock()
+        self.fetcher = None             # the download thread while it runs
+        self.failed_at = None           # monotonic time of the last failed download
+        self.broken = False             # the cached coefficients could not be loaded: normal from now on
+
+    def source(self):
+        """'egm2008' when the next message() uses the model, else 'normal'."""
+        if self.model is not None:
+            return "egm2008"
+        return "egm2008" if not self.broken and egm2008_cached(self.cache_dir) else "normal"
+
+    def _fetch(self):
+        try:
+            ensure_egm2008(self.cache_dir, log=self.log.info)
+            self.log.info("gravity: EGM2008 ready; real gravity from the next update")
+        except Exception as e:      # network, checksum, disk: the normal formula stays
+            self.log.warning("gravity: EGM2008 download failed (%s: %s); normal gravity meanwhile", type(e).__name__, e)
+            with self.lock:
+                self.failed_at = time.monotonic()
+        finally:
+            with self.lock:
+                self.fetcher = None
+
+    def _start_download(self):
+        with self.lock:
+            if not self.download or self.fetcher is not None:
+                return
+            if self.failed_at is not None and time.monotonic() - self.failed_at < DOWNLOAD_RETRY_S:
+                return
+            self.fetcher = threading.Thread(target=self._fetch, name="gravity-download", daemon=True)
+            self.fetcher.start()
+
+    def _get_model(self):
+        if self.model is None and not self.broken:
+            if egm2008_cached(self.cache_dir):
+                try:
+                    self.model = load_egm2008(self.nmax, cache_dir=self.cache_dir, log=self.log.info)
+                except Exception as e:      # a damaged cache: say so once, keep serving normal gravity
+                    self.broken = True
+                    self.log.warning("gravity: EGM2008 cache unusable (%s: %s); normal gravity", type(e).__name__, e)
+            else:
+                self._start_download()
+        return self.model
+
+    def message(self, lat, lon, h):
+        """The 'gravity' message at geodetic (lat, lon), h m above sea level (blocking)."""
+        model = self._get_model()
+        if model is not None:
+            g, src = model.field(lat, lon, h, msl=True).g, "egm2008"
+        else:
+            g, src = float(normal_gravity(lat, h)), "normal"
+        return {"type": "gravity", "v": MSG_VERSION, "g": round(float(g), 7), "lat": round(float(lat), 6),
+                "lon": round(float(lon), 6), "h": round(float(h), 1), "source": src}
+
+
+class Tracker:
+    """Per connection: when to recompute (moved > RECOMPUTE_M, height changed > RECOMPUTE_DH, the
+    first pose, or EGM2008 became available) and the last message sent (re-sent on hello)."""
+
+    def __init__(self):
+        self.last = None            # (lat, lon, h, source) of the last message sent
+        self.inflight = False
+        self.msg = None
+
+    def due(self, prov, lat, lon, h):
+        if self.inflight:
+            return False
+        if self.last is None:
+            return True
+        llat, llon, lh, src = self.last
+        return (src != prov.source() or abs(h - lh) > RECOMPUTE_DH
+                or distance_m(llat, llon, lat, lon) > RECOMPUTE_M)
+
+    def on_pose(self, conn, frame, x, y, z):
+        """earthd Connection.on_pose: the player at (x, y, z) in its anchor's frame (z above sea
+        level at the anchor; enu_to_geodetic adds the curvature). Computes on the provider's
+        thread when due; the message goes to the mod when it is ready."""
+        prov = conn.s.gravity
+        if prov is None:
+            return
+        lat, lon, h = (float(v) for v in frame.enu_to_geodetic(x, y, z))
+        if not (math.isfinite(lat) and math.isfinite(lon) and math.isfinite(h)) or not self.due(prov, lat, lon, h):
+            return
+        self.inflight = True
+
+        async def run():
+            msg = None
+            try:
+                msg = await conn.loop.run_in_executor(prov.pool, prov.message, lat, lon, h)
+            except Exception as e:      # a bug, not the network: keep the last value
+                prov.log.warning("gravity at %.4f, %.4f failed: %s: %s", lat, lon, type(e).__name__, e)
+            finally:
+                self.inflight = False
+            if msg is not None:
+                self.last, self.msg = (lat, lon, h, msg["source"]), msg
+                conn.send(msg)
+        conn.spawn(run())
 
 
 def main(argv=None):

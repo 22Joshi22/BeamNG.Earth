@@ -144,8 +144,8 @@ Physics geometry always comes from open data:
 - **Gravity:** WGS84 normal gravity (Somigliana + free air) plus the EGM2008 anomalies (NGA,
   degree 2190, about 9 km; 74 MB once from GeographicLib's mirror of NGA's coefficients;
   45 ms a point): `server/gravity.py`, described in server/README.md "Gravity". Real g runs
-  from 9.76 to 9.84 m/s²; the anomalies are −350 to +600 mGal. It is standalone until it is
-  merged with the weather branch's `setGravity`.
+  from 9.76 to 9.84 m/s²; the anomalies are −350 to +600 mGal. earthd sends it to the mod as the
+  `gravity` message (`--gravity on`, default), applied through the weather extension's `setGravity`.
 
 **Google Photorealistic 3D Tiles** (v2, optional): visual only, the user's own
 key, fetched straight from the user's own companion, no shared cache, Google
@@ -494,6 +494,15 @@ in 2026-10-10-weather-probe-results.md.
 - **Gravity** by latitude and height (WGS84 Somigliana minus 3.086e-6·h; 9.7803 equator, 9.8322 pole)
   through `core_environment.setGravity` when it changes by 1e-4 (~30 m of climb); `GRAVITY_ENABLED`
   (on); a menu gravity change is respected; off restores 9.81.
+  - Real gravity (after the merge): earthd's `--gravity on` (default) computes |g| with
+    `server/gravity.py` (normal + EGM2008 anomaly at the pose's lat/lon/height above sea level) on
+    its own thread, after the first pose and whenever the player moved > 2 km or > 200 m in height,
+    and sends the additive `gravity` message (`v`, `g`, `lat`, `lon`, `h`, `source`). Without the
+    EGM2008 cache it sends normal gravity (`source: "normal"`) and downloads the 74 MB in a daemon
+    thread; the next pose after it is ready recomputes. The mod uses `g − 3.086e-6 · (z − h)` instead
+    of the latitude formula while it has a value (cleared on `hello`), and moves the engine's value
+    by at most `GRAVITY_STEP` (1e-3 m/s²) per 1 s check once its own is set. Settings page: "Real
+    gravity" (on) = `GRAVITY_ENABLED`.
 - Tests: `server/tests/test_weather.py` (fixtures, codes, cache, refetch rule, server, the Lua mapping
   under luajit, the level objects = generator output), `mod/tests/test_weather.lua` (pure conversions
   + a stubbed core_environment run: grace, convergence, writes only on change, overrides, BWM, missions,

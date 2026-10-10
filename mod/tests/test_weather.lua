@@ -322,6 +322,41 @@ env.gravity = -1.62
 run(5)
 check(env.gravity == -1.62, 'gravity override respected')
 
+-- the server's real gravity (server/gravity.py 'gravity' message): carried to the player's height
+-- by the free-air gradient, approached in GRAVITY_STEP steps per check, back to normal gravity on
+-- a new session (clearGravity)
+near(W.gravityFrom({ g = 9.79, h = 100 }, 600), 9.79 - 500 * W.FREE_AIR, 1e-12, 'gravityFrom: free air')
+check(W.gravityToward(nil, 9.8, 1e-3) == 9.8 and W.gravityToward(9.8, 9.7995, 1e-3) == 9.7995,
+  'gravityToward: no previous value or within a step: the value itself')
+near(W.gravityToward(9.79, 9.8, 1e-3), 9.791, 1e-12, 'gravityToward: one limited step')
+W.setMode('real')                                   -- clears the gravity override
+run(2)
+local gNormal = W.gravityAt(36.58, 4000)
+near(-env.gravity, gNormal, W.GRAVITY_EPS, 'override cleared: normal gravity')
+check(W.gravityLine():find('no server value', 1, true) ~= nil, 'gravity line: normal by latitude')
+local gmsg = { type = 'gravity', v = 1, g = gNormal + 0.0035, h = 3900, lat = 36.58, lon = -118.29, source = 'egm2008' }
+local gWant = W.gravityFrom(gmsg, 4000)
+W.onGravity(gmsg)
+run(0.1)
+near(-env.gravity, gNormal + W.GRAVITY_STEP, 1e-9, 'server gravity: the first step only')
+run(W.GRAVITY_CHECK_S + 0.05)
+near(-env.gravity, gNormal + 2 * W.GRAVITY_STEP, 1e-9, 'server gravity: one step per check')
+run(5)
+near(-env.gravity, gWant, 1e-12, 'server gravity reached (free air for the 100 m since)')
+check(W.gravityLine():find('EGM2008', 1, true) ~= nil, 'gravity line: EGM2008')
+local nGrav = env.calls.gravity
+W.onGravity({ g = 'x' })
+W.onGravity({ g = 1.62 })
+run(3)
+check(env.calls.gravity == nGrav and math.abs(-env.gravity - gWant) < 1e-12, 'invalid gravity messages ignored')
+veh.pos = vec3(0, 0, 4300)                          -- a climb: free air from the server's value
+run(2)
+near(-env.gravity, W.gravityFrom(gmsg, 4300), W.GRAVITY_EPS, 'climb: free-air gradient')
+veh.pos = vec3(0, 0, 4000)
+W.clearGravity()
+run(5)
+near(-env.gravity, gNormal, W.GRAVITY_EPS, 'new session: normal gravity until its message')
+
 -- BWM_Weather: set to a preset -> real weather steps back (auto mode) with one notice
 W.setMode('auto')
 W.onClientEndMission()

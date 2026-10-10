@@ -27,7 +27,9 @@ docs/V1_2_DESIGN.md §7 as amended by §12; server/README.md documents the same 
     at detailScale 1, so one repeat per DETAIL_M), and the mod's detail texture is a stock asset;
   - real weather (server/weather.py, docs/research/2026-10-10-real-weather.md): the 'weather'
     message (additive, no protocol bump: both sides ignore unknown types), sent in the session by an
-    injected weather service; its nested cover / wind / aloft fields; the mod reads it in weather.lua.
+    injected weather service; its nested cover / wind / aloft fields; the mod reads it in weather.lua;
+  - real gravity (server/gravity.py Provider / Tracker): the 'gravity' message (additive the same
+    way), sent in the session by a provider on the degree-36 EGM2008 fixture; weather.lua reads it.
 """
 import json
 import math
@@ -53,6 +55,7 @@ import heightmap  # noqa: E402
 import imagery  # noqa: E402
 import modsim  # noqa: E402
 import test_server  # noqa: E402
+import gravity as gravitymod  # noqa: E402
 import test_weather  # noqa: E402
 import weather  # noqa: E402
 
@@ -111,6 +114,8 @@ SERVER_TO_MOD = {
                 "visM": F(NUM, NULL), "fog": F(bool), "thunder": F(bool), "wind": F(dict),
                 "aloft": F(dict, OPT), "tempC": F(NUM), "dewC": F(NUM), "elevM": F(NUM), "slTempC": F(NUM),
                 "pressureHpa": F(NUM), "utcOffsetS": F(int, OPT), "tz": F(str, OPT), "credit": F(str)},
+    # real gravity at the player (gravity.py; additive, protocol 4): |g| in m/s^2 at (lat, lon, h m MSL)
+    "gravity": {"v": F(int), "g": F(NUM), "lat": F(NUM), "lon": F(NUM), "h": F(NUM), "source": F(str)},
 }
 WEATHER_NESTED = {"cover": {"total", "low", "mid", "high"}, "wind": {"ms", "fromDeg", "gustMs"},
                   "aloft": {"ms", "fromDeg"}}
@@ -118,6 +123,7 @@ WEATHER_NESTED = {"cover": {"total", "low", "mid", "high"}, "wind": {"ms", "from
 MOD_INTERNAL = {"_connected": set(), "_disconnected": {"error"}}
 
 LUA = modsim.MOD_DIR
+GRAVITY_FIXTURE = Path(__file__).resolve().parent / "fixtures" / "egm2008_n36.npz"     # degree 36 (test_gravity)
 SHAPE_RE = r"^/temp/beamngEarth/[^/]+/far_\d+_-?\d+_-?\d+_-?\d+\.cdae$"     # levels down to -2 (mesh mode)
 HM_RE = r"^/temp/beamngEarth/[^/]+/hm_\d+_-?\d+_-?\d+\.png$"
 
@@ -479,6 +485,8 @@ class ServerMessagesTest(test_server.ServerHarness):
     def setUp(self):
         super().setUp()
         self.server.weather = weather.Service(fetch=test_weather.FakeFetch())     # no network
+        self.server.gravity = gravitymod.Provider(model=gravitymod.GravityModel.from_npz(GRAVITY_FIXTURE),
+                                                  download=False)               # no network either
 
     def check(self, m):
         kind = m["type"]
@@ -536,6 +544,9 @@ class ServerMessagesTest(test_server.ServerHarness):
                     self.assertEqual(set(m[k]), fields, (k, m))
                     self.assertTrue(all(isinstance(v, NUM) for v in m[k].values()), (k, m))
             self.assertEqual((m["v"], m["credit"]), (weather.VERSION, weather.CREDIT))
+        if kind == "gravity":
+            self.assertEqual((m["v"], m["source"]), (gravitymod.MSG_VERSION, "egm2008"))
+            self.assertTrue(9.75 < m["g"] < 9.85, m)
         if kind == "far_tile" and "material" in m:
             self.assertTrue("texture" in m and "detail" in m, m)
             self.assertRegex(m["texture"], r"^/temp/beamngEarth/[^/]+/[^/]+\.dds$")

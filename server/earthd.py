@@ -5,7 +5,7 @@
     python3 server/earthd.py [--port 47613] [--user-dir DIR] [--cache-dir DIR] [--far-format cdae|dae]
                              [--imagery usgs,eox2023,eox2016|off] [--near-visual mesh|terrain]
                              [--cells 32|64] [--tex 256,256,256,512] [--block 1024|512] [--horizon]
-                             [--deshadow off|lambert|full]
+                             [--deshadow off|lambert|full] [--weather on|off] [--gravity on|off]
 
 Listens on 127.0.0.1 for the mod, builds terrain-block heightmaps (1024² on a world-locked
 2 m lattice, 256 m-aligned centres; in mesh near-visual mode the block is physics only) and a
@@ -57,6 +57,7 @@ import dem as demmod  # noqa: E402
 import deshadow as deshadowmod  # noqa: E402
 import farfield  # noqa: E402
 import geodesy  # noqa: E402
+import gravity as gravitymod  # noqa: E402
 import heightmap  # noqa: E402
 import imagery as imagerymod  # noqa: E402
 import protocol  # noqa: E402
@@ -284,7 +285,7 @@ class Server:
                  hysteresis=farfield.HYSTERESIS, radius=farfield.RADIUS, far_format="cdae",
                  imagery=imagerymod.DEFAULT_CHAIN, near_visual="mesh", tex_near=TEX_NEAR, tex_far=TEX_FAR,
                  tone=1.0, near_radii=None, status_interval=STATUS_INTERVAL, cells=CELLS_DEFAULT, tex=None,
-                 block=BLOCK_DEFAULT, horizon=False, deshadow="off", weather=None):
+                 block=BLOCK_DEFAULT, horizon=False, deshadow="off", weather=None, gravity=None):
         """kfun: K(L) for every level (default: the layout's K table); near_radii: the min-level
         radii (default: the layout's); cells: 32 (v1.3.1) or 64 (M1, mesh mode only); tex: texture
         px per level from the finest (default: tex_near, tex_near, tex_far with 32 cells,
@@ -363,6 +364,8 @@ class Server:
         self._prune_scheduled = set()
         # Real weather at the player (weather.py): a weathermod.Service, or None (--weather off)
         self.weather = weather
+        # Real gravity at the player (gravity.py): a gravitymod.Provider, or None (--gravity off)
+        self.gravity = gravity
 
     @staticmethod
     def _clean_old_sessions(root, cdae_root):
@@ -816,6 +819,7 @@ class Connection:
         self.radius_sent = None
         self.zmax_region = None
         self.weather = weathermod.Tracker()     # real weather: fetch rule, last message sent
+        self.gravity = gravitymod.Tracker()     # real gravity: recompute rule, last message sent
 
     def send(self, msg):
         if not self.writer.is_closing():
@@ -900,6 +904,8 @@ class Connection:
             self.send(m)
             if self.weather.msg is not None:        # a reconnected mod gets the weather again
                 self.send(self.weather.msg)
+            if self.gravity.msg is not None:        # ... and its gravity
+                self.send(self.gravity.msg)
         elif kind == "prepare_anchor":
             self.spawn(self.prepare_anchor(msg))
         elif kind == "prepare_terrain":
@@ -1089,6 +1095,7 @@ class Connection:
             self.cam = msg["cam"]
         if self.s.horizon:
             self.update_eye(self.s.anchors[aid].frame, x, y, msg)
+        self.gravity.on_pose(self, self.s.anchors[aid].frame, x, y, _num(msg, "z", 0.0))
         self.predicted_block = None
         # The mod asks for its next terrain relative to the block it will have committed by
         # then: the pending one if it asked already (it commits that one first), else the
@@ -1397,7 +1404,9 @@ async def main_async(args):
                     tex_far=args.tex_far, tone=args.tone, near_radii=radii,
                     status_interval=args.status_interval, cells=args.cells, tex=args.tex, block=args.block,
                     horizon=args.horizon, deshadow=args.deshadow,
-                    weather=weathermod.Service() if args.weather == "on" else None)
+                    weather=weathermod.Service() if args.weather == "on" else None,
+                    gravity=(gravitymod.Provider(os.path.join(args.cache_dir, "gravity"))
+                             if args.gravity == "on" else None))
     srv = await asyncio.start_server(
         lambda r, w: Connection(server, r, w).run(), "127.0.0.1", args.port)
     port = srv.sockets[0].getsockname()[1]
@@ -1407,7 +1416,7 @@ async def main_async(args):
           f"horizon: {'on' if server.horizon else 'off'}, "
           f"imagery: {','.join(args.imagery) if args.imagery else 'off'}"
           f"{'' if server.deshadow is None else ', deshadow: ' + server.deshadow.mode}, "
-          f"weather: {args.weather})",
+          f"weather: {args.weather}, gravity: {args.gravity})",
           flush=True)
     async with srv:
         await srv.serve_forever()
@@ -1491,6 +1500,9 @@ def main():
                          "while it changes (0 = status on events only, as v1.3.1; tools/drive.py runs use 1)")
     ap.add_argument("--weather", choices=("on", "off"), default="on",
                     help="real weather at the player from Open-Meteo.com (keyless; every 10 min or 25 km)")
+    ap.add_argument("--gravity", choices=("on", "off"), default="on",
+                    help="real gravity at the player (gravity.py: WGS84 normal + EGM2008 from <cache-dir>/gravity/, "
+                         "every 2 km or 200 m of height; normal gravity while EGM2008 downloads, once, 74 MB)")
     ap.add_argument("-v", "--verbose", action="store_true")
     args = ap.parse_args()
     args.cells = resolve_cells(args.cells, args.near_visual)

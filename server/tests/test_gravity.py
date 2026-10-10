@@ -8,21 +8,30 @@ degree-36 coefficient fixture (fixtures/egm2008_n36.npz, 23 kB, EGM2008 truncate
 BNGE_GRAVITY_REAL=1 also runs the full EGM2008 model (degree 2190; downloads 74 MB once into
 ~/.cache/beamng-earth/gravity/ if missing) against published values: GeographicLib's Gravity
 example on Everest and its EGM2008 geoid heights, plus anomaly sanity values and global ranges.
+
+The earthd side (Provider / Tracker, the 'gravity' message): the fixture model as EGM2008, the
+normal fallback, a background download that never blocks (faked), the recompute rule, and an
+in-process server (sent after a pose, again after 2 km or 200 m of height, re-sent on hello).
 """
 import math
 import os
 import subprocess
 import sys
+import tempfile
+import threading
 import time
 import unittest
+from unittest import mock
 from decimal import Decimal, getcontext
 from pathlib import Path
 
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 import geodesy  # noqa: E402
 import gravity as G  # noqa: E402
+import test_server  # noqa: E402
 
 FIXTURE = Path(__file__).resolve().parent / "fixtures" / "egm2008_n36.npz"
 MGAL = 1e-5
@@ -316,6 +325,142 @@ class RealEgm2008Test(unittest.TestCase):
             self.assertTrue(-110 < f.geoid < 90, f)
         print(f"\n  EGM2008/2190 point: median {1e3 * sorted(times)[20]:.1f} ms", file=sys.stderr)
         self.assertLess(sorted(times)[20], 0.2)    # 45 ms on the dev machine; loose for CI
+
+
+# ================================================================================================
+# earthd: Provider, Tracker, the 'gravity' message
+# ================================================================================================
+
+DEG_M = 2 * math.pi * 6371008.8 / 360         # metres per degree of latitude in G.distance_m
+
+
+class ProviderTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.model = G.GravityModel.from_npz(FIXTURE)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_model_message(self):
+        p = G.Provider(self.tmp.name, model=self.model, download=False)
+        self.assertEqual(p.source(), "egm2008")
+        m = p.message(36.5785, -118.2923, 4400.0)
+        self.assertEqual(set(m), {"type", "v", "g", "lat", "lon", "h", "source"})
+        self.assertEqual((m["type"], m["v"], m["source"], m["h"]), ("gravity", G.MSG_VERSION, "egm2008", 4400.0))
+        self.assertAlmostEqual(m["g"], self.model.field(36.5785, -118.2923, 4400.0, msl=True).g, places=6)
+
+    def test_normal_without_coefficients(self):
+        p = G.Provider(self.tmp.name, download=False)
+        self.assertEqual(p.source(), "normal")
+        m = p.message(45.0, 7.0, 1000.0)
+        self.assertEqual(m["source"], "normal")
+        self.assertAlmostEqual(m["g"], float(G.normal_gravity(45.0, 1000.0)), places=6)
+        self.assertIsNone(p.fetcher)                    # download=False: no thread
+
+    def test_background_download_never_blocks(self):
+        release, calls = threading.Event(), []
+
+        def fake_ensure(cache_dir, log=print):          # the 74 MB download, held until released
+            calls.append(cache_dir)
+            release.wait(10)
+            for n in ("egm2008_rowmajor.npy", "egm2008_rowmajor.json"):
+                open(os.path.join(cache_dir, n), "w").close()
+            return os.path.join(cache_dir, "egm2008_rowmajor.npy")
+
+        with mock.patch.object(G, "ensure_egm2008", fake_ensure), \
+                mock.patch.object(G, "load_egm2008", lambda nmax, cache_dir, log: self.model):
+            p = G.Provider(self.tmp.name)
+            t0 = time.monotonic()
+            first = p.message(36.5785, -118.2923, 4400.0)
+            second = p.message(36.5785, -118.2923, 4400.0)
+            self.assertLess(time.monotonic() - t0, 1.0)
+            self.assertEqual((first["source"], second["source"]), ("normal", "normal"))
+            fetcher = p.fetcher
+            self.assertIsNotNone(fetcher)
+            release.set()
+            fetcher.join(10)
+            self.assertEqual(calls, [self.tmp.name])    # one download for both
+            self.assertEqual(p.source(), "egm2008")
+            m = p.message(36.5785, -118.2923, 4400.0)
+            self.assertEqual(m["source"], "egm2008")
+            self.assertAlmostEqual(m["g"], self.model.field(36.5785, -118.2923, 4400.0, msl=True).g, places=6)
+
+    def test_failed_download_retried_later(self):
+        calls = []
+
+        def failing(cache_dir, log=print):
+            calls.append(1)
+            raise OSError("no network in tests")
+
+        with mock.patch.object(G, "ensure_egm2008", failing):
+            p = G.Provider(self.tmp.name, log=mock.Mock())
+            self.assertEqual(p.message(0.0, 0.0, 0.0)["source"], "normal")
+            p.fetcher.join(10)
+            self.assertIsNotNone(p.failed_at)
+            p.message(0.0, 0.0, 0.0)
+            self.assertIsNone(p.fetcher)                # within DOWNLOAD_RETRY_S: no new attempt
+            p.failed_at -= G.DOWNLOAD_RETRY_S + 1
+            p.message(0.0, 0.0, 0.0)
+            p.fetcher.join(10)
+            self.assertEqual(len(calls), 2)
+
+    def test_recompute_rule(self):
+        p, t = G.Provider(self.tmp.name, model=self.model, download=False), G.Tracker()
+        self.assertTrue(t.due(p, 36.5, -118.3, 100.0))            # nothing sent yet
+        t.last = (36.5, -118.3, 100.0, "egm2008")
+        self.assertFalse(t.due(p, 36.5 + 1900 / DEG_M, -118.3, 299.0))
+        self.assertFalse(t.due(p, 36.5, -118.3, -99.0))
+        self.assertTrue(t.due(p, 36.5 + 2100 / DEG_M, -118.3, 100.0))
+        self.assertTrue(t.due(p, 36.5, -118.3, 301.0))
+        self.assertTrue(t.due(p, 36.5, -118.3, -101.0))
+        t.last = (36.5, -118.3, 100.0, "normal")
+        self.assertTrue(t.due(p, 36.5, -118.3, 100.0))            # EGM2008 became available
+        t.inflight = True
+        self.assertFalse(t.due(p, 40.0, -118.3, 100.0))
+
+
+class ServerGravityTest(test_server.ServerHarness):
+    """earthd with a gravity provider on the fixture model: the message after the first pose on an
+    anchor, recomputed after > 2 km or > 200 m of height only, re-sent on hello; none when off."""
+
+    def pose_at(self, aid, x, y, z):
+        self.c.send({"type": "pose", "anchorId": aid, "x": x, "y": y, "z": z, "lat": test_server.LAT,
+                     "lon": test_server.LON, "speed": 0, "vx": 0, "vy": 0})
+
+    def gravity_msgs(self, wait=0.6):
+        return [m for m in self.c.drain(wait) if m["type"] == "gravity"]
+
+    def start(self):
+        self.hello()
+        aid = self.prepare_anchor(1, test_server.LAT, test_server.LON)["anchorId"]
+        self.c.send({"type": "commit_anchor", "anchorId": aid})
+        return aid, self.server.anchors[aid].frame
+
+    def test_sent_recomputed_and_resent(self):
+        prov = G.Provider(self.tmp.name, model=G.GravityModel.from_npz(FIXTURE), download=False)
+        self.server.gravity = prov
+        aid, frame = self.start()
+        self.pose_at(aid, 0, 0, 1500)
+        m, _ = self.c.until(lambda m: m["type"] == "gravity", 10)
+        self.assertEqual(m, prov.message(*(float(v) for v in frame.enu_to_geodetic(0, 0, 1500))))
+        self.pose_at(aid, 1500, 0, 1650)                         # 1.5 km, 150 m: not due
+        self.assertFalse(self.gravity_msgs())
+        self.pose_at(aid, 2500, 0, 1500)                         # 2.5 km
+        moved, _ = self.c.until(lambda m: m["type"] == "gravity", 10)
+        self.assertNotEqual(moved["lon"], m["lon"])
+        self.pose_at(aid, 2500, 0, 1750)                         # 250 m higher
+        climbed, _ = self.c.until(lambda m: m["type"] == "gravity", 10)
+        self.assertLess(climbed["g"], moved["g"])
+        self.hello()
+        again, _ = self.c.until(lambda m: m["type"] == "gravity", 10)
+        self.assertEqual(again, climbed)
+
+    def test_off(self):
+        aid, _ = self.start()
+        self.pose_at(aid, 0, 0, 1500)
+        self.assertFalse(self.gravity_msgs(1.0))
+        self.assertIsNone(self.conn().gravity.msg)
 
 
 if __name__ == "__main__":
