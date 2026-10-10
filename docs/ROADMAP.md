@@ -216,6 +216,35 @@ User goals (2026-10-10):
 - Trees: Meta/WRI 1 m canopy height (tree tops at real positions) + land cover for species, Forest
   items with stock imposter trees out to ~3 km.
 
+## Robustness: no server, lost server, lost internet (user, 2026-10-10; before any public release)
+Today: without a server the player spawns on the level's placeholder ground with no explanation; if
+the server dies mid-drive the shown tiles stay but the physics block stops following, so the car can
+drive off its edge and fall forever; a restarted server deletes the previous session's files at
+start-up (live tiles go invisible until re-streamed); without internet, uncached areas get no
+terrain at all (same fall risk). Plan:
+1. **Clear status, never silent**: an on-screen banner with the state ("Starting world server...",
+   "World server not running - start it with ... / it will start automatically", "Connection lost -
+   reconnecting", "Offline - using cached data") and what the player can do.
+2. **Never fall out of the world**: when the physics block can no longer follow (no server, no data),
+   the mod keeps the last block and, as the car nears its edge, warns and then holds the car at the
+   edge (an invisible soft wall / gentle stop), or pauses the simulation with the banner. The car is
+   never left without ground.
+3. **Server comes back = seamless**: a restarted server adopts the running game's session instead of
+   deleting its files (the mod reports its session id and the files it holds in hello/pose, the
+   server keeps them until released; the same mechanism as pose.held), then resyncs at the current
+   origin without a level reload.
+4. **Offline mode** (server side): detect failed fetches, serve everything from the disk cache, and
+   for uncached areas fall back to a small always-present global coarse DEM (~1 km, downloaded once,
+   tens of MB) plus a land-cover-coloured palette texture, so terrain always exists (coarse but
+   drivable). Mark those tiles; when the internet returns, rebuild them with full data in the
+   background (retex / rebuild swap, invisible). Each source fails over independently (USGS down ->
+   NAIP/EOX; Open-Meteo down -> keep the last weather / manual).
+5. **Start-up without a server**: the launcher / auto-start (quick win "easy install") starts the
+   server with the game; until then the level shows the banner over a safe holding area.
+6. **Pre-download** (candidate): cache a region or route for fully offline play.
+7. **Tests**: fault injection in the integration drive (kill the server mid-drive, restart it, drop
+   network with a fake fetcher, start the mod with no server) and the same as in-game probes.
+
 ## Scheduled quick wins (user picked 2026-10-10; between the big versions)
 1. **Saved places** (smallest): bookmarks, recent places, spawn at a place; in the settings page.
 2. **Easy install and start**: server auto-start with the game / launcher, one settings file,
