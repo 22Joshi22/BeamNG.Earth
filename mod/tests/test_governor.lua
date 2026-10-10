@@ -184,9 +184,10 @@ do
     'a size without a prior: cdaeTex')
   T.check(governor.texKind('512') == 'cdaeTex512' and governor.texKind(256.0) == 'cdaeTex256', 'numeric forms')
   local P = governor.PRIOR
-  T.near(P.cdaeTex128, P.cdaeTex / 4, 1e-12, '128 px prior = cdaeTex x 1/4 (texture area)')
-  T.near(P.cdaeTex256, P.cdaeTex, 1e-12, '256 px prior = cdaeTex')
-  T.near(P.cdaeTex512, P.cdaeTex * 4, 1e-12, '512 px prior = cdaeTex x 4')
+  -- measured in-game (P8, 64-cell tiles): the 348 KB shape dominates, the texture adds a little
+  T.check(P.cdaeTex128 < P.cdaeTex256 and P.cdaeTex256 < P.cdaeTex512, 'priors grow with the texture')
+  T.near(P.cdaeTex256, 4.0, 1e-12, '256 px prior = the P8 measurement')
+  T.near(P.cdaeTex512, 4.2, 1e-12, '512 px prior = the P8 measurement')
   local g = governor.new({ clock = clock })
   local s = g:snapshot()
   T.check(s.estCdaeTex128 == P.cdaeTex128 and s.estCdaeTex256 == P.cdaeTex256 and s.estCdaeTex512 == P.cdaeTex512
@@ -196,7 +197,7 @@ do
   T.near(g.est.cdaeTex256, 5, 0.01, 'cdaeTex256 estimate learns its cost')
   T.check(g.est.cdaeTex512 == P.cdaeTex512 and g.est.cdaeTex == P.cdaeTex, 'other kinds untouched')
   g:try('cdaeTex512')
-  T.near(g:maxUnit(), P.cdaeTex512, 1e-12, 'maxUnit includes the 512 px kind once used')
+  T.near(g:maxUnit(), math.max(P.cdaeTex512, g.est.cdaeTex256), 1e-12, 'maxUnit covers every used kind')
 end
 
 T.done('test_governor')

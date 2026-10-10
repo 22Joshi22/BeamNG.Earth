@@ -340,6 +340,44 @@ def poll_record(raw, t):
 
 
 # --- run -------------------------------------------------------------------------------
+# The drive never uses the user's own vehicle (in-game 2026-10-10: the user's lifted Hopper went
+# physically unstable under per-frame placement at 67 m/s and the engine removed it). A stock test
+# car is spawned at the player, the user's vehicle is frozen meanwhile (setActive(0), as vehicle
+# pooling does: it would fall once the physics block follows the test car away) and given back at
+# the end: test car deleted, user's vehicle woken, re-entered and teleported to where it was.
+TEST_VEHICLE = ("vivace", None)     # model, config (None = default); handled every run so far
+
+SETUP_TEST_VEHICLE = r"""
+local car = getPlayerVehicle(0)
+if not car then return jsonEncode({ error = 'no player vehicle' }) end
+local s = loadstring('return ' .. beamngEarth_core.status())()
+local p, d = car:getPosition(), car:getDirectionVector()
+local opts = { pos = vec3(p.x, p.y, p.z + 2), rot = quatFromDir(vec3(d.x, d.y, 0):normalized(), vec3(0, 0, 1)),
+  autoEnterVehicle = true }
+if %s then opts.config = %s end
+local t = core_vehicles.spawnNewVehicle(%s, opts)
+if not t then return jsonEncode({ error = 'test vehicle spawn failed' }) end
+BNGE_DRIVE_CAR = { carId = car:getID(), testId = t:getID(), lat = s.player.lat, lon = s.player.lon }
+car:setActive(0)
+return jsonEncode(BNGE_DRIVE_CAR)"""
+
+RESTORE_USER_VEHICLE = r"""
+local st = BNGE_DRIVE_CAR
+if not st then return 'no test vehicle' end
+local t = st.testId and getObjectByID(st.testId)
+if t then t:delete() end
+local car = getObjectByID(st.carId)
+if car then car:setActive(1); be:enterVehicle(0, car) end
+commands.setGameCamera()
+local ok = car and beamngEarth_core.teleport(st.lat, st.lon)
+BNGE_DRIVE_CAR = nil
+return 'user vehicle ' .. tostring(st.carId) .. ' restored, teleport ' .. tostring(ok)"""
+
+
+def _lua_str(v):
+    return "nil" if v is None else json.dumps(v)
+
+
 def run_ge(a, profile, call=None, clock=time):
     """Install the driver, poll it until the drive ends, uninstall it. Everything after the first
     MCP call runs inside the try: whatever fails (an MCP timeout after the install went through, a
@@ -356,7 +394,15 @@ def run_ge(a, profile, call=None, clock=time):
     polls = []
     samples = frames_out = None
     interval = max(MIN_POLL_S, a.poll)
+    test_car = not getattr(a, "use_player_vehicle", False)
     try:
+        if test_car:
+            model, config = TEST_VEHICLE
+            res = json.loads(lua_(SETUP_TEST_VEHICLE % (_lua_str(config), _lua_str(config), _lua_str(model))))
+            if "error" in res:
+                raise SystemExit("test vehicle: " + res["error"])
+            print("test vehicle", res, flush=True)
+            clock.sleep(3.0)                    # spawned and settled on the ground
         print("driver:", lua_(code), flush=True)
         lua_("if not beamngEarth_perfmon then extensions.load('beamngEarth_perfmon') end return 1")
         res = json.loads(lua_(f"return BNGE_DRIVE.install({lua_long(json.dumps(cfg))})"))
@@ -399,6 +445,11 @@ def run_ge(a, profile, call=None, clock=time):
             print(lua_("return BNGE_DRIVE and BNGE_DRIVE.uninstall() or 'no driver'"), flush=True)
         except Exception as e:      # the game went away: the driver's watchdog parks the car
             print("uninstall failed:", e, flush=True)
+        if test_car:
+            try:
+                print(lua_(RESTORE_USER_VEHICLE), flush=True)
+            except Exception as e:
+                print("restoring the user's vehicle failed (run BNGE_DRIVE_CAR restore by hand):", e, flush=True)
         for f in (samples, frames_out):
             if f is not None:
                 f.close()
@@ -419,6 +470,9 @@ def main(argv=None):
     ap.add_argument("--max-s", type=float, default=3600.0, help="give up after this many seconds")
     ap.add_argument("--exact-level", type=int, default=None,
                     help="exact level for a mod without farfield.exactState (default -2)")
+    ap.add_argument("--use-player-vehicle", action="store_true",
+                    help="drive the player's own vehicle (default: spawn a stock test car, freeze the "
+                         "player's vehicle and restore it at the end)")
     ap.add_argument("--step-mode", choices=("ge", "mcp"), default="ge",
                     help="ge: the per-frame driver (default); mcp: the old sim_drive.py set_position stepping")
     a = ap.parse_args(argv)

@@ -382,4 +382,28 @@ D.installed = false
 D = load()
 T.check(ph.destroyed and rebaseMod.moveVehicles == origMove, 'reload uninstalls a half-installed driver')
 
+
+-- a physics blow-up stops the run (in-game 2026-10-10: the user's Hopper went unstable at 67 m/s,
+-- its velocity read inf and the engine removed it; the old driver kept going)
+T.check(D.sane(vec3(30, 0, 0), 30) and D.sane(vec3(0, 0, 18000), 100), 'sane: profile speed, flight climb')
+T.check(not D.sane(vec3(0 / 0, 0, 0), 30), 'sane: NaN')
+T.check(not D.sane(vec3(math.huge, 0, 0), 30) and not D.sane(vec3(0, 0, -math.huge), 30), 'sane: inf')
+T.check(not D.sane(vec3(130, 0, 0), 30), 'sane: far above the profile speed')
+for _, bad in ipairs({ vec3(0 / 0, 0, 0), vec3(-math.huge, 0, 0), vec3(500, 0, 0) }) do
+  D = load()
+  D.install({ points = { { s = 0, speed = 30, heading = 0 } }, km = 5 })
+  for _ = 1, 3 do frame() end
+  local gv = veh.getVelocity
+  veh.getVelocity = function() return bad end
+  frame()
+  veh.getVelocity = gv
+  T.check(D.state.done and D.state.reason == 'unstable' and D.state.error:match('unstable') ~= nil,
+    'unstable vehicle stops the run: ' .. tostring(bad.x))
+  T.check(rebaseMod.moveVehicles == origMove, 'unstable: moveVehicles restored')
+  local n = #veh.calls
+  frame()
+  T.check(#veh.calls == n, 'unstable: nothing placed afterwards')
+  D.uninstall()
+end
+
 T.done('test_drive_driver')

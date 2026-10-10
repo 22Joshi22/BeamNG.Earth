@@ -12,9 +12,9 @@ dynamic-LOD tile field (down to 64 m tiles on the physics lattice in mesh mode) 
 satellite textures, streamed as swap groups, and writes them into
 <user-dir>/temp/beamngEarth/<sessionId>/.
 
-Tile layout (docs/V1_4_SPEC.md §3.1, M1): --cells 32 (default) is the v1.3.1 layout, FORMAT 3;
---cells 64 (mesh mode only) makes every tile 64 x 64 cells, FORMAT 4, with the exact level L-1,
-hello.cells and far_tile.tex. The default stays 32 until the in-game probe P8 passes.
+Tile layout (docs/V1_4_SPEC.md §3.1, M1): --cells 64 (the default in mesh mode since probe P8
+passed) makes every tile 64 x 64 cells, FORMAT 4, with the exact level L-1, hello.cells and
+far_tile.tex; --cells 32 (and terrain mode) is the v1.3.1 layout, FORMAT 3.
 """
 import os
 
@@ -51,9 +51,20 @@ PROTOCOL = 4
 # 32-cell tiles), 4 = 64-cell tiles down to L-1 (farfield.CONTENT_FORMAT). A mod's hello.format is
 # the newest format it reads (it reads every older one from 3: core.lua FORMATS), so a mod older
 # than the server's format gets the mismatch status.
-# --cells default: the v1.3.1 layout until the in-game gate P8 passes (docs/V1_4_SPEC.md §3.1);
-# then 64 (the spec's default in mesh mode).
+# Server(cells=...) default: the v1.3.1 layout (library and tests; test_v131_default pins it).
+# The command line defaults to 64 cells in mesh mode since the in-game gate P8 passed
+# (2026-10-10: 64-cell textured imports 4.0 ms at 256 px, 4.2 ms at 512 px; at 90 m/s the exact
+# level was under the car 100 % of frames, queue max 35, vs 26 % / 2442 with 32 cells;
+# docs/research/m1_d*); terrain mode stays frozen at 32.
 CELLS_DEFAULT = 32
+CLI_CELLS_MESH = 64
+
+
+def resolve_cells(cells, near_visual):
+    """The --cells value to use: the given one, else 64 in mesh mode and 32 in terrain mode."""
+    if cells is not None:
+        return cells
+    return CLI_CELLS_MESH if near_visual == "mesh" else 32
 SERVER_VERSION = "0.4.0"
 NEAR_VISUALS = ("mesh", "terrain")
 TEX_NEAR, TEX_FAR = 256, 256    # 32 cells: texture edge (px) of the two finest levels / of the others (512
@@ -1206,9 +1217,9 @@ def main():
     ap.add_argument("--near-visual", choices=NEAR_VISUALS, default="mesh",
                     help="mesh: the ground near the player is drawn by 64/128 m tiles and the terrain block is "
                          "physics only (default); terrain: the v1.2 look (the terrain block is drawn)")
-    ap.add_argument("--cells", type=int, choices=farfield.CELL_COUNTS, default=CELLS_DEFAULT,
-                    help="tile cells per edge: 32 = the v1.3.1 layout (FORMAT 3, default until the in-game "
-                         "gate P8 passes), 64 = docs/V1_4_SPEC.md M1 (FORMAT 4, exact level L-1, mesh mode only)")
+    ap.add_argument("--cells", type=int, choices=farfield.CELL_COUNTS, default=None,
+                    help="tile cells per edge: 64 = docs/V1_4_SPEC.md M1 (FORMAT 4, exact level L-1; the "
+                         "default in mesh mode), 32 = the v1.3.1 layout (FORMAT 3; terrain mode always)")
     ap.add_argument("--tex", type=parse_tex_list, default=None,
                     help="texture size (px) per level from the finest, the last value repeating "
                          "(default: 64 cells 256,256,256,512; 32 cells from --tex-near / --tex-far)")
@@ -1225,6 +1236,7 @@ def main():
                          "while it changes (0 = status on events only, as v1.3.1; tools/drive.py runs use 1)")
     ap.add_argument("-v", "--verbose", action="store_true")
     args = ap.parse_args()
+    args.cells = resolve_cells(args.cells, args.near_visual)
     if args.cells != 32 and args.near_visual != "mesh":
         ap.error("--cells 64 needs --near-visual mesh (terrain mode is frozen at the v1.3.1 layout)")
     logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO,

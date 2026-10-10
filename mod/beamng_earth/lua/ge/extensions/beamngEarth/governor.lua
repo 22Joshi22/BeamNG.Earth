@@ -51,7 +51,10 @@ M.EST_ALPHA = 0.2          -- cost EMA gain
 -- 64-cell textured tiles (M1, far_tile.tex): cdaeTex scaled by texture area until probe P8 measures
 -- them (128 px 0.25x, 256 px 1x, 512 px 4x); 'cdaeTex' stays the kind of FORMAT 3 tiles.
 -- (One line: server/tests/modsim.py lua_consts reads flat tables line by line.)
-M.PRIOR = { cdae = 3.0, dae = 8.0, reveal = 0.05, delete = 0.3, cdaeTex = 3.0, material = 0.3, matDelete = 0.2, cdaeTex128 = 0.75, cdaeTex256 = 3.0, cdaeTex512 = 12.0 }
+-- cdaeTex256 / cdaeTex512: the in-game P8 EMA for 64-cell tiles (2026-10-10, ~300 objects, Baltimore:
+-- 4.03 / 4.21 ms; the texture size barely matters next to the 348 KB shape); cdaeTex128 not measured
+-- (scaled from 256 by the shape's share, ~3.9).
+M.PRIOR = { cdae = 3.0, dae = 8.0, reveal = 0.05, delete = 0.3, cdaeTex = 3.0, material = 0.3, matDelete = 0.2, cdaeTex128 = 3.9, cdaeTex256 = 4.0, cdaeTex512 = 4.2 }
 
 -- Unit kind of a textured .cdae import from its far_tile.tex (px): cdaeTex<px> for a size with a
 -- prior, else (FORMAT 3 tiles have no tex) 'cdaeTex'.

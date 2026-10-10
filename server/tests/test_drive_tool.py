@@ -306,7 +306,8 @@ class RunGeTest(unittest.TestCase):
     """drive.run_ge with a fake MCP: every path uninstalls the driver, and polls are >= 1 s apart."""
 
     def args(self, tmp, **kw):
-        a = drive.argparse.Namespace(out=tmp, poll=1.0, shots=0.0, max_s=3600.0, exact_level=None)
+        a = drive.argparse.Namespace(out=tmp, poll=1.0, shots=0.0, max_s=3600.0, exact_level=None,
+                                     use_player_vehicle=True)
         vars(a).update(kw)
         return a
 
@@ -320,6 +321,10 @@ class RunGeTest(unittest.TestCase):
                 raise RuntimeError("MCP timeout")
             if "BNGE_DRIVE.install" in code:
                 return json.dumps({"ok": True})
+            if "spawnNewVehicle" in code:
+                return json.dumps({"carId": 1, "testId": 2, "lat": 39.3, "lon": -76.5})
+            if "BNGE_DRIVE_CAR" in code and "restored" in code:
+                return "user vehicle 1 restored, teleport true"
             if "BNGE_DRIVE.poll" in code:
                 n = sum(1 for _, c in calls if "BNGE_DRIVE.poll" in c)
                 return json.dumps({"frames": {"ms": [16.7], "flags": [0], "under": [-2], "dropped": 0},
@@ -329,6 +334,32 @@ class RunGeTest(unittest.TestCase):
 
     def uninstalled(self, calls):
         return any("uninstall" in c for _, c in calls)
+
+    def restored(self, calls):
+        return any("BNGE_DRIVE_CAR" in c and "no test vehicle" in c for _, c in calls)
+
+    def test_test_vehicle_always_restored(self):
+        """The drive uses its own stock test car; the user's vehicle comes back on every path,
+        after the driver is uninstalled (in-game 2026-10-10: the user's own Hopper went unstable)."""
+        for fail_at in (None, "BNGE_DRIVE.install", "BNGE_DRIVE.poll", "GE-side per-frame"):
+            with self.subTest(fail_at=fail_at), tempfile.TemporaryDirectory() as tmp:
+                clock = FakeClock()
+                call, _ = self.fake(clock, fail_at=fail_at)
+                codes = []
+
+                def rec(code):
+                    codes.append(code)
+                    return call(code)
+                try:
+                    drive.run_ge(self.args(tmp, use_player_vehicle=False), drive.straight(40.0, 0.0, 1.0), rec, clock)
+                except RuntimeError:
+                    self.assertIsNotNone(fail_at)
+                self.assertIn("spawnNewVehicle", codes[0])
+                self.assertIn("setActive(0)", codes[0])     # the user's vehicle is frozen meanwhile
+                ir = [i for i, c in enumerate(codes) if "BNGE_DRIVE_CAR" in c and "no test vehicle" in c]
+                self.assertEqual(len(ir), 1, "restored exactly once")
+                iu = max(i for i, c in enumerate(codes) if "uninstall()" in c)
+                self.assertLess(iu, ir[0], "restore after the driver is gone")
 
     def test_poll_spacing_and_uninstall(self):
         for cost in (0.0, 0.3, 1.7):        # a slow MCP call must not make the next poll come early

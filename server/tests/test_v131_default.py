@@ -139,7 +139,10 @@ class V131DefaultTest(unittest.TestCase):
         sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
         import earthd
         import farfield as ff
-        self.assertEqual(earthd.CELLS_DEFAULT, 32)
+        self.assertEqual(earthd.CELLS_DEFAULT, 32)                         # Server(): the v1.3.1 layout
+        # the command line: 64 cells in mesh mode (P8 passed), terrain mode frozen at 32
+        self.assertEqual((earthd.resolve_cells(None, "mesh"), earthd.resolve_cells(None, "terrain"),
+                          earthd.resolve_cells(32, "mesh")), (64, 32, 32))
         self.assertEqual(earthd.STATUS_INTERVAL, 0.0)                      # status on events only
         self.assertEqual(ff.Layout(earthd.CELLS_DEFAULT).format, 3)
         p = inspect.signature(earthd.Server).parameters

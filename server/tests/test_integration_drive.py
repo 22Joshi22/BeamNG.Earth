@@ -1202,9 +1202,10 @@ class TerrainDriveTest(DriveBase):
 @unittest.skipIf(os.environ.get("BNGE_SKIP_DRIVE") == "1", "BNGE_SKIP_DRIVE=1")
 @unittest.skipUnless("mesh" in MODES, "BNGE_DRIVE_MODES")
 class MeshDriveTest(DriveBase):
-    """The v1.3 defaults: --near-visual mesh with imagery (offline fake source)."""
+    """The v1.3 layout: --near-visual mesh with imagery (offline fake source), --cells 32 (the
+    command line defaults to 64 cells in mesh mode since P8: MeshDrive64Test)."""
     near_visual = "mesh"
-    server_args = ("--near-visual", "mesh")
+    server_args = ("--near-visual", "mesh", "--cells", "32")
     launcher = "fake_imagery_earthd.py"
 
     def test_drive_and_rebase(self):

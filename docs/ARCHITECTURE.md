@@ -303,3 +303,21 @@ their chunk arrived.
   with this cost model (the in-game rule is ≤ 25 ms: P8 decides).
 - Still to do in-game (user not playing): P8 (+P10), then flip the default to 64 (`CELLS_DEFAULT`
   in `server/earthd.py`).
+
+## v1.4 M1 in-game results (2026-10-10, Baltimore, 4K, tools/drive.py with a stock test car)
+| run | layout | exact level under the car | queue max | objects max | fps mean | steady frames > 50 ms |
+|---|---|---|---|---|---|---|
+| D67 | 32 cells (v1.3.1) | 99.9 % | 44 | 970 | 82.5 | 2 |
+| D90 | 32 cells (v1.3.1) | **25.5 %** | **2442** | 1187 | 62.6 | 1 |
+| D67 | 64 cells (M1) | 100 % | 17 | 341 | 103.0 | 3 |
+| D90 | 64 cells (M1) | **100 %** | **35** | 339 | 97.1 | 1 |
+| D134 | 64 cells (M1) | 97.0 % (L0 in 46 frames) | 64 | 370 | 81.5 | 0 |
+- P8 gate: 64-cell textured imports 4.03 ms (256 px) and 4.21 ms (512 px) at ~300 objects (gate:
+  <= 7.5 / 12 ms); the shape (348 KB) dominates. Governor priors set to these values.
+- 64 cells is now the command-line default in mesh mode (`--cells 32` keeps the v1.3.1 layout;
+  `Server()` itself still defaults to 32, pinned by test_v131_default).
+- Terrain-follow commit frames are still 55-80 ms (M4 addresses them); no rebase in these 12 km runs.
+- Harness lesson: per-frame placement of a lifted, soft-sprung car (the user's Hopper Off-Road) at
+  67 m/s made its physics unstable and the engine removed it. drive.py now drives a stock test car
+  (Vivace), freezes the user's vehicle meanwhile and restores it, and stops on a non-finite or runaway
+  velocity ('unstable').

@@ -256,6 +256,16 @@ function D.onRebase(xf)
 end
 
 -- One frame. dtSim = 0: paused (nothing moves).
+-- A velocity physics can still produce for a profile speed: finite, horizontal speed not wildly
+-- above the profile's, vertical speed below a hard bound (flight profiles command large climbs).
+D.SANE_FACTOR, D.SANE_SLACK, D.SANE_VZ = 3, 30, 1e5
+function D.sane(v, speed)
+  local x, y, z = v.x, v.y, v.z
+  if x ~= x or y ~= y or z ~= z then return false end -- NaN
+  if abs(z) >= D.SANE_VZ then return false end           -- also +-inf
+  return sqrt(x * x + y * y) < D.SANE_FACTOR * (speed or 0) + D.SANE_SLACK
+end
+
 function D.tick(dtReal, dtSim)
   local s = D.state
   if not s then return end
@@ -331,6 +341,15 @@ function D.tick(dtReal, dtSim)
     -- the speed physics reports (the motion since the last placement) against the profile's
     s.placed = s.placed + 1
     local v = s.placed > 1 and veh:getVelocity()
+    -- a physics blow-up (in-game 2026-10-10: the user's lifted Hopper at 67 m/s went unstable and the
+    -- engine removed it; velocity read inf and the old driver kept going): stop at once
+    if v and not D.sane(v, speed) then
+      s.done, s.reason, s.endMs = true, 'unstable', now - s.installMs
+      s.error = s.error or string.format('vehicle unstable: v = (%s, %s, %s)', tostring(v.x), tostring(v.y), tostring(v.z))
+      unwrap()
+      record(ms, flags + D.FLAG_SKIP, nil)
+      return
+    end
     if v then
       s.vSum, s.vProfSum, s.vN = s.vSum + sqrt(v.x * v.x + v.y * v.y), s.vProfSum + s.lastSpeed, s.vN + 1
     end

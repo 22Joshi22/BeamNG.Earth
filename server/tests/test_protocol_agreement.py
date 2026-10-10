@@ -344,15 +344,17 @@ class ConstantsTest(unittest.TestCase):
 
     def test_texture_kinds(self):
         """M1: far_tile.tex picks the governor kind; every texture size a layout uses by default has
-        its own prior (cdaeTex128/256/512, today's cdaeTex scaled by area until P8), and a FORMAT 3
-        tile (no tex) stays 'cdaeTex'."""
+        its own prior (cdaeTex128/256/512, measured in-game by P8: the shape dominates, so the priors
+        are close and grow with the texture), and a FORMAT 3 tile (no tex) stays 'cdaeTex'."""
         far = (LUA / "farfield.lua").read_text()
         self.assertIn("inst.material and governor.texKind(inst.tex) or 'cdae'", lua_function(far, "kindOf"))
         self.assertIn("tex = tonumber(msg.tex)", far)
         prior = modsim.GOV["PRIOR"]
         for px in sorted({p for t in ff.TEX_DEFAULT.values() for p in t} | {128}):
             self.assertEqual(modsim.tex_kind(px), f"cdaeTex{px}")
-            self.assertAlmostEqual(prior[f"cdaeTex{px}"], prior["cdaeTex"] * (px / 256) ** 2)
+            self.assertGreater(prior[f"cdaeTex{px}"], 0)
+        self.assertLess(prior["cdaeTex128"], prior["cdaeTex256"])
+        self.assertLess(prior["cdaeTex256"], prior["cdaeTex512"])
         self.assertEqual(modsim.tex_kind(None), "cdaeTex")
 
 
