@@ -38,3 +38,20 @@ so every frame-cost number of this run is invalid; redo costs with the window fo
 - Ground wind 25 m/s from the car's left on a test car coasting at 3 m/s: the car rolled down the
   summit slope to ~30 m/s either way (bad site); it drifted ~85 m further right with wind than without
   over 8 s, which suggests wind does push cars. Confirm on flat ground.
+
+## Third pass (flat Central Valley 35.40,-119.20, focused, no other mods) - tools/probe_weather3.py
+- **Ground wind does not push cars**: a Vivace coasting at ~5 m/s for 8 s on flat ground drifted
+  sideways -0.02 / +0.00 m with no wind and -0.22 / -0.04 m with a 25 m/s side wind (two runs each).
+  The summit "85 m" earlier was the slope. So real wind is visual/audio only (clouds, trees,
+  particles, rain), unless a vehicle's own aero code reads it (not seen); keep the setGroundWind call
+  for the visuals and the pause menu.
+- **Cloud amount is set by the weather map, not by height/alpha**: at coverage 0.95, `height` 4/8/12
+  and baseColor alpha 0.9/1.0 all gave 5.6 % sky fraction (25 deg up, north); regenerating the
+  weather map gave 17 % (seed 1), 16 % (seed 77), 4 % (seed 4242). The clouds look good (well-formed
+  cumulus, see weather_probe3/cov0.95_h8_seed*.png) but the system is fair-weather: no overcast deck
+  was reachable with any field. Real weather: map cloud cover to coverage + a seed search (pick the
+  seed whose local fraction matches), cirrus via cirrusDensity; full overcast needs another approach
+  (a second low CloudLayer, or darkening/haze) - an open item.
+- Rain: Precipitation has setPercentage (no modifyStorm). With rain_medium, 9000 drops, followCam,
+  the drops are faint in a screenshot (thin streaks); visibility tuning (dropSize 0.5, numDrops,
+  boxWidth/Height, useLighting) is part of the weather build.
