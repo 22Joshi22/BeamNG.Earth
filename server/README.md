@@ -291,6 +291,117 @@ first and are ready in ~1.4 s).
 L0 `sink` on Mt Whitney: median 8.7 m, max 40 m (cliffs between the 8 m vertices); on gentle
 synthetic ground it is the 0.3 m margin plus a few cm.
 
+## Gravity (`server/gravity.py`, standalone; not wired into `earthd` or the protocol yet)
+
+Real gravity at a point: WGS84 normal gravity plus the regional anomalies of the EGM2008 Earth
+gravity model. The normal field alone runs from 9.780 m/s² on the equator to 9.832 at the poles
+and loses about 0.3086 mGal per metre of height (1 mGal = 1e-5 m/s²). The anomalies on top of it
+are −350 to +600 mGal: high mountain summits +100 to +350 (Hawaii +590), deep-sea trenches −300,
+Hudson Bay −35 to −50. The mod's `setGravity` threshold of 1e-4 m/s² is 10 mGal, so they matter.
+
+```sh
+python3 server/gravity.py 36.5785 -118.2923 4421 --msl     # Whitney summit; h above sea level
+```
+
+```python
+import gravity
+f = gravity.gravity(lat, lon, h_msl, msl=True)   # GravityField; f.g is |g| in m/s^2
+f.east, f.north, f.up         # gravity vector, local geodetic ENU, m/s^2 (up < 0, as GeographicLib)
+f.normal, f.disturbance       # WGS84 normal gravity at the same point; g - normal
+f.anomaly, f.xi, f.eta        # free-air anomaly (m/s^2); deflection of the vertical (arc seconds)
+f.geoid                       # EGM2008 geoid height N (m): h_ellipsoid = H_msl + N
+gravity.normal_gravity(lat, h)  # Somigliana + 2nd-order free-air series, numpy, no data
+```
+
+**Model.**
+- `normal_gravity(lat, h)` uses Somigliana's formula with the published WGS84 γe = 9.7803253359 and
+  γp = 9.8321849378 (NIMA TR8350.2 eq. 4-1). Height uses the second-order series
+  `1 − 2/a (1 + f + m − 2f sin²φ) h + 3h²/a²` (eq. 4-3). The series is first order in f and m, so
+  it is 1.1e-10 m/s² per metre off the exact value: 0.05 mGal at 4.4 km.
+- `normal_gravity_exact` is the closed form in ellipsoidal coordinates. It is the reference for the
+  tests and for `GravityField.normal`.
+- `GravityModel` synthesises the disturbing potential T = W − U from fully normalised spherical
+  harmonics, together with its gradient:
+  - **Legendre functions:** the standard forward column recursion, with a log scale kept per
+    order. Sectoral terms near the poles underflow above degree ~1900 (P₂₁₉₀,₇₆₀ at 68° has
+    P_mm ≈ 1e-329); the scale keeps them, so the result is exact at every latitude.
+  - **Latitude derivative:** taken from the same row, with the coefficients pre-shifted by one
+    order, so there is no division by cos φ.
+  - **Radius:** all the per-degree sums are independent of the radius. One pass therefore gives
+    the field at the point and T on the ellipsoid below it (Bruns: N = T/γ + NGA's zeta-to-N
+    correction − 0.41 m). `msl=True` reuses that pass.
+- Gravity vector:
+  - It is ∇(U + Φ + T): the WGS84 zonal series J2…J20, centrifugal force and T, rotated from
+    geocentric to geodetic ENU.
+  - `disturbance` is |g| − γ(h).
+  - `anomaly` is −∂T/∂r − 2T/r (spherical approximation, as NGA defines it).
+  - The sums run in float32 against float64 Legendre values. Against float64 sums this changes
+    nothing above 0.001 mGal or 0.01 mm of geoid (30 points). It halves the memory.
+
+**Data.**
+- EGM2008 (Pavlis et al. 2012, NGA), degree and order 2190, tide-free. The source is
+  GeographicLib's binary repackaging of NGA's `EGM2008_to2190_TideFree` and
+  `Zeta-to-N_to2160_egm2008`:
+  `https://downloads.sourceforge.net/project/geographiclib/gravity-distrib/egm2008.tar.bz2`
+  (74,456,990 B, SHA-256 `54c1f511…5074ed91`, pinned in the code).
+- Download: once, on first use, into `~/.cache/beamng-earth/gravity/`, with resume across
+  SourceForge mirrors. Some mirrors stall at 1 kB/s; others close the connection early. The
+  archive is verified, then converted to `egm2008_rowmajor.npy`: row-major triangles of C, S and
+  the correction, 77 MB, read with mmap so that a truncated model loads only its prefix. The
+  archive stays next to it (145 MB in all); deleting the archive is safe. First use takes about
+  10 s plus the download (11 s in all on a fast mirror); later loads take 0.2 s. The only request
+  is the GET, with the generic `BeamNG.Earth/0.1` user agent.
+- Licence: EGM2008 is a US Government (NGA) product released for public use, and NGA attaches no
+  licence terms. GeographicLib (MIT) only repackages it.
+- The tests ship a 23 kB degree-36 truncation, `tests/fixtures/egm2008_n36.npz`.
+
+**Degree.** The default is the full 2190, which resolves 9 km half-wavelengths. Override it with
+`load_egm2008(nmax)` or `BNGE_GRAVITY_NMAX`. Timings are from this machine (numpy 2.5.3,
+Python 3.14, one thread, 2026-10-10). The memory column is the model alone; the process RSS after
+loading at 2190 is 227 MB, with a 386 MB peak while building. "Omission" is the |g| difference
+from the full model:
+- "6 named": the worst of Whitney, Quito, Denver, the Alps at 2.5 km, Everest and Baltimore, all
+  at their surface.
+- "30 random": surface points 0–3 km, RMS / max.
+
+| nmax | half-wavelength | one point | model memory | load (cached) | omission, 6 named (mGal) | omission, 30 random (mGal) |
+|---|---|---|---|---|---|---|
+| 360 | 56 km | 3.6 ms | 4 MB | 5 ms | 97 | 18.6 / 87 |
+| 720 | 28 km | 9.2 ms | 15 MB | 19 ms | 39 | 10.7 / 49 |
+| 1080 | 19 km | 15.5 ms | 33 MB | 42 ms | 31 | 4.5 / 19 |
+| 1440 | 14 km | 23.4 ms | 58 MB | 94 ms | 13 | 2.8 / 12 |
+| 1800 | 11 km | 32.0 ms | 91 MB | 145 ms | 12 | 2.2 / 7 |
+| **2190** | **9 km** | **45 ms** | **134 MB** | **0.23 s** | – | – |
+
+A point costs one O(N²) pass: 2190 numpy steps of row recursion, then one small matmul per
+degree. The other approach was a precomputed 5′ global grid. It would need one grid per height
+level, because the high degrees shrink by e^(−n·h/R) (×0.25 at 4.4 km for n = 2190). Per-point
+synthesis is exact at any height. Driving changes the anomaly by up to about 1 mGal per 100 m
+(climbing changes gravity by 0.31 mGal per metre). A caller can therefore evaluate the model about
+once a second on a worker thread (the function is thread-safe) and add the free-air term for height
+changes in between.
+
+**Accuracy.**
+- The implementation reproduces published EGM2008 values:
+  - GeographicLib `Gravity -n egm2008` on Everest (27:59:17N 86:55:32E, 8820 m):
+    −0.00001 0.00103 −9.76782 (ours −0.0000060 0.0010327 −9.7678245).
+  - GeographicLib's EGM2008 geoid at 10 places (Timbuktu, Baltimore, Denver, Quito, Whitney, the
+    Indian Ocean low −106.9 m, Hudson Bay, the North Pole, Everest, the Southern Ocean): within
+    1.3 mm.
+- The model itself is good to a few mGal over flat, well-surveyed land. It is worse in high
+  mountains, where terrain shorter than 9 km is missing: roughly 10–30 mGal there.
+- Heights must be ellipsoidal or flagged `msl=True`. Ignoring the geoid (−107 to +86 m) would be
+  a 33 mGal error.
+
+| Sample (H above sea level) | geoid N | g (m/s²) | normal | disturbance | free-air anomaly | ξ, η |
+|---|---|---|---|---|---|---|
+| Whitney summit 36.5785, −118.2923, 4421 m | −25.17 m | 9.786692 | 9.785137 | +155.6 mGal | +162.9 mGal | +1.4″, +15.0″ |
+| Baltimore 39.2904, −76.6122, 10 m | −33.60 m | 9.801040 | 9.801139 | −9.9 | +0.4 | −3.2″, +7.4″ |
+| Denver 39.7392, −104.9903, 1609 m | −17.28 m | 9.796161 | 9.796555 | −39.4 | −34.3 | +2.6″, +10.3″ |
+| Quito −0.1807, −78.4678, 2850 m | +26.76 m | 9.772474 | 9.771449 | +102.5 | +94.0 | −3.5″, +12.0″ |
+| North Pole, sea level | +14.90 m | 9.832248 | 9.832139 | +10.9 | +6.2 | – |
+| Kansas 38.5, −98.0, 10 km | −27.99 m | 9.769524 | 9.769665 | −14.1 | −5.6 | −1.6″, +4.1″ |
+
 ## Tests
 
 ```sh
@@ -318,6 +429,15 @@ a real server and download real tiles, so they need network access; their DEM ca
 straight drive at 4 Hz poses with hysteresis and HOLD_S), the v1.3.1 and the 64-cell (M1) rows; hooks
 for the M3a / M5 rows. The layout-dependent tests (`test_farfield`, `test_mesh`, `test_server`,
 `test_protocol_agreement`, `test_integration_drive` mesh) run for both 32 and 64 cells.
+`test_gravity.py`: WGS84 normal gravity against its published constants (γe, γp, k, m, C20) and
+its exact closed form (heights, free-air gradient, plumb-line curvature); the spherical-harmonic
+engine against the closed form (the normal field fed in as a model: magnitude and direction to
+2e-9 m/s²), against finite differences of T, against 40-digit Decimal Legendre functions beyond
+the float64 underflow (P₂₁₉₀,₇₆₀ at 68.4°), pole continuity, MSL heights, the `.cof` layout and the
+CLI; the long-wavelength field from the degree-36 fixture (geoid within 3 m, Hudson Bay / Indian
+Ocean negative, Andes positive, global ranges). `BNGE_GRAVITY_REAL=1` adds the full EGM2008 checks
+(GeographicLib's Everest vector, 10 published geoid heights to 3 mm, summit/trench/Hudson Bay
+anomaly ranges, worldwide ranges, one point < 0.2 s); it downloads 74 MB once if not cached.
 `test_drive_tool.py` checks `tools/drive.py` and `tools/drive_driver.lua` offline (profile rule on both
 sides, nominal speed, the summary, the driver under luajit, `run_ge` with a fake MCP: polls >= 1 s
 apart and an uninstall on every failure path). `test_v131_default.py` checks that a default
