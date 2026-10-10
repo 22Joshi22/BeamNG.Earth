@@ -31,4 +31,21 @@ T.check(d(3699, nil, nil, 0, 0) == nil and d(3700, nil, nil, 0, 0) == 'prefetch'
 T.check(d(4000, { purpose = 'rebase', ready = true }, 0, 0, 0) == 'commit', 'commit follows the distance')
 rebase.setDistance(10000)
 
+-- M4 (docs/V1_4_SPEC.md 3.5): STALE_DIST per block size, and the stale-anchor rule (512² only)
+T.check(rebase.STALE_DIST == 450 and rebase.KEEP_EDGE == 0, '1024: STALE_DIST 450, stale anchors discarded (v1.3.1)')
+T.check(d(10050, { purpose = 'rebase', ready = true }, 451, 0, 0, 500) == 'discard', '1024: stale is discarded however far inside')
+T.check(rebase.configure(512) == 512 and rebase.STALE_DIST == 192 and rebase.KEEP_EDGE == 150, '512: STALE_DIST 192, keep edge 150 m')
+T.check(d(10000, { purpose = 'rebase', ready = true }, 192, 0, 0, 318) == 'commit', '512: at 192 m: commit')
+T.check(d(10000, { purpose = 'rebase', ready = true }, 250, 0, 0, 260) == 'commit',
+  '512: stale (250 m) but 260 m inside every edge: commit (terrain-follow prepares next)')
+T.check(d(10000, { purpose = 'rebase', ready = true }, 360, 0, 0, 150) == 'commit', '512: exactly 150 m inside: commit')
+T.check(d(10000, { purpose = 'rebase', ready = true }, 361, 0, 0, 149) == 'discard', '512: stale and < 150 m from an edge: discard')
+T.check(d(10000, { purpose = 'rebase', ready = true }, 600, 0, 0, -90) == 'discard', '512: off the prepared terrain: discard')
+T.check(d(10000, { purpose = 'rebase', ready = true }, 300, 0, 0, nil) == 'discard', '512: no edge distance: discard')
+T.check(d(9900, { purpose = 'rebase', ready = true }, 300, 0, 0, 200) == nil, '512: below the distance: hold')
+T.check(rebase.aheadLead(nil) == rebase.LATENCY_S + rebase.LEAD_EXTRA_S and rebase.aheadLead(3) == 4,
+  're-request lead = measured anchor latency + 1 s')
+T.check(rebase.configure(1024) == 1024 and rebase.STALE_DIST == 450 and rebase.KEEP_EDGE == 0, 'configure(1024) restores v1.3.1')
+T.check(rebase.configure(nil) == 1024, 'no size: 1024')
+
 T.done('test_rebase')

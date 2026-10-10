@@ -8,6 +8,12 @@
 -- isolated heavy slots with no streaming in or around them.
 -- Near visual (server hello.nearVisual): 'mesh' = the far-tile system draws all the ground and the
 -- TerrainBlock is physics-only (render disabled, re-applied after every import); 'terrain' = v1.2.
+-- Block size (server hello.blockSize, docs/V1_4_SPEC.md 3.5 M4; none = 1024, v1.3.1): 512 sets the
+-- lattice, terrain-follow table, layer / flat maps and rebase staleness rule of the session
+-- (setBlockSize), before anything else reads them.
+-- Horizon (server hello.horizon, docs/V1_4_SPEC.md 3.6 M1h; none = off, v1.3.1): LevelInfo.visibleDistance
+-- follows the server's far-field radius (status.radius, +10 %) and the sky's planet radius is the
+-- tiles' (horizon.lua); the level's values come back when it ends.
 --
 -- World logic is active in our level (levels/beamng_earth) from the start, and in any other
 -- level once the player teleports (for testing). Console helpers:
@@ -30,6 +36,7 @@ local lattice = require('beamngEarth/lattice')
 local governor = require('beamngEarth/governor')
 local camshift = require('beamngEarth/camshift')
 local stopwatch = require('beamngEarth/stopwatch')
+local horizon = require('beamngEarth/horizon')
 local ui = require('beamngEarth/ui')
 
 local LEVEL_ID = 'beamng_earth'
@@ -59,6 +66,9 @@ local gov = governor.new() -- outlives levels (keeps its target and cost estimat
 local warned = {}          -- one-time warnings
 local nearVisual = 'terrain' -- from the server's hello; outlives levels like the connection
 local serverAttribution = nil -- hello.attribution (protocol 4): the credits for the sources it uses
+local blockSize = 1024        -- the session's terrain block size (hello.blockSize); outlives levels
+local horizonOn = false       -- hello.horizon (M1h); outlives levels like the connection
+local farRadius = nil         -- status.radius: the server's far-field radius (m), horizon mode only
 
 local function resetState()
   st = {
@@ -90,6 +100,9 @@ local function resetState()
     loadingUntil = 0,        -- governor loading mode until this clock (after a teleport)
     slowFor = 0,             -- s the player has been below SLOW_SPEED
     serverBacklog = nil,     -- status.backlog of the server's last status (v1.4 M0), nil before / from v1.3.1
+    anchorLatency = nil,     -- s from prepare_anchor to anchor_ready of the last rebase request (M4 stale rule)
+    terrainLatency = nil,    -- s from prepare_terrain to terrain_ready of the last one (M4 follow re-check)
+    visibleDistance = nil,   -- LevelInfo.visibleDistance set for the horizon (M1h); nil = VISIBLE_DISTANCE
   }
 end
 resetState()
@@ -124,15 +137,23 @@ local function requestAnchor(lat, lon, purpose, cx, cy)
     return false
   end
   local id = nextId()
-  st.pending = { requestId = id, purpose = purpose, lat = lat, lon = lon }
+  st.pending = { requestId = id, purpose = purpose, lat = lat, lon = lon, sentAt = st.clock }
   net.send({ type = 'prepare_anchor', requestId = id, lat = lat, lon = lon, cx = cx or 0, cy = cy or 0 })
   return true
 end
 
 -- Where the player will be, in the new frame, when the rebase commits: the new anchor is the
 -- player's position now, and the commit comes once the distance reaches rebase.distance.
+-- M4 stale-anchor rule (rebase.KEEP_EDGE > 0, the 512² block): at or past the distance (a re-request
+-- after a stale anchor was discarded) the terrain goes where the player will be when the answer
+-- arrives, p + v * (measured anchor latency + 1 s), so a slow server cannot make it stale forever.
 local function rebaseHint(pl)
   local rem = math.max(0, rebase.distance - pl.dist)
+  if rem <= 0 and rebase.KEEP_EDGE > 0 then
+    local lead = rebase.aheadLead(st.anchorLatency)
+    local lat = lead - rebase.LEAD_EXTRA_S
+    return follow.centreNear(pl.vx * lead, pl.vy * lead, pl.vx * lat, pl.vy * lat, follow.reachFor(pl.vx, pl.vy))
+  end
   local px, py = 0, 0
   if pl.speed > 1 then px, py = pl.vx / pl.speed * rem, pl.vy / pl.speed * rem end
   return follow.target(px, py, pl.vx, pl.vy)
@@ -157,7 +178,7 @@ end
 local function anchorTerrain(msg)
   local tr = msg.terrain
   if type(tr) ~= 'table' then return nil, 'anchor_ready without terrain' end
-  if tr.size ~= terrain.SIZE then return nil, 'unsupported terrain size ' .. tostring(tr.size) end
+  if tr.size ~= terrain.SIZE then return nil, 'unsupported terrain size ' .. tostring(tr.size) end -- the session's (M4)
   if type(tr.heightmap) ~= 'string' or not FS:fileExists(tr.heightmap) then
     return nil, 'heightmap not found: ' .. tostring(tr.heightmap)
   end
@@ -179,12 +200,28 @@ local function loadBlock(tr)
   return terrain.load(tr.heightmap, sq, maxH, x, y, tr.zBase)
 end
 
+-- M1h: in horizon mode LevelInfo.visibleDistance follows the server's radius (+10 %, with
+-- hysteresis, never below VISIBLE_DISTANCE, each change with postApply) and the sky uses the tiles'
+-- planet radius; otherwise both go back to what they were (only if horizon mode changed them).
+local function applyHorizon()
+  if not st.active then return end
+  if horizonOn then
+    horizon.applySky()
+    local v = horizon.visibleTarget(farRadius, st.visibleDistance or VISIBLE_DISTANCE, VISIBLE_DISTANCE)
+    if v and horizon.setVisibleDistance(v) then st.visibleDistance = v end
+  else
+    horizon.restoreSky()
+    if st.visibleDistance and horizon.setVisibleDistance(VISIBLE_DISTANCE) then st.visibleDistance = nil end
+  end
+end
+
 local function activateWorld()
   if st.active then return end
   st.active = true
   -- bigMapMode.lua:866-867 sets the same LevelInfo field at runtime
   if scenetree.theLevelInfo then scenetree.theLevelInfo.visibleDistance = VISIBLE_DISTANCE end
   terrain.hideGroundPlanes()
+  applyHorizon()
 end
 
 local function sendCommits(anchorId, cx, cy)
@@ -401,6 +438,12 @@ local function onMessage(msg)
     setStatus('Disconnected from companion server: ' .. tostring(msg.error))
   elseif t == 'hello' then
     st.sessionId = msg.sessionId
+    -- M4: the terrain block size first (everything below may use the lattice / follow table); a
+    -- server without hello.blockSize has the v1.3.1 1024² block
+    local size, okSize = M.setBlockSize(msg.blockSize or 1024)
+    if not okSize then
+      setStatus('Unsupported terrain block size ' .. tostring(msg.blockSize) .. ': using ' .. size)
+    end
     if msg.protocol ~= PROTOCOL then
       setStatus('Protocol mismatch: server ' .. tostring(msg.protocol) .. ', mod ' .. PROTOCOL)
     elseif msg.format ~= nil and not formatKnown(msg.format) then
@@ -419,6 +462,8 @@ local function onMessage(msg)
     -- protocol 4: who draws the near ground (a protocol-3 server sends nothing: the terrain does),
     -- and the credit line for the imagery / elevation sources the server actually uses
     M.setNearVisual(msg.nearVisual)
+    -- M1h: horizon mode (a server without hello.horizon: the level's sky and 100 km view distance)
+    M.setHorizon(msg.horizon == true)
     serverAttribution = (type(msg.attribution) == 'string' and msg.attribution ~= '') and msg.attribution or nil
     if st.anchor then
       -- A (re)started server knows nothing of our anchor: re-register the SAME geodetic origin under
@@ -434,11 +479,14 @@ local function onMessage(msg)
     -- v1.4 M0: the server's far-tile backlog (desired - shown) rides on every status; nil from a
     -- v1.3.1 server. For the harness (status()), nothing here acts on it.
     st.serverBacklog = tonumber(msg.backlog)
+    -- M1h: the far-field radius rides on every status in horizon mode (the view distance follows it)
+    if msg.radius ~= nil then M.setFarRadius(msg.radius) end
   elseif t == 'anchor_ready' then
     local p = st.pending
     if not p or msg.requestId ~= p.requestId then return end -- stale answer
     if p.purpose == 'rebase' or (p.purpose == 'resync' and st.anchor) then
       p.ready, p.msg = true, msg -- committed in updateWorld() (distance rule / when not paused)
+      if p.purpose == 'rebase' and p.sentAt then st.anchorLatency = st.clock - p.sentAt end
     else
       st.pending = nil
       commitAnchor(msg, p.purpose)
@@ -458,6 +506,7 @@ local function onMessage(msg)
       return
     end
     p.ready, p.msg = true, msg -- committed by the distance rule in updateWorld()
+    if p.sentAt then st.terrainLatency = st.clock - p.sentAt end
   elseif t == 'terrain_error' then
     local p = st.terrainPending
     if not p or msg.requestId ~= p.requestId then return end
@@ -540,15 +589,18 @@ local function updateWorld(dt)
 
   -- origin rebase first: when it commits, the terrain-follow state belongs to the old frame
   local p = st.pending
-  local staleDist
+  local staleDist, edgeDist
   if p and p.ready and (p.purpose == 'rebase' or p.purpose == 'resync') then
     p.anchorObj = p.anchorObj or geodesy.newAnchor(p.msg.lat, p.msg.lon)
     p.xf = p.xf or st.anchor:transformTo(p.anchorObj)
     local nx, ny = p.xf:apply(pl.x, pl.y, pl.z)
     local tr = p.msg.terrain or {}
     staleDist = follow.cheb(nx, ny, tr.cx or 0, tr.cy or 0)
+    -- M4 stale-anchor rule: how far inside the prepared terrain's collidable area the player is
+    local x0, y0, x1, y1 = lattice.groundBox(tr.cx or 0, tr.cy or 0)
+    edgeDist = math.min(nx - x0, x1 - nx, ny - y0, y1 - ny)
   end
-  local action = rebase.decide(pl.dist, p, staleDist, st.clock, st.retryAt)
+  local action = rebase.decide(pl.dist, p, staleDist, st.clock, st.retryAt, edgeDist)
   if p and p.ready and p.purpose == 'resync' then
     -- the player may have driven off the terrain the server prepared meanwhile: ask again
     if staleDist > rebase.STALE_DIST then
@@ -584,11 +636,11 @@ local function updateWorld(dt)
   -- may straddle the new block (design 2.3, farfield.uncoverReady)
   local gate = b and function(ncx, ncy) return farfield.uncoverReady(b.cx, b.cy, ncx, ncy) end
   local fa, tx, ty = follow.decide(pl.x, pl.y, pl.vx, pl.vy, b and b.cx, b and b.cy, st.terrainPending,
-    st.clock, st.terrainRetryAt, gate)
+    st.clock, st.terrainRetryAt, gate, st.terrainLatency)
   if fa == 'prepare' then
     if net.isConnected() then
       local id = nextId()
-      st.terrainPending = { requestId = id, anchorId = st.anchorId, cx = tx, cy = ty }
+      st.terrainPending = { requestId = id, anchorId = st.anchorId, cx = tx, cy = ty, sentAt = st.clock }
       net.send({ type = 'prepare_terrain', requestId = id, anchorId = st.anchorId, cx = tx, cy = ty })
     end
   elseif fa == 'commit' then
@@ -739,6 +791,7 @@ local function onClientEndMission()
   -- runs before the level deletes its objects (server/server.lua:19 vs :34): delete the far tiles
   -- ourselves first, so their per-tile materials (not level objects) can go after them
   farfield.clear()
+  horizon.restoreSky() -- M1h: the level's sky planet radius (its LevelInfo goes with the level)
   local sessionId, nextRequestId = st.sessionId, st.nextRequestId
   resetState()
   st.sessionId, st.nextRequestId = sessionId, nextRequestId
@@ -754,6 +807,9 @@ local function onExtensionUnloaded()
   net.close()
   farfield.clear()
   terrain.delete()
+  -- M1h: the level stays loaded; give it back its sky and view distance
+  horizon.restoreSky()
+  if st.visibleDistance and horizon.setVisibleDistance(VISIBLE_DISTANCE) then st.visibleDistance = nil end
 end
 
 ------------------------------------------------------------------------------------------
@@ -775,6 +831,18 @@ end
 
 function M.toggleUI() ui.visible = not ui.visible end
 
+-- The session's terrain block size (docs/V1_4_SPEC.md 3.5, M4): 1024 (v1.3.1) or 512, from the
+-- server's hello.blockSize. Sets the lattice, the terrain-follow table, the importMaps layer / flat
+-- maps and the rebase staleness rule together. Returns the size in use and whether `size` was valid.
+function M.setBlockSize(size)
+  local n, ok = lattice.configure(tonumber(size))
+  follow.configure(n)
+  terrain.configure(n)
+  rebase.configure(n)
+  blockSize = n
+  return n, ok
+end
+
 -- Who draws the near ground: 'mesh' (far tiles; the TerrainBlock is physics-only, render disabled)
 -- or 'terrain' (v1.2; anything else). Set by the server's hello; callable from the console to test.
 function M.setNearVisual(mode)
@@ -782,6 +850,23 @@ function M.setNearVisual(mode)
   terrain.setRenderEnabled(nearVisual ~= 'mesh')
   farfield.setNearVisual(nearVisual)
   return nearVisual
+end
+
+-- Horizon mode (docs/V1_4_SPEC.md 3.6 M1h), from the server's hello.horizon: the view distance follows
+-- the far-field radius (setFarRadius, from status.radius) and the sky uses the tiles' planet radius.
+-- Off restores both. Returns the mode in use.
+function M.setHorizon(on)
+  horizonOn = on and true or false
+  if not horizonOn then farRadius = nil end
+  applyHorizon()
+  return horizonOn
+end
+
+-- The server's far-field radius in metres (status.radius, horizon mode). Returns the view distance in use.
+function M.setFarRadius(m)
+  farRadius = tonumber(m)
+  applyHorizon()
+  return st.visibleDistance or VISIBLE_DISTANCE
 end
 
 -- Origin rebase distance in metres (2000-25000, default 10000). Returns the value in use.
@@ -804,7 +889,9 @@ function M.status()
     rebaseDistance = rebase.distance, lastFollowMs = st.lastFollowMs, lastRebaseMs = st.lastRebaseMs,
     lastRebaseWaitFrames = st.lastRebaseWait, rebaseLag = rebaseLag, lastMoveLag = st.lastMoveLag, player = st.player, far = farfield.stats(), governor = gov:snapshot(), status = st.status,
     serverBacklog = st.serverBacklog, followCount = st.followCount, rebaseCount = st.rebaseCount,
-    cells = crossover.cells() })
+    cells = crossover.cells(), blockSize = blockSize, anchorLatency = st.anchorLatency,
+    terrainLatency = st.terrainLatency, horizon = horizonOn, farRadius = farRadius,
+    visibleDistance = st.visibleDistance or VISIBLE_DISTANCE })
 end
 
 -- net.close() drops its '_disconnected' event, so reset the connection state here.

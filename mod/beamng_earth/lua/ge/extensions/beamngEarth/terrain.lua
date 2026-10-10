@@ -13,21 +13,26 @@
 -- registerObject, setTerrFileLvlFolder, MissionGroup:addObject) and the material setup
 -- of terrainGenerator.lua:451-463 (addMaterial/updateMaterial, then importMaps with a
 -- material-name list and one layer map per material).
+--
+-- Block size (docs/V1_4_SPEC.md 3.5, M4): configure(size) from the server's hello.blockSize picks
+-- the 1024² or 512² layer map and flat heightmap (the layer map must match the heightmap size).
 
 local lattice = require('beamngEarth/lattice')
 
 local M = {}
 
 M.NAME = 'bngEarthTerrain'
-M.SIZE = lattice.N              -- samples per side; the shipped layer map has the same size
+M.SIZE = lattice.N              -- samples per side (configure); the layer map has the same size
 M.SQUARE_SIZE = lattice.SQUARE  -- 2.0 m
 M.MATERIAL = 'beamngEarthDirt'
 M.TEXTURE_SET = 'beamngEarthTerrainMaterialTextureSet'
 
 local TERRAIN_DIR = '/levels/beamng_earth/art/terrains/'
 local MATERIALS_FILE = TERRAIN_DIR .. 'main.materials.json'
-local LAYER_MAP = TERRAIN_DIR .. 'beamngEarth_layer_1024.png' -- all white: material 0 everywhere
-local FLAT_HEIGHTMAP = TERRAIN_DIR .. 'beamngEarth_flat_1024.png' -- all zero, 16-bit
+-- per block size (tools/make_level_assets.py): all white = material 0 everywhere; all zero, 16-bit
+local LAYER_MAPS = { [1024] = TERRAIN_DIR .. 'beamngEarth_layer_1024.png', [512] = TERRAIN_DIR .. 'beamngEarth_layer_512.png' }
+local FLAT_HEIGHTMAPS = { [1024] = TERRAIN_DIR .. 'beamngEarth_flat_1024.png', [512] = TERRAIN_DIR .. 'beamngEarth_flat_512.png' }
+local LAYER_MAP, FLAT_HEIGHTMAP = LAYER_MAPS[1024], FLAT_HEIGHTMAPS[1024]
 
 local materialsChecked = false
 local renderEnabled = true -- false in mesh mode; survives levels (a server setting)
@@ -45,6 +50,14 @@ end
 
 function M.get()
   return scenetree.findObject(M.NAME)
+end
+
+-- The session's block size (1024 or 512, after lattice.configure): the imports' layer map and the
+-- flat start map follow it. Returns the size in use.
+function M.configure(size)
+  local n = LAYER_MAPS[size] and size or 1024
+  M.SIZE, LAYER_MAP, FLAT_HEIGHTMAP = n, LAYER_MAPS[n], FLAT_HEIGHTMAPS[n]
+  return n
 end
 
 local function getOrCreate()
@@ -120,7 +133,7 @@ function M.load(path, squareSize, maxHeight, x, y, z)
 end
 
 -- Flat ground at z=0, centred on the origin, so the player has something to stand on before
--- the first anchor.
+-- the first anchor (the session's block size: a 512² session imports the 512² flat map).
 function M.loadFlat()
   local x, y = lattice.blockOrigin(0, 0)
   return M.load(FLAT_HEIGHTMAP, M.SQUARE_SIZE, 50, x, y, 0)

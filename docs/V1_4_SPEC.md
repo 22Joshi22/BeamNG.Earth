@@ -850,6 +850,33 @@ near-car rules apply only to prio-0 tiles, so a server that sends no prio disabl
 
 **Rollback.** `--block 1024` (server). The mod follows `hello.blockSize` and `terrain.size`.
 
+**Implementation notes (built offline 2026-10-10, docs/ARCHITECTURE.md "v1.4 M4").**
+- `--block` defaults to **1024** until P2, P7 and P11 pass (`tools/m4_probes.py`); `hello.blockSize` is
+  sent only with 512, so a 1024 session's messages are unchanged.
+- The commit-time re-check as written above discarded nearly every block in the offline model (77 of
+  78 commits at 134 m/s, 0.3 s latency) and took a 250 m/s car up to 98 m off the block at 1.2 s
+  latency. It is implemented with a guard: it discards only while the player stays out of the 150 m
+  edge band (Chebyshev 360 m from the centre) for longer than the measured heightmap latency
+  (`terrain_ready` - `prepare_terrain`, 1 s until measured) + 0.5 s, never past the hard commit
+  distance and not in fast mode. Result (real follow.lua under luajit): at 134 m/s, headings 0-45°,
+  commits >= 2.6 s apart at 0.3 s latency, >= 166 m inside the edges at 0.3-1.2 s; 200 m/s at 1.2 s
+  >= 216 m inside.
+- Review (2026-10-10, offline, the real follow.lua with the latency of each request drawn from 0.3-1.2 s
+  and the commit 0-0.15 s later in a heavy slot): two holes, both 512² only, fixed in follow.lua and
+  the modsim port. (1) A ready block that is no better than the current one (typically prepared from
+  ~130 m behind the centre, one grid step to the side of the way the car goes) was never committed
+  and blocked every new request until it left the reach (260 m, fast mode 420 m: 250 / 90 m from
+  the edge): 76-93 m from the edge at 134 m/s, and a car accelerating from 100 to 200 m/s left the
+  block by up to 121 m. Such a block is now dropped when it would still be no better where the player
+  reaches the hard commit distance (straight on), so the next frame prepares the target. (2) The
+  re-check guard used the last measured latency, which says little about the next request: it now
+  assumes at least LATENCY_S (1 s), and it never discards a block only to re-request the same
+  centre. Result (`test_follow`): jittered latency, all headings: >= 171 m inside at 134 m/s, >= 178 m
+  accelerating 100 -> 200 m/s; fixed latency: 134 m/s >= 199 m (0.3-1.2 s), commits >= 0.95 s apart at
+  0.3 s (the guard re-prepares less at warm latency: ~1 commit per 2.4 s at 134 m/s in the model, vs
+  §2.3's 1.9 s), 200 m/s at 1.2 s >= 216 m, 250 m/s at 0.3 s >= 254 m.
+- The stale-anchor rule and the re-check apply to 512² only (1024² keeps v1.3.1's rules).
+
 ### 3.6 M5: altitude-aware LOD, physics follow in the air, far field to the horizon
 **Problem.** Planes fly up to about 10 km at 250+ m/s:
 - the ground-based LOD would stream exact tiles under a plane;
@@ -1002,6 +1029,46 @@ near-car rules apply only to prio-0 tiles, so a server that sends no prio disabl
 **Rollback.** `--altitude off`: agl is treated as 0, the radius is 80 km, and the follow gate is
 disabled.
 
+**Implementation notes, M1h "Radius" (built offline 2026-10-10, docs/ARCHITECTURE.md "v1.4 M1h").**
+- Behind `earthd --horizon` (mesh mode only), **off by default** until P12 (extended, below) passes;
+  without it hello, status and the selection are unchanged (test_v131_default unchanged).
+- Wire (additive under protocol 4, like M1/M4): `hello.horizon: true` and `status.radius` (m, every
+  status) with `--horizon` only; `far_tile.level` up to 10. `pose_reply` stays M5: until then the radius
+  rides on `status`, re-sent when it moves by > 2 %.
+- Eye = the pose's camera z (else player z + 1.5 m) as a geodetic height in the pose's anchor frame
+  (its h0 is sea level, so this adds the plane's d²/2R above the ellipsoid), quantised to
+  max(10 m, 5 %). It survives rebases (it is frame-independent).
+- zmax per anchor: one worker builds a pyramid of L6 cells (16 km) up to L10 over
+  ±(min(1500 km, d(h_eye) + d(8900 m)) + 21 km), each cell the highest **DEM z6 pixel** touching it
+  (block maxima of 8 x 8 px, never a sample that could miss a summit; z5 or coarser where z6 would
+  need > 64 tiles); rebuilt bigger when a climbing eye needs more. A tile's zmax always comes from
+  this pyramid (not from its built grid) so its selection never depends on whether it was built.
+  Until the first pyramid exists the far field is the 80 km disc without a cull.
+- RADIUS = clamp(d(h_eye) + d(zmax_region), 80 km, **1500 km**) with zmax_region = the highest L6
+  cell above the eye's horizon (its nearest point within d(h_eye) + d(z)); the cap follows the
+  "raised to 1500 km" item above (the task text said 700 km; one constant, `farfield.HORIZON_MAX`).
+- The cull drops a node (and its subtree) when its nearest point is past d(h_eye) + d(zmax_node), but
+  never within 80 km: the near field is today's tile for tile (tested along a 134 m/s drive, both
+  layouts; demand 15.98 adds/s either way). Textures: 256 px at L8/L9, 128 px at L10.
+- Offline numbers on the real DEM (z6, 64 cells): Whitney summit (eye 4417 m) radius 503 km,
+  zmax 4217 m (z6 smooths the 4421 m summit), San Gorgonio's tile (306 km) kept, 83 tiles beyond
+  80 km (379 in all vs 300 today), farthest kept tile 414 km; 10 km above Whitney 631 km, 97 beyond
+  80 km; Central Valley floor (eye 110 m) 289 km, 49 beyond; open ocean (eye 2 m) 80 km, none beyond
+  (296 tiles: the disc drops the square's corners). Selection 1-2.5 ms; pyramid 0.02-0.04 s from
+  cached DEM tiles (0.9 s with z6 downloads).
+- Mod: `horizon.lua` (pure target rule + LevelInfo / ScatterSky); `core.setHorizon(hello.horizon)`,
+  `core.setFarRadius(status.radius)`: visibleDistance = max(100 km, 1.1 × radius) with 10 %
+  hysteresis and postApply after every change; ScatterSky.atmoPlanetRadius = 6371 while horizon mode
+  is on in an active world, the level's value restored at level end, on unload and with a server
+  without horizon. Distance haze: a documented TODO in horizon.lua (core_environment.setFogDensity,
+  setFogAtmosphereHeight, ScatterSky atmoMie*) for the lead to tune in P12.
+- **P12 extended (before enabling):** with `--horizon`, at Whitney summit and at 10 km altitude:
+  frame cost (fps, p50/p95, perfmon) with the real distant tiles shown (the original P12 had none
+  beyond 80 km), live object count, far_done time and the L8-L10 import costs per kind; screenshots
+  toward San Gorgonio / the Coast Ranges: the terrain silhouette meets the sky's horizon band with no
+  sky-coloured gap; read back atmoPlanetRadius = 6371 and visibleDistance = 1.1 × radius after
+  postApply; no depth or shadow artefacts at 500-650 km; then tune the haze.
+
 ### 3.7 M6: global far tiles in tile-local frames plus a disk cache (gated)
 **Problem.**
 - R5: each rebase rebuilds the whole set, about 300 tiles after M1.
@@ -1095,13 +1162,13 @@ disabled.
 
 | direction | message | change | milestone |
 |---|---|---|---|
-| S->M | hello | `cells` int (M1, additive under protocol 4); `farWindow` int (M2); `exactLevel` int (M3a); `blockSize` int (M4); `globalMinSize` int, opt (M6) | M1-M6 |
-| S->M | far_tile | `tex` int (M1); `prio` int 0..2, `seq` int (M2); `frame` {lat, lon, h} opt, `poly` [[x, y]...] opt (M6) | M1, M2, M6 |
+| S->M | hello | `cells` int (M1, additive under protocol 4); `farWindow` int (M2); `exactLevel` int (M3a); `blockSize` int (M4); `horizon` true, opt (M1h); `globalMinSize` int, opt (M6) | M1-M6 |
+| S->M | far_tile | `tex` int (M1); `prio` int 0..2, `seq` int (M2); `level` up to 10 (M1h); `frame` {lat, lon, h} opt, `poly` [[x, y]...] opt (M6) | M1, M2, M1h, M6 |
 | S->M | far_retex | new: `anchorId` int, `key` str, `seq` int, `tex` int, `texture` str | M3a |
 | M->S | far_ack | new: `anchorId` int, `loaded` [int seq], `failed` [int seq] (an empty Lua table may encode as {}) | M2 |
 | M->S | pose | `vz` num, `cap` num, `old` int | M3a |
 | S->M | pose_reply | new: `anchorId` int, `groundZ` num/null, `clearance` num/null, `tti` num/null, `impact` [x, y]/null, `radius` num | M5 |
-| S->M | status | `backlog` int (desired − shown, current anchor), alongside `text` | M0 |
+| S->M | status | `backlog` int (desired − shown, current anchor), alongside `text`; `radius` num, opt (M1h: the far-field radius with `--horizon`, until `pose_reply` carries it) | M0, M1h |
 | S->M | terrain_ready / anchor_ready.terrain | `size` 512 (already a field) | M4 |
 
 `test_protocol_agreement.py` tables (MOD_TO_SERVER, SERVER_TO_MOD) are exact and are extended in the

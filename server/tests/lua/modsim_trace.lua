@@ -1,12 +1,16 @@
 -- Trace of the mod's pure rule modules (governor.lua, follow.lua, rebase.lua) on a deterministic
 -- pseudo-random schedule, for server/tests/test_modsim.py, which runs the Python ports
--- (server/tests/modsim.py) on the same schedule and compares line by line.
+-- (server/tests/modsim.py) on the same schedule and compares line by line. 'M' lines (M4,
+-- docs/V1_4_SPEC.md 3.5): the same rules after configure(512) (the 512 follow table with its fast
+-- mode and commit-time re-check, the stale-anchor rule, centreNear / aheadLead of core.lua's
+-- rebaseHint), then after configure(1024) again.
 --   luajit modsim_trace.lua <mod lua/ge/extensions dir> <frames> <seed>
 local dir, frames, seed = arg[1], tonumber(arg[2]), tonumber(arg[3])
 package.path = dir .. '/?.lua;' .. package.path
 local governor = require('beamngEarth/governor')
 local follow = require('beamngEarth/follow')
 local rebase = require('beamngEarth/rebase')
+local lattice = require('beamngEarth/lattice')
 
 -- Park-Miller: exact in doubles (products < 2^53), identical in Python
 local x = seed
@@ -56,4 +60,42 @@ for i = 1, frames do
   local stale = rnd() * 900
   local ra = rebase.decide(dist, rp, stale, now, retry)
   print(table.concat({ 'F', i, tostring(a), f(tx or 0), f(ty or 0), f(tgx), f(tgy), tostring(ra) }, ' '))
+end
+
+-- M4: the 512² block, then back to 1024² (configure switches the tables and the derived locals)
+for _, size in ipairs({ 512, 1024 }) do
+  lattice.configure(size)
+  follow.configure(size)
+  rebase.configure(size)
+  for i = 1, frames do
+    local px, py = (rnd() - 0.5) * 3000, (rnd() - 0.5) * 3000
+    local sp, hd = rnd() * 260, rnd() * 2 * math.pi -- spans the fast mode (> 150 m/s)
+    local vx, vy = sp * math.cos(hd), sp * math.sin(hd)
+    local cx, cy = follow.snap(px + (rnd() - 0.5) * 900), follow.snap(py + (rnd() - 0.5) * 900)
+    local kind, ready, gateOk = rnd(), rnd() < 0.6, rnd() < 0.7
+    local pending = nil
+    if kind < 0.7 then
+      pending = { cx = follow.snap(px + (rnd() - 0.5) * 900), cy = follow.snap(py + (rnd() - 0.5) * 900), ready = ready }
+    end
+    local lr = rnd()
+    local latency = nil -- (`c and nil or x` would always be x)
+    if lr >= 0.2 then latency = lr * 2 end
+    local now, retry = rnd() * 10, rnd() * 10
+    local a, tx, ty = follow.decide(px, py, vx, vy, cx, cy, pending, now, retry, function() return gateOk end, latency)
+    local tgx, tgy = follow.target(px, py, vx, vy)
+    local dist, dd = rnd() * 18000, rnd()
+    local rp = nil
+    if dd < 0.5 then rp = { purpose = 'rebase', ready = dd < 0.4 } end
+    local stale, er = rnd() * 600, rnd()
+    local edge = nil
+    if er >= 0.1 then edge = (er - 0.4) * 600 end
+    local ra = rebase.decide(dist, rp, stale, now, retry, edge)
+    local measured = nil
+    if lr >= 0.5 then measured = lr * 4 end
+    local lead = rebase.aheadLead(measured)
+    local nx, ny = follow.centreNear(vx * lead, vy * lead, vx * (lead - 1), vy * (lead - 1), follow.reachFor(vx, vy))
+    local tt = follow.timeTo(px, py, vx, vy, cx, cy, follow.RECHECK_SAFE)
+    print(table.concat({ 'M', size, i, tostring(a), f(tx or 0), f(ty or 0), f(tgx), f(tgy), tostring(ra), f(lead), f(nx), f(ny),
+      tt == math.huge and 'inf' or f(tt) }, ' '))
+  end
 end

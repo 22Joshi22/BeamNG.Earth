@@ -21,6 +21,13 @@ Selection (select()):
   - everything intersecting the square of half-size RADIUS (80 km) around the player is kept.
 The selected tiles tile the radius square exactly once.
 
+Horizon mode (docs/V1_4_SPEC.md §3.6 "Radius", milestone M1h; earthd --horizon, off by default):
+roots at HORIZON_MAX_LEVEL (L10, 262 km), a disc instead of the square (radius from the line-of-sight
+horizon, HorizonGrid.radius) and, beyond HORIZON_MIN (80 km), a per-node horizon cull (Horizon): a
+node whose nearest point is farther than sqrt(2R'h_eye) + sqrt(2R'zmax_node) is dropped with its
+subtree (a child is never nearer nor higher than its parent, so this is the per-tile test). The
+selected tiles then tile the disc minus the culled nodes exactly once.
+
 LOD changes are grouped into swap groups (swap_groups()): connected sets of added and removed
 tiles with the same footprint (a parent and its descendants), which the mod exchanges with a
 vertical crossover (§2.5 C2).
@@ -83,7 +90,7 @@ CONTENT_FORMAT = {32: 3, 64: 4}     # the protocol's FORMAT (hello.format) of ea
 # v1.3.1 rule (two finest levels tex_near, the rest tex_far; both 256). 64 (§3.1; P8 may change it):
 # 256 to L1, 512 from L2 (keeps today's texel density at distance).
 TEX_DEFAULT = {32: (256, 256, 256), 64: (256, 256, 256, 512)}
-BLOCK_SIZES = (1024,)       # terrain block samples per edge a layout may use (M4 adds 512)
+BLOCK_SIZES = (1024, 512)   # terrain block samples per edge (M4, docs/V1_4_SPEC.md §3.5: 512, mesh mode only)
 # Triangles per tile shape: 8192 + 512 at 64 cells. The old 8192 was the ProceduralMesh rule;
 # .cdae has no such cliff and the 65k-vertex engine limit is far away (§3.1).
 TRIS_MAX = 9000
@@ -102,6 +109,26 @@ DIRT_UNTIL, DIRT_BLEND_TO = 1500.0, 2500.0      # m of elevation
 MOD_SHAPES = ("levels", "beamng_earth", "art", "shapes", "beamngEarth")   # in mod/beamng_earth
 MOD_PALETTE = "far_palette.png"
 FORMATS = ("cdae", "dae")
+
+# --- horizon mode (M1h, docs/V1_4_SPEC.md §3.6 "Radius: the real line-of-sight horizon") ---------
+# Heights are above sea level (the ellipsoid: the anchor frame's h0 is 0), never above the ground
+# under the player: the bulge drops a point by d²/2R' whatever the local ground.
+R_EARTH = 6371000.0             # m: the sphere the sky uses too (the mod sets ScatterSky.atmoPlanetRadius)
+REFRACTION_K = 0.13             # standard terrestrial refraction; the cull's effective radius is R' below.
+R_REFRACTED = R_EARTH / (1.0 - REFRACTION_K)    # 7323 km. The geometry (and the sky) have no refraction,
+                                                # so using R' only makes the cull generous (~7 % farther).
+HORIZON_MIN = RADIUS            # the disc is never smaller than today's radius, and nothing within it is culled
+HORIZON_MAX = 1500000.0         # radius cap (spec: raised from 700 km so planes see far; eyes up to ~40 km)
+HORIZON_MAX_LEVEL = 10          # L10 = 262 km, 4 km vertex spacing with 64 cells: a silhouette at 300+ km
+# Texture px of the coarse levels in horizon mode (a 256 px L9 is 512 m/px; at 300 km one screen
+# pixel is ~100 m, so the texture is never the limit); imagery.render picks the low source zoom.
+HORIZON_TEX = {8: 256, 9: 256, 10: 128}
+HORIZON_GRID_LEVEL = 6          # the zmax pyramid's base cell: one L6 node (16 384 m)
+HORIZON_DEM_ZOOM = 6            # the coarse DEM pass (z6: ~1 km pixels at 36° N) ...
+HORIZON_DEM_TILES = 64          # ... or coarser while the grid would need more DEM tiles than this
+HORIZON_BLOCK = 8               # DEM pixels per block maximum (a block is ~8 km at z6)
+Z_TOP = 8900.0                  # m: no terrain is higher (Everest 8849 m); sizes the grid an eye needs
+VISIBLE_MARGIN = 1.10           # the mod's LevelInfo.visibleDistance = radius * this (horizon.lua)
 
 
 @dataclass(frozen=True)
@@ -122,8 +149,8 @@ class Layout:
             raise ValueError(f"cells must be one of {CELL_COUNTS}, not {self.cells!r}")
         if self.block not in BLOCK_SIZES:
             raise ValueError(f"terrain block size {self.block!r} is not supported (one of {BLOCK_SIZES})")
-        if not self.mesh and self.cells != 32:
-            raise ValueError("terrain near-visual mode is frozen at the v1.3.1 layout (32 cells)")
+        if not self.mesh and (self.cells != 32 or self.block != heightmap.SIZE):
+            raise ValueError("terrain near-visual mode is frozen at the v1.3.1 layout (32 cells, 1024² block)")
         tex = TEX_DEFAULT[self.cells] if self.tex is None else tuple(int(v) for v in self.tex)
         if not tex:
             raise ValueError("no texture size")
@@ -170,6 +197,15 @@ class Layout:
     def tex_size(self, level):
         return self.tex[min(max(level - self.min_level, 0), len(self.tex) - 1)]
 
+    @property
+    def grid(self):
+        """The terrain block's centre grid (M4: 128 m for 512², 256 m for 1024²)."""
+        return heightmap.grid(self.block)
+
+    def block_at(self, cx, cy):
+        """The Block of this layout's size centred at (cx, cy)."""
+        return Block(cx, cy, self.block)
+
 
 V131 = Layout(32)           # the v1.3.1 mesh layout (the server's default; terrain mode: mesh=False)
 
@@ -210,7 +246,8 @@ def torque_split45(gx, gy):
     x > y: (BL, BR, TR) / else (BL, TR, TL), and of other squares as x + y < 1: (BL, BR, TL) /
     else (BR, TR, TL). The renderer's index buffer (terrCell.cpp ~649, `xTess == yTess`) uses
     the same parity. Our blocks start at an even lattice index (cx - 1024 with cx a multiple
-    of 256 m is a multiple of 4 m), and L-2 tiles at multiples of 64 m, so the block-local
+    of 256 m is a multiple of 4 m; M4's 512² block: cx - 512 with cx a multiple of 128 m), and
+    L-2 tiles at multiples of 64 m, so the block-local
     parity equals the parity of the world lattice index (x / 2 + y / 2) and of a tile's local
     cell index (i + j): build_tile() and surface_at() split cell (i, j) on (i + j) even."""
     return ((np.asarray(gx) ^ np.asarray(gy)) & 1) == 0
@@ -219,13 +256,15 @@ def torque_split45(gx, gy):
 @dataclass(frozen=True)
 class Block:
     """Footprint of a terrain block: the 2048 m square of its samples (the valid, collidable
-    area is [cx-1024, cx+1022]; the 2 m N/E strip is covered by sunk L0 tiles)."""
+    area is [cx-1024, cx+1022]; the 2 m N/E strip is covered by sunk L0 tiles). size: samples per
+    edge (M4: 512, a 1024 m square, collidable [cx-512, cx+510]; mesh mode only)."""
     cx: float
     cy: float
+    size: int = heightmap.SIZE
 
     @property
     def bbox(self):
-        h = heightmap.HALF
+        h = heightmap.half_extent(self.size)
         return (self.cx - h, self.cy - h, self.cx + h, self.cy + h)
 
 
@@ -268,7 +307,8 @@ def overlaps(a, b):
 
 
 def select(px, py, forced=(), prev_refined=frozenset(), kfun=None, h=HYSTERESIS,
-           radius=RADIUS, max_level=MAX_LEVEL, hold=frozenset(), min_level=0, radii=None, layout=V131):
+           radius=RADIUS, max_level=MAX_LEVEL, hold=frozenset(), min_level=0, radii=None, layout=V131,
+           disc=False, horizon=None):
     """Desired tiles for a player at (px, py).
 
     forced: bboxes (terrain blocks) under which everything is refined to L0 (terrain mode).
@@ -277,6 +317,9 @@ def select(px, py, forced=(), prev_refined=frozenset(), kfun=None, h=HYSTERESIS,
     min_level: finest level (0; layout.min_level in mesh mode); kfun / radii: K(L) and the
     min-level radii (default: the layout's K table and NEAR_RADII row; only levels >= min_level
     count).
+    disc (horizon mode): keep the nodes whose nearest point is closer than `radius` (a disc, not
+    the square). horizon: a Horizon; beyond HORIZON_MIN it drops every node past the line-of-sight
+    horizon, with its subtree (the server passes it with disc=True and max_level HORIZON_MAX_LEVEL).
     Returns ({key: Tile}, set of refined nodes)."""
     kfun = kfun or layout.k
     radii = NEAR_RADII[layout.cells] if radii is None else radii
@@ -291,7 +334,12 @@ def select(px, py, forced=(), prev_refined=frozenset(), kfun=None, h=HYSTERESIS,
         lvl, i, j = node
         s = level_size(lvl)
         x0, y0, x1, y1 = i * s, j * s, (i + 1) * s, (j + 1) * s
-        if not (x0 < hi_x and x1 > lo_x and y0 < hi_y and y1 > lo_y):
+        d = None
+        if disc:
+            d = math.hypot(max(x0 - px, 0.0, px - x1), max(y0 - py, 0.0, py - y1))
+            if d >= radius or (horizon is not None and not horizon.keeps(lvl, i, j, d)):
+                continue                                # outside the disc, or beyond the horizon
+        elif not (x0 < hi_x and x1 > lo_x and y0 < hi_y and y1 > lo_y):
             continue                                    # outside the far radius
         if lvl > min_level:
             if lvl > 0 and any(x0 < b[2] and x1 > b[0] and y0 < b[3] and y1 > b[1] for b in forced):
@@ -299,7 +347,8 @@ def select(px, py, forced=(), prev_refined=frozenset(), kfun=None, h=HYSTERESIS,
             elif node in hold:
                 split = node in prev_refined
             else:
-                d = math.hypot(max(x0 - px, 0.0, px - x1), max(y0 - py, 0.0, py - y1))
+                if d is None:
+                    d = math.hypot(max(x0 - px, 0.0, px - x1), max(y0 - py, 0.0, py - y1))
                 lim = switch_distance(lvl, kfun, radii, min_level)
                 split = d < lim or (node in prev_refined and d < (1.0 + h) * lim)
             if split:
@@ -340,7 +389,7 @@ def swap_groups(old, new):
 
     for k in side:
         lvl, i, j = tile_of(k).node
-        while lvl < MAX_LEVEL:
+        while lvl < HORIZON_MAX_LEVEL:          # (no L10 node exists outside horizon mode)
             lvl, i, j = lvl + 1, i >> 1, j >> 1
             a = by_node.get((lvl, i, j))
             if a is not None and side[a] != side[k]:
@@ -371,6 +420,179 @@ def zoom_for_level(layout, lat, level):
 
 def skirt_depth(size, err=0.0):
     return max(2.0, 0.02 * size, 2.5 * err + 1.0)
+
+
+# --- horizon mode (M1h) ------------------------------------------------------------------
+def horizon_distance(h, r=R_REFRACTED):
+    """Distance (m) from a point h m above sea level to its sea-level horizon, sqrt(2 R' h) (0 at or
+    below sea level). A point at height z is above the horizon of an eye at h within
+    horizon_distance(h) + horizon_distance(z)."""
+    return math.sqrt(2.0 * r * max(0.0, h))
+
+
+def horizon_extent(h_eye, margin=0.0):
+    """Half-size of the zmax grid an eye h_eye m above sea level needs: everything that can rise
+    above its horizon (terrain up to Z_TOP) within the radius cap, plus `margin` (how far the player
+    can be from the anchor), rounded up to whole L10 nodes (the pyramid's top level)."""
+    e = min(HORIZON_MAX, horizon_distance(h_eye) + horizon_distance(Z_TOP)) + margin
+    s = level_size(HORIZON_MAX_LEVEL)
+    return max(1, math.ceil(e / s)) * s
+
+
+class HorizonGrid:
+    """The highest terrain (m above sea level) under every quadtree node of levels >= HORIZON_GRID_LEVEL
+    over [-half, half]² of one anchor's plane (half: whole L10 nodes): base[j, i] for the L6 node
+    (i - n/2, j - n/2), and its 2x2 maximum pyramid up to HORIZON_MAX_LEVEL. Built once per anchor by
+    horizon_grid() (a coarse DEM pass), so a tile's zmax never depends on whether it was built."""
+
+    def __init__(self, half, base, zoom=None):
+        self.half, self.zoom = float(half), zoom
+        base = np.asarray(base, np.float64)
+        n = base.shape[0]
+        if base.shape != (n, n) or n * level_size(HORIZON_GRID_LEVEL) != 2 * half or n % (
+                1 << (HORIZON_MAX_LEVEL - HORIZON_GRID_LEVEL)):
+            raise ValueError("the grid must cover [-half, half]² in whole L10 nodes")
+        self.levels = {HORIZON_GRID_LEVEL: base}
+        a = base
+        for lvl in range(HORIZON_GRID_LEVEL + 1, HORIZON_MAX_LEVEL + 1):
+            m = a.shape[0] // 2
+            a = a.reshape(m, 2, m, 2).max(axis=(1, 3))
+            self.levels[lvl] = a
+        self._edges = (np.arange(n) - n // 2) * level_size(HORIZON_GRID_LEVEL)     # west / south cell edges
+
+    @property
+    def base(self):
+        return self.levels[HORIZON_GRID_LEVEL]
+
+    def zmax(self, level, i, j):
+        """Highest terrain under node (level, i, j): a finer node takes its L6 ancestor's value; a node
+        outside the grid gets +inf (never culled: the disc ends inside the grid)."""
+        if level < HORIZON_GRID_LEVEL:
+            k = HORIZON_GRID_LEVEL - level
+            level, i, j = HORIZON_GRID_LEVEL, i >> k, j >> k
+        a = self.levels.get(level)
+        if a is None:
+            return math.inf
+        m = a.shape[0]
+        ii, jj = i + m // 2, j + m // 2
+        if 0 <= ii < m and 0 <= jj < m:
+            return float(a[jj, ii])
+        return math.inf
+
+    def radius(self, px, py, h_eye):
+        """(RADIUS, zmax_region) for an eye h_eye m above sea level at (px, py): zmax_region is the
+        highest L6 cell that rises above the eye's horizon (its nearest point within
+        sqrt(2R'h_eye) + sqrt(2R'z)), and RADIUS = clamp(sqrt(2R'h_eye) + sqrt(2R'zmax_region),
+        HORIZON_MIN, HORIZON_MAX) (spec §3.6: Whitney summit ~480-510 km, the per-tile cull trims the
+        rest; the Central Valley floor with the Sierra in sight ~290 km)."""
+        s = level_size(HORIZON_GRID_LEVEL)
+        e = self._edges
+        dx = np.maximum(np.maximum(e - px, 0.0), px - (e + s))
+        dy = np.maximum(np.maximum(e - py, 0.0), py - (e + s))
+        d = np.hypot(dx[None, :], dy[:, None])
+        reach = horizon_distance(h_eye)
+        z = self.base
+        vis = d <= reach + np.sqrt(2.0 * R_REFRACTED * np.maximum(z, 0.0))
+        zr = float(z[vis].max()) if vis.any() else 0.0
+        return min(max(reach + horizon_distance(zr), HORIZON_MIN), HORIZON_MAX), zr
+
+
+class Horizon:
+    """The per-node line-of-sight cull of one selection (M1h): an eye h_eye m above sea level and the
+    anchor's HorizonGrid. Within HORIZON_MIN everything is kept (today's far field near the player)."""
+
+    def __init__(self, eye, grid):
+        self.eye, self.grid = float(eye), grid
+        self.reach = horizon_distance(self.eye)
+
+    def keeps(self, level, i, j, d):
+        """Node (level, i, j) whose nearest point is d m from the eye (horizontally): kept while
+        d <= sqrt(2R'h_eye) + sqrt(2R'zmax_node). The bulge only: terrain in between can still hide
+        a kept node (the depth buffer handles that). Plane distances are a little longer than the arc
+        (2.8 km at 700 km), which R' more than makes up for."""
+        if d <= HORIZON_MIN:
+            return True
+        return d <= self.reach + horizon_distance(self.grid.zmax(level, i, j))
+
+
+def _merc(lat, lon, zoom):
+    """Global DEM pixel coordinates (x east, y south; pixel k covers [k, k + 1)) of lat/lon at a zoom,
+    as dem.sample maps them; latitudes beyond the Web Mercator limit are clamped to it."""
+    w = 2 ** zoom * demmod.TILE
+    lat = np.clip(lat, -demmod.MAX_LAT, demmod.MAX_LAT)
+    fx = (np.asarray(lon, np.float64) / 360.0 + 0.5) * w
+    fy = (0.5 - np.arcsinh(np.tan(np.radians(lat))) / (2 * np.pi)) * w
+    return fx, fy
+
+
+def dem_block_max(dem, zoom, x, y, block=HORIZON_BLOCK):
+    """Highest elevation in every block x block pixel square of DEM tile (zoom, x, y): a
+    (TILE / block)² array, row 0 north (dem.Dem.block_max). A DEM without block_max (the tests'
+    synthetic ones) is sampled twice per block and axis instead."""
+    if hasattr(dem, "block_max"):
+        return dem.block_max(zoom, x, y, block)
+    n = demmod.TILE // block
+    w = 2 ** zoom * demmod.TILE
+    f = (np.arange(2 * n) + 0.5) * (block / 2.0)
+    fx, fy = np.meshgrid(x * demmod.TILE + f, y * demmod.TILE + f)
+    lon = fx / w * 360.0 - 180.0
+    lat = np.degrees(np.arctan(np.sinh(np.pi * (1.0 - 2.0 * fy / w))))
+    a = np.asarray(dem.sample(lat, lon, zoom), np.float64)
+    return a.reshape(n, 2, n, 2).max(axis=(1, 3))
+
+
+def horizon_grid(frame, dem, half, zoom=HORIZON_DEM_ZOOM, block=HORIZON_BLOCK, cache=None):
+    """The HorizonGrid of an anchor frame over [-half, half]² (spec §3.6: zmax_region "from a coarse
+    DEM pass, cached per anchor"). Each L6 cell gets the highest DEM block maximum (block x block
+    pixels at `zoom`) touching the lat/lon box of its corners and edge midpoints, padded by one
+    block, so it is never below the DEM's highest pixel in the cell. The zoom drops below `zoom`
+    while the grid would need more than HORIZON_DEM_TILES DEM tiles. cache: {(zoom, x, y, block):
+    block maxima} shared between anchors (a rebase reuses it). Runs in a worker thread: DEM tiles
+    may be fetched."""
+    s = level_size(HORIZON_GRID_LEVEL)
+    n = int(round(2 * half / s))
+    e = (np.arange(2 * n + 1) - n) * (s / 2.0)
+    X, Y = np.meshgrid(e, e)                    # [j north, i east]: cell corners and edge midpoints
+    lat, lon, _ = frame.enu_to_geodetic(X, Y, 0.0)
+    nb = demmod.TILE // block
+    while True:
+        w = 2 ** zoom * demmod.TILE
+        fx, fy = _merc(lat, lon, zoom)
+        fx = fx - w * np.round((fx - fx[n, n]) / w)        # unwrapped around the anchor (antimeridian)
+        bx = np.floor(fx / block).astype(np.int64)
+        by = np.clip(np.floor(fy / block).astype(np.int64), 0, 2 ** zoom * nb - 1)
+        tx0, tx1 = int(bx.min() - 1) // nb, int(bx.max() + 1) // nb
+        ty0, ty1 = max(0, int(by.min() - 1) // nb), min(2 ** zoom - 1, int(by.max() + 1) // nb)
+        if (tx1 - tx0 + 1) * (ty1 - ty0 + 1) <= HORIZON_DEM_TILES or zoom == 0:
+            break
+        zoom -= 1
+    keys = [(tx, ty) for ty in range(ty0, ty1 + 1) for tx in range(tx0, tx1 + 1)]
+    todo = [(zoom, tx % 2 ** zoom, ty) for tx, ty in keys
+            if cache is None or (zoom, tx % 2 ** zoom, ty, block) not in cache]
+    if todo and hasattr(dem, "tiles"):
+        dem.tiles(todo)                         # fetched concurrently, then read from its memory cache
+    m = np.empty(((ty1 - ty0 + 1) * nb, (tx1 - tx0 + 1) * nb))
+    for tx, ty in keys:
+        k = (zoom, tx % 2 ** zoom, ty, block)
+        a = cache.get(k) if cache is not None else None
+        if a is None:
+            a = dem_block_max(dem, *k)
+            if cache is not None:
+                cache[k] = a
+        m[(ty - ty0) * nb:(ty - ty0 + 1) * nb, (tx - tx0) * nb:(tx - tx0 + 1) * nb] = a
+    # per cell: the block range of its 3 x 3 points, padded by one block
+    bx, by = bx - tx0 * nb, by - ty0 * nb
+    views = [(bx[dj:dj + 2 * n:2, di:di + 2 * n:2], by[dj:dj + 2 * n:2, di:di + 2 * n:2])
+             for dj in range(3) for di in range(3)]
+    x0 = np.clip(np.minimum.reduce([v[0] for v in views]) - 1, 0, m.shape[1] - 1)
+    x1 = np.clip(np.maximum.reduce([v[0] for v in views]) + 1, 0, m.shape[1] - 1)
+    y0 = np.clip(np.minimum.reduce([v[1] for v in views]) - 1, 0, m.shape[0] - 1)
+    y1 = np.clip(np.maximum.reduce([v[1] for v in views]) + 1, 0, m.shape[0] - 1)
+    base = np.empty((n, n))
+    for cj in range(n):
+        for ci in range(n):
+            base[cj, ci] = m[y0[cj, ci]:y1[cj, ci] + 1, x0[cj, ci]:x1[cj, ci] + 1].max()
+    return HorizonGrid(half, base, zoom)
 
 
 # --- colour ----------------------------------------------------------------------------

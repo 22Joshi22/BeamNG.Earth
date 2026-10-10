@@ -4,7 +4,7 @@
 
     python3 server/earthd.py [--port 47613] [--user-dir DIR] [--cache-dir DIR] [--far-format cdae|dae]
                              [--imagery usgs,eox2023,eox2016|off] [--near-visual mesh|terrain]
-                             [--cells 32|64] [--tex 256,256,256,512]
+                             [--cells 32|64] [--tex 256,256,256,512] [--block 1024|512] [--horizon]
 
 Listens on 127.0.0.1 for the mod, builds terrain-block heightmaps (1024² on a world-locked
 2 m lattice, 256 m-aligned centres; in mesh near-visual mode the block is physics only) and a
@@ -15,6 +15,19 @@ satellite textures, streamed as swap groups, and writes them into
 Tile layout (docs/V1_4_SPEC.md §3.1, M1): --cells 64 (the default in mesh mode since probe P8
 passed) makes every tile 64 x 64 cells, FORMAT 4, with the exact level L-1, hello.cells and
 far_tile.tex; --cells 32 (and terrain mode) is the v1.3.1 layout, FORMAT 3.
+
+Terrain block (docs/V1_4_SPEC.md §3.5, M4): --block 512 (mesh mode only; the default stays 1024 until
+the in-game probes P2, P7 and P11 pass) makes the physics block 512² (collidable [c-512, c+510]) on
+a 128 m centre grid, sends hello.blockSize and terrain.size 512, and predicts the mod's 512 follow
+table (FOLLOW_RULES, with its fast mode above 150 m/s) for the prefetch.
+
+Horizon (docs/V1_4_SPEC.md §3.6 "Radius", M1h): --horizon (mesh mode only; off by default until the
+in-game probe P12 passes) replaces the 80 km square by a disc out to the line-of-sight horizon: the
+eye's height above sea level from the pose (camera z in the anchor frame, whose h0 is sea level),
+zmax from a coarse DEM pass per anchor (farfield.horizon_grid, in its own worker), RADIUS =
+clamp(sqrt(2R'h_eye) + sqrt(2R'zmax_region), 80 km, 1500 km), the per-tile horizon cull with
+refraction R' = R/(1-0.13), MAX_LEVEL 10, 256/128 px textures from L8, hello.horizon and
+status.radius (the mod's visibleDistance follows it).
 """
 import os
 
@@ -94,6 +107,41 @@ FOLLOW_PREPARE = 300.0
 FOLLOW_LEAD = 4.0
 FOLLOW_REACH = 420.0
 FRAME_S = 0.05              # the mod decides per frame, so it asks just past the threshold
+
+
+@dataclass(frozen=True)
+class FollowRule:
+    """The mod's terrain-follow table for one block size (follow.lua, its flat *_1024 / *_512
+    constants; tests/test_protocol_agreement.py checks both sides): centre grid, prepare distance
+    (Chebyshev from the centre), target lead (s) and reach (max |centre - player| per axis), the
+    prefetch start, and the fast mode (|v| > fast_v: lead fast_lead, reach fast_reach, the prepare
+    test at player + v * fast_ahead). 1024² has no fast mode (fast_v infinite)."""
+    grid: float
+    prepare: float
+    lead: float
+    reach: float
+    prefetch_start: float
+    fast_v: float = math.inf
+    fast_lead: float = 0.0
+    fast_reach: float = 0.0
+    fast_ahead: float = 0.0
+
+    def mode(self, vx, vy):
+        """(lead, reach, prepare-test ahead s) for this velocity."""
+        if vx * vx + vy * vy > self.fast_v * self.fast_v:
+            return self.fast_lead, self.fast_reach, self.fast_ahead
+        return self.lead, self.reach, 0.0
+
+
+# docs/V1_4_SPEC.md §3.5 (M4): the 512² block (collidable [c-512, c+510]) on a 128 m grid: prepare at
+# 128 m, lead 2 s, reach 510 - 250 = 260 m; fast mode above 150 m/s: lead 3 s, reach 510 - 90 = 420 m,
+# prepare test 0.75 s ahead; the prefetch starts 28 m before the prepare distance.
+FOLLOW_RULES = {
+    1024: FollowRule(heightmap.GRIDS[1024], FOLLOW_PREPARE, FOLLOW_LEAD, FOLLOW_REACH, PREFETCH_START),
+    512: FollowRule(heightmap.GRIDS[512], 128.0, 2.0, 260.0, 100.0,
+                    fast_v=150.0, fast_lead=3.0, fast_reach=420.0, fast_ahead=0.75),
+}
+BLOCK_DEFAULT = 1024        # --block: 512 (M4) stays off until the in-game probes P2, P7, P11 pass
 # |cx|,|cy| of an anchor's first terrain. A rebase hint stays within ~512 m of the new origin, but
 # a resync (same origin, after a server restart) asks for the block around the player, which can be
 # up to the mod's maximum rebase distance (16 km) away, plus however far the player got past it.
@@ -119,6 +167,16 @@ DELETE_INTERVAL = 0.2           # seconds between file deletions (5 files/s)
 # rate = backlog / DELETE_DRAIN_S, between 5 and DELETE_MAX_RATE files/s.
 DELETE_DRAIN_S = 60.0
 DELETE_MAX_RATE = 40.0
+# Horizon mode (M1h): the eye is quantised so a car on a slope does not re-select every pose: it moves
+# when it changed by more than max(EYE_STEP, EYE_STEP_REL * eye). Without a camera in the pose the eye
+# is EYE_ABOVE_PLAYER over the player's z. The radius is re-sent (status.radius) when it changed by
+# more than RADIUS_REPORT_REL; a failed coarse DEM pass is retried after HORIZON_RETRY s.
+EYE_STEP = 10.0
+EYE_STEP_REL = 0.05
+EYE_ABOVE_PLAYER = 1.5
+RADIUS_REPORT_REL = 0.02
+HORIZON_RETRY = 30.0
+HORIZON_BLOCK_CACHE = 1024      # DEM tiles' block maxima kept between anchors (16 KB each)
 # Anchor height quantum: relief survey of +-SURVEY_HALF around the anchor at DEM zoom SURVEY_ZOOM.
 SURVEY_HALF = 15000.0
 SURVEY_N = 31
@@ -166,28 +224,32 @@ class TileInfo:
     tex_seconds: float = 0.0
 
 
-def predict_centre(px, py, vx, vy, lead, reach=FOLLOW_REACH):
-    """snap256(p + v*lead), clamped so p stays within `reach` of the centre on both axes."""
+def predict_centre(px, py, vx, vy, lead, reach=FOLLOW_REACH, grid=heightmap.GRID):
+    """snap256(p + v*lead) (M4: the block's grid), clamped so p stays within `reach` of the centre
+    on both axes."""
     out = []
     for p, v in ((px, vx), (py, vy)):
-        c = heightmap.snap(p + v * lead)
-        lo = math.ceil((p - reach) / heightmap.GRID) * heightmap.GRID
-        hi = math.floor((p + reach) / heightmap.GRID) * heightmap.GRID
+        c = heightmap.snap(p + v * lead, grid)
+        lo = math.ceil((p - reach) / grid) * grid
+        hi = math.floor((p + reach) / grid) * grid
         out.append(float(min(max(c, lo), hi)) + 0.0)
     return tuple(out)
 
 
-def predict_request(px, py, vx, vy, cx, cy):
+def predict_request(px, py, vx, vy, cx, cy, rule=FOLLOW_RULES[1024]):
     """The centre the mod will ask for (V1_1_SPEC 4 prefetch): where a player moving
     straight at (vx, vy) leaves the FOLLOW_PREPARE box around the block centre, then the
     mod's own target rule there. (Spec 4 suggests snap256(p + v*6 s); predicting the mod's
-    exact request instead avoids builds that are never asked for.)"""
+    exact request instead avoids builds that are never asked for.) rule: the block size's
+    follow table; in its fast mode the box test is on the point v * fast_ahead ahead."""
+    lead, reach, ahead = rule.mode(vx, vy)
+    qx, qy = px + vx * ahead, py + vy * ahead
     t = 0.0
-    if max(abs(px - cx), abs(py - cy)) <= FOLLOW_PREPARE:
-        exits = [((c + math.copysign(FOLLOW_PREPARE, v)) - p) / v
-                 for p, v, c in ((px, vx, cx), (py, vy, cy)) if abs(v) > 0.5]
+    if max(abs(qx - cx), abs(qy - cy)) <= rule.prepare:
+        exits = [((c + math.copysign(rule.prepare, v)) - q) / v
+                 for q, v, c in ((qx, vx, cx), (qy, vy, cy)) if abs(v) > 0.5]
         t = min(exits) + FRAME_S if exits else 0.0
-    return predict_centre(px + vx * t, py + vy * t, vx, vy, FOLLOW_LEAD)
+    return predict_centre(px + vx * t, py + vy * t, vx, vy, lead, reach, rule.grid)
 
 
 def _num(msg, name, default=None):
@@ -218,11 +280,14 @@ class Server:
     def __init__(self, user_dir, cache_dir, tile_workers=3, kfun=None,
                  hysteresis=farfield.HYSTERESIS, radius=farfield.RADIUS, far_format="cdae",
                  imagery=imagerymod.DEFAULT_CHAIN, near_visual="mesh", tex_near=TEX_NEAR, tex_far=TEX_FAR,
-                 tone=1.0, near_radii=None, status_interval=STATUS_INTERVAL, cells=CELLS_DEFAULT, tex=None):
+                 tone=1.0, near_radii=None, status_interval=STATUS_INTERVAL, cells=CELLS_DEFAULT, tex=None,
+                 block=BLOCK_DEFAULT, horizon=False):
         """kfun: K(L) for every level (default: the layout's K table); near_radii: the min-level
         radii (default: the layout's); cells: 32 (v1.3.1) or 64 (M1, mesh mode only); tex: texture
         px per level from the finest (default: tex_near, tex_near, tex_far with 32 cells,
-        farfield.TEX_DEFAULT[64] with 64)."""
+        farfield.TEX_DEFAULT[64] with 64); block: terrain block samples per edge, 1024 (v1.3.1) or
+        512 (M4, mesh mode only: a 128 m centre grid and the 512 follow table); horizon: M1h, the
+        far field out to the line-of-sight horizon (mesh mode only; `radius` is then unused)."""
         self.sid = time.strftime("%Y%m%d-%H%M%S-") + secrets.token_hex(2)
         root = os.path.join(user_dir, "temp", "beamngEarth")
         self._clean_old_sessions(root, os.path.join(user_dir, *CDAE_ROOT))
@@ -241,7 +306,8 @@ class Server:
         if tex is None and cells == 32:
             tex = (tex_near, tex_near, tex_far)         # the v1.3.1 rule: the two finest levels are near
         # Every layout-dependent rule reads self.layout (terrain mode: frozen at 32 cells)
-        self.layout = farfield.Layout(cells, heightmap.SIZE, near_visual == "mesh", tex)
+        self.layout = farfield.Layout(cells, block, near_visual == "mesh", tex)
+        self.follow = FOLLOW_RULES[self.layout.block]     # the mod's terrain-follow table for this block
         self.min_level = self.layout.min_level
         self.near_radii = dict(self.layout.near_radii if near_radii is None else near_radii)
         self.tile_cache = TILE_CACHE[cells]
@@ -256,6 +322,16 @@ class Server:
         self.tile_workers = tile_workers
         self.kfun, self.hysteresis, self.radius = kfun or self.layout.k, hysteresis, radius
         self.status_interval = status_interval
+        # M1h: the line-of-sight far field. One worker builds the anchors' zmax grids (coarse DEM
+        # passes) so neither a heightmap nor a tile ever waits behind one.
+        if horizon and near_visual != "mesh":
+            raise ValueError("horizon mode needs the mesh near-visual mode")
+        self.horizon = bool(horizon)
+        self.horizon_pool = ThreadPoolExecutor(1, thread_name_prefix="horizon") if self.horizon else None
+        self.horizon_grids = {}             # anchorId -> farfield.HorizonGrid
+        self.horizon_inflight = {}          # anchorId -> (future, half-size)
+        self.horizon_failed = {}            # anchorId -> monotonic time of the last failed build
+        self.horizon_blocks = OrderedDict()     # (zoom, x, y, block) -> block maxima, LRU
         self.anchors = {}
         self._next_anchor = 1
         self.connections = set()
@@ -287,10 +363,14 @@ class Server:
             shutil.rmtree(os.path.dirname(d), ignore_errors=True)
             shutil.rmtree(os.path.join(cdae_root, sid.lower()), ignore_errors=True)
 
+    def snap(self, v):
+        """Nearest block centre coordinate on the layout's grid (256 m; M4 512²: 128 m)."""
+        return heightmap.snap(v, self.layout.grid)
+
     def new_anchor(self, lat, lon):
         a = Anchor(self._next_anchor, lat, lon, geodesy.EnuFrame(lat, lon))
         a.hm_zoom = demmod.zoom_for(lat, 2.5)       # ~2 m pixels where the data exists
-        a.zooms = {lvl: self.layout.dem_zoom(lat, lvl) for lvl in range(1, farfield.MAX_LEVEL + 1)}
+        a.zooms = {lvl: self.layout.dem_zoom(lat, lvl) for lvl in range(1, farfield.HORIZON_MAX_LEVEL + 1)}
         a.zooms[0] = a.hm_zoom                      # L0 shares the terrain's DEM (§1.4)
         self._next_anchor += 1
         return a
@@ -448,8 +528,63 @@ class Server:
 
     def tex_size(self, level):
         """Texture edge of a level (the layout's per-level table: with 32 cells the two finest
-        levels of the mode get tex_near, the others tex_far)."""
+        levels of the mode get tex_near, the others tex_far; horizon mode: farfield.HORIZON_TEX from L8)."""
+        if self.horizon and level in farfield.HORIZON_TEX:
+            return farfield.HORIZON_TEX[level]
         return self.layout.tex_size(level)
+
+    @property
+    def max_level(self):
+        """The quadtree's root level: L9 (v1.3.1), L10 in horizon mode."""
+        return farfield.HORIZON_MAX_LEVEL if self.horizon else farfield.MAX_LEVEL
+
+    # --- horizon (M1h) -------------------------------------------------------
+    def make_horizon_grid(self, anchor, half):
+        """Worker thread: the anchor's zmax grid over [-half, half]² (a coarse DEM pass)."""
+        t0 = time.perf_counter()
+        cache = _BoundedLru(self.horizon_blocks, HORIZON_BLOCK_CACHE)
+        grid = farfield.horizon_grid(anchor.frame, self.dem, half, cache=cache)
+        log.info("anchor %d horizon grid: %.0f km half-size, DEM z%d, %d cells, highest %.0f m, in %.2f s",
+                 anchor.id, half / 1000, grid.zoom, grid.base.size, float(grid.base.max()), time.perf_counter() - t0)
+        return grid
+
+    def horizon_grid(self, anchor, h_eye):
+        """The anchor's zmax grid, or None before its first one is built. Starts a build (on the event
+        loop's executor) when there is none, or when the one it has is smaller than an eye at h_eye
+        needs (an aircraft climbing); a finished build re-selects every connection on the anchor."""
+        half = farfield.horizon_extent(h_eye, ANCHOR_CENTRE_MAX)
+        have = self.horizon_grids.get(anchor.id)
+        busy = self.horizon_inflight.get(anchor.id)
+        failed = self.horizon_failed.get(anchor.id)
+        if ((have is None or have.half < half) and (busy is None or busy[1] < half)
+                and (failed is None or time.monotonic() - failed > HORIZON_RETRY)):
+            if busy is not None:
+                busy[0].cancel()            # a smaller build that has not started yet
+            fut = asyncio.get_running_loop().run_in_executor(self.horizon_pool, self.make_horizon_grid, anchor, half)
+            self.horizon_inflight[anchor.id] = (fut, half)
+            fut.add_done_callback(lambda f, aid=anchor.id: self._horizon_done(aid, f))
+        return have
+
+    def _horizon_done(self, aid, fut):
+        cur = self.horizon_inflight.get(aid)
+        if cur is not None and cur[0] is fut:
+            del self.horizon_inflight[aid]
+        if fut.cancelled():
+            return
+        if fut.exception() is not None:
+            self.horizon_failed[aid] = time.monotonic()
+            log.warning("anchor %d: horizon grid failed (%r), retrying in %.0f s", aid, fut.exception(), HORIZON_RETRY)
+            return
+        grid = fut.result()
+        if aid not in self.anchors:
+            return                          # pruned meanwhile
+        have = self.horizon_grids.get(aid)
+        if have is None or have.half < grid.half:
+            self.horizon_grids[aid] = grid
+            self.horizon_failed.pop(aid, None)
+            for c in list(self.connections):
+                if c.active == aid:
+                    c.update_far()
 
     def prefetch_imagery(self, anchor, tile):
         """Start downloading a queued tile's imagery (fire and forget), so tile workers rarely
@@ -572,6 +707,8 @@ class Server:
         """Forget anchors older than keep_from and delete their files."""
         for aid in [a for a in self.anchors if a < keep_from]:
             del self.anchors[aid]
+            self.horizon_grids.pop(aid, None)
+            self.horizon_failed.pop(aid, None)
             for ck in [k for k in self.tiles if k[0] == aid]:
                 del self.tiles[ck]
             for fut in [f for k, f in self.tile_inflight.items() if k[0] == aid]:
@@ -590,6 +727,28 @@ class Server:
             doomed += [p for p in glob.glob(os.path.join(self.out_dir, f"hm_{aid}_*"))
                        if os.path.basename(p) not in keep]
             self.queue_delete(p for p in dict.fromkeys(doomed) if os.path.exists(p))
+
+
+class _BoundedLru:
+    """The dict interface farfield.horizon_grid() uses for its block-maximum cache, over the server's
+    OrderedDict: LRU order, at most `size` entries (only the one horizon worker reads and writes it)."""
+
+    def __init__(self, od, size):
+        self.od, self.size = od, size
+
+    def get(self, key):
+        v = self.od.get(key)
+        if v is not None:
+            self.od.move_to_end(key)
+        return v
+
+    def __contains__(self, key):
+        return key in self.od
+
+    def __setitem__(self, key, value):
+        self.od[key] = value
+        while len(self.od) > self.size:
+            self.od.popitem(last=False)
 
 
 class Connection:
@@ -635,6 +794,13 @@ class Connection:
         self.streamer = None
         self.last_status = ""           # text of the last status message (re-sent with a new backlog)
         self.status_sent = (0.0, None)  # (monotonic time, backlog) of the last status message
+        # M1h (horizon mode): the eye in m above sea level (quantised, see EYE_STEP; frame
+        # independent, so it survives a rebase; None before the first pose), the far-field radius of
+        # the last selection, the radius the last status carried, the region's highest visible terrain
+        self.eye = None
+        self.radius = farfield.HORIZON_MIN if server.horizon else server.radius
+        self.radius_sent = None
+        self.zmax_region = None
 
     def send(self, msg):
         if not self.writer.is_closing():
@@ -650,7 +816,11 @@ class Connection:
     def status(self, text):
         n = self.backlog()
         self.last_status, self.status_sent = text, (time.monotonic(), n)
-        self.send({"type": "status", "text": text, "backlog": n})
+        m = {"type": "status", "text": text, "backlog": n}
+        if self.s.horizon:              # M1h: the far-field radius (the mod's visibleDistance follows it)
+            m["radius"] = round(self.radius)
+            self.radius_sent = self.radius
+        self.send(m)
 
     def refresh_status(self):
         """--status-interval: re-send the last status when the backlog changed, at most every
@@ -708,6 +878,10 @@ class Connection:
                  "nearVisual": self.s.near_visual, "attribution": self.s.attribution()}
             if lay.format >= 4:         # M1: the tiles' cell count (crossover.defaultErr, the exact level)
                 m["cells"] = lay.cells
+            if lay.block != heightmap.SIZE:     # M4: the terrain block size (the mod's lattice / follow table)
+                m["blockSize"] = lay.block
+            if self.s.horizon:                  # M1h: status.radius follows; the mod sets its sky and view distance
+                m["horizon"] = True
             self.send(m)
         elif kind == "prepare_anchor":
             self.spawn(self.prepare_anchor(msg))
@@ -745,8 +919,8 @@ class Connection:
             if not (math.isfinite(lat) and math.isfinite(lon) and -90 <= lat <= 90):
                 raise ValueError
             lim = ANCHOR_CENTRE_MAX
-            cx = min(max(heightmap.snap(_num(msg, "cx", 0.0)), -lim), lim)
-            cy = min(max(heightmap.snap(_num(msg, "cy", 0.0)), -lim), lim)
+            cx = min(max(self.s.snap(_num(msg, "cx", 0.0)), -lim), lim)
+            cy = min(max(self.s.snap(_num(msg, "cy", 0.0)), -lim), lim)
         except (KeyError, TypeError, ValueError):
             self.send({"type": "anchor_error", "requestId": req, "error": "invalid lat/lon/cx/cy"})
             return
@@ -779,14 +953,14 @@ class Connection:
         try:
             aid = msg["anchorId"]
             anchor = self.s.anchors[aid]
-            cx, cy = heightmap.snap(_num(msg, "cx")), heightmap.snap(_num(msg, "cy"))
+            cx, cy = self.s.snap(_num(msg, "cx")), self.s.snap(_num(msg, "cy"))
         except (KeyError, TypeError, ValueError) as e:
             self.send({"type": "terrain_error", "requestId": req, "anchorId": msg.get("anchorId"),
                        "error": f"invalid request: {type(e).__name__} {e}"})
             return
-        if aid == self.active and farfield.Block(cx, cy) != self.block:
+        if aid == self.active and self.s.layout.block_at(cx, cy) != self.block:
             # The pending block's L0 tiles stream first, so the commit never waits (§2.3).
-            self.pending_block = farfield.Block(cx, cy)
+            self.pending_block = self.s.layout.block_at(cx, cy)
             self.update_far()
         t0 = time.perf_counter()
         try:
@@ -795,7 +969,7 @@ class Connection:
             log.exception("terrain request %s failed", req)
             self.send({"type": "terrain_error", "requestId": req, "anchorId": aid,
                        "error": f"{type(e).__name__}: {e}"})
-            if aid == self.active and self.pending_block == farfield.Block(cx, cy):
+            if aid == self.active and self.pending_block == self.s.layout.block_at(cx, cy):
                 self.pending_block = None   # the mod will not commit it: stop forcing L0 there
                 self.update_far()
             return
@@ -819,7 +993,7 @@ class Connection:
             fx, fy, _ = anchor.frame.ecef_to_enu(*old.frame.enu_to_ecef(*self.focus, 0.0))
             self.focus = (float(fx), float(fy))
             if anchor.first_terrain is not None:
-                bx0, by0, bx1, by1 = farfield.Block(*anchor.first_terrain).bbox
+                bx0, by0, bx1, by1 = self.s.layout.block_at(*anchor.first_terrain).bbox
                 if not (bx0 <= fx <= bx1 and by0 <= fy <= by1):
                     # Not a rebase but a teleport: the mod places the player on the new
                     # anchor's first terrain, and its next pose may come only after that.
@@ -846,7 +1020,7 @@ class Connection:
         self.update_far()
 
     def _set_block(self, aid, cx, cy):
-        self.block = farfield.Block(cx, cy)
+        self.block = self.s.layout.block_at(cx, cy)
         if self.pending_block == self.block:
             self.pending_block = None
         key = (aid, cx, cy)
@@ -857,14 +1031,14 @@ class Connection:
 
     def commit_terrain(self, msg):
         aid = msg.get("anchorId")
-        cx, cy = heightmap.snap(_num(msg, "cx")), heightmap.snap(_num(msg, "cy"))
+        cx, cy = self.s.snap(_num(msg, "cx")), self.s.snap(_num(msg, "cy"))
         if aid != self.active:
             if aid in self.s.anchors and (self.active is None or aid > self.active):
                 self.commit_anchor(aid)
             else:
                 log.warning("commit_terrain for anchor %r (active %r) ignored", aid, self.active)
                 return
-        if self.block == farfield.Block(cx, cy):
+        if self.block == self.s.layout.block_at(cx, cy):
             return
         # Far-tile keys do not depend on the block; only the forced L0 area moves.
         self._set_block(aid, cx, cy)
@@ -895,6 +1069,8 @@ class Connection:
         self.vel = (vx, vy)
         if isinstance(msg.get("cam"), dict):
             self.cam = msg["cam"]
+        if self.s.horizon:
+            self.update_eye(self.s.anchors[aid].frame, x, y, msg)
         self.predicted_block = None
         # The mod asks for its next terrain relative to the block it will have committed by
         # then: the pending one if it asked already (it commits that one first), else the
@@ -903,13 +1079,53 @@ class Connection:
         base = self.pending_block or self.block
         if base is not None:
             px, py = self.focus
-            if max(abs(px - base.cx), abs(py - base.cy)) >= PREFETCH_START:
-                c = predict_request(px, py, *self.vel, base.cx, base.cy)
-                if c != (base.cx, base.cy) and farfield.Block(*c) != self.block:
-                    self.predicted_block = farfield.Block(*c)
+            rule = self.s.follow
+            ahead = rule.mode(*self.vel)[2]         # M4 fast mode: the mod tests a point ahead
+            qx, qy = px + self.vel[0] * ahead, py + self.vel[1] * ahead
+            if max(abs(qx - base.cx), abs(qy - base.cy)) >= rule.prefetch_start:
+                c = predict_request(px, py, *self.vel, base.cx, base.cy, rule)
+                if c != (base.cx, base.cy) and self.s.layout.block_at(*c) != self.block:
+                    self.predicted_block = self.s.layout.block_at(*c)
         self.update_far()
         self.maybe_prefetch()
         self.refresh_status()
+
+    def update_eye(self, frame, x, y, msg):
+        """M1h: the eye's height above sea level from a pose in `frame` (the pose's anchor): the camera's
+        z, else EYE_ABOVE_PLAYER over the player's. The frame's z is the height above the anchor's
+        tangent plane, whose origin is at sea level, so the exact geodetic height adds the d²/2R the
+        plane lies above the ellipsoid at the player (17.7 m at 15 km). Quantised (EYE_STEP)."""
+        cam = msg.get("cam")
+        z = cam.get("z") if isinstance(cam, dict) else None
+        if isinstance(z, (int, float)) and not isinstance(z, bool) and math.isfinite(z):
+            z = float(z)
+        else:
+            z = _num(msg, "z", 0.0) + EYE_ABOVE_PLAYER
+        h = float(frame.enu_to_geodetic(x, y, z)[2])
+        if self.eye is None or abs(h - self.eye) > max(EYE_STEP, EYE_STEP_REL * abs(self.eye)):
+            self.eye = h
+
+    def horizon_select(self):
+        """M1h: (radius, extra select() arguments) for the active anchor: the disc out to the
+        line-of-sight horizon with the per-tile cull, L10 roots; until the anchor's zmax grid is
+        built, the HORIZON_MIN disc without a cull. Reports a changed radius in a status."""
+        anchor = self.s.anchors[self.active]
+        eye = self.eye if self.eye is not None else 0.0
+        grid = self.s.horizon_grid(anchor, eye)
+        cull = None
+        if grid is None:
+            radius = farfield.HORIZON_MIN
+        else:
+            radius, zr = grid.radius(*self.focus, eye)
+            cull = farfield.Horizon(eye, grid)
+            if zr != self.zmax_region or abs(radius - self.radius) > RADIUS_REPORT_REL * self.radius:
+                log.info("horizon: eye %.0f m, highest visible terrain %.0f m, radius %.0f km",
+                         eye, zr, radius / 1000)
+            self.zmax_region = zr
+        self.radius = radius
+        if self.radius_sent is None or abs(radius - self.radius_sent) > RADIUS_REPORT_REL * self.radius_sent:
+            self.status(self.last_status or f"Horizon {radius / 1000:.0f} km")
+        return radius, {"max_level": self.s.max_level, "disc": True, "horizon": cull}
 
     def maybe_prefetch(self):
         """Speculatively build the terrain the mod is about to ask for."""
@@ -951,9 +1167,11 @@ class Connection:
         now = time.monotonic()
         self.retired = {ck: t for ck, t in self.retired.items() if now - t < self.s.retired_keep}
         self.node_changed = {n: t for n, t in self.node_changed.items() if now - t < farfield.HOLD_S}
+        radius, extra = (self.horizon_select() if self.s.horizon else (self.s.radius, {}))
         new, refined = farfield.select(*self.focus, self.forced(), self.refined, self.s.kfun,
-                                       self.s.hysteresis, self.s.radius, hold=set(self.node_changed),
-                                       min_level=self.s.min_level, radii=self.s.near_radii, layout=self.s.layout)
+                                       self.s.hysteresis, radius, hold=set(self.node_changed),
+                                       min_level=self.s.min_level, radii=self.s.near_radii, layout=self.s.layout,
+                                       **extra)
         if self.desired:                # the first selection of an anchor is not a change
             for n in refined ^ self.refined:
                 self.node_changed[n] = now
@@ -1159,13 +1377,16 @@ async def main_async(args):
     server = Server(args.user_dir, args.cache_dir, args.workers, kfun, args.hysteresis, args.far_radius, fmt,
                     imagery=args.imagery, near_visual=args.near_visual, tex_near=args.tex_near,
                     tex_far=args.tex_far, tone=args.tone, near_radii=radii,
-                    status_interval=args.status_interval, cells=args.cells, tex=args.tex)
+                    status_interval=args.status_interval, cells=args.cells, tex=args.tex, block=args.block,
+                    horizon=args.horizon)
     srv = await asyncio.start_server(
         lambda r, w: Connection(server, r, w).run(), "127.0.0.1", args.port)
     port = srv.sockets[0].getsockname()[1]
     print(f"earthd listening on 127.0.0.1:{port} session {server.sid} -> {server.out_dir} "
           f"(far tiles: {fmt}, near visual: {server.near_visual}, cells: {server.layout.cells} "
-          f"(format {server.layout.format}), imagery: {','.join(args.imagery) if args.imagery else 'off'})",
+          f"(format {server.layout.format}), block: {server.layout.block}, "
+          f"horizon: {'on' if server.horizon else 'off'}, "
+          f"imagery: {','.join(args.imagery) if args.imagery else 'off'})",
           flush=True)
     async with srv:
         await srv.serve_forever()
@@ -1220,6 +1441,15 @@ def main():
     ap.add_argument("--cells", type=int, choices=farfield.CELL_COUNTS, default=None,
                     help="tile cells per edge: 64 = docs/V1_4_SPEC.md M1 (FORMAT 4, exact level L-1; the "
                          "default in mesh mode), 32 = the v1.3.1 layout (FORMAT 3; terrain mode always)")
+    ap.add_argument("--block", type=int, choices=tuple(FOLLOW_RULES), default=BLOCK_DEFAULT,
+                    help="terrain block samples per edge: 1024 = the v1.3.1 block (default), 512 = "
+                         "docs/V1_4_SPEC.md M4 (on a 128 m grid, hello.blockSize; mesh mode only; off until "
+                         "the in-game probes P2, P7, P11 pass)")
+    ap.add_argument("--horizon", action="store_true",
+                    help="docs/V1_4_SPEC.md M1h: the far field out to the line-of-sight horizon (a disc up to "
+                         "1500 km from the eye's height above sea level and the terrain in sight, L10 tiles, "
+                         "per-tile horizon cull; hello.horizon, status.radius; mesh mode only; off by default "
+                         "until the in-game probe P12 passes)")
     ap.add_argument("--tex", type=parse_tex_list, default=None,
                     help="texture size (px) per level from the finest, the last value repeating "
                          "(default: 64 cells 256,256,256,512; 32 cells from --tex-near / --tex-far)")
@@ -1239,6 +1469,10 @@ def main():
     args.cells = resolve_cells(args.cells, args.near_visual)
     if args.cells != 32 and args.near_visual != "mesh":
         ap.error("--cells 64 needs --near-visual mesh (terrain mode is frozen at the v1.3.1 layout)")
+    if args.block != heightmap.SIZE and args.near_visual != "mesh":
+        ap.error("--block 512 needs --near-visual mesh (terrain mode is frozen at the v1.3.1 layout)")
+    if args.horizon and args.near_visual != "mesh":
+        ap.error("--horizon needs --near-visual mesh (terrain mode is frozen at the v1.3.1 layout)")
     logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO,
                         format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     if args.nice:

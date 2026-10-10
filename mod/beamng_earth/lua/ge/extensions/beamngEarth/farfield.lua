@@ -76,7 +76,8 @@ M.HIDE_DEPTH = 2.0      -- covered tile without a server `sink`: how far it sink
 M.DELETE_PRESSURE = 64  -- deletes wait for the import queue unless this many objects are doomed
 M.MAX_DT = 0.1          -- s; longest step of the transition clock per frame
 M.EXACT_LEVEL = -2      -- the exact (physics lattice) level of the 32-cell mesh layout (server MESH_MIN_LEVEL)
-M.MAX_LEVEL = 9         -- coarsest level (server farfield.MAX_LEVEL)
+M.MAX_LEVEL = 9         -- coarsest level (server farfield.MAX_LEVEL); the horizon mode's L10 tiles (M1h)
+                        -- are never under the player (they split within 328 km), so shownAt stops here
 M.EXACT_OFF = 0.01      -- m; an exact tile further than this off its height (crossover) is a miss
 
 local pending = {}      -- key -> instance received but not shown yet (current anchor)

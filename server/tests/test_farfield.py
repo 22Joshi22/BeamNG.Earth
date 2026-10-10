@@ -275,7 +275,12 @@ class LayoutTest(unittest.TestCase):
         self.assertEqual([ff.Layout(64, tex=(128, 256)).tex_size(lvl) for lvl in (-1, 0, 5)], [128, 256, 256])
         self.assertEqual([ff.Layout(32, mesh=False, tex=(512, 512, 256)).tex_size(lvl) for lvl in (0, 1, 2)],
                          [512, 512, 256])
-        for bad in (dict(cells=48), dict(cells=64, mesh=False), dict(block=512), dict(tex=())):
+        # M4 (docs/V1_4_SPEC.md §3.5): the 512² block, mesh mode only, on a 128 m grid
+        b = ff.Layout(64, 512)
+        self.assertEqual((b.block, b.grid, b.block_at(128.0, 0.0).bbox), (512, 128.0, (-384.0, -512.0, 640.0, 512.0)))
+        self.assertEqual((m.grid, m.block_at(0.0, 0.0)), (256.0, ff.Block(0.0, 0.0)))
+        for bad in (dict(cells=48), dict(cells=64, mesh=False), dict(block=2048), dict(block=512, mesh=False),
+                    dict(tex=())):
             with self.assertRaises(ValueError, msg=bad):
                 ff.Layout(**bad)
         with self.assertRaises(Exception):

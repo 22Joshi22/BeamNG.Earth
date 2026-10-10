@@ -10,6 +10,7 @@ from PIL import Image
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import dem as demmod  # noqa: E402
+import farfield as ff  # noqa: E402
 import geodesy as g  # noqa: E402
 import heightmap  # noqa: E402
 
@@ -62,6 +63,13 @@ class GeometryTest(unittest.TestCase):
         self.assertEqual(heightmap.height_at(q, 0.0, 65536.0, 0.0, 0.0, -2.0, 0.0), 9.0)
         self.assertIsNone(heightmap.height_at(q, 0.0, 65536.0, 0.0, 0.0, 2.5, 0.0))
 
+    def test_grids(self):
+        """M4: the centre grid per block size; snap takes it."""
+        self.assertEqual((heightmap.grid(), heightmap.grid(1024), heightmap.grid(512)), (256.0, 256.0, 128.0))
+        self.assertEqual((heightmap.valid(), heightmap.valid(512)), (2046.0, 1022.0))
+        self.assertEqual((heightmap.snap(63.9, 128.0), heightmap.snap(64.0, 128.0), heightmap.snap(-64.1, 128.0)),
+                         (0.0, 128.0, -128.0))
+
     def test_snap(self):
         self.assertEqual(heightmap.snap(127.9), 0.0)
         self.assertEqual(heightmap.snap(128.0), 256.0)
@@ -85,25 +93,52 @@ class GeometryTest(unittest.TestCase):
 
 
 class HeightmapTest(unittest.TestCase):
+    """The block as the server writes it, parametrised over the layouts' block sizes
+    (docs/V1_4_SPEC.md §3.5, E11: (32 cells, 1024²) here, (64 cells, 512²) in Heightmap512Test):
+    a move of the size's grid shares bit-identical samples, the q / zBase rules are the same."""
+    layout = ff.Layout(32, 1024)
+    ORIENT_C = (768.0, -256.0)          # a block centre with (0, 0) inside it
+
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.path = os.path.join(self.tmp.name, "hm.png")
         self.frame = g.EnuFrame(LAT0, LON0)
+        self.n = self.layout.block
+        self.half = heightmap.half_extent(self.n)
+        self.grid = self.layout.grid
 
     def tearDown(self):
         self.tmp.cleanup()
 
+    def generate(self, elev, path, cx=0.0, cy=0.0, **kw):
+        return heightmap.generate(self.frame, elev, path, cx, cy, size=self.n, **kw)
+
     def read(self, path=None):
         with Image.open(path or self.path) as im:
-            self.assertEqual(im.size, (1024, 1024))
+            self.assertEqual(im.size, (self.n, self.n))
             self.assertIn(im.mode, ("I;16", "I"))
             return np.asarray(im).astype(np.int64)[::-1]       # back to [gy, gx], gy = north
+
+    def test_grid_and_parity(self):
+        """Centres on the size's grid (256 / 128 m); the SW corner is then an even lattice index, so
+        the block-local Torque diagonal parity is the world lattice's (farfield.torque_split45)."""
+        self.assertEqual(self.grid, {1024: 256.0, 512: 128.0}[self.n])
+        self.assertEqual(self.grid / heightmap.SQUARE % 2, 0)
+        for k in range(-7, 8):
+            c = k * self.grid
+            i0 = heightmap.lattice_index(c, self.n)
+            self.assertEqual(i0 % 2, 0, c)
+            gx = np.arange(5)
+            self.assertTrue((ff.torque_split45(gx, 3) == ff.torque_split45(i0 + gx, i0 + 3)).all())
+        self.assertEqual(heightmap.snap(self.grid / 2 - 0.1, self.grid), 0.0)
+        self.assertEqual(heightmap.snap(self.grid / 2, self.grid), self.grid)
 
     def test_orientation_and_sample_positions(self):
         # Ground rising to the north-east: north edge high, east edge high.
         elev = lambda lat, lon: 1000 + (lat - LAT0) * 20000 + (lon - LON0) * 5000
-        cx, cy = 768.0, -256.0
-        info = heightmap.generate(self.frame, elev, self.path, cx, cy)
+        cx, cy = self.ORIENT_C
+        n, half = self.n, self.half
+        info = self.generate(elev, self.path, cx, cy)
         with Image.open(self.path) as im:
             png = np.asarray(im).astype(np.float64)
         self.assertGreater(png[0].mean(), png[-1].mean())        # row 0 = north
@@ -114,40 +149,42 @@ class HeightmapTest(unittest.TestCase):
         self.assertLessEqual(info["zBase"], info["minU"] - 8)
         q = self.read()
         h = heightmap.heights(q, info["zBase"], info["maxHeight"])
-        # Sample (gx, gy) at (cx-1024+2gx, cy-1024+2gy); the last row/column is real data.
-        for gy, gx in ((100, 900), (0, 0), (1023, 1023), (1023, 0), (0, 1023), (511, 511)):
-            x, y = cx - 1024 + 2 * gx, cy - 1024 + 2 * gy
+        # Sample (gx, gy) at (cx-half+2gx, cy-half+2gy); the last row/column is real data.
+        for gy, gx in ((100, n - 124), (0, 0), (n - 1, n - 1), (n - 1, 0), (0, n - 1), (n // 2 - 1, n // 2 - 1)):
+            x, y = cx - half + 2 * gx, cy - half + 2 * gy
             _, _, _, _, _, u = self.frame.surface_enu(np.float64(x), np.float64(y), elev)
             self.assertAlmostEqual(h[gy, gx], float(u), delta=info["q"] / 2 + 1e-9)
-        self.assertFalse((q[:, 1023] == q[:, 1022]).all())
-        self.assertFalse((q[1023] == q[1022]).all())
+        self.assertFalse((q[:, n - 1] == q[:, n - 2]).all())
+        self.assertFalse((q[n - 1] == q[n - 2]).all())
         # (0, 0) is inside this block: groundZ is the terrain height there.
         _, _, _, _, _, u0 = self.frame.surface_enu(np.float64(0), np.float64(0), elev)
         self.assertAlmostEqual(info["groundZ"], float(u0), delta=0.01)
 
     def test_overlapping_blocks_identical(self):
         """§1.8: adjacent blocks' overlapping samples are bit-identical (same stored height and,
-        with the same zBase, the same uint16), on rough ground."""
-        base = heightmap.generate(self.frame, rough, self.path, 0.0, 0.0)
+        with the same zBase, the same uint16), on rough ground, for moves on the size's grid."""
+        n, G = self.n, self.grid
+        base = self.generate(rough, self.path, 0.0, 0.0)
         q0 = self.read()
         h0 = heightmap.heights(q0, base["zBase"], base["maxHeight"])
-        for dx, dy in ((256.0, 0.0), (0.0, 256.0), (256.0, 256.0), (-512.0, 768.0)):
+        for dx, dy in ((G, 0.0), (0.0, G), (G, G), (-2 * G, 3 * G)):
             with self.subTest(dx=dx, dy=dy):
                 p = os.path.join(self.tmp.name, f"hm_{dx}_{dy}.png")
-                info = heightmap.generate(self.frame, rough, p, dx, dy)
+                info = self.generate(rough, p, dx, dy)
                 q1 = self.read(p)
                 h1 = heightmap.heights(q1, info["zBase"], info["maxHeight"])
                 sx, sy = int(dx // 2), int(dy // 2)
-                a = (slice(max(0, sy), 1024 + min(0, sy)), slice(max(0, sx), 1024 + min(0, sx)))
-                b = (slice(max(0, -sy), 1024 - max(0, sy)), slice(max(0, -sx), 1024 - max(0, sx)))
+                a = (slice(max(0, sy), n + min(0, sy)), slice(max(0, sx), n + min(0, sx)))
+                b = (slice(max(0, -sy), n - max(0, sy)), slice(max(0, -sx), n - max(0, sx)))
                 self.assertEqual(info["q"], base["q"])
+                self.assertGreater(h0[a].size, 0)
                 self.assertTrue((h0[a] == h1[b]).all())
                 if info["zBase"] == base["zBase"]:
                     self.assertTrue((q0[a] == q1[b]).all())
                 else:
                     self.assertTrue((q0[a] - q1[b] == (info["zBase"] - base["zBase"]) / info["q"]).all())
         # Stored heights are Q * round(u / Q) for any zBase.
-        u = heightmap.grid_u(self.frame, rough, 0.0, 0.0)
+        u = heightmap.grid_u(self.frame, rough, 0.0, 0.0, self.n)
         self.assertTrue((h0 == heightmap.quantise(u, base["q"]) * base["q"]).all())
 
     def test_overlap_identical_through_dem_mosaic(self):
@@ -156,39 +193,48 @@ class HeightmapTest(unittest.TestCase):
             def _load_tile(self, key):
                 rng = np.random.default_rng(abs(hash(key)) % 2 ** 32)
                 return (2000 + rng.normal(0, 3, (demmod.TILE, demmod.TILE))).astype(np.float32)
+        n, G = self.n, self.grid
         with tempfile.TemporaryDirectory() as cache:
             dem = SynthDem(cache, fetch_workers=2)
             fn = lambda la, lo: dem.sample(la, lo, 15)      # noqa: E731
-            a = heightmap.generate(self.frame, fn, self.path, 0.0, 0.0)
+            a = self.generate(fn, self.path, 0.0, 0.0)
             h0 = heightmap.heights(self.read(), a["zBase"], a["maxHeight"])
             p = os.path.join(self.tmp.name, "b.png")
-            b = heightmap.generate(self.frame, fn, p, 256.0, -768.0)
+            b = self.generate(fn, p, G, -3 * G)
             h1 = heightmap.heights(self.read(p), b["zBase"], b["maxHeight"])
             dem.pool.shutdown()
-        self.assertTrue((h0[:640, 128:] == h1[384:, :896]).all())
+        sx, sy = int(G // 2), int(3 * G // 2)                  # new sample (gx, gy) = old (gx + sx, gy - sy)
+        self.assertTrue((h0[:n - sy, sx:] == h1[sy:, :n - sx]).all())
 
     def test_ground_outside_block(self):
-        info = heightmap.generate(self.frame, lambda lat, lon: np.zeros_like(lat), self.path, 2048.0, 0.0)
+        info = self.generate(lambda lat, lon: np.zeros_like(lat), self.path, 2 * self.half, 0.0)
         self.assertIsNone(info["groundZ"])
 
     def test_valid_area(self):
-        info = heightmap.generate(self.frame, lambda lat, lon: np.zeros_like(lat), self.path, 0.0, 0.0)
+        info = self.generate(lambda lat, lon: np.zeros_like(lat), self.path, 0.0, 0.0)
         q = self.read()
+        h, v = self.half, heightmap.valid(self.n)
         args = (q, info["zBase"], info["maxHeight"], 0.0, 0.0)
-        self.assertIsNotNone(heightmap.height_at(*args, -1024.0, -1024.0))
-        self.assertIsNotNone(heightmap.height_at(*args, 1022.0, 1022.0))      # sample 1023: still collidable
-        self.assertIsNone(heightmap.height_at(*args, 1023.0, 0.0))            # the 2 m N/E strip
-        self.assertIsNone(heightmap.height_at(*args, 0.0, -1024.5))
+        self.assertIsNotNone(heightmap.height_at(*args, -h, -h))
+        self.assertIsNotNone(heightmap.height_at(*args, v - h, v - h))       # sample n-1: still collidable
+        self.assertIsNone(heightmap.height_at(*args, v - h + 1.0, 0.0))     # the 2 m N/E strip
+        self.assertIsNone(heightmap.height_at(*args, 0.0, -h - 0.5))
 
     def test_quantisation_and_curvature(self):
-        info = heightmap.generate(self.frame, lambda lat, lon: np.zeros_like(lat), self.path)
+        info = self.generate(lambda lat, lon: np.zeros_like(lat), self.path)
         q = self.read()
-        # Flat ellipsoid: centre is highest; corners (1.45 km out) drop ~0.16 m.
+        # Flat ellipsoid: centre is highest; corners (1.45 km out for 1024²) drop d² / 2R.
         self.assertEqual(info["q"], heightmap.Q_DEFAULT)
         self.assertEqual(info["zBase"], math.floor((info["minU"] - 8) / 64) * 64)
         self.assertAlmostEqual(info["groundZ"], 0.0, delta=0.01)
         corner = heightmap.heights(q, info["zBase"], info["maxHeight"])[0, 0]
-        self.assertAlmostEqual(corner, -(1024 ** 2 * 2) / (2 * 6371000), delta=0.02)
+        self.assertAlmostEqual(corner, -(self.half ** 2 * 2) / (2 * 6371000), delta=0.02)
+
+
+class Heightmap512Test(HeightmapTest):
+    """M4 (docs/V1_4_SPEC.md §3.5): the 512² block of the (64 cells, 512) layout, on a 128 m grid."""
+    layout = ff.Layout(64, 512)
+    ORIENT_C = (384.0, -256.0)
 
 
 if __name__ == "__main__":

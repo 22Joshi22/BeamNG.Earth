@@ -3,6 +3,14 @@
 -- exact rigid transform p_new = R*p_old + t (geodesy Anchor:transformTo).
 -- decide() is the pure prefetch/commit rule (testable under plain luajit);
 -- moveVehicles() is the engine side for vehicles.
+--
+-- Block size (docs/V1_4_SPEC.md 3.5, M4): configure(size) picks STALE_DIST per block size (450 m for
+-- 1024², 192 m for 512²) and, for 512², the stale-anchor rule: a prepared anchor whose terrain centre
+-- is farther than STALE_DIST from the player is still committed when the player is inside its valid
+-- area with >= KEEP_EDGE to every edge (terrain-follow then prepares at once); otherwise it is
+-- discarded and re-requested with its terrain where the player will be when the answer arrives
+-- (core.lua rebaseHint: p + v * (measured anchor latency + LEAD_EXTRA_S)). 1024² keeps v1.3.1's
+-- discard (KEEP_EDGE_1024 = 0: off).
 
 local M = {}
 
@@ -15,7 +23,22 @@ M.distance = M.DEFAULT_DISTANCE -- switch anchors at or beyond this horizontal d
 M.PREFETCH_MARGIN = 300  -- prepare_anchor this much earlier, so the anchor is ready by `distance`
 M.STALE_DIST = 450       -- a prepared anchor whose terrain centre is this far (Chebyshev, new
                          -- frame) from the player would not help: re-request
+M.STALE_DIST_1024 = 450  -- per block size (flat: modsim reads these); 512: a commit at 192 m leaves
+M.STALE_DIST_512 = 192   -- 318 m to the collidable edge, as the follow table's commit distance does
+M.KEEP_EDGE = 0          -- stale but >= this far inside every edge of its valid area: commit (0 = off)
+M.KEEP_EDGE_1024 = 0
+M.KEEP_EDGE_512 = 150
+M.LATENCY_S = 1          -- anchor latency assumed until one is measured (s)
+M.LEAD_EXTRA_S = 1       -- a re-requested terrain leads the player by the latency plus this
 M.RETRY_S = 5            -- wait after an anchor_error before asking again
+
+-- The session's block size (1024 or 512): the staleness distance and the stale-anchor rule.
+function M.configure(size)
+  local small = size == 512
+  M.STALE_DIST = small and M.STALE_DIST_512 or M.STALE_DIST_1024
+  M.KEEP_EDGE = small and M.KEEP_EDGE_512 or M.KEEP_EDGE_1024
+  return small and 512 or 1024
+end
 
 function M.setDistance(m)
   m = tonumber(m)
@@ -28,20 +51,31 @@ end
 -- pending: nil or { purpose = 'rebase'|'resync'|'teleport', ready = bool } (the request in flight).
 -- staleDist: only when pending.ready: Chebyshev distance player -> the prepared terrain centre,
 --   both in the new anchor's frame.
+-- edgeDist: only when pending.ready: the player's distance to the nearest edge of that terrain's
+--   valid (collidable) area, new frame (negative outside); used by the stale-anchor rule (KEEP_EDGE).
 -- Returns 'prefetch', 'commit', 'discard' or nil. Teleport/resync requests commit as soon as they
 -- are ready, which the caller handles; this rule only covers the distance-driven rebase.
 -- Staleness is judged only at the commit: the terrain was centred for where the player will be
 -- at the rebase distance (core.lua rebaseHint), up to PREFETCH_MARGIN + 424 m ahead of the player
 -- at the prefetch, so judging it earlier discards a good answer and re-requests in a loop.
-function M.decide(dist, pending, staleDist, now, retryAt)
+function M.decide(dist, pending, staleDist, now, retryAt, edgeDist)
   if not pending then
     if dist >= M.distance - M.PREFETCH_MARGIN and now >= (retryAt or 0) then return 'prefetch' end
     return nil
   end
   if pending.purpose ~= 'rebase' or not pending.ready then return nil end
   if dist < M.distance then return nil end
-  if staleDist and staleDist > M.STALE_DIST then return 'discard' end
+  if staleDist and staleDist > M.STALE_DIST then
+    if M.KEEP_EDGE > 0 and edgeDist and edgeDist >= M.KEEP_EDGE then return 'commit' end
+    return 'discard'
+  end
   return 'commit'
+end
+
+-- Lead time (s) of a re-requested rebase terrain (the stale-anchor rule): the measured anchor
+-- latency (nil: LATENCY_S) plus LEAD_EXTRA_S.
+function M.aheadLead(latency)
+  return (tonumber(latency) or M.LATENCY_S) + M.LEAD_EXTRA_S
 end
 
 -- Move every vehicle from the old anchor frame into the new one in place, keeping its motion

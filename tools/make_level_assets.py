@@ -113,10 +113,13 @@ Image.new("RGB", (512, 512), (127, 127, 255)).save(os.path.join(T, "bngEarth_bas
 Image.new("L", (512, 512), 206).save(os.path.join(T, "bngEarth_base_r.png"), optimize=True)
 Image.new("L", (512, 512), 251).save(os.path.join(T, "bngEarth_base_ao.png"), optimize=True)
 Image.new("L", (512, 512), 175).save(os.path.join(T, "bngEarth_base_h.png"), optimize=True)
-# importMaps inputs, sized like the terrain block (N = 1024, docs/V1_1_SPEC.md 1a): one all-white
-# layer map (material 0 everywhere) and a flat 16-bit heightmap. The v1 2048-sample files are removed.
-Image.new("RGB", (1024, 1024), (255, 255, 255)).save(os.path.join(T, "beamngEarth_layer_1024.png"), optimize=True)
-Image.new("I;16", (1024, 1024), 0).save(os.path.join(T, "beamngEarth_flat_1024.png"), optimize=True)
+# importMaps inputs, sized like the terrain block (N = 1024, docs/V1_1_SPEC.md 1a; and 512 for the
+# M4 block, docs/V1_4_SPEC.md 3.5: the layer map must match the heightmap size): one all-white
+# layer map (material 0 everywhere) and a flat 16-bit heightmap per size. The v1 2048-sample files
+# are removed.
+for n in (1024, 512):
+    Image.new("RGB", (n, n), (255, 255, 255)).save(os.path.join(T, f"beamngEarth_layer_{n}.png"), optimize=True)
+    Image.new("I;16", (n, n), 0).save(os.path.join(T, f"beamngEarth_flat_{n}.png"), optimize=True)
 for old in ("beamngEarth_layer_2048.png", "beamngEarth_flat_2048.png"):
     if os.path.exists(os.path.join(T, old)):
         os.remove(os.path.join(T, old))

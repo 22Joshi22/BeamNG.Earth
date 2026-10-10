@@ -321,3 +321,96 @@ their chunk arrived.
   67 m/s made its physics unstable and the engine removed it. drive.py now drives a stock test car
   (Vivace), freezes the user's vehicle meanwhile and restores it, and stops on a non-finite or runaway
   velocity ('unstable').
+
+## v1.4 M4: the 512² physics block (docs/V1_4_SPEC.md §3.5; built offline 2026-10-10, behind a flag)
+- **Server**: `earthd.py --block 512` (mesh mode only; **default 1024** = v1.3.1 until the in-game
+  probes below pass). `farfield.Layout(cells, block)` carries the block size (`Layout.grid` 128 m,
+  `Layout.block_at`, `Block.size`); `heightmap` takes the size everywhere (`grid(size)`,
+  `valid(size)`); `earthd.FOLLOW_RULES[size]` is the mod's follow table (512: prepare 128 m, lead
+  2 s, reach 260 m, prefetch from 100 m; fast mode above 150 m/s: lead 3 s, reach 420 m, the prepare
+  test 0.75 s ahead), used by `predict_request` and the prefetch start; requests snap to the layout's
+  grid; `hello.blockSize` only with 512 (a 1024 session's hello is unchanged), `terrain.size` 512.
+- **Mod**: `core.setBlockSize(hello.blockSize or 1024)` first in `hello` calls `lattice.configure`,
+  `follow.configure`, `terrain.configure` (the 512 layer / flat maps, also for `loadFlat`) and
+  `rebase.configure`; `anchorTerrain` / `terrain_ready` accept the session's size. `follow.lua` has
+  flat `*_1024` / `*_512` constants (modsim reads them) and `configure` resets every derived local.
+  1024² behaviour is unchanged (no fast mode, no re-check, stale anchors discarded as before).
+  - Commit-time re-check (512 only, normal mode): a ready block with
+    cheb(p + 2 s·v, pending) > 128 m is discarded and re-prepared **only while the player stays out
+    of the 150 m edge band for longer than the heightmap latency (the measured one, at least 1 s)
+    + 0.5 s** (never past the hard commit, never to re-request the same centre). The spec's unguarded
+    rule discarded nearly every block in the offline model (77 of 78 commits at 134 m/s) and took a
+    250 m/s car up to 98 m off the block at 1.2 s latency.
+  - A ready block that would still be no better than the current one where the player reaches the
+    hard commit distance (straight on) is dropped, so the next frame prepares the target; before
+    (review, 2026-10-10) it blocked every request until it left the 260 / 420 m reach.
+  - Offline (luajit `test_follow`, the real follow.lua): latency drawn per request from 0.3-1.2 s,
+    commits 0-0.15 s late, all headings: ≥ 171 m inside the edges at 134 m/s, ≥ 178 m accelerating
+    100 -> 200 m/s (before the two review fixes: 75 m, and up to 116 m off the block); fixed latency:
+    134 m/s ≥ 199 m, commits ≥ 0.95 s apart at 0.3 s (spec ≥ 0.9; 0.32 s without the re-check);
+    200 m/s at 1.2 s (fast mode) ≥ 216 m; 250 m/s at 0.3 s ≥ 254 m.
+  - Stale-anchor rule (512 only): a stale rebase anchor is still committed when the player is
+    ≥ 150 m inside its terrain's collidable area; otherwise discarded and re-requested with the
+    terrain at p + v·(measured anchor latency + 1 s) (`core.rebaseHint`), so a slow server cannot
+    loop. `rebase.STALE_DIST` 450 / 192 m (= the table's commit distance).
+  - Assets: `beamngEarth_layer_512.png`, `beamngEarth_flat_512.png` (`tools/make_level_assets.py`).
+- **Tests**: `test_heightmap` over (32, 1024²) and (64, 512²) (128 m moves bit-identical, even SW
+  lattice index); `test_server` `MeshServer64Block512Test` (+ the prefetch against modsim's 512 rule,
+  both modes); `test_protocol_agreement` (both tables, `blockSize`, STALE_DIST per size, the
+  512 session's messages); modsim ports + `modsim_trace.lua` 'M' lines (the 512 table, fast mode,
+  re-check, stale rule, configure back to 1024); luajit `test_follow`, `test_lattice`, `test_rebase`,
+  `test_core_stubbed` (hello.blockSize 512: a 512² anchor accepted, the 512 flat map at level start,
+  a 1024² terrain refused, back to 1024 without blockSize).
+- **Integration**: `MeshDrive64Block512Test` (30 m/s, 16.5 km, one rebase): 100 commits, every
+  overlap bit-identical (196 608-229 376 shared samples), no hole, the tile under the player L-1 at
+  every pose, the player ≥ 296 m inside the block, commit 18.4 ms / rebase 44 ms in the cost model.
+  `FollowDrive512Test` (in-process server, real time, no far field): 134 m/s at 20°: no late
+  terrain, ≥ 243 m inside; 200 m/s with +1.2 s heightmaps (fast mode): ≥ 167 m inside; 250 m/s
+  with a 3 s / 5 s anchor latency: one rebase each (5 s: the stale answer discarded once, the
+  re-request committed).
+- **Still to do in-game** (user not playing; `tools/m4_probes.py`, Lua in `probes/v14/m4_probes.lua`,
+  no mod update needed, the 512² heightmap is a crop of the live one): `check`, then **P2**
+  (gate: steady 512² import ≤ 30 ms with the layer map; extent [c−512, c+510]; heights equal;
+  restore), **P11** (does physics follow a re-import without reloadCollision), **P7 (a)**
+  (`p7a-install`, a drive with ≥ 3 rebases, `p7a-read`: the rebase-frame breakdown and remainder),
+  **P7 (b)** last (a hidden second block, swap ≤ 5 ms). Then D134 with `--block 512` (commit frames
+  ≤ 40 ms, rebase frame per §3.5) before flipping `BLOCK_DEFAULT`.
+
+## v1.4 M1h: the line-of-sight horizon (docs/V1_4_SPEC.md §3.6 "Radius"; built offline 2026-10-10, behind a flag)
+- **Server**: `earthd.py --horizon` (mesh mode only; **off by default** until P12 extended passes).
+  The eye is the pose's camera z (else player z + 1.5 m) as a height above sea level in the pose's
+  anchor frame (`frame.enu_to_geodetic`; the frame's h0 is sea level), quantised to max(10 m, 5 %),
+  kept across rebases. Per anchor, one `horizon` worker builds `farfield.HorizonGrid`: the highest
+  DEM z6 pixel under every L6 cell (16 km; block maxima of 8 × 8 px, `dem.Dem.block_max`, cached
+  across anchors) and its max pyramid up to L10, over ±(min(1500 km, d(h_eye) + d(8900 m)) + 21 km),
+  rebuilt bigger for a climbing eye; z5 or coarser where z6 would need > 64 DEM tiles. `select(...,
+  max_level=10, disc=True, horizon=Horizon(eye, grid))`: roots at L10 (262 km), a disc of RADIUS =
+  clamp(d(h_eye) + d(zmax_region), 80 km, 1500 km), d(h) = sqrt(2R'h), R' = 6371 km / (1 − 0.13),
+  zmax_region = the highest L6 cell above the eye's horizon; beyond 80 km a node whose nearest point
+  is past d(h_eye) + d(zmax_node) is dropped with its subtree. Within 80 km the selection is today's.
+  Textures 256 px at L8/L9, 128 px at L10 (imagery picks the low zoom). Until the first grid the far
+  field is the 80 km disc. `hello.horizon: true`; every status carries `radius` (re-sent when it moves
+  by > 2 %). `swap_groups` unions up to L10.
+- **Mod**: `horizon.lua`; `core.setHorizon(hello.horizon == true)` and `core.setFarRadius(status.radius)`:
+  `LevelInfo.visibleDistance` = max(100 km, 1.1 × radius) with 10 % hysteresis, `postApply()` after every
+  change (the engine ignores the field without it); `ScatterSky.atmoPlanetRadius` = 6371 (level: 6360)
+  while horizon mode is on in an active world; both back to the level's values at level end (sky), on
+  unload and with a server without horizon. Distance haze: TODO in `horizon.lua` with the
+  `core_environment` knobs (setFogDensity, setFogAtmosphereHeight) and the ScatterSky Mie fields.
+- **Offline numbers** (real DEM, 64 cells): Whitney summit 503 km radius, 83 tiles beyond 80 km (379
+  in all, 300 today), San Gorgonio (306 km) kept, farthest tile 414 km; 10 km above Whitney 631 km, 97
+  beyond; Central Valley floor 289 km, 49 beyond; open ocean 80 km, none beyond (296: the disc has no
+  corners). Selection 1-2.5 ms per pose.
+- **Tests**: `tests/test_horizon.py` (distances, extent, the pyramid and its lookups, the grid never
+  below a DEM pixel, the sampled-DEM fallback and the block cache, the zoom fallback, the disc tiled
+  exactly once with and without the cull, San Gorgonio kept from Whitney and dropped without the
+  mountain, sea level past the horizon dropped at 2 m-10 km eyes, extra-tile counts, the near field
+  and demand unchanged along a 134 m/s drive, L10 swap groups, the server flag / zooms / textures /
+  eye); `test_server.MeshServer64HorizonTest` (a session: 80 km until the grid, ~170 km from a 3 m eye
+  on the synthetic 1.5 km plateau, the climb to 10 km: a bigger grid, 545 km, L10 tiles at 128 px; a
+  rebase's own grid); `test_protocol_agreement` (hello.horizon, status.radius, the horizon session,
+  planet radius and margin on both sides); luajit `test_horizon`, `test_core_stubbed`.
+- **Still to do in-game** (user not playing): P12 extended with `--horizon` at Whitney summit and at
+  10 km: fps / p50 / p95 and perfmon with the distant tiles shown, objects, the L8-L10 import costs;
+  screenshots of the horizon (the silhouette meets the sky's horizon band, no sky gap); read back
+  atmoPlanetRadius and visibleDistance; no depth / shadow artefacts at 500-650 km; tune the haze.

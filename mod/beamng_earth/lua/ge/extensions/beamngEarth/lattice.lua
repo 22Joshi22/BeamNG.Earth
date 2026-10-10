@@ -13,6 +13,11 @@
 -- The engine computes h = zBase + q16 * maxHeight / 65536 (P1: dz/q = H/65536), so the server sends
 -- maxHeight = Q * 65536 with zBase a multiple of Q: the same world height then maps to the same
 -- q16 in every block.
+--
+-- Block size (docs/V1_4_SPEC.md 3.5, M4): the server's hello.blockSize picks 1024 (v1.3.1, the
+-- default) or 512 (collidable [c-512, c+510], centres on a 128 m grid, so the SW corner is still an
+-- even lattice index). configure(size) sets N, HALF, VALID_W, COVER_W and GRID for the session; one
+-- session per process, so nothing else changes them (the luajit tests call it in their setup).
 
 local M = {}
 
@@ -23,19 +28,35 @@ M.SQUARE = 2.0                     -- m between samples
 M.HALF = 1024                      -- block SW corner = centre - HALF (both axes)
 M.VALID_W = (M.N - 1) * M.SQUARE   -- 2046 m collidable width (P1)
 M.COVER_W = 2 * M.HALF             -- 2048 m: the 8 x 8 L0 tiles the block sits on
-M.L0 = 256                         -- far-field L0 tile size = the block centre grid
+M.L0 = 256                         -- far-field L0 tile size (= the 1024² block's centre grid)
 M.GRID = 256
+M.GRID_1024 = 256                  -- block centre grid per block size (flat: modsim reads these)
+M.GRID_512 = 128
 M.Q_LADDER = { 1 / 256, 1 / 128, 1 / 64, 1 / 32, 1 / 16 } -- height quanta, m (design 1.3)
 M.Q_SCALE = 65536                  -- maxHeight = Q * Q_SCALE (P1)
+
+-- The session's block size: 1024 or 512 (anything else: 1024, and false as the second value).
+-- Returns the size in use.
+function M.configure(size)
+  local ok = size == 512 or size == 1024
+  local n = ok and size or 1024
+  M.N = n
+  M.HALF = n * M.SQUARE / 2
+  M.VALID_W = (n - 1) * M.SQUARE
+  M.COVER_W = 2 * M.HALF
+  M.GRID = n == 512 and M.GRID_512 or M.GRID_1024
+  return n, ok
+end
 
 -- TerrainBlock position (SW corner, x/y) for a block centred at (cx, cy).
 function M.blockOrigin(cx, cy) return cx - M.HALF, cy - M.HALF end
 
 -- Area the block occupies on the L0 grid: [cx-1024, cx+1024]^2 (8 x 8 L0 tiles when cx, cy are
--- multiples of 256). Far tiles fully inside it are "covered" (farfield.lua).
+-- multiples of 256). Far tiles fully inside it are "covered" (farfield.lua; terrain mode only, which
+-- is always 1024²).
 function M.coverBox(cx, cy) return cx - M.HALF, cy - M.HALF, cx + M.HALF, cy + M.HALF end
 
--- Collidable / rendered ground of the block: [cx-1024, cx+1022]^2.
+-- Collidable / rendered ground of the block: [cx-1024, cx+1022]^2 (512²: [cx-512, cx+510]^2).
 function M.groundBox(cx, cy)
   local x0, y0 = cx - M.HALF, cy - M.HALF
   return x0, y0, x0 + M.VALID_W, y0 + M.VALID_W

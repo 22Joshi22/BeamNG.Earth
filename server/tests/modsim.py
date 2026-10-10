@@ -3,8 +3,9 @@ for the integration drive (test_integration_drive.py) and the protocol agreement
 
 Every threshold is read from the mod's Lua files (lua_consts), and the rules are line-by-line
 ports of:
-  follow.lua    target / decide (terrain-follow prepare/commit, commit gating hook)
-  rebase.lua    decide, core.lua rebaseHint
+  follow.lua    target / decide (terrain-follow prepare/commit, commit gating hook); M4: the 512
+                table (configure), its fast mode and the commit-time re-check (`size=` on every rule)
+  rebase.lua    decide, core.lua rebaseHint; M4: STALE_DIST per block size, the stale-anchor rule
   governor.lua  the per-frame streaming budget and heavy-slot isolation (Governor)
   crossover.lua the C1/C2 mode choice (in view at any distance, the cap where near in-view groups
                 wait for a slot) and phase lengths; defaultErr from the server's hello.cells (M1)
@@ -114,16 +115,52 @@ FAR = lua_consts("farfield.lua")
 
 
 # --- follow.lua / rebase.lua / core.lua rebaseHint ----------------------------------------
-def snap(v):
-    return math.floor(v / FOLLOW["GRID"] + 0.5) * FOLLOW["GRID"]
+# The block size (docs/V1_4_SPEC.md §3.5 M4): the mod's lattice.configure / follow.configure /
+# rebase.configure(size) pick flat *_1024 / *_512 constants; here every rule takes `size` (default
+# 1024, the tables the Lua modules start with) and reads the same constants through these.
+def lattice_table(size=1024):
+    """lattice.configure(size): N, HALF, VALID_W, COVER_W, GRID."""
+    n = 512 if size == 512 else 1024
+    half = n * LATTICE["SQUARE"] / 2
+    return {"N": n, "HALF": half, "VALID_W": (n - 1) * LATTICE["SQUARE"], "COVER_W": 2 * half,
+            "GRID": LATTICE["GRID_512"] if n == 512 else LATTICE["GRID_1024"]}
+
+
+def follow_table(size=1024):
+    """follow.configure(size): the active table."""
+    n = 512 if size == 512 else 1024
+    t = f"_{n}"
+    F = FOLLOW
+    return {"SIZE": n, "HALF": n * F["SQUARE_SIZE"] / 2, "GRID": F["GRID" + t], "PREPARE_DIST": F["PREPARE_DIST" + t],
+            "COMMIT_DIST": F["COMMIT_DIST" + t], "HARD_COMMIT_DIST": F["HARD_COMMIT_DIST" + t],
+            "EDGE_MARGIN": F["EDGE_MARGIN" + t], "REACH": F["REACH" + t], "LOOKAHEAD_S": F["LOOKAHEAD_S" + t],
+            "RECHECK_S": F["RECHECK_S" + t], "FAST_MODE_V": F["FAST_V" + t]}
+
+
+def rebase_table(size=1024):
+    """rebase.configure(size): STALE_DIST and KEEP_EDGE (the stale-anchor rule, 0 = off)."""
+    t = "_512" if size == 512 else "_1024"
+    return {"STALE_DIST": REBASE["STALE_DIST" + t], "KEEP_EDGE": REBASE["KEEP_EDGE" + t]}
+
+
+def follow_mode(vx, vy, size=1024):
+    """follow.lua mode: (lookahead s, reach m, prepare-test lead s); the fast mode above FAST_MODE_V."""
+    T = follow_table(size)
+    if vx * vx + vy * vy > T["FAST_MODE_V"] * T["FAST_MODE_V"]:
+        return FOLLOW["LOOKAHEAD_FAST_S"], FOLLOW["REACH_FAST"], FOLLOW["PREP_AHEAD_FAST_S"]
+    return T["LOOKAHEAD_S"], T["REACH"], 0
+
+
+def snap(v, size=1024):
+    g = follow_table(size)["GRID"]
+    return math.floor(v / g + 0.5) * g
 
 
 def cheb(ax, ay, bx, by):
     return max(abs(ax - bx), abs(ay - by))
 
 
-def _clamp_axis(c, p):
-    reach, g = FOLLOW["REACH"], FOLLOW["GRID"]
+def _clamp_axis(c, p, reach, g):
     if c > p + reach:
         return math.floor((p + reach) / g) * g
     if c < p - reach:
@@ -131,63 +168,119 @@ def _clamp_axis(c, p):
     return c
 
 
-def follow_target(px, py, vx, vy):
-    t = FOLLOW["LOOKAHEAD_S"]
-    return _clamp_axis(snap(px + vx * t), px), _clamp_axis(snap(py + vy * t), py)
+def follow_centre_near(tx, ty, px, py, reach=None, size=1024):
+    """follow.centreNear: the centre nearest (tx, ty) within reach (default REACH) of (px, py)."""
+    T = follow_table(size)
+    reach = T["REACH"] if reach is None else reach
+    return (_clamp_axis(snap(tx, size), px, reach, T["GRID"]), _clamp_axis(snap(ty, size), py, reach, T["GRID"]))
 
 
-def follow_decide(px, py, vx, vy, cx, cy, pending, now=0.0, retry_at=0.0, gate=None):
+def follow_target(px, py, vx, vy, size=1024):
+    t, reach, _ = follow_mode(vx, vy, size)
+    return follow_centre_near(px + vx * t, py + vy * t, px, py, reach, size)
+
+
+def _axis_time(p, v, c, dist):
+    if abs(v) <= 1e-9:
+        return math.inf
+    return max(0, ((c + dist if v > 0 else c - dist) - p) / v)
+
+
+def follow_time_to(px, py, vx, vy, cx, cy, dist):
+    """follow.timeTo: s until (px, py) moving at (vx, vy) is `dist` (Chebyshev) from (cx, cy)."""
+    return min(_axis_time(px, vx, cx, dist), _axis_time(py, vy, cy, dist))
+
+
+def _retargets(px, py, vx, vy, pending, size):
+    """follow.lua retargets: the target for this pose is not the pending block."""
+    return follow_target(px, py, vx, vy, size) != (pending["cx"], pending["cy"])
+
+
+def follow_decide(px, py, vx, vy, cx, cy, pending, now=0.0, retry_at=0.0, gate=None, latency=None, size=1024):
     """follow.decide: ('prepare', tx, ty) | ('commit',) | ('discard',) | None."""
     if cx is None:
         return None
+    T = follow_table(size)
+    _, reach, ahead = follow_mode(vx, vy, size)
     d = cheb(px, py, cx, cy)
     if pending:
         pd = cheb(px, py, pending["cx"], pending["cy"])
-        if pending.get("ready") and pd < d and d > FOLLOW["COMMIT_DIST"]:
-            if d > FOLLOW["HARD_COMMIT_DIST"] or gate is None or gate(pending["cx"], pending["cy"]):
+        if pending.get("ready") and pd < d and d > T["COMMIT_DIST"]:
+            r = T["RECHECK_S"]
+            if (r > 0 and ahead == 0 and d <= T["HARD_COMMIT_DIST"]
+                    and cheb(px + vx * r, py + vy * r, pending["cx"], pending["cy"]) > T["PREPARE_DIST"]
+                    and follow_time_to(px, py, vx, vy, cx, cy, FOLLOW["RECHECK_SAFE"])
+                    > max(FOLLOW["LATENCY_S"] if latency is None else latency, FOLLOW["LATENCY_S"])
+                    + FOLLOW["RECHECK_SLACK_S"]
+                    and _retargets(px, py, vx, vy, pending, size)):
+                return ("discard",)
+            if d > T["HARD_COMMIT_DIST"] or gate is None or gate(pending["cx"], pending["cy"]):
                 return ("commit",)
             return None
-        if pd > FOLLOW["REACH"]:
+        if pending.get("ready") and T["RECHECK_S"] > 0 and pd >= d:
+            t = follow_time_to(px, py, vx, vy, cx, cy, T["HARD_COMMIT_DIST"])
+            if t < math.inf:
+                qx, qy = px + vx * t, py + vy * t
+                if (cheb(qx, qy, pending["cx"], pending["cy"]) >= cheb(qx, qy, cx, cy)
+                        and _retargets(px, py, vx, vy, pending, size)):
+                    return ("discard",)
+        if pd > reach:
             return ("discard",)
         return None
-    if d <= FOLLOW["PREPARE_DIST"] or now < retry_at:
+    if cheb(px + vx * ahead, py + vy * ahead, cx, cy) <= T["PREPARE_DIST"] or now < retry_at:
         return None
-    tx, ty = follow_target(px, py, vx, vy)
+    tx, ty = follow_target(px, py, vx, vy, size)
     if (tx, ty) == (cx, cy):
         return None
     return ("prepare", tx, ty)
 
 
-def rebase_decide(dist, pending, stale, distance, now=0.0, retry_at=0.0):
+def rebase_decide(dist, pending, stale, distance, now=0.0, retry_at=0.0, edge=None, size=1024):
     if not pending:
         return "prefetch" if dist >= distance - REBASE["PREFETCH_MARGIN"] and now >= retry_at else None
     if pending["purpose"] != "rebase" or not pending.get("ready"):
         return None
     if dist < distance:
         return None
-    if stale is not None and stale > REBASE["STALE_DIST"]:
+    R = rebase_table(size)
+    if stale is not None and stale > R["STALE_DIST"]:
+        if R["KEEP_EDGE"] > 0 and edge is not None and edge >= R["KEEP_EDGE"]:
+            return "commit"
         return "discard"
     return "commit"
 
 
-def rebase_hint(vx, vy, dist, distance):
+def rebase_ahead_lead(latency=None):
+    """rebase.aheadLead: the measured anchor latency (None: LATENCY_S) + LEAD_EXTRA_S."""
+    return (REBASE["LATENCY_S"] if latency is None else latency) + REBASE["LEAD_EXTRA_S"]
+
+
+def rebase_hint(vx, vy, dist, distance, size=1024, latency=None):
+    """core.lua rebaseHint; at or past the distance with the stale-anchor rule (512²): the terrain at
+    p + v * (anchor latency + 1 s), the player's position at the answer within reach."""
     rem = max(0.0, distance - dist)
+    if rem <= 0 and rebase_table(size)["KEEP_EDGE"] > 0:
+        lead = rebase_ahead_lead(latency)
+        lat = lead - REBASE["LEAD_EXTRA_S"]
+        return follow_centre_near(vx * lead, vy * lead, vx * lat, vy * lat, follow_mode(vx, vy, size)[1], size)
     speed = math.hypot(vx, vy)
     px = py = 0.0
     if speed > 1:
         px, py = vx / speed * rem, vy / speed * rem
-    return follow_target(px, py, vx, vy)
+    return follow_target(px, py, vx, vy, size)
 
 
-def cover_box(cx, cy):
-    h = LATTICE["HALF"]
+def cover_box(cx, cy, size=1024):
+    h = lattice_table(size)["HALF"]
     return cx - h, cy - h, cx + h, cy + h
 
 
-def ground_box(cx, cy):
-    """lattice.groundBox: the block's collidable / rendered ground, [cx-1024, cx+1022]^2."""
-    x0, y0 = cx - LATTICE["HALF"], cy - LATTICE["HALF"]
-    return x0, y0, x0 + LATTICE["VALID_W"], y0 + LATTICE["VALID_W"]
+def ground_box(cx, cy, size=1024):
+    """lattice.groundBox: the block's collidable / rendered ground, [cx-1024, cx+1022]^2
+    (512²: [cx-512, cx+510]^2)."""
+    L = lattice_table(size)
+    x0, y0 = cx - L["HALF"], cy - L["HALF"]
+    return x0, y0, x0 + L["VALID_W"], y0 + L["VALID_W"]
 
 
 # --- governor.lua ----------------------------------------------------------------------
@@ -404,7 +497,7 @@ class Inst:
     def __init__(self, msg, seq, path, cells=None):
         self.key, self.aid = str(msg["key"]), msg["anchorId"]
         self.level = int(msg.get("level", 0))
-        size = FOLLOW["GRID"] * 2 ** self.level
+        size = LATTICE["L0"] * 2 ** self.level
         x, y, z = (float(v) for v in msg["pos"])
         self.bbox0 = (x, y, x + size, y + size)
         self.x0, self.y0, self.x1, self.y1 = self.bbox0
@@ -553,7 +646,7 @@ class FarField:
             return True
         ox0, oy0, ox1, oy1 = cover_box(ocx, ocy)
         nx0, ny0, nx1, ny1 = cover_box(ncx, ncy)
-        L, e = FOLLOW["GRID"], 0.01
+        L, e = LATTICE["L0"], 0.01
         for inst in self.live.values():
             if (not inst.failed and inst.x0 < nx1 - e and nx0 + e < inst.x1 and inst.y0 < ny1 - e
                     and ny0 + e < inst.y1 and (inst.level > 0 or inst.x0 < nx0 - e or inst.y0 < ny0 - e

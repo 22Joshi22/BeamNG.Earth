@@ -47,4 +47,25 @@ for _, zb in ipairs({ 1088, 1152, 0 }) do
   T.near(zb + q16 * Q, Q * math.floor(u / Q + 0.5), 1e-9, 'quantised height independent of zBase ' .. zb)
 end
 
+-- M4 (docs/V1_4_SPEC.md 3.5): the 512² block from hello.blockSize (configure), centres on a 128 m grid
+local n, ok = L.configure(512)
+T.check(n == 512 and ok and L.N == 512 and L.HALF == 512 and L.SQUARE == 2.0, '512: N = 512 at 2.0 m, HALF 512')
+T.check(L.VALID_W == 1022 and L.COVER_W == 1024 and L.GRID == 128 and L.L0 == 256, '512: collidable 1022 m, 128 m grid, L0 unchanged')
+T.check(L.GRID / L.SQUARE == 64, 'a 128 m re-centre is exactly 64 samples')
+x0, y0 = L.blockOrigin(128, -384)
+T.check(x0 == -384 and y0 == -896, 'block position = (cx-512, cy-512)')
+for _, cx in ipairs({ 0, 128, -384, 4224 }) do
+  local sx = L.blockOrigin(cx, 0)
+  T.check((sx / L.SQUARE) % 2 == 0, 'SW corner on an even lattice index (Torque diagonal parity), cx ' .. cx)
+end
+a, b, c, d = L.groundBox(128, 0)
+T.check(a == -384 and b == -512 and c == 638 and d == 510, 'ground (collidable) box = [cx-512, cx+510]')
+T.check(L.sampleX(0, 64 + 5) == L.sampleX(128, 5), 'block (128,0) sample 5 = block (0,0) sample 69')
+T.check(L.sampleX(128, 0) == L.sampleX(0, 0) + 128 and L.sampleX(0, 0) == -512, '512: sample 0 at cx - 512')
+n, ok = L.configure(2048)
+T.check(n == 1024 and ok == false and L.N == 1024 and L.HALF == 1024 and L.GRID == 256 and L.VALID_W == 2046,
+  'an unsupported size falls back to 1024 (and says so)')
+n, ok = L.configure(1024)
+T.check(n == 1024 and ok and L.COVER_W == 2048, 'configure(1024): the v1.3.1 block')
+
 T.done('test_lattice')

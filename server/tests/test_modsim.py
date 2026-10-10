@@ -1,6 +1,7 @@
 """The Python model of the mod (modsim.py) against the mod's own Lua, under luajit:
   - governor.lua, follow.lua and rebase.lua on a deterministic pseudo-random schedule
-    (lua/modsim_trace.lua);
+    (lua/modsim_trace.lua), the 1024² tables and (M4, docs/V1_4_SPEC.md §3.5) the 512² ones after
+    configure(512): fast mode, the commit-time re-check, the stale-anchor rule, then configure(1024);
   - farfield.lua (with the offline engine stubs of mod/tests/stubs.lua and the real governor) on a
     scripted far-field session built with the server's own selection and swap grouping
     (lua/farfield_trace.lua): teleport, streaming, waiting swap groups, evictions, crossovers,
@@ -90,6 +91,35 @@ def python_trace(frames, seed):
         name = a[0] if a else "nil"
         tx, ty = (a[1], a[2]) if a and a[0] == "prepare" else (0, 0)
         out.append(("F", i, name, tx, ty, tgx, tgy, ra or "nil"))
+    # M4: the 512² tables (follow with its fast mode and re-check, the stale-anchor rule), then 1024² again
+    for size in (512, 1024):
+        for i in range(1, frames + 1):
+            px, py = (rnd() - 0.5) * 3000, (rnd() - 0.5) * 3000
+            sp, hd = rnd() * 260, rnd() * 2 * math.pi
+            vx, vy = sp * math.cos(hd), sp * math.sin(hd)
+            cx, cy = modsim.snap(px + (rnd() - 0.5) * 900, size), modsim.snap(py + (rnd() - 0.5) * 900, size)
+            kind, ready, gate_ok = rnd(), rnd() < 0.6, rnd() < 0.7
+            pending = None
+            if kind < 0.7:
+                pending = {"cx": modsim.snap(px + (rnd() - 0.5) * 900, size),
+                           "cy": modsim.snap(py + (rnd() - 0.5) * 900, size), "ready": ready}
+            lr = rnd()
+            latency = None if lr < 0.2 else lr * 2
+            now, retry = rnd() * 10, rnd() * 10
+            a = modsim.follow_decide(px, py, vx, vy, cx, cy, pending, now, retry, lambda *_: gate_ok, latency, size)
+            tgx, tgy = modsim.follow_target(px, py, vx, vy, size)
+            dist, dd = rnd() * 18000, rnd()
+            rp = {"purpose": "rebase", "ready": dd < 0.4} if dd < 0.5 else None
+            stale, er = rnd() * 600, rnd()
+            edge = None if er < 0.1 else (er - 0.4) * 600
+            ra = modsim.rebase_decide(dist, rp, stale, modsim.REBASE["distance"], now, retry, edge, size)
+            lead = modsim.rebase_ahead_lead(None if lr < 0.5 else lr * 4)
+            nx, ny = modsim.follow_centre_near(vx * lead, vy * lead, vx * (lead - 1), vy * (lead - 1),
+                                               modsim.follow_mode(vx, vy, size)[1], size)
+            tt = modsim.follow_time_to(px, py, vx, vy, cx, cy, modsim.FOLLOW["RECHECK_SAFE"])
+            name = a[0] if a else "nil"
+            tx, ty = (a[1], a[2]) if a and a[0] == "prepare" else (0, 0)
+            out.append(("M", size, i, name, tx, ty, tgx, tgy, ra or "nil", lead, nx, ny, "inf" if tt == math.inf else tt))
     return out
 
 
@@ -273,6 +303,13 @@ class ModSimTest(unittest.TestCase):
         self.assertGreater(sum(1 for b in py if b[0] == "F" and b[2] == "commit"), 20)
         self.assertGreater(sum(1 for b in py if b[0] == "F" and b[2] == "prepare"), 20)
         self.assertGreater(sum(1 for b in py if b[0] == "F" and b[7] == "commit"), 20)
+        # M4: the 512 table's paths, its fast mode and re-check, and the stale-anchor rule ran
+        m512 = [b for b in py if b[0] == "M" and b[1] == 512]
+        for act in ("prepare", "commit", "discard"):
+            self.assertGreater(sum(1 for b in m512 if b[3] == act), 20, act)
+        self.assertGreater(sum(1 for b in m512 if b[8] == "commit"), 20)
+        self.assertGreater(sum(1 for b in m512 if b[8] == "discard"), 20)
+        self.assertNotEqual([b[3:9] for b in m512], [b[3:9] for b in py if b[0] == "M" and b[1] == 1024])
 
     def test_farfield_port_matches_lua(self):
         lines = far_script(7)

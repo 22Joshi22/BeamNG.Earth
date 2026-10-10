@@ -182,6 +182,13 @@ class Dem:
                 while len(self._lru) > self.mem_tiles:
                     self._lru.popitem(last=False)
 
+    def block_max(self, z, x, y, block):
+        """Highest elevation in every block x block pixel square of tile (z, x, y): a (TILE / block)²
+        array, row 0 north (the horizon mode's coarse pass, farfield.horizon_grid)."""
+        a = self.tiles([(z, x, y)])[(z, x, y)]
+        n = TILE // block
+        return a.reshape(n, block, n, block).max(axis=(1, 3))
+
     # --- sampling --------------------------------------------------------
     def sample(self, lat, lon, zoom, progress=None):
         """Bilinear elevation (m) at arbitrary lat/lon arrays from zoom-level tiles.

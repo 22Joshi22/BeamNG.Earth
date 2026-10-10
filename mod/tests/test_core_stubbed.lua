@@ -576,7 +576,113 @@ T.check(said('Format mismatch: server 5, mod 3/4'), 'an unknown format is report
 T.check(crossover.cells() == 32 and farfield.stats().exactLevel == -2, 'no hello.cells: back to 32 cells, L-2')
 log = stubLog
 
+-- M4 (docs/V1_4_SPEC.md 3.5): hello.blockSize 512 switches the lattice, the follow table, the layer /
+-- flat maps and the rebase staleness rule before the resync; a 512² terrain is accepted and imported
+local lattice = require('beamngEarth/lattice')
+local rebase = require('beamngEarth/rebase')
+veh.vel = vec3(0, 0, 0)
+local nA = #received('prepare_anchor')
+serverSend({ type = 'hello', protocol = 4, format = 4, cells = 64, blockSize = 512, serverVersion = '0.4.0', sessionId = 's5',
+  farFormat = 'cdae', material = 'bngEarthFar_v3', nearVisual = 'mesh' })
+T.check(pumpUntil(function() return #received('prepare_anchor') == nA + 1 end, 10), '512: resync requested on hello')
+T.check(lattice.N == 512 and lattice.HALF == 512 and follow.GRID == 128 and follow.REACH == 260 and follow.PREPARE_DIST == 128
+  and rebase.STALE_DIST == 192, 'hello.blockSize 512: lattice, follow table and staleness rule switched')
+local rq = last('prepare_anchor')
+T.check(rq.cx % 128 == 0 and rq.cy % 128 == 0 and math.abs(rq.cx - veh.pos.x) <= 64, 'resync hint on the 128 m grid')
+local imp512 = calls.importMaps
+serverSend({ type = 'anchor_ready', requestId = rq.requestId, anchorId = 7, lat = rq.lat, lon = rq.lon, groundZ = 0,
+  terrain = { cx = rq.cx, cy = rq.cy, heightmap = '/temp/beamngEarth/s5/hm_7.png', size = 512, squareSize = SQ,
+    zBase = 1120, maxHeight = 1024, q = 1 / 64 } })
+T.check(pumpUntil(function() return calls.importMaps == imp512 + 1 end, 10), '512: the size-512 anchor terrain is accepted and imported')
+T.check(last('commit_anchor').anchorId == 7, '512: resync committed')
+T.check(tb.pos.x == rq.cx - 512 and tb.pos.y == rq.cy - 512, '512: block position = (cx-512, cy-512)')
+T.check(tb.lastImport.maps[1].path:match('beamngEarth_layer_512%.png$') ~= nil, '512: the 512 layer map with the 512 heightmap')
+-- terrain-follow on the 512 table: prepare past 128 m, a 1024² answer is refused
+veh.pos = vec3(rq.cx + 140, rq.cy, 1200)
+veh.vel = vec3(30, 0, 0)
+T.check(pumpUntil(function() return last('prepare_terrain').anchorId == 7 end, 10), '512: terrain-follow prepares past 128 m')
+local pt7 = last('prepare_terrain')
+T.check(pt7.cx == rq.cx + 256 and pt7.cy == rq.cy, '512: target snap128(p + 2 s v) = cx + 256')
+serverSend({ type = 'terrain_ready', requestId = pt7.requestId, anchorId = 7, cx = pt7.cx, cy = pt7.cy,
+  heightmap = '/temp/beamngEarth/s5/hm_7b.png', size = 1024, squareSize = SQ, zBase = 1120, maxHeight = 1024, q = 1 / 64 })
+local statusLog = {}
+log = function(level, tag, text) statusLog[#statusLog + 1] = tostring(text) end
+frames(3)
+log = stubLog
+local refused = false
+for _, w in ipairs(statusLog) do if w:match('Unexpected terrain_ready %(size 1024%)') then refused = true end end
+T.check(refused and #received('prepare_terrain') > 0, 'a 1024² terrain in a 512 session is refused')
+-- a level change in a 512 session: the flat start block is the 512² one
+core.onClientEndMission()
+local impFlat = calls.importMaps
+core.onClientStartMission()
+T.check(calls.importMaps == impFlat + 1 and tb.lastImport.path:match('beamngEarth_flat_512%.png$') ~= nil,
+  '512: level start imports the 512² flat map')
+T.check(tb.lastImport.maps[1].path:match('beamngEarth_layer_512%.png$') ~= nil and tb.pos.x == -512 and tb.pos.y == -512,
+  '512: flat block 1024 m centred on the origin')
+-- a server without hello.blockSize: back to the v1.3.1 block
+serverSend({ type = 'hello', protocol = 4, format = 4, cells = 64, serverVersion = '0.4.0', sessionId = 's6',
+  farFormat = 'cdae', material = 'bngEarthFar_v3', nearVisual = 'mesh' })
+frames(3)
+T.check(lattice.N == 1024 and follow.GRID == 256 and follow.REACH == 420 and rebase.STALE_DIST == 450,
+  'no hello.blockSize: the 1024² block again')
+
+-- M1h (docs/V1_4_SPEC.md 3.6): hello.horizon sets the sky's planet radius to the tiles' sphere;
+-- status.radius drives LevelInfo.visibleDistance (+10 %, hysteresis, 100 km minimum, postApply after
+-- every change); the level's values come back at level end and with a server without horizon
+local sky = S.newObject('ScatterSky')
+sky.atmoPlanetRadius = 6360
+sky:registerObject('sunsky')
+local postApplies = 0
+function scenetree.theLevelInfo:postApply() postApplies = postApplies + 1 end
+T.check(scenetree.theLevelInfo.visibleDistance == 100000 and sky.atmoPlanetRadius == 6360 and postApplies == 0,
+  'no horizon: the level\'s sky and the 100 km view distance, untouched')
+serverSend({ type = 'status', text = 'x', backlog = 0, radius = 300000 })
+frames(3)
+T.check(scenetree.theLevelInfo.visibleDistance == 100000 and postApplies == 0, 'status.radius without hello.horizon: ignored')
+serverSend({ type = 'hello', protocol = 4, format = 4, cells = 64, horizon = true, serverVersion = '0.4.0',
+  sessionId = 's7', farFormat = 'cdae', material = 'bngEarthFar_v3', nearVisual = 'mesh' })
+frames(3)
+T.check(sky.atmoPlanetRadius == 6371, 'hello.horizon: sky planet radius 6371 km')
+T.check(scenetree.theLevelInfo.visibleDistance == 330000 and postApplies == 1,
+  'the radius already known (300 km): visibleDistance 330 km, with postApply')
+serverSend({ type = 'status', text = 'Far field loading', backlog = 5, radius = 310000 })
+frames(3)
+T.check(scenetree.theLevelInfo.visibleDistance == 330000 and postApplies == 1, '+3 %: within the hysteresis')
+serverSend({ type = 'status', text = 'Far field ready', backlog = 0, radius = 545000 })
+frames(3)
+T.near(scenetree.theLevelInfo.visibleDistance, 599500, 1e-6, 'radius 545 km: 600 km')
+T.check(postApplies == 2, 'postApply after the change')
+serverSend({ type = 'status', text = 'x', backlog = 0, radius = 80000 })
+frames(3)
+T.check(scenetree.theLevelInfo.visibleDistance == 100000 and postApplies == 3, 'radius 80 km: the 100 km minimum')
+serverSend({ type = 'status', text = 'x', backlog = 0, radius = 400000 })
+frames(3)
+T.near(scenetree.theLevelInfo.visibleDistance, 440000, 1e-6, '400 km: 440 km')
+-- a level change: the sky goes back before the level ends, and is applied again on the next start
+core.onClientEndMission()
+T.check(sky.atmoPlanetRadius == 6360, 'level end: the level\'s sky planet radius restored')
+scenetree.theLevelInfo.visibleDistance = 1000             -- the next level's LevelInfo
+core.onClientStartMission()
+T.check(sky.atmoPlanetRadius == 6371, 'level start in horizon mode: planet radius applied again')
+T.near(scenetree.theLevelInfo.visibleDistance, 440000, 1e-6, 'level start: visibleDistance from the known radius')
+-- a server without horizon: the level's values back
+local pa = postApplies
+serverSend({ type = 'hello', protocol = 4, format = 4, cells = 64, serverVersion = '0.4.0', sessionId = 's8',
+  farFormat = 'cdae', material = 'bngEarthFar_v3', nearVisual = 'mesh' })
+frames(3)
+T.check(sky.atmoPlanetRadius == 6360, 'no hello.horizon: the level\'s sky planet radius back')
+T.check(scenetree.theLevelInfo.visibleDistance == 100000 and postApplies == pa + 1, 'no hello.horizon: 100 km back, with postApply')
+serverSend({ type = 'hello', protocol = 4, format = 4, cells = 64, horizon = true, serverVersion = '0.4.0',
+  sessionId = 's9', farFormat = 'cdae', material = 'bngEarthFar_v3', nearVisual = 'mesh' })
+frames(3)
+serverSend({ type = 'status', text = 'x', backlog = 0, radius = 500000 })
+frames(3)
+T.check(sky.atmoPlanetRadius == 6371 and math.abs(scenetree.theLevelInfo.visibleDistance - 550000) < 1e-6, 'horizon again')
+
 core.onExtensionUnloaded()
+T.check(sky.atmoPlanetRadius == 6360 and scenetree.theLevelInfo.visibleDistance == 100000,
+  'unload: the level keeps running with its own sky and the 100 km view distance')
 T.check(scenetree.findObject('bngEarthTerrain') == nil, 'terrain deleted on unload')
 T.check(#S.liveOf('Material') == 0 and #S.liveOf('TSStatic') == 0, 'far tiles and their materials deleted on unload')
 

@@ -19,6 +19,11 @@ grayscale PNG, row 0 = north.
 SIZE, HALF, VALID and GRID describe the v1.3.1 block. The functions that depend on the block size
 take it as a parameter (`size`, samples per edge; the server passes its Layout's `block`,
 docs/V1_4_SPEC.md §3.1), defaulting to SIZE; nothing reads a module setting at call time.
+
+M4 (docs/V1_4_SPEC.md §3.5, `earthd.py --block 512`): a 512² block, collidable [c-512, c+510],
+centred on a 128 m grid (GRIDS). Its SW corner c - 512 is then a multiple of 128 m, an even lattice
+index, so the block-local Torque diagonal parity is the world one, as with 1024² (farfield.py
+torque_split45), and a 128 m move is exactly 64 samples.
 """
 import math
 import os
@@ -31,6 +36,7 @@ SQUARE = 2.0                        # m; exactly representable, so the lattice i
 HALF = 1024.0                       # block position = centre - HALF
 VALID = (SIZE - 1) * SQUARE         # 2046 m: collidable extent from the SW corner (P1)
 GRID = 256.0                        # block centres are multiples of this (= 128 samples)
+GRIDS = {1024: GRID, 512: 128.0}    # the centre grid per block size (M4: 512² on 128 m = 64 samples)
 CHUNK_ROWS = 256                    # bounds the geodesy temporaries
 # Height quanta (m), finest first: 65536 Q = 256 ... 4096 m of range per block.
 Q_LADDER = (1 / 256, 1 / 128, 1 / 64, 1 / 32, 1 / 16)
@@ -47,6 +53,16 @@ def snap(v, grid=GRID):
 def half_extent(size=SIZE):
     """Block position = centre - this (1024 m for the 1024² block)."""
     return size * SQUARE / 2
+
+
+def grid(size=SIZE):
+    """The centre grid of a `size`² block (256 m for 1024², 128 m for 512²)."""
+    return GRIDS[size]
+
+
+def valid(size=SIZE):
+    """Collidable extent from the SW corner, (N-1) * s (P1): 2046 m for 1024², 1022 m for 512²."""
+    return (size - 1) * SQUARE
 
 
 def lattice_index(c, size=SIZE):

@@ -13,6 +13,12 @@ docs/V1_2_DESIGN.md §7 as amended by §12; server/README.md documents the same 
   - the tile layouts (docs/V1_4_SPEC.md §3.1 M1): FORMAT 3 (32 cells) and 4 (64 cells) on both
     sides, hello.cells and far_tile.tex with FORMAT 4 only, crossover.defaultErr (under luajit) and
     the exact level for both cell counts, the governor kind of every texture size;
+  - the terrain block sizes (docs/V1_4_SPEC.md §3.5 M4): both follow tables (1024 and 512, with the
+    fast mode) and the staleness distances on both sides, hello.blockSize with --block 512 only,
+    terrain.size the session's, the mod's layer / flat maps per size, setBlockSize first in hello;
+  - the horizon (docs/V1_4_SPEC.md §3.6 M1h): hello.horizon and status.radius with --horizon only, the
+    mod's visibleDistance margin and the sky's planet radius against the server's (horizon.lua), the
+    mod reacting to both (core.lua);
   - protocol 4 (docs/V1_3_SPEC.md E): hello.nearVisual values; a textured far_tile's material
     name (bngEarthSat_<anchorId>_<key, '-' as 'm'>) is the one inside its .cdae (the mod's
     Material maps onto it by mapTo), its texture is a DXT1 DDS with a full mip chain next to the
@@ -33,6 +39,7 @@ import unittest
 from pathlib import Path
 
 import numpy as np
+from PIL import Image
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -72,9 +79,12 @@ SERVER_TO_MOD = {
     "hello": {"protocol": F(int), "format": F(int), "serverVersion": F(str), "sessionId": F(str),
               "farFormat": F(str), "material": F(str),
               "nearVisual": F(str), "attribution": F(str),          # protocol 4
-              "cells": F(int, OPT)},            # v1.4 M1: cells per tile edge, FORMAT 4 only
+              "cells": F(int, OPT),             # v1.4 M1: cells per tile edge, FORMAT 4 only
+              "blockSize": F(int, OPT),         # v1.4 M4: terrain block size, only when not 1024 (--block 512)
+              "horizon": F(bool, OPT)},         # v1.4 M1h: true with --horizon only
     "status": {"text": F(str),
-               "backlog": F(int)},          # v1.4 M0: desired - shown far tiles of the current anchor
+               "backlog": F(int),           # v1.4 M0: desired - shown far tiles of the current anchor
+               "radius": F(NUM, OPT)},      # v1.4 M1h: the far-field radius (m), --horizon only
     "anchor_ready": {"requestId": F(int), "anchorId": F(int), "lat": F(NUM), "lon": F(NUM),
                      "groundZ": F(NUM, NULL), "terrain": F(dict),
                      "anchorKey": F(str, OPT)},            # phase 5 (lattice anchors): not sent yet
@@ -190,6 +200,29 @@ class AgreementTableTest(unittest.TestCase):
         self.assertFalse(unknown, f"the mod reads fields no server message has: {sorted(unknown)}")
 
 
+class HorizonAgreementTest(unittest.TestCase):
+    def test_horizon_constants_and_mod(self):
+        """M1h (docs/V1_4_SPEC.md §3.6): the sky's planet radius is the tiles' sphere, the mod's
+        visibleDistance margin is the server's (radius + 10 %), and core.lua reads hello.horizon first
+        thing after the block size and status.radius on every status; horizon.lua re-applies
+        LevelInfo with postApply (in-game: without it the engine keeps the level's value)."""
+        H = modsim.lua_consts("horizon.lua")
+        self.assertEqual(H["PLANET_RADIUS_KM"] * 1000.0, ff.R_EARTH)
+        self.assertEqual(H["VISIBLE_MARGIN"], ff.VISIBLE_MARGIN)
+        core = (LUA / "core.lua").read_text()
+        on_msg = lua_function(core, "onMessage")
+        hello = on_msg[on_msg.index("t == 'hello'"):on_msg.index("t == 'status'")]
+        self.assertIn("M.setHorizon(msg.horizon == true)", hello)
+        status = on_msg[on_msg.index("t == 'status'"):on_msg.index("t == 'anchor_ready'")]
+        self.assertIn("M.setFarRadius(msg.radius)", status)
+        text = (LUA / "horizon.lua").read_text()
+        setter = lua_function(text, "setVisibleDistance")
+        self.assertLess(setter.index("li.visibleDistance = v"), setter.index("li:postApply()"))
+        self.assertIn("s.atmoPlanetRadius = M.PLANET_RADIUS_KM", lua_function(text, "applySky"))
+        self.assertIn("horizon.restoreSky()", lua_function(core, "onClientEndMission"))
+        self.assertIn("horizon.restoreSky()", lua_function(core, "onExtensionUnloaded"))
+
+
 class ConstantsTest(unittest.TestCase):
     def test_protocol_and_format(self):
         """Protocol 4; the mod reads FORMAT 3 and 4 and says the newest in its hello; the server's
@@ -216,6 +249,14 @@ class ConstantsTest(unittest.TestCase):
             self.assertEqual(heightmap.block_params(1000.0, 1100.0, q)[2], q * L["Q_SCALE"])
         self.assertEqual(L["L0"], ff.BASE)
         self.assertEqual(2 * L["HALF"], 8 * ff.BASE)                        # a block sits on 8 x 8 L0 tiles
+        # M4: lattice.configure(size) against the server's per-size geometry
+        for size in ff.BLOCK_SIZES:
+            t = modsim.lattice_table(size)
+            self.assertEqual((t["N"], t["HALF"], t["VALID_W"], t["GRID"]),
+                             (size, heightmap.half_extent(size), heightmap.valid(size), heightmap.grid(size)))
+            self.assertEqual(ff.Layout(64, size).grid, t["GRID"])
+            # the SW corner of a block on its grid is an even lattice index (Torque diagonal parity)
+            self.assertEqual((t["GRID"] - t["HALF"]) / heightmap.SQUARE % 2, 0)
         self.assertEqual(modsim.XO["CELLS"], ff.V131.cells)             # without hello.cells (FORMAT 3)
         self.assertLess(modsim.FAR["EDGE_BAND"], ff.BASE)                   # the edge ring is one L0 tile deep
 
@@ -275,6 +316,64 @@ class ConstantsTest(unittest.TestCase):
         # the player stays >= EDGE_MARGIN inside the collidable [cx-1024, cx+1022] on both sides
         self.assertLessEqual(F["REACH"], L_VALID_EDGE - F["EDGE_MARGIN"])
         self.assertLessEqual(earthd.ANCHOR_CENTRE_MAX, modsim.REBASE["MAX_DISTANCE"] + 5000)
+
+    def test_follow_tables_per_block_size(self):
+        """M4 (docs/V1_4_SPEC.md §3.5): the server's predicted follow rule per block size is the mod's
+        table (flat *_1024 / *_512 constants) on both sides, including the 512 fast mode; each table
+        keeps the player EDGE_MARGIN inside the collidable edge; the default stays 1024."""
+        F = modsim.FOLLOW
+        self.assertEqual(set(earthd.FOLLOW_RULES), set(ff.BLOCK_SIZES))
+        self.assertEqual(earthd.BLOCK_DEFAULT, heightmap.SIZE)
+        self.assertEqual(earthd.FOLLOW_RULES[1024], earthd.FollowRule(256.0, earthd.FOLLOW_PREPARE, earthd.FOLLOW_LEAD,
+                                                                     earthd.FOLLOW_REACH, earthd.PREFETCH_START))
+        for size, rule in earthd.FOLLOW_RULES.items():
+            T = modsim.follow_table(size)
+            self.assertEqual((rule.grid, rule.prepare, rule.lead, rule.reach),
+                             (T["GRID"], T["PREPARE_DIST"], T["LOOKAHEAD_S"], T["REACH"]), size)
+            self.assertEqual(rule.grid, heightmap.grid(size))
+            edge = heightmap.valid(size) - heightmap.half_extent(size)            # +1022 / +510 m
+            self.assertLessEqual(T["REACH"], edge - T["EDGE_MARGIN"])
+            self.assertEqual(rule.fast_v, math.inf if T["FAST_MODE_V"] >= 1e9 else T["FAST_MODE_V"])
+            self.assertLess(rule.prefetch_start, rule.prepare)
+            self.assertLessEqual(T["PREPARE_DIST"], T["COMMIT_DIST"])
+            self.assertLess(T["COMMIT_DIST"], T["HARD_COMMIT_DIST"])
+        fast = earthd.FOLLOW_RULES[512]
+        self.assertEqual((fast.fast_v, fast.fast_lead, fast.fast_reach, fast.fast_ahead),
+                         (F["FAST_V"], F["LOOKAHEAD_FAST_S"], F["REACH_FAST"], F["PREP_AHEAD_FAST_S"]))
+        self.assertLessEqual(F["REACH_FAST"], 510 - F["EDGE_MARGIN_FAST"])
+        self.assertEqual(earthd.FOLLOW_RULES[512].prefetch_start, earthd.FOLLOW_RULES[512].prepare - 28)
+        # the predicted request is the mod's target at the prepare point (both modes), 512 table
+        for vx, vy, px, py in ((30.0, 0.0, 129.0, 0.0), (134.0, 0.0, 129.0, 0.0), (200.0, 0.0, 0.0, 0.0),
+                               (-90.0, 60.0, -140.0, 40.0), (170.0, 120.0, 10.0, -20.0)):
+            want = modsim.follow_decide(px, py, vx, vy, 0.0, 0.0, None, size=512)
+            self.assertEqual(want[0], "prepare", (vx, vy))
+            self.assertEqual(earthd.predict_centre(px, py, vx, vy, *fast.mode(vx, vy)[:2], fast.grid), want[1:])
+
+    def test_stale_dist_per_block_size(self):
+        """rebase.lua STALE_DIST per block size equals that table's commit distance (a rebase never
+        commits a block the follow rule would already replace), and the stale-anchor rule is 512² only."""
+        for size in ff.BLOCK_SIZES:
+            self.assertEqual(modsim.rebase_table(size)["STALE_DIST"], modsim.follow_table(size)["COMMIT_DIST"])
+        self.assertEqual(modsim.REBASE["STALE_DIST"], modsim.REBASE["STALE_DIST_1024"])      # the default
+        self.assertEqual((modsim.rebase_table(1024)["KEEP_EDGE"], modsim.rebase_table(512)["KEEP_EDGE"]), (0, 150))
+
+    def test_block_size_in_the_mod(self):
+        """core.lua sets the block size from hello.blockSize before anything reads the lattice, every
+        module's configure is called, and the mod ships the layer / flat maps of each size."""
+        core = (LUA / "core.lua").read_text()
+        on_msg = lua_function(core, "onMessage")
+        hello = on_msg[on_msg.index("t == 'hello'"):]
+        self.assertLess(hello.index("M.setBlockSize(msg.blockSize or 1024)"), hello.index("requestAnchor("))
+        setter = lua_function(core, "setBlockSize")
+        for call in ("lattice.configure(", "follow.configure(n)", "terrain.configure(n)", "rebase.configure(n)"):
+            self.assertIn(call, setter)
+        terrain = (LUA / "terrain.lua").read_text()
+        for size in ff.BLOCK_SIZES:
+            for kind, mode in (("layer", "RGB"), ("flat", "I;16")):
+                name = f"beamngEarth_{kind}_{size}.png"
+                self.assertIn(f"[{size}] = TERRAIN_DIR .. '{name}'", terrain)
+                with Image.open(modsim.MOD_ROOT / "levels" / "beamng_earth" / "art" / "terrains" / name) as im:
+                    self.assertEqual((im.size, im.mode), ((size, size), mode))
 
     def test_material(self):
         name = modsim.lua_string("farfield.lua", "MATERIAL")
@@ -400,11 +499,20 @@ class ServerMessagesTest(test_server.ServerHarness):
             for f, (types, _) in TERRAIN.items():
                 self.assertIsInstance(t[f], types, (f, t))
             self.assertRegex(t["heightmap"], HM_RE)
-            self.assertEqual((t["size"], t["squareSize"]), (modsim.LATTICE["N"], modsim.LATTICE["SQUARE"]))
+            # M4: the session's block size (hello.blockSize), on its grid
+            self.assertEqual((t["size"], t["squareSize"]), (self.server.layout.block, modsim.LATTICE["SQUARE"]))
+            grid = modsim.lattice_table(t["size"])["GRID"]
+            self.assertEqual((t["cx"] % grid, t["cy"] % grid), (0, 0))
             self.assertEqual(t["maxHeight"], t["q"] * modsim.LATTICE["Q_SCALE"])
             self.assertEqual(t["zBase"] % t["q"], 0)
         if kind == "far_swap":
             self.assertTrue(all(isinstance(k, str) for k in m["add"] + m["remove"]))
+        if kind == "status":                    # M1h: the radius with --horizon only, at least 80 km
+            self.assertEqual("radius" in m, self.horizon, m)
+            if self.horizon:
+                self.assertTrue(ff.HORIZON_MIN <= m["radius"] <= ff.HORIZON_MAX, m)
+        if kind == "far_tile":
+            self.assertLessEqual(m["level"], ff.HORIZON_MAX_LEVEL if self.horizon else ff.MAX_LEVEL)
         if kind == "far_tile" and "material" in m:
             self.assertTrue("texture" in m and "detail" in m, m)
             self.assertRegex(m["texture"], r"^/temp/beamngEarth/[^/]+/[^/]+\.dds$")
@@ -418,6 +526,8 @@ class ServerMessagesTest(test_server.ServerHarness):
             self.assertEqual(m["format"], self.server.layout.format)
             self.assertIn(m["format"], modsim.CORE["FORMATS"])
             self.assertEqual(m.get("cells"), 64 if self.cells == 64 else None)
+            self.assertEqual(m.get("blockSize"), None if self.block == 1024 else self.block)       # M4
+            self.assertEqual(m.get("horizon"), True if self.horizon else None)                    # M1h
             self.assertEqual(m["material"], modsim.lua_string("farfield.lua", "MATERIAL"))
             self.assertIn(m["farFormat"], ff.FORMATS)
 
@@ -508,6 +618,19 @@ class MeshImageryMessagesTest(ServerMessagesTest):
 class MeshImagery64MessagesTest(MeshImageryMessagesTest):
     """The same with --cells 64 (docs/V1_4_SPEC.md §3.1 M1): FORMAT 4, hello.cells, far_tile.tex."""
     cells = 64
+
+
+class MeshImagery64Block512MessagesTest(MeshImagery64MessagesTest):
+    """The same with --block 512 (docs/V1_4_SPEC.md §3.5 M4): hello.blockSize, terrain.size 512 on the
+    128 m grid."""
+    block = 512
+
+
+
+class MeshImagery64HorizonMessagesTest(MeshImagery64MessagesTest):
+    """The same with --horizon (docs/V1_4_SPEC.md §3.6 M1h): hello.horizon, status.radius, tiles up to
+    L10 with the coarse textures."""
+    horizon = True
 
 
 if __name__ == "__main__":
