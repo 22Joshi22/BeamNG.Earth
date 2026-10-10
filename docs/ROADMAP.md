@@ -276,6 +276,33 @@ terrain at all (same fall risk). Plan:
 4. **Airports and runways** for plane mods (pairs with v1.4 M5 flight).
 All other candidates below are approved too ("all these look good") and get scheduled after these.
 
+## Seasons, snow and weather events (user, 2026-10-10)
+Real weather (feature/weather) already brings real temperature, rain vs snow from the forecast,
+clouds, fog and wind. On top of it:
+- **Snow on the ground from real data**: snow depth/cover from Open-Meteo (snow_depth, hourly,
+  global models), NOAA NOHRSC SNODAS (US, ~1 km daily depth and water equivalent, public domain) and
+  NOAA IMS / NASA MODIS-VIIRS snow cover (global daily, 1-4 km / 500 m) for where it lies.
+  Rendering: a snow layer blended into the tile material by depth, slope (no snow on cliffs), aspect
+  and altitude (snow line), with stock BeamNG snow textures; physics: SNOW / ICE ground models on
+  the physics terrain cells (v1.5 per-cell surfaces) so grip changes.
+- **Events evolve between data updates**: during real snowfall the cover builds up in real time;
+  afterwards it melts with a degree-day model driven by the real temperature (faster on sunny
+  south-facing slopes, slower in shade/forest); new data snaps it back to reality.
+- **Plowing**: roads (v1.6) get cleared by class and time since the snow stopped (highways and main
+  roads first, residential later, rural tracks last), leaving banks along the edges and packed snow
+  or slush where plowing lags; parking lots and sidewalks follow; ice where it re-froze overnight.
+- **Seasons for vegetation**: deciduous trees leaf-off in winter and coloured in autumn, dry/golden
+  grass in dry summers (e.g. California), green in wet seasons - driven by latitude, day of year,
+  land cover and climate data (phenology), applied to the v1.9 trees/grass and as a seasonal tint of
+  vegetation pixels in the imagery (the photos are from one season, usually summer leaf-on).
+- **Other events**: heavy rain/storm visuals and sound, fog banks from real visibility, wind storms;
+  floods and wildfire smoke later if data allows.
+- **References**: high-quality third-party winter maps for BeamNG (names to be given by the user)
+  as look references for snow materials, banks and plowed roads - credited in CREDITS.md, nothing
+  redistributed; real photos of snowy roads/towns for tuning.
+- Deterministic and global, like everything else: snow placement is a pure function of position,
+  data and time.
+
 ## Sound design (user, 2026-10-10: "definitely something we should work on at some point")
 First step is in the next build (ambient room tone by climate zone, from the game's own sounds).
 Later, as content arrives:
