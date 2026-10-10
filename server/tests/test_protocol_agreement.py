@@ -40,6 +40,7 @@ import shutil
 import subprocess
 import zipfile
 import sys
+import types
 import unittest
 from pathlib import Path
 
@@ -55,6 +56,7 @@ import heightmap  # noqa: E402
 import imagery  # noqa: E402
 import modsim  # noqa: E402
 import test_server  # noqa: E402
+import deshadow as deshadowmod  # noqa: E402
 import gravity as gravitymod  # noqa: E402
 import test_weather  # noqa: E402
 import weather  # noqa: E402
@@ -89,7 +91,8 @@ SERVER_TO_MOD = {
               "nearVisual": F(str), "attribution": F(str),          # protocol 4
               "cells": F(int, OPT),             # v1.4 M1: cells per tile edge, FORMAT 4 only
               "blockSize": F(int, OPT),         # v1.4 M4: terrain block size, only when not 1024 (--block 512)
-              "horizon": F(bool, OPT)},         # v1.4 M1h: true with --horizon only
+              "horizon": F(bool, OPT),          # v1.4 M1h: true with --horizon only
+              "deshadow": F(str, OPT)},         # --deshadow lambert|full only (the settings page shows it)
     "status": {"text": F(str),
                "backlog": F(int),           # v1.4 M0: desired - shown far tiles of the current anchor
                "radius": F(NUM, OPT)},      # v1.4 M1h: the far-field radius (m), --horizon only
@@ -641,6 +644,21 @@ class ServerMessagesTest(test_server.ServerHarness):
         self.assertEqual((w, h, fourcc), (self.server.tex_size(m["level"]),) * 2 + (b"DXT1",))
         self.assertEqual(mips, w.bit_length())                 # full chain down to 1 x 1
         self.assertEqual(len(data), imagery.DDS_HEADER + sum(sizes))
+
+
+class DeshadowHelloTest(test_server.ServerHarness):
+    """hello.deshadow: absent with --deshadow off (the default hello is unchanged), the mode otherwise."""
+
+    def test_hello_deshadow(self):
+        self.c.send({"type": "hello", "protocol": 4, "format": self.MOD_FORMAT, "modVersion": "0.4.0"})
+        m, _ = self.c.until(lambda m: m["type"] == "hello", 10)
+        self.assertNotIn("deshadow", m)
+        self.server.deshadow = types.SimpleNamespace(mode="full", prepare=lambda lat, lon: None)
+        self.c.send({"type": "hello", "protocol": 4, "format": self.MOD_FORMAT, "modVersion": "0.4.0"})
+        m, _ = self.c.until(lambda m: m["type"] == "hello", 10)
+        self.assertEqual(m["deshadow"], "full")
+        self.assertIn("deshadow", SERVER_TO_MOD["hello"])
+        self.assertIn(m["deshadow"], deshadowmod.MODES)
 
 
 class MeshImageryMessagesTest(ServerMessagesTest):

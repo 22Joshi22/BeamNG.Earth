@@ -186,6 +186,9 @@ const settingsSchema = [
       { id: "connection", type: "info", name: "Companion server", desc: "State of the connection to the BeamNG.Earth companion server (127.0.0.1:47613) and the session id it gave this game." },
       { id: "anchor", type: "info", name: "Anchor", desc: "The current world origin (anchor) and its latitude / longitude. A rebase moves it under the player." },
       { id: "player", type: "info", name: "Player", desc: "The player's latitude / longitude and the distance from the anchor origin." },
+      { id: "weather", type: "info", name: "Weather", desc: "Real weather from the server (Open-Meteo.com, every 10 min or 25 km; the server's --weather on|off)." },
+      { id: "gravity", type: "info", name: "Gravity", desc: "The gravity in use: the server's real value (WGS84 normal + EGM2008, every 2 km or 200 m of height; the server's --gravity on|off) or normal gravity by latitude." },
+      { id: "deshadow", type: "info", name: "Imagery de-shadowing", desc: "Server-side relighting of the baked terrain shadows in the USGS imagery (the server's --deshadow off|lambert|full)." },
     ],
   },
   {
@@ -199,6 +202,9 @@ const settingsSchema = [
       { id: "skyMode", type: "select", default: "real", name: "Sky", desc: "Real time: the sun, moon and stars follow the real clock and date at the player's position. Manual: hands off, use the game's own Time & Weather controls.",
         options: [ { label: "Real time", value: "real" }, { label: "Manual", value: "manual" } ] },
       { id: "clouds", type: "bool", default: true, name: "Clouds", desc: "A volumetric cloud layer that follows the ground under the player." },
+      { id: "weatherMode", type: "select", default: "auto", name: "Weather", desc: "Auto: real weather unless the BWM_Weather mod is changing the weather. Real: always drive clouds, fog, wind, rain, snow and temperature from the real weather. Manual: hands off, use the game's own Time & Weather controls.",
+        options: [ { label: "Auto", value: "auto" }, { label: "Real weather", value: "real" }, { label: "Manual", value: "manual" } ] },
+      { id: "realGravity", type: "bool", default: true, name: "Real gravity", desc: "Gravity follows the player: the server's real value (normal gravity plus the EGM2008 anomalies) or normal gravity by latitude and height. Off: the level's 9.81 m/s2." },
     ],
   },
   {
@@ -270,6 +276,9 @@ function infoValue(item) {
   if (item.id === "anchor") return s.anchorId ? `#${s.anchorId}  ${fmt(s.anchorLat, 5)}, ${fmt(s.anchorLon, 5)}` : "none"
   if (item.id === "player") return (typeof s.playerLat === "number") ? `${fmt(s.playerLat, 5)}, ${fmt(s.playerLon, 5)}  (${fmt(s.dist / 1000, 1)} km from origin)` : "-"
   if (item.id === "attribution") return s.attribution || "-"
+  if (item.id === "weather") return s.weather || "-"
+  if (item.id === "gravity") return s.gravity || "-"
+  if (item.id === "deshadow") return s.deshadow || "off"
   return ""
 }
 

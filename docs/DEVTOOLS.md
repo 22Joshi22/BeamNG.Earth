@@ -126,9 +126,12 @@ player right now, e.g.:
   (structure and bridge pattern of taa_standalone: BngSwitch / BngSlider / BngButton, custom
   dropdown, `bngApi.engineLua` with callbacks). `beamngEarth/settings.lua` (extension
   `beamngEarth_settings`) persists rebase distance, view distance mode / fixed km, haze
-  (placeholder), sky mode, clouds, HUD, dev radii in `/settings/beamngEarth.json`; every default
+  (placeholder), sky mode, clouds, weather mode (auto / real / manual, `beamngEarth_weather.setMode`),
+  real gravity (on, `setGravityEnabled`), HUD, dev radii in `/settings/beamngEarth.json`; every default
   is today's behaviour, the view distance is applied only in our level and only when it is not
-  the default. The dev overlays stay per session.
+  the default. The dev overlays stay per session. The Connection section also shows the server
+  features as status lines: the weather line, the gravity in use and its source, and the imagery
+  de-shadowing mode (`hello.deshadow`, server-side only; "off" without it).
 - HUD: once the page exists (index.js says so, or the pause menu lists the button) the imgui
   window is a compact status HUD, hidden at level start unless "Status HUD" is on; "Full window"
   brings the old window back for the session. Without the page nothing changes.

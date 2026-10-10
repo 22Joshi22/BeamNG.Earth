@@ -901,6 +901,8 @@ class Connection:
                 m["blockSize"] = lay.block
             if self.s.horizon:                  # M1h: status.radius follows; the mod sets its sky and view distance
                 m["horizon"] = True
+            if self.s.deshadow is not None:     # --deshadow lambert|full: shown on the mod's settings page
+                m["deshadow"] = self.s.deshadow.mode
             self.send(m)
             if self.weather.msg is not None:        # a reconnected mod gets the weather again
                 self.send(self.weather.msg)

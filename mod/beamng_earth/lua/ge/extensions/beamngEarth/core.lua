@@ -442,6 +442,7 @@ local function onMessage(msg)
     -- a new server session: its own gravity message follows the first pose (none with --gravity off)
     local w = rawget(_G, 'beamngEarth_weather')
     if w and w.clearGravity then w.clearGravity() end
+    st.deshadow = msg.deshadow -- server-side imagery de-shadowing ('lambert' / 'full'; nil = off), shown on the settings page
     -- M4: the terrain block size first (everything below may use the lattice / follow table); a
     -- server without hello.blockSize has the v1.3.1 1024² block
     local size, okSize = M.setBlockSize(msg.blockSize or 1024)

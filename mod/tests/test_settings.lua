@@ -107,6 +107,21 @@ local saved = files[settings.FILE]
 vals = settings.load()
 T.check(vals.rebaseDistance == 9000 and vals.skyMode == 'manual' and vals.clouds == false, 'save -> load round trip')
 T.check(saved.hudVisible == false and saved.devOutlineKm == 3, 'every value is written')
+-- real weather and gravity: through beamngEarth_weather (defaults = its own: auto, gravity on)
+T.check(settings.get('weatherMode') == 'auto' and settings.get('realGravity') == true, 'weather defaults: auto, real gravity on')
+local wCalls = {}
+beamngEarth_weather = { GRAVITY_ENABLED = true,
+  setMode = function(m) wCalls[#wCalls + 1] = 'mode ' .. m end,
+  setGravityEnabled = function(on) wCalls[#wCalls + 1] = 'gravity ' .. tostring(on); beamngEarth_weather.GRAVITY_ENABLED = on end,
+  statusLine = function() return 'Weather (real): 20 C' end, gravityLine = function() return '9.78676 m/s2, EGM2008 (server)' end }
+settings.set('weatherMode', 'manual')
+settings.set('realGravity', false)
+T.check(wCalls[1] == 'mode manual' and wCalls[2] == 'gravity false', 'weather mode and gravity applied through beamngEarth_weather')
+settings.set('realGravity', false)
+T.check(#wCalls == 2, 'an unchanged gravity switch is not re-applied')
+T.check(not settings.set('weatherMode', 'stormy').ok, 'weather mode: only auto / real / manual')
+settings.set('weatherMode', 'auto')
+settings.set('realGravity', true)
 -- without the core extension: straight to rebase.lua
 beamngEarth_core = nil
 settings.set('rebaseDistance', 7000)
@@ -168,6 +183,10 @@ T.check(s.settings.rebaseDistance == settings.get('rebaseDistance') and #s.schem
 T.check(s.status.connection == 'disconnected' and s.status.session == 'abc' and s.status.anchorId == 3
   and s.status.attribution == 'credits' and s.status.dist == 500, 'uiState: status from the core')
 T.check(s.dev and s.dev.active, 'uiState: dev state')
+T.check(s.status.weather == 'Weather (real): 20 C' and s.status.gravity:match('EGM2008') and s.status.deshadow == 'off',
+  'uiState: server features (weather, gravity, de-shadowing off)')
+stTbl.deshadow = 'full'
+T.check(settings.uiState().status.deshadow == 'full', 'uiState: de-shadowing mode from the hello')
 T.check(settings.uiDevSet('tint', true).active and devCalls[1] == 'tint=true', 'uiDevSet forwards')
 settings.uiDevPreset('lod')
 T.check(devCalls[2] == 'preset lod', 'uiDevPreset forwards')

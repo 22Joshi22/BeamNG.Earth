@@ -36,12 +36,14 @@ M.SCHEMA = {
   hazeStrength = { kind = 'number', default = 0, min = 0, max = 1, label = 'Distance haze (placeholder)' },
   skyMode = { kind = 'enum', default = 'real', values = { 'real', 'manual' }, label = 'Sky' },
   clouds = { kind = 'bool', default = true, label = 'Clouds' },
+  weatherMode = { kind = 'enum', default = 'auto', values = { 'auto', 'real', 'manual' }, label = 'Weather' },
+  realGravity = { kind = 'bool', default = true, label = 'Real gravity' },
   hudVisible = { kind = 'bool', default = false, label = 'Status HUD at level start' },
   devOutlineKm = { kind = 'number', default = 3, min = 0.5, max = 20, label = 'Dev outlines radius (km)' },
   devMapKm = { kind = 'number', default = 10, min = 1, max = 80, label = 'Dev mini-map radius (km)' },
 }
 M.ORDER = { 'rebaseDistance', 'viewDistanceMode', 'viewDistanceKm', 'hazeStrength', 'skyMode', 'clouds',
-  'hudVisible', 'devOutlineKm', 'devMapKm' }
+  'weatherMode', 'realGravity', 'hudVisible', 'devOutlineKm', 'devMapKm' }
 
 local values = {}       -- the settings in use (always complete and valid)
 local pageFlag = false  -- index.js said the page exists
@@ -152,6 +154,15 @@ M.APPLY = {
     local sky = ext('beamngEarth_sky')
     if sky and sky.setClouds and sky.CLOUDS_ENABLED ~= v then sky.setClouds(v) end
   end,
+  -- real weather and gravity (weather.lua; the server's --weather / --gravity decide whether data come)
+  weatherMode = function(v)
+    local w = ext('beamngEarth_weather')
+    if w and w.setMode then w.setMode(v) end
+  end,
+  realGravity = function(v)
+    local w = ext('beamngEarth_weather')
+    if w and w.setGravityEnabled and w.GRAVITY_ENABLED ~= v then w.setGravityEnabled(v) end
+  end,
   hudVisible = function(v)
     if M.pageExists() then ui.visible = v end
   end,
@@ -238,6 +249,11 @@ function M.uiState()
     status = st and st.status or '', inOurLevel = st and st.inOurLevel or false,
     attribution = core and core.attribution and core.attribution() or '',
   }
+  -- server features (status only): weather, gravity, imagery de-shadowing
+  local w = ext('beamngEarth_weather')
+  status.weather = w and w.statusLine and w.statusLine() or nil
+  status.gravity = w and w.gravityLine and w.gravityLine() or nil
+  status.deshadow = st and st.deshadow or 'off'
   local schema = {}
   for _, k in ipairs(M.ORDER) do
     local s = M.SCHEMA[k]
