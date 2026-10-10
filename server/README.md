@@ -38,6 +38,7 @@ python3 server/earthd.py --port 47613 --user-dir ~/.local/share/BeamNG/BeamNG.dr
 | `--tone` | `1.0` | Strength of the imagery tone curve (0 = imagery as downloaded) |
 | `--near-radii` | `150,400` | Mesh mode: everything within 150 m of the player is the exact level, within 400 m at least the next one (32 cells: L-2, L-1; 64 cells: L-1, L0) |
 | `--status-interval` | `0` | Re-send the last status with the current far-tile backlog every S s while it changes (0 = v1.3.1: on events only; `tools/drive.py` runs use 1) |
+| `--weather` | `on` | Real weather at the player from Open-Meteo.com (keyless, non-commercial; `weather` messages, see below). `off`: no requests, no message |
 | `-v` | off | Debug logging |
 
 Requirements: Python 3 (3.10+), numpy, Pillow (≥ 11, for its DXT1 encoder) with WebP support. No
@@ -90,6 +91,7 @@ as JSON floats (`512.0`). All positions are in the ENU plane of the anchor named
 | `{"type":"far_swap","anchorId":A,"id":G,"add":[keys],"remove":[keys],"dIn":m,"dOut":m}` | A swap group, sent once every `add` has been sent as `far_tile`. Run it once all adds are loaded: show the adds, remove the removes (C2 crossover: spawn adds at z − dIn, raise them, then sink the removes by dOut, then delete). `add` and `remove` cover exactly the same footprint (a parent and its descendants). One-sided groups: `remove: []` for the initial load / tiles entering the 80 km radius, `add: []` for tiles leaving it. `dIn` = max(new − old), `dOut` = max(old − new) over the group (both ≥ 0, evaluated at every vertex of both sides, +0.1 m). Group ids increase per connection. |
 | `{"type":"far_remove","anchorId":A,"key":"L_i_j"}` | For the **active** anchor: eviction of a tile sent as `far_tile` that no group needs any more (the desired set changed before its swap); delete it, it was never shown. For a **previous** anchor (after a rebase): remove that shown tile; it is sent only after every `far_swap` whose adds cover its area (footprints compared in the new frame), so apply it once the swaps received before it have run. |
 | `{"type":"far_done","anchorId":A,"count":K}` | Every swap group for the current desired set has been sent. K = number of tiles the mod shows once those swaps have run. Sent again after each later change completes. |
+| `{"type":"weather","v":1,"t":epoch,"lat","lon","code":wmo,"isDay","cover":{"total","low","mid","high"},"baseM","baseAglM","rainMmH","snowCmH","visM","fog","thunder","wind":{"ms","fromDeg","gustMs"},"aloft":{"ms","fromDeg"},"tempC","dewC","elevM","slTempC","pressureHpa","utcOffsetS","tz","credit"}` | Real weather (`server/weather.py`; additive, no protocol bump: both sides ignore unknown types). Open-Meteo's current (15-min) conditions at the 0.1° cell of the player's `pose.lat/lon`, fetched when there is none yet, every 10 min, or after 25 km (one request in flight; a failure keeps the last weather and retries after 2 min); cached per (cell, 15-min slot) for all connections; re-sent on `hello`. Rates per hour from the 15-min sums (`× 3600 / interval`); a weather code with a zero sum gets a light floor (drizzle 0.3, rain 1, thunder 4 mm/h; snow 0.5 cm/h). `visM` (null = unknown) is ≤ 800 m with fog codes 45/48. `baseM`/`baseAglM`: the drawn deck's base (= max(low, mid)): a low deck at the LCL (125 m/K × (T − Td)), a mid deck ≥ 3000 m ASL; clamped 200–6000 m above the model ground `elevM`. `slTempC` = `tempC` + 0.0065 × `elevM` (the game lowers it with height). `aloft` = 700 hPa wind (cloud drift). `utcOffsetS`/`tz` = the place's real time zone (`timezone=auto`). `credit` = "Weather data by Open-Meteo.com" (CC BY 4.0), also in `hello.attribution` while weather is on. The mod's mapping is `beamngEarth/weather.lua`. |
 
 Far-field state per connection (`earthd.Connection`): **D** the desired set, **C** the tiles of
 emitted swaps (what the mod shows), **S** the tiles sent but not yet swapped in. Groups are
@@ -318,6 +320,13 @@ a real server and download real tiles, so they need network access; their DEM ca
 straight drive at 4 Hz poses with hysteresis and HOLD_S), the v1.3.1 and the 64-cell (M1) rows; hooks
 for the M3a / M5 rows. The layout-dependent tests (`test_farfield`, `test_mesh`, `test_server`,
 `test_protocol_agreement`, `test_integration_drive` mesh) run for both 32 and 64 cells.
+`test_weather.py`: the Open-Meteo responses recorded 2026-10-10 (`fixtures/openmeteo_baltimore.json`,
+`openmeteo_whitney.json`) into messages, synthetic codes (fog, rain/drizzle floors, snow, thunder,
+rates from `interval`), the request (no key, generic user agent), the cell/slot cache, the 600 s /
+25 km / retry rule, the in-process server (sent after a pose, re-sent on hello, the credit in
+`hello.attribution`, nothing on failure or with weather off), the mod's `weather.lua` mapping of the
+same messages under luajit, and the level's weather objects (each once, the names the mod uses, the
+committed files = `tools/make_level_assets.py`'s output). No network: the fetch is injected.
 `test_drive_tool.py` checks `tools/drive.py` and `tools/drive_driver.lua` offline (profile rule on both
 sides, nominal speed, the summary, the driver under luajit, `run_ge` with a fake MCP: polls >= 1 s
 apart and an uninstall on every failure path). `test_v131_default.py` checks that a default
@@ -361,7 +370,8 @@ Cross-component (server ↔ mod):
 
 Show this in the mod UI (the server sends the line for the sources in use as `hello.attribution`):
 "Imagery: USGS The National Map (public domain); Sentinel-2 cloudless by EOX (CC BY-NC-SA 4.0 /
-CC BY 4.0); Elevation: Mapterhorn (see mapterhorn.com/attribution), AWS Terrain Tiles / Mapzen".
+CC BY 4.0); Weather data by Open-Meteo.com; Elevation: Mapterhorn (see mapterhorn.com/attribution),
+AWS Terrain Tiles / Mapzen". Open-Meteo data: CC BY 4.0, <https://open-meteo.com/>.
 Full EOX credit: "Sentinel-2 cloudless 2023 by EOX IT Services GmbH (Contains modified Copernicus
 Sentinel data 2023)" (CC BY-NC-SA 4.0: personal, non-commercial use) and "Sentinel-2 cloudless 2016
 by EOX IT Services GmbH (Contains modified Copernicus Sentinel data 2016)" (CC BY 4.0); see

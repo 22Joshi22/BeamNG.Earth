@@ -57,6 +57,8 @@ function M.draw(view, actions)
     text(string.format('Last terrain-follow: %s (%d)   Last rebase: %s (%d)', ms(view.lastFollowMs), view.followCount or 0,
       ms(view.lastRebaseMs), view.rebaseCount or 0))
     if view.farText then text(view.farText) end
+    local weather = rawget(_G, 'beamngEarth_weather') -- real weather (weather.lua), when loaded
+    if weather and weather.statusLine then text(weather.statusLine()) end
     if rebaseKmPtr then
       im.SliderFloat('Rebase distance (km)', rebaseKmPtr, view.rebaseMin / 1000, view.rebaseMax / 1000, '%.1f km')
       if im.IsItemDeactivatedAfterEdit() and actions.setRebaseDistance then

@@ -26,6 +26,16 @@ check(near(utcHours, 3 + 20 / 60 + 9 / 3600, 1e-6), 'reconstructed UTC 03:20:09'
 local s = sky.todFields(epoch, 1.35, 103.82)
 check(s.utcOffset == 7, 'Singapore approx offset 7, got ' .. s.utcOffset)
 
+-- The real offset (Open-Meteo timezone=auto, via the weather service) wins near its point:
+-- Singapore is +8, not the meridian guess +7; 300 km away the guess is back
+local real = { hours = 8, lat = 1.35, lon = 103.82 }
+local sr = sky.todFields(epoch, 1.30, 103.85, real)
+check(sr.utcOffset == 8, 'Singapore real offset 8, got ' .. sr.utcOffset)
+check(near((sr.localHours - sr.utcOffset) % 24, 3 + 20 / 60 + 9 / 3600, 1e-6), 'real offset: same instant')
+check(sky.todFields(epoch, 1.35, 106.6, real).utcOffset == 7, 'beyond REAL_TZ_KM: the guess')
+-- half-hour zones (Delhi +5.5)
+check(sky.todFields(epoch, 28.61, 77.21, { hours = 5.5, lat = 28.6, lon = 77.2 }).utcOffset == 5.5, 'Delhi +5.5')
+
 -- Southern temperate (AU rule): Sydney in October -> DST active: std +10 + 1
 local a = sky.todFields(epoch, -33.87, 151.21)
 check(a.utcOffset == 11, 'Sydney offset 11, got ' .. a.utcOffset)
@@ -58,6 +68,8 @@ check(near(sky.cloudAltitudeKm(4417), 4.417 + sky.CLOUD_ABOVE_KM, 1e-9), 'Whitne
 check(near(sky.cloudAltitudeKm(5), 0.005 + sky.CLOUD_ABOVE_KM, 1e-9), 'sea level: CLOUD_ABOVE_KM up')
 check(sky.cloudAltitudeKm(-1000) == sky.CLOUD_MIN_KM, 'far below sea level: the minimum altitude')
 check(sky.cloudAltitudeKm(nil) == nil, 'no ground: no change')
+check(near(sky.cloudAltitudeKm(33, 2.967), 3.0, 1e-9), 'real weather: the base above the ground (Baltimore mid deck)')
+check(sky.cloudAltitudeKm(0, 0.3) == sky.CLOUD_MIN_KM, 'a low base still keeps the minimum altitude')
 local ox, oy, oz = sky.shiftedOffsetKm({ x = 1, y = 2, z = 0 }, 15000, 0, 0, 0)
 check(near(ox, 1 - 15 * sky.CLOUD_SHIFT_SIGN, 1e-9) and oy == 2 and oz == 0, 'rebase shifts the weather offset by the move (km)')
 

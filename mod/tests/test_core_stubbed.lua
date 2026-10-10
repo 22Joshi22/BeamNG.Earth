@@ -576,6 +576,16 @@ T.check(said('Format mismatch: server 5, mod 3/4'), 'an unknown format is report
 T.check(crossover.cells() == 32 and farfield.stats().exactLevel == -2, 'no hello.cells: back to 32 cells, L-2')
 log = stubLog
 
+-- real weather: core hands the message to the beamngEarth_weather extension (when it is loaded)
+serverSend({ type = 'weather', v = 1, code = 3, tempC = 20.5 })
+frames(2)                                               -- no extension: ignored
+local gotWeather = nil
+beamngEarth_weather = { onWeather = function(m) gotWeather = m end }
+serverSend({ type = 'weather', v = 1, code = 3, tempC = 20.5 })
+frames(2)
+T.check(gotWeather and gotWeather.code == 3 and gotWeather.tempC == 20.5, 'weather message handed to beamngEarth_weather')
+beamngEarth_weather = nil
+
 core.onExtensionUnloaded()
 T.check(scenetree.findObject('bngEarthTerrain') == nil, 'terrain deleted on unload')
 T.check(#S.liveOf('Material') == 0 and #S.liveOf('TSStatic') == 0, 'far tiles and their materials deleted on unload')

@@ -471,6 +471,10 @@ local function onMessage(msg)
     farfield.onRemove(msg)
   elseif t == 'far_done' then
     farfield.onDone(msg)
+  elseif t == 'weather' then
+    -- real weather (server weather.py): applied by the separate beamngEarth_weather extension
+    local w = rawget(_G, 'beamngEarth_weather')
+    if w and w.onWeather then w.onWeather(msg) end
   end
 end
 

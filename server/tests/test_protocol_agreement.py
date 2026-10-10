@@ -18,7 +18,10 @@ docs/V1_2_DESIGN.md §7 as amended by §12; server/README.md documents the same 
     Material maps onto it by mapTo), its texture is a DXT1 DDS with a full mip chain next to the
     shape (same stem), UV0 spans the footprint with v flipped as the engine stores it (row 0 of
     the texture = north), UV1 is world-locked (x, y) / DETAIL_M (the mod's detail map runs on UV1
-    at detailScale 1, so one repeat per DETAIL_M), and the mod's detail texture is a stock asset.
+    at detailScale 1, so one repeat per DETAIL_M), and the mod's detail texture is a stock asset;
+  - real weather (server/weather.py, docs/research/2026-10-10-real-weather.md): the 'weather'
+    message (additive, no protocol bump: both sides ignore unknown types), sent in the session by an
+    injected weather service; its nested cover / wind / aloft fields; the mod reads it in weather.lua.
 """
 import json
 import math
@@ -43,6 +46,8 @@ import heightmap  # noqa: E402
 import imagery  # noqa: E402
 import modsim  # noqa: E402
 import test_server  # noqa: E402
+import test_weather  # noqa: E402
+import weather  # noqa: E402
 
 NUM = (int, float)
 OPT = "optional"            # may be absent
@@ -90,7 +95,15 @@ SERVER_TO_MOD = {
                  "dOut": F(NUM)},
     "far_remove": {"anchorId": F(int), "key": F(str)},
     "far_done": {"anchorId": F(int), "count": F(int)},
+    # real weather at the player (weather.py; additive, protocol 4)
+    "weather": {"v": F(int), "t": F(int), "lat": F(NUM), "lon": F(NUM), "code": F(int), "isDay": F(bool),
+                "cover": F(dict), "baseM": F(NUM), "baseAglM": F(NUM), "rainMmH": F(NUM), "snowCmH": F(NUM),
+                "visM": F(NUM, NULL), "fog": F(bool), "thunder": F(bool), "wind": F(dict),
+                "aloft": F(dict, OPT), "tempC": F(NUM), "dewC": F(NUM), "elevM": F(NUM), "slTempC": F(NUM),
+                "pressureHpa": F(NUM), "utcOffsetS": F(int, OPT), "tz": F(str, OPT), "credit": F(str)},
 }
+WEATHER_NESTED = {"cover": {"total", "low", "mid", "high"}, "wind": {"ms", "fromDeg", "gustMs"},
+                  "aloft": {"ms", "fromDeg"}}
 # events the mod's net.lua makes up itself (not on the wire)
 MOD_INTERNAL = {"_connected": set(), "_disconnected": {"error"}}
 
@@ -145,7 +158,7 @@ def mod_sends():
 def mod_reads():
     """Fields the mod reads from server messages: msg.X / p.msg.X / tr.X (terrain) in its Lua."""
     out = set()
-    for name in ("core.lua", "farfield.lua", "lattice.lua"):
+    for name in ("core.lua", "farfield.lua", "lattice.lua", "weather.lua"):
         text = (LUA / name).read_text()
         out |= set(re.findall(r"\bmsg\.(\w+)", text))
         out |= {"terrain." + f for f in re.findall(r"\btr\.(\w+)", text)}
@@ -364,6 +377,10 @@ L_VALID_EDGE = modsim.LATTICE["VALID_W"] - modsim.LATTICE["HALF"]      # +1022 m
 class ServerMessagesTest(test_server.ServerHarness):
     """Everything the server sends in a session, checked against SERVER_TO_MOD."""
 
+    def setUp(self):
+        super().setUp()
+        self.server.weather = weather.Service(fetch=test_weather.FakeFetch())     # no network
+
     def check(self, m):
         kind = m["type"]
         self.assertIn(kind, SERVER_TO_MOD, m)
@@ -405,6 +422,12 @@ class ServerMessagesTest(test_server.ServerHarness):
             self.assertEqual(t["zBase"] % t["q"], 0)
         if kind == "far_swap":
             self.assertTrue(all(isinstance(k, str) for k in m["add"] + m["remove"]))
+        if kind == "weather":
+            for k, fields in WEATHER_NESTED.items():
+                if k in m:
+                    self.assertEqual(set(m[k]), fields, (k, m))
+                    self.assertTrue(all(isinstance(v, NUM) for v in m[k].values()), (k, m))
+            self.assertEqual((m["v"], m["credit"]), (weather.VERSION, weather.CREDIT))
         if kind == "far_tile" and "material" in m:
             self.assertTrue("texture" in m and "detail" in m, m)
             self.assertRegex(m["texture"], r"^/temp/beamngEarth/[^/]+/[^/]+\.dds$")

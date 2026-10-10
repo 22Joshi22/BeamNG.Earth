@@ -321,3 +321,54 @@ their chunk arrived.
   67 m/s made its physics unstable and the engine removed it. drive.py now drives a stock test car
   (Vivace), freezes the user's vehicle meanwhile and restores it, and stops on a non-finite or runaway
   velocity ('unstable').
+
+## Real weather, level parity, gravity (quick wins 1, 2, 4; built offline 2026-10-10, feature/weather)
+docs/research/2026-10-10-real-weather.md, 2026-10-10-game-feature-quick-wins.md §5.1-5.4, probe facts
+in 2026-10-10-weather-probe-results.md.
+- **Level objects** (`tools/make_level_assets.py` → `main/MissionGroup/Weather/items.level.json`, a new
+  `Weather` group): the CloudLayer `bngEarthClouds` (the fields sky.lua used to create at runtime; sky.lua
+  keeps `createObject` as a fallback and then resets core_environment's per-class object cache), two
+  camera-following Precipitation objects `bngEarthRain` (`rain_drop`, BWM_Weather's verified 0.39 setup)
+  and `bngEarthSnow` (`Snow_menu`), both `numDrops 0` and without a `numOfDrops` field (so BWM_Weather
+  keeps its own rain object), a ForestWindEmitter and a 2D reverb SFXEmitter (`snapshot:>Reverb_WC_Open`).
+  LevelInfo gets `temperatureCurveC [0,15,1,15]` (ISA until real weather: core_environment now drives
+  the engine's temperature and the menu stops showing −273 °C).
+- **Server** `server/weather.py` + three hooks in earthd (`Server(weather=...)`, `Connection.weather`
+  in `on_pose`, re-send on `hello`; `--weather on|off`, default on; the credit "Weather data by
+  Open-Meteo.com" in `hello.attribution`). One keyless GET per fetch (generic user agent), at the 0.1°
+  cell of the player, when there is none yet, every 600 s or after 25 km; cached per (cell, 15-min
+  slot). `derive()` keeps the physics (rates per hour from the 15-min sums, fog-code visibility,
+  cloud base, sea-level temperature, winds aloft, the real UTC offset); the `weather` message is
+  additive (no protocol bump) and in the agreement table. Fixtures: Baltimore and Whitney, recorded
+  2026-10-10.
+- **Mod** `beamngEarth/weather.lua`, its own extension `beamngEarth_weather`
+  (`scripts/beamng_earth_weather/modScript.lua`; core.lua only forwards the message; the BeamNG.Earth
+  window shows a one-line summary). In the BeamNG.Earth level only. Every value approaches its target
+  exponentially (95 % in 60 s), written at 2 Hz (ground wind 1 Hz) and only when it changed, through
+  core_environment (the pause menu shows the real values): coverage from max(low, mid) through
+  `COVERAGE_CURVE` (probe rows to 19 %, guesses above, retune there), cirrus from high cloud (density
+  0.3-0.6, the CloudLayer default 0 hides cirrus), drift from the 700 hPa wind, fog density
+  3.912 / V × exp(groundZ / H) (the engine's fog thins with absolute z, `sceneFog.h.hlsl`; capped at the
+  menu's 0.05), ground wind from the 10 m wind with an OU gust term up to the gust speed, rain/snow
+  as `setPercentage(sqrt(rate / full))` of a 4000/3000-drop pool (none above the cloud base), and a
+  flat `temperatureCurveC` at the sea-level temperature (LevelInfo setter found by read-back, editor
+  dirty for 3 frames so core_environment re-reads it). The cloud base above the ground goes to
+  sky.lua (it keeps the ground-following altitude and the rebase weather-offset shift); the real UTC
+  offset too (`sky.todFields(..., real)` within 200 km of the reported point; Singapore +8, Delhi
+  +5.5 instead of the meridian guess).
+- **Modes**: `setMode('auto')` (default) = real unless BWM_Weather has automatic weather on or a preset
+  other than clear (then manual, one toast); `'real'` / `'manual'` = the user's choice. Writes wait 20 s
+  after a level start (BWM's start transition, env's `setState(init_env)`). Any other change
+  (onEnvironmentChanged not from our own calls) afterwards overrides its group (clouds, cirrus, cloud
+  wind, fog, wind, gravity, cloud altitude, precipitation) and pauses all writes 3 s (env's 1.15 s
+  menu lerp would be cancelled by our setters); `setMode('real')` clears overrides. Missions pause it;
+  their setup changes are not overrides.
+- **Gravity** by latitude and height (WGS84 Somigliana minus 3.086e-6·h; 9.7803 equator, 9.8322 pole)
+  through `core_environment.setGravity` when it changes by 1e-4 (~30 m of climb); `GRAVITY_ENABLED`
+  (on); a menu gravity change is respected; off restores 9.81.
+- Tests: `server/tests/test_weather.py` (fixtures, codes, cache, refetch rule, server, the Lua mapping
+  under luajit, the level objects = generator output), `mod/tests/test_weather.lua` (pure conversions
+  + a stubbed core_environment run: grace, convergence, writes only on change, overrides, BWM, missions,
+  gravity, rain objects, temperature curve, other levels untouched), `test_sky.lua` (real offset),
+  `test_core_stubbed.lua` (forwarding). Still to check in-game: the temperature-curve setter form,
+  `setPercentage` drops visible, coverage calibration above 0.95 (overcast), fog k = 1/H, wind push.

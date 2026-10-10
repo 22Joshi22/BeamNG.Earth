@@ -45,6 +45,7 @@ import geodesy  # noqa: E402
 import heightmap  # noqa: E402
 import imagery as imagerymod  # noqa: E402
 import protocol  # noqa: E402
+import weather as weathermod  # noqa: E402
 
 PROTOCOL = 4
 # Tile/heightmap content format (hello.format) is the layout's: 3 = v1.3.1 (2 m lattice, fixed Q,
@@ -218,7 +219,8 @@ class Server:
     def __init__(self, user_dir, cache_dir, tile_workers=3, kfun=None,
                  hysteresis=farfield.HYSTERESIS, radius=farfield.RADIUS, far_format="cdae",
                  imagery=imagerymod.DEFAULT_CHAIN, near_visual="mesh", tex_near=TEX_NEAR, tex_far=TEX_FAR,
-                 tone=1.0, near_radii=None, status_interval=STATUS_INTERVAL, cells=CELLS_DEFAULT, tex=None):
+                 tone=1.0, near_radii=None, status_interval=STATUS_INTERVAL, cells=CELLS_DEFAULT, tex=None,
+                 weather=None):
         """kfun: K(L) for every level (default: the layout's K table); near_radii: the min-level
         radii (default: the layout's); cells: 32 (v1.3.1) or 64 (M1, mesh mode only); tex: texture
         px per level from the finest (default: tex_near, tex_near, tex_far with 32 cells,
@@ -277,6 +279,8 @@ class Server:
         self.delete_queue = deque()     # (path, tile key or None) waiting for a rate-limited delete
         self._deleting = False
         self._prune_scheduled = set()
+        # Real weather at the player (weather.py): a weathermod.Service, or None (--weather off)
+        self.weather = weather
 
     @staticmethod
     def _clean_old_sessions(root, cdae_root):
@@ -422,6 +426,8 @@ class Server:
     def attribution(self):
         """The credit line the mod shows: imagery (if on) and elevation sources."""
         parts = [self.imagery.attribution()] if self.imagery is not None else []
+        if self.weather is not None:
+            parts.append(weathermod.CREDIT)
         return "; ".join(parts + [ELEVATION_CREDIT])
 
     def level_summary(self):
@@ -635,6 +641,7 @@ class Connection:
         self.streamer = None
         self.last_status = ""           # text of the last status message (re-sent with a new backlog)
         self.status_sent = (0.0, None)  # (monotonic time, backlog) of the last status message
+        self.weather = weathermod.Tracker()     # real weather: fetch rule, last message sent
 
     def send(self, msg):
         if not self.writer.is_closing():
@@ -709,6 +716,8 @@ class Connection:
             if lay.format >= 4:         # M1: the tiles' cell count (crossover.defaultErr, the exact level)
                 m["cells"] = lay.cells
             self.send(m)
+            if self.weather.msg is not None:        # a reconnected mod gets the weather again
+                self.send(self.weather.msg)
         elif kind == "prepare_anchor":
             self.spawn(self.prepare_anchor(msg))
         elif kind == "prepare_terrain":
@@ -876,6 +885,7 @@ class Connection:
             held = list(held.values())
         if isinstance(held, list):
             self.held = {int(a) for a in held if isinstance(a, (int, float)) and not isinstance(a, bool)}
+        self.weather.on_pose(self, msg.get("lat"), msg.get("lon"))
         aid = msg.get("anchorId")
         # The latest committed anchor is the one the mod reports in its pose
         # (ids only grow, so never switch back to an older one).
@@ -1159,13 +1169,15 @@ async def main_async(args):
     server = Server(args.user_dir, args.cache_dir, args.workers, kfun, args.hysteresis, args.far_radius, fmt,
                     imagery=args.imagery, near_visual=args.near_visual, tex_near=args.tex_near,
                     tex_far=args.tex_far, tone=args.tone, near_radii=radii,
-                    status_interval=args.status_interval, cells=args.cells, tex=args.tex)
+                    status_interval=args.status_interval, cells=args.cells, tex=args.tex,
+                    weather=weathermod.Service() if args.weather == "on" else None)
     srv = await asyncio.start_server(
         lambda r, w: Connection(server, r, w).run(), "127.0.0.1", args.port)
     port = srv.sockets[0].getsockname()[1]
     print(f"earthd listening on 127.0.0.1:{port} session {server.sid} -> {server.out_dir} "
           f"(far tiles: {fmt}, near visual: {server.near_visual}, cells: {server.layout.cells} "
-          f"(format {server.layout.format}), imagery: {','.join(args.imagery) if args.imagery else 'off'})",
+          f"(format {server.layout.format}), imagery: {','.join(args.imagery) if args.imagery else 'off'}, "
+          f"weather: {args.weather})",
           flush=True)
     async with srv:
         await srv.serve_forever()
@@ -1234,6 +1246,8 @@ def main():
     ap.add_argument("--status-interval", type=float, default=STATUS_INTERVAL,
                     help="re-send the last status with the current far-tile backlog at most every S seconds "
                          "while it changes (0 = status on events only, as v1.3.1; tools/drive.py runs use 1)")
+    ap.add_argument("--weather", choices=("on", "off"), default="on",
+                    help="real weather at the player from Open-Meteo.com (keyless; every 10 min or 25 km)")
     ap.add_argument("-v", "--verbose", action="store_true")
     args = ap.parse_args()
     args.cells = resolve_cells(args.cells, args.near_visual)
