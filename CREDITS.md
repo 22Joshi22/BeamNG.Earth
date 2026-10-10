@@ -65,6 +65,9 @@ only, nothing redistributed. Licence notes marked *(verify)* must be re-checked 
   terrain and surface generation (e.g. Moab's trails, the Rubicon Trail, Johnson Valley's Hammers);
   see docs/ROADMAP.md. Only used to judge the look; no imagery from them is shipped.
 - NAIP flight specifications (sun elevation rules) for the de-shadowing sun fit.
+- "Polish Roads" by mcct (BeamNG resource 5846, summer and winter versions) and MuYe's video "They
+  Added Seasons To BeamNG": visual reference for winter roads, snow, plowing and road surface quality
+  by road use. Its assets are not used (the author does not allow reuse).
 - The project owner's own knowledge of Fells Point, Baltimore, and their in-game reports.
 
 ## User mods mentioned in the docs (not part of BeamNG.Earth)

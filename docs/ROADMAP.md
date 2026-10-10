@@ -297,9 +297,13 @@ clouds, fog and wind. On top of it:
   vegetation pixels in the imagery (the photos are from one season, usually summer leaf-on).
 - **Other events**: heavy rain/storm visuals and sound, fog banks from real visibility, wind storms;
   floods and wildfire smoke later if data allows.
-- **References**: high-quality third-party winter maps for BeamNG (names to be given by the user)
-  as look references for snow materials, banks and plowed roads - credited in CREDITS.md, nothing
-  redistributed; real photos of snowy roads/towns for tuning.
+- **References**: "Polish Roads" by mcct (https://www.beamng.com/resources/polish-roads.5846/,
+  v3.3, summer and winter versions; shown in MuYe's video "They Added Seasons To BeamNG",
+  https://www.youtube.com/watch?v=-Ga0a2fmmJo): the look of winter roads, snow banks, plowed vs
+  unplowed surfaces, and how busier roads are better paved/maintained than quiet ones (also a model
+  for road surface quality by road class in v1.6). Its licence forbids using or modifying its assets
+  ("We do not allow anyone to use/sell our assets/modify map"), so it is a visual reference only:
+  screenshots side by side, nothing taken. Real photos of snowy roads/towns for tuning.
 - Deterministic and global, like everything else: snow placement is a pure function of position,
   data and time.
 
