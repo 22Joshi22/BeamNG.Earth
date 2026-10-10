@@ -7,6 +7,8 @@
 -- utcOffset explicitly together with a matching local `time`, so the instant (Julian date) is
 -- exact even where the timezone guess is wrong; a wrong guess only shifts the displayed clock.
 -- Latitude/longitude are kept current by beamngEarth_core (core_celestial.setLocation).
+-- The real UTC offset (Open-Meteo timezone=auto, from beamngEarth_weather) replaces the guess
+-- within REAL_TZ_KM of the point it was reported for.
 --
 -- Modes: 'real'   = real UTC now, clock runs at real speed, re-synced every RESYNC_S seconds.
 --        'manual' = hands off (use the game's own environment/time controls).
@@ -14,9 +16,11 @@
 local M = {}
 
 local RESYNC_S = 30
+M.REAL_TZ_KM = 200
 
 local mode = 'real'
 local timer = RESYNC_S -- sync on the first update
+local realTz = nil     -- { hours, lat, lon }: the real UTC offset at a point (setRealUtcOffset)
 
 -- Day of week, 0 = Sunday (Sakamoto), and the Sunday helpers mirror celestial.lua:261-283 so the
 -- clock we display agrees with what core_celestial would derive on its own.
@@ -52,11 +56,23 @@ function M.utcOffsetFor(lat, lon, y, mo, d)
   return std + (dstActive(rule, y, mo, d) and 1 or 0)
 end
 
--- Pure: TimeOfDay fields for UTC epoch seconds `epoch` at (lat, lon).
+local function distKm(lat1, lon1, lat2, lon2)
+  local p1, p2 = math.rad(lat1), math.rad(lat2)
+  local a = math.sin((p2 - p1) / 2) ^ 2 + math.cos(p1) * math.cos(p2) * math.sin(math.rad(lon2 - lon1) / 2) ^ 2
+  return 2 * 6371.0088 * math.asin(math.min(1, math.sqrt(a)))
+end
+
+-- Pure: TimeOfDay fields for UTC epoch seconds `epoch` at (lat, lon); real = { hours, lat, lon }
+-- (optional): a real UTC offset, used within REAL_TZ_KM of its point.
 -- Returns { year, month, day, time (noon = 0), utcOffset, localHours }.
-function M.todFields(epoch, lat, lon)
+function M.todFields(epoch, lat, lon, real)
   local u = os.date('!*t', epoch)
-  local off = M.utcOffsetFor(lat, lon, u.year, u.month, u.day)
+  local off
+  if real and real.hours and real.lat and real.lon and distKm(lat, lon, real.lat, real.lon) <= M.REAL_TZ_KM then
+    off = real.hours
+  else
+    off = M.utcOffsetFor(lat, lon, u.year, u.month, u.day)
+  end
   local l = os.date('!*t', epoch + math.floor(off * 3600 + 0.5))
   local localHours = l.hour + l.min / 60 + l.sec / 3600
   return {
@@ -75,7 +91,7 @@ function M.sync()
   local tod = getTod()
   if not tod then return false end
   local lat, lon = tonumber(tod.latitude) or 0, tonumber(tod.longitude) or 0
-  local f = M.todFields(os.time(), lat, lon)
+  local f = M.todFields(os.time(), lat, lon, realTz)
   tod.year, tod.month, tod.day = f.year, f.month, f.day
   tod.utcOffset = f.utcOffset
   tod.time = f.time
@@ -91,6 +107,14 @@ function M.setMode(m)
   return 'sky mode: ' .. mode
 end
 function M.getMode() return mode end
+
+-- The real UTC offset (hours) at (lat, lon), from the weather service; re-syncs on the next update.
+function M.setRealUtcOffset(hours, lat, lon)
+  if not (tonumber(hours) and tonumber(lat) and tonumber(lon)) then return end
+  local changed = not realTz or realTz.hours ~= hours
+  realTz = { hours = tonumber(hours), lat = tonumber(lat), lon = tonumber(lon) }
+  if changed and mode == 'real' then timer = RESYNC_S end
+end
 
 function M.status()
   local tod = getTod()
@@ -112,8 +136,10 @@ end
 -- altitude puts clouds under the player on high ground (the default 0.8 km was below Mount
 -- Whitney): the layer follows the ground under the player, CLOUD_ABOVE_KM above it. A rebase moves
 -- the world by kilometres; the weather map is shifted by the same amount so the clouds stay put
--- (CloudLayer.setWeatherOffsetKm; CLOUD_SHIFT_SIGN checked in-game). Real weather (Open-Meteo) will
--- drive coverage, altitude and wind later (docs/ROADMAP.md quick wins).
+-- (CloudLayer.setWeatherOffsetKm; CLOUD_SHIFT_SIGN checked in-game). The layer is a level object
+-- (tools/make_level_assets.py) so core_environment, the pause menu and weather presets find it; it
+-- is created here only for a level file without one. Real weather (beamngEarth_weather) drives
+-- coverage, cirrus and drift, and sets the base height above the ground (setCloudAboveKm).
 
 M.CLOUDS_ENABLED = true
 M.CLOUD_NAME = 'bngEarthClouds'
@@ -126,10 +152,14 @@ M.CLOUD_CHECK_S = 5
 M.JUMP_M = 3000             -- a player move this large in one frame is a rebase/teleport
 M.CLOUD_SHIFT_SIGN = 1
 
--- Pure: the cloud altitude (km above z = 0) for ground height groundZ (m), or nil without ground.
-function M.cloudAltitudeKm(groundZ)
+local cloudAboveKm = nil -- real weather's base above the ground (nil = CLOUD_ABOVE_KM)
+local cloudFollow = true -- false while someone else sets the altitude (a manual override)
+
+-- Pure: the cloud altitude (km above z = 0) for ground height groundZ (m), or nil without ground;
+-- aboveKm: the base above the ground (default CLOUD_ABOVE_KM).
+function M.cloudAltitudeKm(groundZ, aboveKm)
   if not groundZ then return nil end
-  return math.max(M.CLOUD_MIN_KM, groundZ / 1000 + M.CLOUD_ABOVE_KM)
+  return math.max(M.CLOUD_MIN_KM, groundZ / 1000 + (aboveKm or M.CLOUD_ABOVE_KM))
 end
 
 -- Pure: the weather offset (km) after the world moved so that the player went from (ox, oy) to
@@ -155,6 +185,9 @@ local function cloudObj()
   scenetree.MissionGroup:addObject(o)
   o.coverage, o.cirrusCoverage = M.CLOUD_COVERAGE, M.CLOUD_CIRRUS
   o:postApply()
+  -- core_environment caches 'no CloudLayer' per class (environment.lua getObject): reset it
+  local env = rawget(_G, 'core_environment')
+  if env and env.onEditorDeactivated then pcall(env.onEditorDeactivated) end
   return o
 end
 
@@ -181,7 +214,8 @@ local function updateClouds(dt)
   cloudTimer = 0
   local o = cloudObj()
   if not o then return end
-  local alt = M.cloudAltitudeKm(groundUnder(p))
+  if not cloudFollow then return end
+  local alt = M.cloudAltitudeKm(groundUnder(p), cloudAboveKm)
   if alt and math.abs((tonumber(o.altitudeKm) or 0) - alt) > M.CLOUD_RETUNE_KM then
     o.altitudeKm = alt
     o:postApply()
@@ -194,6 +228,14 @@ function M.setClouds(on)
   if not M.CLOUDS_ENABLED and o then o:delete() end
   cloudTimer = M.CLOUD_CHECK_S
   return 'clouds ' .. (M.CLOUDS_ENABLED and 'on' or 'off')
+end
+
+-- Real weather: the cloud base above the ground (km; nil = CLOUD_ABOVE_KM), and whether the
+-- altitude follows the ground at all (off while the user or another mod sets it).
+function M.setCloudAboveKm(km) cloudAboveKm = tonumber(km) end
+function M.setCloudFollow(on)
+  cloudFollow = on and true or false
+  if cloudFollow then cloudTimer = M.CLOUD_CHECK_S end
 end
 
 function M.onUpdate(dtReal)

@@ -35,7 +35,7 @@ class EndToEndTest(unittest.TestCase):
         self.user = self.tmp.name
         self.proc = subprocess.Popen(
             [sys.executable, str(SERVER_DIR / "earthd.py"), "--port", "0",
-             "--user-dir", self.user, "--cache-dir", CACHE] + self.args,
+             "--user-dir", self.user, "--cache-dir", CACHE, "--weather", "off"] + self.args,
             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
         line = self.proc.stdout.readline()
         self.assertIn("listening on 127.0.0.1:", line)

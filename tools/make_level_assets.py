@@ -39,6 +39,7 @@ lines(os.path.join(L, "main/items.level.json"), [
 lines(os.path.join(L, "main/MissionGroup/items.level.json"), [
     {"name": "PlayerDropPoints", "class": "SimGroup", "persistentId": "3b0f6f0e-8f5e-4a51-9a59-0b8e2f6a1c02", "__parent": "MissionGroup", "enabled": "1"},
     {"name": "Sky", "class": "SimGroup", "persistentId": "3b0f6f0e-8f5e-4a51-9a59-0b8e2f6a1c03", "__parent": "MissionGroup"},
+    {"name": "Weather", "class": "SimGroup", "persistentId": "3b0f6f0e-8f5e-4a51-9a59-0b8e2f6a1c20", "__parent": "MissionGroup"},
 ])
 lines(os.path.join(L, "main/MissionGroup/PlayerDropPoints/items.level.json"), [
     {"name": "spawn_default", "class": "SpawnSphere", "persistentId": "3b0f6f0e-8f5e-4a51-9a59-0b8e2f6a1c04", "__parent": "PlayerDropPoints",
@@ -46,11 +47,13 @@ lines(os.path.join(L, "main/MissionGroup/PlayerDropPoints/items.level.json"), [
      "indoorWeight": "1", "isAIControlled": "0", "lockCount": "0", "outdoorWeight": "1", "radius": 5, "sphereWeight": "1"},
 ])
 # Sky group: LevelInfo/ScatterSky/TimeOfDay as in smallgrid's Sky/items.level.json, with the
-# view distance raised for the far field and no CloudLayer/GroundPlane.
+# view distance raised for the far field and no GroundPlane (the CloudLayer is in the Weather group).
 lines(os.path.join(L, "main/MissionGroup/Sky/items.level.json"), [
     {"name": "theLevelInfo", "class": "LevelInfo", "persistentId": "3b0f6f0e-8f5e-4a51-9a59-0b8e2f6a1c05", "__parent": "Sky",
      "canvasClearColor": [1, 1, 1, 255], "enabled": "1", "fogAtmosphereHeight": 1000, "fogColor": [0.741176009, 0.815685987, 0.925490022, 1],
-     "fogDensity": 4e-05, "globalEnviromentMap": "BNG_Sky_01_cubemap", "gravity": -9.81000042, "nearClip": 0.1, "visibleDistance": 100000},
+     "fogDensity": 4e-05, "globalEnviromentMap": "BNG_Sky_01_cubemap", "gravity": -9.81000042, "nearClip": 0.1, "visibleDistance": 100000,
+     # (time of day, C at sea level) pairs: ISA 15 C until real weather sets its own (weather.lua)
+     "temperatureCurveC": [0, 15, 1, 15]},
     {"name": "sunsky", "class": "ScatterSky", "persistentId": "3b0f6f0e-8f5e-4a51-9a59-0b8e2f6a1c06", "__parent": "Sky",
      "position": [0, 0, 100], "ambientScale": [1, 0.894117653, 0.78039217, 1], "ambientScaleGradientFile": "art/sky_gradients/default/gradient_ambient.png",
      "azimuth": 57.2957764, "colorize": [0.219607845, 0.349019617, 0.607843161, 1], "colorizeGradientFile": "art/sky_gradients/default/gradient_colorize.png",
@@ -66,6 +69,32 @@ lines(os.path.join(L, "main/MissionGroup/Sky/items.level.json"), [
     {"name": "tod", "class": "TimeOfDay", "persistentId": "3b0f6f0e-8f5e-4a51-9a59-0b8e2f6a1c07", "__parent": "Sky",
      "position": [0, 0, 100], "axisTilt": 10, "play": False, "startTime": 0.1, "time": 0.1,
      "latitude": 36.5785, "longitude": -118.2923},
+])
+
+# Weather group: the objects every official level has, so core_environment, the pause menu's
+# Time & Weather panel and the weather presets (core_weather) find them
+# (docs/research/2026-10-10-game-feature-quick-wins.md §5.1). None is positional: the clouds
+# follow the ground under the player (sky.lua), the precipitation follows the camera and the reverb
+# is 2D, so the floating origin does not matter. Precipitation: BWM_Weather's verified 0.39 setup
+# (rain_drop; the pool `numDrops` is set when it rains, then setPercentage); no `numOfDrops` field,
+# so BWM_Weather still uses its own rain object here.
+lines(os.path.join(L, "main/MissionGroup/Weather/items.level.json"), [
+    {"name": "bngEarthClouds", "class": "CloudLayer", "persistentId": "3b0f6f0e-8f5e-4a51-9a59-0b8e2f6a1c21", "__parent": "Weather",
+     "texture": "art/skies/clouds/clouds_normal_displacement.png", "coverage": 0.5, "cirrusCoverage": 0.3, "exposure": 1.45,
+     "windSpeed": 0.1, "baseColor": [0.99, 0.99, 0.99, 0.9], "altitudeKm": 1.5},
+    {"name": "bngEarthRain", "class": "Precipitation", "persistentId": "3b0f6f0e-8f5e-4a51-9a59-0b8e2f6a1c22", "__parent": "Weather",
+     "dataBlock": "rain_drop", "numDrops": 0, "boxWidth": 50, "boxHeight": 40, "dropSize": 0.36, "splashSize": 0.2,
+     "fadeDist": 6, "fadeDistEnd": 65, "followCam": True, "useWind": True, "useTurbulence": True, "doCollision": True,
+     "hitVehicles": False},
+    {"name": "bngEarthSnow", "class": "Precipitation", "persistentId": "3b0f6f0e-8f5e-4a51-9a59-0b8e2f6a1c23", "__parent": "Weather",
+     "dataBlock": "Snow_menu", "numDrops": 0, "boxWidth": 40, "boxHeight": 30, "dropSize": 0.25, "splashSize": 0,
+     "minSpeed": 0.15, "maxSpeed": 0.3, "fadeDist": 6, "fadeDistEnd": 45, "followCam": True, "useWind": True,
+     "useTurbulence": True, "maxTurbulence": 0.5, "turbulenceSpeed": 0.2, "doCollision": False},
+    {"name": "bngEarthWind", "class": "ForestWindEmitter", "persistentId": "3b0f6f0e-8f5e-4a51-9a59-0b8e2f6a1c24", "__parent": "Weather",
+     "position": [0, 0, 0], "strength": 0.5},
+    {"name": "bngEarthReverb", "class": "SFXEmitter", "persistentId": "3b0f6f0e-8f5e-4a51-9a59-0b8e2f6a1c25", "__parent": "Weather",
+     "position": [0, 0, 0], "fadeInTime": 0, "fadeOutTime": 0, "is3D": False, "isLooping": False, "maxDistance": 0.01,
+     "referenceDistance": 0, "track": "snapshot:>Reverb_WC_Open", "useTrackDescriptionOnly": True},
 ])
 
 # Terrain material: the template level's "Dirt" (v1.5 PBR) with detail/macro textures taken

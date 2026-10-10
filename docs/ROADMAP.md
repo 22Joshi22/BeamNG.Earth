@@ -288,7 +288,9 @@ Plan (with the netfetch / rate-limit work):
 2. **Easy install and start**: server auto-start with the game / launcher, one settings file,
    Windows support.
 3. **Real weather** (Open-Meteo, keyless): clouds, rain, fog, wind; integrates with the game's
-   weather/clouds or BWM_Weather.
+   weather/clouds or BWM_Weather. Built offline on branch feature/weather (2026-10-10) with the
+   level-file parity objects, the real time zone and gravity by latitude/height
+   (ARCHITECTURE.md "Real weather"); waiting for its in-game checks and the cloud calibration.
 4. **Airports and runways** for plane mods (pairs with v1.4 M5 flight).
 All other candidates below are approved too ("all these look good") and get scheduled after these.
 

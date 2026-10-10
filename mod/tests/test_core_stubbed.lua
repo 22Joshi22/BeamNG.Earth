@@ -679,6 +679,15 @@ frames(3)
 serverSend({ type = 'status', text = 'x', backlog = 0, radius = 500000 })
 frames(3)
 T.check(sky.atmoPlanetRadius == 6371 and math.abs(scenetree.theLevelInfo.visibleDistance - 550000) < 1e-6, 'horizon again')
+-- real weather: core hands the message to the beamngEarth_weather extension (when it is loaded)
+serverSend({ type = 'weather', v = 1, code = 3, tempC = 20.5 })
+frames(2)                                               -- no extension: ignored
+local gotWeather = nil
+beamngEarth_weather = { onWeather = function(m) gotWeather = m end }
+serverSend({ type = 'weather', v = 1, code = 3, tempC = 20.5 })
+frames(2)
+T.check(gotWeather and gotWeather.code == 3 and gotWeather.tempC == 20.5, 'weather message handed to beamngEarth_weather')
+beamngEarth_weather = nil
 
 core.onExtensionUnloaded()
 T.check(sky.atmoPlanetRadius == 6360 and scenetree.theLevelInfo.visibleDistance == 100000,
