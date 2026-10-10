@@ -36,6 +36,7 @@ python3 server/earthd.py --port 47613 --user-dir ~/.local/share/BeamNG/BeamNG.dr
 | `--tex-near` | `256` | 32 cells: texture edge (px) of the two finest levels (mesh: L-2, L-1; terrain: L0, L1) |
 | `--tex-far` | `256` | 32 cells: texture edge (px) of every other level |
 | `--tone` | `1.0` | Strength of the imagery tone curve (0 = imagery as downloaded) |
+| `--deshadow` | `off` | Undo the capture sun's terrain shading in the USGS tiles (`deshadow.py`): `lambert` = slope shading only, `full` = slopes and the terrain's cast shadows (relit texels then get half the tone curve's shadow lift). `off` = textures byte-identical to before |
 | `--near-radii` | `150,400` | Mesh mode: everything within 150 m of the player is the exact level, within 400 m at least the next one (32 cells: L-2, L-1; 64 cells: L-1, L0) |
 | `--status-interval` | `0` | Re-send the last status with the current far-tile backlog every S s while it changes (0 = v1.3.1: on events only; `tools/drive.py` runs use 1) |
 | `-v` | off | Debug logging |
@@ -241,6 +242,14 @@ Format decoded from engine-written files (golden pairs in `tests/fixtures/`):
   than with a baked fallback colour.
 - **Tone curve** (`--tone`, LUT per channel): +0.06 at black, −0.10 at white, ~0 at mid-grey: lifts
   baked shadows a little and stops bright rock/sand glowing under the engine's own lighting.
+- **De-shadowing** (`--deshadow lambert|full`, default off; docs/research/2026-10-10-deshadow-prototype.md,
+  method A): per USGS z12 region (~8 km) a background thread fits the capture sun against the DEM
+  (z14 imagery, DEM z13 on the same pixels), gates it (r² ≥ 0.25, shadow-class separation ≥ 0.9),
+  measures haze, sky/sun ratio and the shadow classifier on a few z16 tiles at the shadow edges, and
+  caches the values (`<cache>/deshadow/usgs/12/x/y.json` + `.npz` grids). `Imagery._mosaic` then
+  relights each USGS z12–z16 source tile with an 8 px margin from its neighbours; results live in a
+  memory LRU and `<cache>/imagery/usgs-ds<ver>-<mode>/` (raw tiles untouched). Tiles of a region that
+  is not ready stay raw (renders wait up to 30 s for the regions within 2 km of a new anchor).
 - **Texture format: DDS DXT1 (BC1) with a full mip chain** (512²: 10 levels, 174 904 B; 256²: 9 levels,
   43 832 B). Pillow 12 writes DXT1 but always `mipMapCount = 0`, so `imagery.encode_dds` box-reduces
   each level, BC1-encodes it with Pillow's encoder and writes its own header (`DDSD_MIPMAPCOUNT`,
@@ -303,7 +312,11 @@ assets. `test_mesh.py` mesh mode: selection down to L-2 with the min-level radii
 64 m cells), the 25 % hysteresis at 150/400 m, L-2 vertices == terrain PNG heights (float64 and the
 engine's float32), the Torque diagonal rule against a port of `TerrainBlock::getHeight`, footprint
 UV0 / world-locked UV1, and the engine's UV2 convention (stock shape, if the game is installed).
-`test_imagery.py`: a landmark lat/lon lands on its texel (within 0.2 m, two frames), orientation,
+`test_deshadow.py`: box / guided filter / horizon march against brute force, hue-preserving gain
+cap, sun recovery, relit ratio, halo bound and 20 px misregistration on a synthetic ridge scene,
+the gates (flat DEM, low r², separation), the region cache (round trip, version bump, lambert reuse),
+the imagery hook, and `--deshadow off` byte-identical to the pre-hook renders (`DESHADOW_TIMING=1`:
+per-tile cost). `test_imagery.py`: a landmark lat/lon lands on its texel (within 0.2 m, two frames), orientation,
 zoom choice, the source chain (404, blank, last-source blank, unreachable, undecodable, coverage
 probes, min zoom), disk cache and remembered 404s, prefetch, tone curve, DDS mip chain (each level
 the BC1 of the box-reduced previous one, readable by Pillow); plus three real-network checks (USGS
