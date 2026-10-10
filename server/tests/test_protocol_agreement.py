@@ -1,0 +1,417 @@
+"""Protocol 4 agreement between the server (earthd.py) and the mod (core.lua, farfield.lua,
+lattice.lua, follow.lua, ...), checked from both sides against one table (docs/V1_3_SPEC.md E over
+docs/V1_2_DESIGN.md §7 as amended by §12; server/README.md documents the same table):
+
+  - every message the mod builds (net.send constructors in core.lua) has exactly the table's
+    fields, and every field the server reads exists in the table;
+  - every message the server sends in a real session (in-process server, synthetic DEM: teleport,
+    far field, terrain-follow, errors, a second anchor with the previous one's far_removes) has
+    the table's required fields with the table's types and nothing else, and every field the mod
+    reads (msg.X / tr.X in its Lua) is in the table;
+  - the constants both sides must share (protocol/format, lattice, quantum, terrain-follow rule,
+    tile grid, material name and file, paths), and the material loading order in the mod;
+  - protocol 4 (docs/V1_3_SPEC.md E): hello.nearVisual values; a textured far_tile's material
+    name (bngEarthSat_<anchorId>_<key, '-' as 'm'>) is the one inside its .cdae (the mod's
+    Material maps onto it by mapTo), its texture is a DXT1 DDS with a full mip chain next to the
+    shape (same stem), UV0 spans the footprint with v flipped as the engine stores it (row 0 of
+    the texture = north), UV1 is world-locked (x, y) / DETAIL_M (the mod's detail map runs on UV1
+    at detailScale 1, so one repeat per DETAIL_M), and the mod's detail texture is a stock asset.
+"""
+import json
+import math
+import os
+import struct
+import re
+import zipfile
+import sys
+import unittest
+from pathlib import Path
+
+import numpy as np
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import cdae  # noqa: E402
+import earthd  # noqa: E402
+import farfield as ff  # noqa: E402
+import heightmap  # noqa: E402
+import imagery  # noqa: E402
+import modsim  # noqa: E402
+import test_server  # noqa: E402
+
+NUM = (int, float)
+OPT = "optional"            # may be absent
+NULL = "nullable"           # may be JSON null
+
+
+def F(types, *flags):
+    return (types if isinstance(types, tuple) else (types,), set(flags))
+
+
+# message type -> {field: F(types, flags)}; "type" itself is implied.
+MOD_TO_SERVER = {
+    "hello": {"protocol": F(int), "format": F(int), "modVersion": F(str)},
+    "prepare_anchor": {"requestId": F(int), "lat": F(NUM), "lon": F(NUM), "cx": F(NUM, OPT), "cy": F(NUM, OPT)},
+    "commit_anchor": {"anchorId": F(int)},
+    "prepare_terrain": {"requestId": F(int), "anchorId": F(int), "cx": F(NUM), "cy": F(NUM)},
+    "commit_terrain": {"anchorId": F(int), "cx": F(NUM), "cy": F(NUM)},
+    "pose": {"anchorId": F(int), "x": F(NUM), "y": F(NUM), "z": F(NUM), "vx": F(NUM), "vy": F(NUM), "lat": F(NUM),
+             "lon": F(NUM), "speed": F(NUM), "cam": F(dict, OPT),
+             # previous anchors whose tile objects the mod still has (an empty Lua table may encode as {})
+             "held": F((list, dict), OPT)},
+}
+CAM = {"x", "y", "z", "fx", "fy", "fz", "fovDeg"}
+TERRAIN = {"cx": F(NUM), "cy": F(NUM), "heightmap": F(str), "size": F(int), "squareSize": F(NUM),
+           "zBase": F(NUM), "maxHeight": F(NUM), "q": F(NUM)}
+SERVER_TO_MOD = {
+    "hello": {"protocol": F(int), "format": F(int), "serverVersion": F(str), "sessionId": F(str),
+              "farFormat": F(str), "material": F(str),
+              "nearVisual": F(str), "attribution": F(str)},          # protocol 4
+    "status": {"text": F(str)},
+    "anchor_ready": {"requestId": F(int), "anchorId": F(int), "lat": F(NUM), "lon": F(NUM),
+                     "groundZ": F(NUM, NULL), "terrain": F(dict),
+                     "anchorKey": F(str, OPT)},            # phase 5 (lattice anchors): not sent yet
+    "anchor_error": {"requestId": F(int, NULL), "error": F(str)},
+    "terrain_ready": {"requestId": F(int), "anchorId": F(int), **TERRAIN},
+    "terrain_error": {"requestId": F(int, NULL), "anchorId": F(int, NULL), "error": F(str)},
+    "far_tile": {"anchorId": F(int), "key": F(str), "level": F(int), "shape": F(str), "pos": F(list),
+                 "err": F(NUM), "skirt": F(NUM), "sink": F(NUM, OPT), "state": F(str),   # sink: exactly on L0
+                 # protocol 4, satellite imagery: the tile's own material (all three, or none)
+                 "material": F(str, OPT), "texture": F(str, OPT), "detail": F(bool, OPT)},
+    "far_swap": {"anchorId": F(int), "id": F(int), "add": F(list), "remove": F(list), "dIn": F(NUM),
+                 "dOut": F(NUM)},
+    "far_remove": {"anchorId": F(int), "key": F(str)},
+    "far_done": {"anchorId": F(int), "count": F(int)},
+}
+# events the mod's net.lua makes up itself (not on the wire)
+MOD_INTERNAL = {"_connected": set(), "_disconnected": {"error"}}
+
+LUA = modsim.MOD_DIR
+SHAPE_RE = r"^/temp/beamngEarth/[^/]+/far_\d+_-?\d+_-?\d+_-?\d+\.cdae$"     # levels down to -2 (mesh mode)
+HM_RE = r"^/temp/beamngEarth/[^/]+/hm_\d+_-?\d+_-?\d+\.png$"
+
+
+def lua_tables(text, start):
+    """Text of the Lua table constructor that opens at text[start] == '{' (balanced braces)."""
+    depth = 0
+    for i in range(start, len(text)):
+        if text[i] == "{":
+            depth += 1
+        elif text[i] == "}":
+            depth -= 1
+            if depth == 0:
+                return text[start:i + 1]
+    raise ValueError("unbalanced table")
+
+
+def top_keys(table):
+    """Keys `name = ...` of a constructor, and of the constructors nested one level down
+    ({outer key: keys})."""
+    keys, nested, depth, last = set(), {}, 0, None
+    for m in re.finditer(r"\{|\}|(\w+)\s*=(?!=)", table):
+        tok = m.group(0)
+        if tok == "{":
+            depth += 1
+        elif tok == "}":
+            depth -= 1
+        elif depth == 1:
+            keys.add(m.group(1))
+            last = m.group(1)
+        elif depth == 2 and last:
+            nested.setdefault(last, set()).add(m.group(1))
+    return keys, nested
+
+
+def mod_sends():
+    """{type: (keys, nested)} of every net.send({...}) in core.lua."""
+    text = (LUA / "core.lua").read_text()
+    out = {}
+    for m in re.finditer(r"net\.send\(\{", text):
+        t = lua_tables(text, m.end() - 1)
+        keys, nested = top_keys(t)
+        kind = re.search(r"type\s*=\s*'(\w+)'", t).group(1)
+        out.setdefault(kind, []).append((keys - {"type"}, nested))
+    return out
+
+
+def mod_reads():
+    """Fields the mod reads from server messages: msg.X / p.msg.X / tr.X (terrain) in its Lua."""
+    out = set()
+    for name in ("core.lua", "farfield.lua", "lattice.lua"):
+        text = (LUA / name).read_text()
+        out |= set(re.findall(r"\bmsg\.(\w+)", text))
+        out |= {"terrain." + f for f in re.findall(r"\btr\.(\w+)", text)}
+    return out
+
+
+def server_reads():
+    text = (Path(earthd.__file__)).read_text()
+    out = set(re.findall(r"msg\.get\(\"(\w+)\"", text)) | set(re.findall(r"msg\[\"(\w+)\"\]", text))
+    out |= set(re.findall(r"_num\(msg, \"(\w+)\"", text))
+    return out
+
+
+def lua_function(text, name):
+    """Body of `local function name(` / `function M.name(` up to the next top-level `end`."""
+    m = re.search(rf"^(?:local )?function (?:M\.)?{name}\(.*?^end", text, re.S | re.M)
+    return m.group(0) if m else ""
+
+
+class AgreementTableTest(unittest.TestCase):
+    def test_mod_sends_match_table(self):
+        sends = mod_sends()
+        self.assertEqual(set(sends), set(MOD_TO_SERVER), "message types the mod sends")
+        for kind, variants in sends.items():
+            want = MOD_TO_SERVER[kind]
+            required = {f for f, (_, flags) in want.items() if OPT not in flags}
+            for keys, nested in variants:
+                self.assertLessEqual(required, keys, (kind, keys))
+                self.assertLessEqual(keys, set(want), (kind, keys))
+                if "cam" in nested:
+                    self.assertEqual(nested["cam"], CAM)
+
+    def test_server_reads_are_in_table(self):
+        fields = {f for spec in MOD_TO_SERVER.values() for f in spec} | {"type"}
+        self.assertLessEqual(server_reads(), fields)
+
+    def test_mod_reads_are_in_table(self):
+        sent = {f for spec in SERVER_TO_MOD.values() for f in spec} | {"type"}
+        sent |= {f for spec in MOD_INTERNAL.values() for f in spec}
+        sent |= {"terrain." + f for f in TERRAIN}
+        unknown = mod_reads() - sent
+        self.assertFalse(unknown, f"the mod reads fields no server message has: {sorted(unknown)}")
+
+
+class ConstantsTest(unittest.TestCase):
+    def test_protocol_and_format(self):
+        self.assertEqual((modsim.CORE["PROTOCOL"], modsim.CORE["FORMAT"]), (earthd.PROTOCOL, earthd.FORMAT))
+
+    def test_lattice_and_quantum(self):
+        L = modsim.LATTICE
+        self.assertEqual((L["N"], L["SQUARE"], L["HALF"], L["GRID"]),
+                         (heightmap.SIZE, heightmap.SQUARE, heightmap.HALF, heightmap.GRID))
+        self.assertEqual(L["VALID_W"], heightmap.VALID)                     # 2046 m (§12 P1)
+        self.assertEqual(tuple(L["Q_LADDER"]), heightmap.Q_LADDER)
+        for q in heightmap.Q_LADDER:
+            self.assertEqual(heightmap.block_params(1000.0, 1100.0, q)[2], q * L["Q_SCALE"])
+        self.assertEqual(L["L0"], ff.BASE)
+        self.assertEqual(2 * L["HALF"], 8 * ff.BASE)                        # a block sits on 8 x 8 L0 tiles
+        self.assertEqual(modsim.XO["CELLS"], ff.CELLS)
+        self.assertLess(modsim.FAR["EDGE_BAND"], ff.BASE)                   # the edge ring is one L0 tile deep
+
+    def test_terrain_follow_rule(self):
+        F = modsim.FOLLOW
+        self.assertEqual((F["PREPARE_DIST"], F["LOOKAHEAD_S"], F["REACH"]),
+                         (earthd.FOLLOW_PREPARE, earthd.FOLLOW_LEAD, earthd.FOLLOW_REACH))
+        # the player stays >= EDGE_MARGIN inside the collidable [cx-1024, cx+1022] on both sides
+        self.assertLessEqual(F["REACH"], L_VALID_EDGE - F["EDGE_MARGIN"])
+        self.assertLessEqual(earthd.ANCHOR_CENTRE_MAX, modsim.REBASE["MAX_DISTANCE"] + 5000)
+
+    def test_material(self):
+        name = modsim.lua_string("farfield.lua", "MATERIAL")
+        self.assertEqual(name, ff.MATERIAL)
+        vfs = modsim.lua_string("farfield.lua", "MATERIALS_FILE")
+        self.assertEqual(vfs, "/" + "/".join(ff.MOD_SHAPES) + "/main.materials.json")
+        local = modsim.MOD_ROOT / vfs.lstrip("/")
+        mats = json.loads(local.read_text())
+        self.assertEqual(mats[name]["mapTo"], name)                        # P2: mapTo overrides the shape's own
+        self.assertEqual(mats[name]["class"], "Material")
+        palette = mats[name]["Stages"][0]["baseColorMap"]
+        self.assertTrue((modsim.MOD_ROOT / palette.lstrip("/")).is_file(), palette)
+        # the level loader picks up every *materials.json under the level folder, so the file must
+        # live inside levels/beamng_earth
+        self.assertTrue(vfs.startswith("/levels/beamng_earth/"))
+
+    def test_material_loaded_before_first_tile(self):
+        text = (LUA / "farfield.lua").read_text()
+        spawn = lua_function(text, "spawn")
+        self.assertLess(spawn.index("ensureMaterial()"), spawn.index("createObject('TSStatic')"))
+        self.assertIn("ensureMaterial()", lua_function(text, "switchAnchor"))
+        ensure = lua_function(text, "ensureMaterial")
+        self.assertIn("scenetree.findObject(M.MATERIAL)", ensure)          # loaded by the level already?
+        self.assertIn("loadJsonMaterialsFile(M.MATERIALS_FILE)", ensure)
+        terrain = (LUA / "terrain.lua").read_text()
+        create = lua_function(terrain, "getOrCreate")
+        self.assertLess(create.index("ensureMaterials()"), create.index("TerrainBlock()"))
+
+    def test_near_visual_values(self):
+        """hello.nearVisual: the mod draws the ground with tiles for 'mesh' and with the
+        TerrainBlock for anything else (an older server sends none: the v1.2 look)."""
+        self.assertEqual(set(earthd.NEAR_VISUALS), {"mesh", "terrain"})
+        core = (LUA / "core.lua").read_text()
+        self.assertIn("nearVisual = (mode == 'mesh') and 'mesh' or 'terrain'", lua_function(core, "setNearVisual"))
+        far = (LUA / "farfield.lua").read_text()
+        self.assertIn("mode = (mode == 'mesh') and 'mesh' or 'terrain'", lua_function(far, "setNearVisual"))
+
+    def test_imagery_material(self):
+        """satmat.lua builds the Material the way the server's shapes and textures need: mapTo =
+        the far_tile's material (the name in the shape), colorMap = its texture, the detail map on
+        UV1 at detailScale 0.5 (UV1 = metres / DETAIL_M, so one repeat per 2 * DETAIL_M); the
+        detail texture ships with the mod (tools/make_detail_texture.py: mean 0.5 grey, fading
+        mips)."""
+        text = (LUA / "satmat.lua").read_text()
+        create = lua_function(text, "create")
+        self.assertIn("m:setField('mapTo', 0, name)", create)
+        self.assertIn("m:setField('colorMap', 0, texture)", create)
+        self.assertIn("m:registerObject(name)", create)
+        self.assertIn("m:setField('detailMap', 0, M.DETAIL_MAP)", create)
+        self.assertRegex(text, r"\{ 'detailMapUseUV', '1' \}")
+        self.assertRegex(text, r"\{ 'detailScale', '0.5 0.5' \}")
+        # farfield passes the far_tile's fields straight through
+        far = (LUA / "farfield.lua").read_text()
+        self.assertIn("satmat.create, inst.material, inst.texture, inst.detail", far)
+        detail = modsim.lua_string("satmat.lua", "DETAIL_MAP")
+        mod_file = modsim.MOD_ROOT / detail.lstrip("/")      # mod root = the VFS root
+        self.assertTrue(mod_file.is_file(), mod_file)
+        data = mod_file.read_bytes()
+        self.assertEqual(data[:4], b"DDS ")
+        self.assertGreater(struct.unpack_from("<I", data, 28)[0], 1)   # has mips (the fade)
+
+    def test_shape_kind_from_extension(self):
+        text = (LUA / "farfield.lua").read_text()
+        self.assertIn("%.cdae$", lua_function(text, "kindOf"))
+        self.assertLessEqual({"cdae", "dae"}, set(modsim.GOV["PRIOR"]))
+        self.assertEqual(set(ff.FORMATS), {"cdae", "dae"})
+
+
+L_VALID_EDGE = modsim.LATTICE["VALID_W"] - modsim.LATTICE["HALF"]      # +1022 m from the centre
+
+
+class ServerMessagesTest(test_server.ServerHarness):
+    """Everything the server sends in a session, checked against SERVER_TO_MOD."""
+
+    def check(self, m):
+        kind = m["type"]
+        self.assertIn(kind, SERVER_TO_MOD, m)
+        spec = SERVER_TO_MOD[kind]
+        fields = set(m) - {"type"}
+        self.assertLessEqual(fields, set(spec), m)
+        for f, (types, flags) in spec.items():
+            if f not in m:
+                self.assertTrue(OPT in flags, (f, m))
+                continue
+            if m[f] is None:
+                self.assertIn(NULL, flags, (f, m))
+                continue
+            self.assertIsInstance(m[f], types, (f, m))
+            if isinstance(m[f], float):
+                self.assertTrue(math.isfinite(m[f]), (f, m))
+        if kind == "far_tile":
+            self.assertRegex(m["shape"], SHAPE_RE)
+            self.assertIn(m["state"], ("group", "prefetch"))
+            self.assertEqual(len(m["pos"]), 3)
+            # sink: on L0 in terrain near-visual mode only (mesh mode covers nothing)
+            self.assertEqual(m["level"] == 0 and self.near_visual == "terrain", "sink" in m, m)
+            # imagery: every tile carries its material, unless imagery is off
+            self.assertEqual("material" in m, self.with_imagery, m)
+            self.assertEqual(m["key"], ff.tile_of(m["key"]).key)
+        if kind in ("anchor_ready", "terrain_ready"):
+            t = m["terrain"] if kind == "anchor_ready" else {f: m[f] for f in TERRAIN}
+            self.assertEqual(set(t), set(TERRAIN))
+            for f, (types, _) in TERRAIN.items():
+                self.assertIsInstance(t[f], types, (f, t))
+            self.assertRegex(t["heightmap"], HM_RE)
+            self.assertEqual((t["size"], t["squareSize"]), (modsim.LATTICE["N"], modsim.LATTICE["SQUARE"]))
+            self.assertEqual(t["maxHeight"], t["q"] * modsim.LATTICE["Q_SCALE"])
+            self.assertEqual(t["zBase"] % t["q"], 0)
+        if kind == "far_swap":
+            self.assertTrue(all(isinstance(k, str) for k in m["add"] + m["remove"]))
+        if kind == "far_tile" and "material" in m:
+            self.assertTrue("texture" in m and "detail" in m, m)
+            self.assertRegex(m["texture"], r"^/temp/beamngEarth/[^/]+/[^/]+\.dds$")
+            # the name the shape's material slot carries: a plain identifier, unique per anchor+key
+            self.assertEqual(m["material"], earthd.sat_material(m["anchorId"], m["key"]))
+            self.assertRegex(m["material"], r"^bngEarthSat_\d+_m?\d+_m?\d+_m?\d+$")
+            self.assertEqual(m["texture"], m["shape"].rsplit(".", 1)[0] + ".dds")      # next to the shape
+            self.assertIs(m["detail"], True)
+        if kind == "hello":
+            self.assertIn(m["nearVisual"], ("mesh", "terrain"))
+            self.assertEqual(m["material"], modsim.lua_string("farfield.lua", "MATERIAL"))
+            self.assertIn(m["farFormat"], ff.FORMATS)
+
+    def test_session_messages(self):
+        c = self.c
+        seen = []
+
+        def until(pred, timeout=60):
+            m, before = c.until(pred, timeout)
+            seen.extend(before + [m])
+            return m
+
+        c.send({"type": "hello", "protocol": modsim.CORE["PROTOCOL"], "format": modsim.CORE["FORMAT"],
+                "modVersion": "0.4.0"})
+        until(lambda m: m["type"] == "hello")
+        c.send({"type": "prepare_anchor", "requestId": 1, "lat": test_server.LAT, "lon": test_server.LON,
+                "cx": 0, "cy": 0})
+        a = until(lambda m: m["type"] == "anchor_ready")
+        aid = a["anchorId"]
+        c.send({"type": "commit_anchor", "anchorId": aid})
+        c.send({"type": "commit_terrain", "anchorId": aid, "cx": 0, "cy": 0})
+        self.pose(aid, 0, 0)
+        until(lambda m: m["type"] == "far_done" and m["anchorId"] == aid, 120)
+        self.pose(aid, 600, 0, vx=30)                   # LOD swaps (both sides) + the predicted block
+        until(lambda m: m["type"] == "far_done" and m["anchorId"] == aid, 120)
+        c.send({"type": "prepare_terrain", "requestId": 2, "anchorId": aid, "cx": 512, "cy": 0})
+        until(lambda m: m["type"] == "terrain_ready")
+        c.send({"type": "commit_terrain", "anchorId": aid, "cx": 512, "cy": 0})
+        seen.extend(c.drain(0.3))                       # a commit changes no far tile: nothing to wait for
+        c.send({"type": "prepare_terrain", "requestId": 3, "anchorId": 999, "cx": 0, "cy": 0})
+        until(lambda m: m["type"] == "terrain_error")
+        c.send({"type": "prepare_anchor", "requestId": 4, "lat": 123.0, "lon": 0})
+        until(lambda m: m["type"] == "anchor_error")
+        # a second anchor 2 km east (a rebase): the previous anchor's tiles get far_removes
+        lat, lon, _ = self.server.anchors[aid].frame.enu_to_geodetic(2000.0, 0.0, 0.0)
+        c.send({"type": "prepare_anchor", "requestId": 5, "lat": float(lat), "lon": float(lon), "cx": 0, "cy": 0})
+        b = until(lambda m: m["type"] == "anchor_ready")
+        c.send({"type": "commit_anchor", "anchorId": b["anchorId"]})
+        c.send({"type": "commit_terrain", "anchorId": b["anchorId"], "cx": 0, "cy": 0})
+        self.pose(b["anchorId"], 0, 0)
+        until(lambda m: m["type"] == "far_done" and m["anchorId"] == b["anchorId"], 120)
+        seen += c.drain(0.3)
+        kinds = {m["type"] for m in seen}
+        self.assertEqual(kinds, set(SERVER_TO_MOD), "a message type was not exercised or is not in the table")
+        for m in seen:
+            self.check(m)
+        old_removes = [m for m in seen if m["type"] == "far_remove" and m["anchorId"] == aid]
+        self.assertTrue(old_removes)
+        textured = [m for m in seen if m["type"] == "far_tile" and "material" in m]
+        self.assertEqual(bool(textured), self.with_imagery)
+        for m in textured[::max(1, len(textured) // 12)]:
+            self.check_textured(m)
+
+    def check_textured(self, m):
+        """The files a textured far_tile names, as the mod and the engine use them."""
+        shape = cdae.read(self.fs(m["shape"]))
+        self.assertEqual([x["name"] for x in shape["materials"]], [m["material"]])   # mapTo target
+        mesh = cdae.mesh_arrays(shape["meshes"][0])
+        v, uv0, uv1 = mesh["verts"], mesh["tverts"], mesh["tverts2"]
+        size = ff.tile_of(m["key"]).size
+        self.assertEqual(len(uv1), len(v))
+        with open(self.fs(m["texture"]), "rb") as f:
+            px = imagery.read_dds_info(f.read())[0]
+        # UV0: the footprint inside the texture's gutter, v stored flipped (the engine's
+        # convention): u = gutter_uv(x / S), 1 - v = gutter_uv(y / S), so texture row 0 is north
+        self.assertTrue(np.allclose(uv0[:, 0], imagery.gutter_uv(v[:, 0] / size, px), atol=1e-6))
+        self.assertTrue(np.allclose(uv0[:, 1], 1 - imagery.gutter_uv(v[:, 1] / size, px), atol=1e-6))
+        # UV1: tile-local metres / DETAIL_M, flipped the same way; world-locked because the tile
+        # origin is a multiple of DETAIL_M
+        self.assertTrue(np.allclose(uv1[:, 0], v[:, 0] / ff.DETAIL_M, atol=1e-4))
+        self.assertTrue(np.allclose(uv1[:, 1], 1 - v[:, 1] / ff.DETAIL_M, atol=1e-4))
+        self.assertEqual(m["pos"][0] % ff.DETAIL_M, 0)
+        self.assertEqual(m["pos"][1] % ff.DETAIL_M, 0)
+        with open(self.fs(m["texture"]), "rb") as f:
+            data = f.read()
+        w, h, mips, fourcc, sizes = imagery.read_dds_info(data)
+        self.assertEqual((w, h, fourcc), (self.server.tex_size(m["level"]),) * 2 + (b"DXT1",))
+        self.assertEqual(mips, w.bit_length())                 # full chain down to 1 x 1
+        self.assertEqual(len(data), imagery.DDS_HEADER + sum(sizes))
+
+
+class MeshImageryMessagesTest(ServerMessagesTest):
+    """The same session with the v1.3 defaults: --near-visual mesh, imagery on (synthetic)."""
+    near_visual = "mesh"
+    with_imagery = True
+
+
+if __name__ == "__main__":
+    unittest.main()

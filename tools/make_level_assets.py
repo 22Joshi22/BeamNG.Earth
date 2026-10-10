@@ -1,0 +1,132 @@
+"""Generates the static files of the mod level (JSON + small PNG/JPG assets).
+
+  python3 tools/make_level_assets.py mod/beamng_earth/levels/beamng_earth
+"""
+import json, os, sys
+from PIL import Image, ImageDraw
+
+L = sys.argv[1]  # .../mod/beamng_earth/levels/beamng_earth
+T = os.path.join(L, "art/terrains")
+os.makedirs(T, exist_ok=True)
+
+def lines(path, objs):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w") as f:
+        for o in objs:
+            f.write(json.dumps(o, separators=(",", ":")) + "\n")
+
+def pretty(path, obj):
+    with open(path, "w") as f:
+        json.dump(obj, f, indent=2)
+        f.write("\n")
+
+pretty(os.path.join(L, "info.json"), {
+    "title": "BeamNG.Earth",
+    "description": "The whole Earth, streamed around you by the BeamNG.Earth companion server. Start the server, then teleport from the BeamNG.Earth window.",
+    "previews": ["beamng_earth_preview.jpg"],
+    "size": [-1, -1],
+    "biome": "Earth",
+    "roads": "None (v1)",
+    "authors": "BeamNG.Earth",
+    "defaultSpawnPointName": "spawn_default",
+    "supportsTraffic": False,
+    "supportsTimeOfDay": True,
+})
+
+lines(os.path.join(L, "main/items.level.json"), [
+    {"name": "MissionGroup", "class": "SimGroup", "persistentId": "3b0f6f0e-8f5e-4a51-9a59-0b8e2f6a1c01", "enabled": "1"},
+])
+lines(os.path.join(L, "main/MissionGroup/items.level.json"), [
+    {"name": "PlayerDropPoints", "class": "SimGroup", "persistentId": "3b0f6f0e-8f5e-4a51-9a59-0b8e2f6a1c02", "__parent": "MissionGroup", "enabled": "1"},
+    {"name": "Sky", "class": "SimGroup", "persistentId": "3b0f6f0e-8f5e-4a51-9a59-0b8e2f6a1c03", "__parent": "MissionGroup"},
+])
+lines(os.path.join(L, "main/MissionGroup/PlayerDropPoints/items.level.json"), [
+    {"name": "spawn_default", "class": "SpawnSphere", "persistentId": "3b0f6f0e-8f5e-4a51-9a59-0b8e2f6a1c04", "__parent": "PlayerDropPoints",
+     "position": [0, 0, 0.5], "autoplaceOnSpawn": "0", "dataBlock": "SpawnSphereMarker", "enabled": "1", "homingCount": "0",
+     "indoorWeight": "1", "isAIControlled": "0", "lockCount": "0", "outdoorWeight": "1", "radius": 5, "sphereWeight": "1"},
+])
+# Sky group: LevelInfo/ScatterSky/TimeOfDay as in smallgrid's Sky/items.level.json, with the
+# view distance raised for the far field and no CloudLayer/GroundPlane.
+lines(os.path.join(L, "main/MissionGroup/Sky/items.level.json"), [
+    {"name": "theLevelInfo", "class": "LevelInfo", "persistentId": "3b0f6f0e-8f5e-4a51-9a59-0b8e2f6a1c05", "__parent": "Sky",
+     "canvasClearColor": [1, 1, 1, 255], "enabled": "1", "fogAtmosphereHeight": 1000, "fogColor": [0.741176009, 0.815685987, 0.925490022, 1],
+     "fogDensity": 4e-05, "globalEnviromentMap": "BNG_Sky_01_cubemap", "gravity": -9.81000042, "nearClip": 0.1, "visibleDistance": 100000},
+    {"name": "sunsky", "class": "ScatterSky", "persistentId": "3b0f6f0e-8f5e-4a51-9a59-0b8e2f6a1c06", "__parent": "Sky",
+     "position": [0, 0, 100], "ambientScale": [1, 0.894117653, 0.78039217, 1], "ambientScaleGradientFile": "art/sky_gradients/default/gradient_ambient.png",
+     "azimuth": 57.2957764, "colorize": [0.219607845, 0.349019617, 0.607843161, 1], "colorizeGradientFile": "art/sky_gradients/default/gradient_colorize.png",
+     "elevation": 144, "enableFogFallBack": False, "flareScale": 5, "flareType": "BNG_Sunflare_3", "fogScale": [0.396078438, 0.666666687, 1, 1],
+     "fogScaleGradientFile": "art/sky_gradients/default/gradient_fog.png", "mieScattering": 0.000429999985, "moonLightColor": [1, 1, 1, 1],
+     "moonAngularSize": 0.67, "moonMat": "Moon_Mat", "moonScale": 0.300000012, "nightColor": [1, 0.894117653, 0.78039217, 1],
+     "nightCubemap": "nightCubemap", "nightFogColor": [0.396078438, 0.666666687, 1, 1], "nightFogGradientFile": "art/sky_gradients/default/gradient_fog.png",
+     "nightGradientFile": "art/sky_gradients/default/gradient_ambient.png", "occlusionScale": 0.0250000004, "shadowDarkenColor": [0, 0, 0, 0],
+     "skyBrightness": 40, "sunScale": [0.996078432, 0.811764717, 0.70588237, 1], "sunScaleGradientFile": "art/sky_gradients/default/gradient_sunscale.png",
+     "useNightCubemap": True},
+    # TimeOfDay.time: 0 = noon, 0.5 = midnight (ARCHITECTURE.md Phase 0). latitude/longitude are
+    # read by core/celestial.lua (readWhen) and follow the player at runtime.
+    {"name": "tod", "class": "TimeOfDay", "persistentId": "3b0f6f0e-8f5e-4a51-9a59-0b8e2f6a1c07", "__parent": "Sky",
+     "position": [0, 0, 100], "axisTilt": 10, "play": False, "startTime": 0.1, "time": 0.1,
+     "latitude": 36.5785, "longitude": -118.2923},
+])
+
+# Terrain material: the template level's "Dirt" (v1.5 PBR) with detail/macro textures taken
+# straight from the always-mounted /assets/materials/terrain zip and solid base textures shipped
+# here (means of template's t_terrain_base_dirt_*), so nothing depends on another level's zip.
+A = "/assets/materials/terrain/soil/"
+B = "/levels/beamng_earth/art/terrains/"
+pretty(os.path.join(T, "main.materials.json"), {
+    "beamngEarthDirt": {
+        "name": "beamngEarthDirt",
+        "internalName": "beamngEarthDirt",
+        "class": "TerrainMaterial",
+        "persistentId": "3b0f6f0e-8f5e-4a51-9a59-0b8e2f6a1c10",
+        "groundmodelName": "DIRT",
+        # Texture repeat sizes (metres) must divide the 256 m terrain-follow step, or the texture
+        # pattern shifts under the car at every terrain move (in-game 2026-10-10: macro 80 m / base 512 m
+        # made 24% of the view change at each commit; 64 m / 256 m makes it pixel-identical).
+        "aoBaseTex": B + "bngEarth_base_ao.png", "aoBaseTexSize": 256,
+        "aoDetailStrength": [1, 0], "aoDetailTex": A + "dirt_crumbly/t_dirt_crumbly_ao.png",
+        "aoMacroTex": A + "macro_clumply/t_macro_clumpy_ao.png", "aoMacroTexSize": 64,
+        "baseColorBaseTex": B + "bngEarth_base_b.png", "baseColorBaseTexSize": 256,
+        "baseColorDetailStrength": [0.25, 0], "baseColorDetailTex": A + "dirt_crumbly/t_dirt_crumbly_b.png",
+        "baseColorMacroStrength": [0.3, 0.3], "baseColorMacroTex": A + "macro_clumply/t_macro_clumpy_b.png", "baseColorMacroTexSize": 64,
+        "detailDistances": [0, 0, 30, 60], "macroDistances": [0, 10, 100, 3000],
+        "heightBaseTex": B + "bngEarth_base_h.png", "heightBaseTexSize": 256,
+        "heightDetailTex": A + "dirt_crumbly/t_dirt_crumbly_h.png",
+        "heightMacroTex": A + "macro_clumply/t_macro_clumpy_h.png", "heightMacroTexSize": 64,
+        "normalBaseTex": B + "bngEarth_base_nm.png", "normalBaseTexSize": 256,
+        "normalDetailStrength": [0.8, 0], "normalDetailTex": A + "dirt_crumbly/t_dirt_crumbly_nm.png",
+        "normalMacroStrength": [0.5, 0.2], "normalMacroTex": A + "macro_clumply/t_macro_clumpy_nm.png", "normalMacroTexSize": 64,
+        "roughnessBaseTex": B + "bngEarth_base_r.png", "roughnessBaseTexSize": 256,
+        "roughnessDetailStrength": [1, 0], "roughnessDetailTex": A + "dirt_crumbly/t_dirt_crumbly_r.png",
+        "roughnessMacroStrength": [0.5, 1], "roughnessMacroTex": A + "macro_clumply/t_macro_clumpy_r.png", "roughnessMacroTexSize": 64,
+    },
+    "beamngEarthTerrainMaterialTextureSet": {
+        "name": "beamngEarthTerrainMaterialTextureSet",
+        "class": "TerrainMaterialTextureSet",
+        "persistentId": "3b0f6f0e-8f5e-4a51-9a59-0b8e2f6a1c11",
+        "baseTexSize": [512, 512], "detailTexSize": [1024, 1024], "macroTexSize": [1024, 1024],
+    },
+})
+
+Image.new("RGB", (512, 512), (100, 88, 69)).save(os.path.join(T, "bngEarth_base_b.png"), optimize=True)
+Image.new("RGB", (512, 512), (127, 127, 255)).save(os.path.join(T, "bngEarth_base_nm.png"), optimize=True)
+Image.new("L", (512, 512), 206).save(os.path.join(T, "bngEarth_base_r.png"), optimize=True)
+Image.new("L", (512, 512), 251).save(os.path.join(T, "bngEarth_base_ao.png"), optimize=True)
+Image.new("L", (512, 512), 175).save(os.path.join(T, "bngEarth_base_h.png"), optimize=True)
+# importMaps inputs, sized like the terrain block (N = 1024, docs/V1_1_SPEC.md 1a): one all-white
+# layer map (material 0 everywhere) and a flat 16-bit heightmap. The v1 2048-sample files are removed.
+Image.new("RGB", (1024, 1024), (255, 255, 255)).save(os.path.join(T, "beamngEarth_layer_1024.png"), optimize=True)
+Image.new("I;16", (1024, 1024), 0).save(os.path.join(T, "beamngEarth_flat_1024.png"), optimize=True)
+for old in ("beamngEarth_layer_2048.png", "beamngEarth_flat_2048.png"):
+    if os.path.exists(os.path.join(T, old)):
+        os.remove(os.path.join(T, old))
+
+prev = Image.new("RGB", (512, 288))
+d = ImageDraw.Draw(prev)
+for y in range(288):
+    t = y / 287
+    d.line([(0, y), (511, y)], fill=(int(70 + 90 * t), int(120 + 60 * t), int(200 - 60 * t)))
+d.ellipse([156, 44, 356, 244], fill=(40, 90, 160), outline=(230, 230, 230), width=3)
+d.text((200, 250), "BeamNG.Earth", fill=(255, 255, 255))
+prev.save(os.path.join(L, "beamng_earth_preview.jpg"), quality=85)
+print("ok")

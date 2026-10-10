@@ -1,0 +1,91 @@
+{
+  "beamngEarthDirt": {
+    "name": "beamngEarthDirt",
+    "internalName": "beamngEarthDirt",
+    "class": "TerrainMaterial",
+    "persistentId": "3b0f6f0e-8f5e-4a51-9a59-0b8e2f6a1c10",
+    "groundmodelName": "DIRT",
+    "aoBaseTex": "/levels/beamng_earth/art/terrains/bngEarth_base_ao.png",
+    "aoBaseTexSize": 256,
+    "aoDetailStrength": [
+      1,
+      0
+    ],
+    "aoDetailTex": "/assets/materials/terrain/soil/dirt_crumbly/t_dirt_crumbly_ao.png",
+    "aoMacroTex": "/assets/materials/terrain/soil/macro_clumply/t_macro_clumpy_ao.png",
+    "aoMacroTexSize": 64,
+    "baseColorBaseTex": "/levels/beamng_earth/art/terrains/bngEarth_base_b.png",
+    "baseColorBaseTexSize": 256,
+    "baseColorDetailStrength": [
+      0.25,
+      0
+    ],
+    "baseColorDetailTex": "/assets/materials/terrain/soil/dirt_crumbly/t_dirt_crumbly_b.png",
+    "baseColorMacroStrength": [
+      0.3,
+      0.3
+    ],
+    "baseColorMacroTex": "/assets/materials/terrain/soil/macro_clumply/t_macro_clumpy_b.png",
+    "baseColorMacroTexSize": 64,
+    "detailDistances": [
+      0,
+      0,
+      30,
+      60
+    ],
+    "macroDistances": [
+      0,
+      10,
+      100,
+      3000
+    ],
+    "heightBaseTex": "/levels/beamng_earth/art/terrains/bngEarth_base_h.png",
+    "heightBaseTexSize": 256,
+    "heightDetailTex": "/assets/materials/terrain/soil/dirt_crumbly/t_dirt_crumbly_h.png",
+    "heightMacroTex": "/assets/materials/terrain/soil/macro_clumply/t_macro_clumpy_h.png",
+    "heightMacroTexSize": 64,
+    "normalBaseTex": "/levels/beamng_earth/art/terrains/bngEarth_base_nm.png",
+    "normalBaseTexSize": 256,
+    "normalDetailStrength": [
+      0.8,
+      0
+    ],
+    "normalDetailTex": "/assets/materials/terrain/soil/dirt_crumbly/t_dirt_crumbly_nm.png",
+    "normalMacroStrength": [
+      0.5,
+      0.2
+    ],
+    "normalMacroTex": "/assets/materials/terrain/soil/macro_clumply/t_macro_clumpy_nm.png",
+    "normalMacroTexSize": 64,
+    "roughnessBaseTex": "/levels/beamng_earth/art/terrains/bngEarth_base_r.png",
+    "roughnessBaseTexSize": 256,
+    "roughnessDetailStrength": [
+      1,
+      0
+    ],
+    "roughnessDetailTex": "/assets/materials/terrain/soil/dirt_crumbly/t_dirt_crumbly_r.png",
+    "roughnessMacroStrength": [
+      0.5,
+      1
+    ],
+    "roughnessMacroTex": "/assets/materials/terrain/soil/macro_clumply/t_macro_clumpy_r.png",
+    "roughnessMacroTexSize": 64
+  },
+  "beamngEarthTerrainMaterialTextureSet": {
+    "name": "beamngEarthTerrainMaterialTextureSet",
+    "class": "TerrainMaterialTextureSet",
+    "persistentId": "3b0f6f0e-8f5e-4a51-9a59-0b8e2f6a1c11",
+    "baseTexSize": [
+      512,
+      512
+    ],
+    "detailTexSize": [
+      1024,
+      1024
+    ],
+    "macroTexSize": [
+      1024,
+      1024
+    ]
+  }
+}
