@@ -126,6 +126,23 @@ Target: 300 mph sustained with the near ground always detailed, and a rebase tha
   roughness / water colour in the tile material (sun glint), shoreline blended in the imagery.
 - Interacts with bridges (deck over carved river) and roads (no grading into water).
 
+## Official maps as biome references (user, 2026-10-10: "Monument Valley closely resembles the Utah map")
+When building detailed environments (v1.5 ground materials, v1.9 vegetation/props), each biome gets
+an official BeamNG map as its look reference and asset source, and a real place to compare against:
+| biome | official map (reference + stock assets) | real comparison place |
+|---|---|---|
+| red-rock desert, canyons, mesas | Utah, USA | Monument Valley, Moab, Page/Lake Powell |
+| Mojave desert, dry lake beds, rock piles | Johnson Valley | Johnson Valley / Barstow (the real one is in our world) |
+| California coast, chaparral, oak hills | West Coast USA | Central Coast, LA foothills |
+| US East Coast forest, towns, rivers | East Coast USA | Baltimore / Fells Point, Chesapeake |
+| Mediterranean | Italy | Tuscany, Amalfi coast |
+| tropical | Jungle Rock Island | Hawaii, Caribbean |
+Method: measure each reference map's numbers (terrain material layers and scales, rock/shrub/tree
+species and densities per km², groundcover settings, decal and colour palette, lighting/fog) with the
+same tools as docs/research/2026-10-10-official-map-look.md; take matching screenshots (same sun,
+similar viewpoint) in the official map and at the real place in our world; tune the generator until
+they compare well, then check the result against street-level photos (v1.9 loop).
+
 ## v1.6 "Roads"
 - Overture transportation (GeoParquet via the STAC per-file index; 2.6-3.7 s per 30 km box cold).
 - Near roads: meshes on the 2 m lattice, ground graded under them on the server so physics and
