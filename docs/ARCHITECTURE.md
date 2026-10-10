@@ -321,3 +321,16 @@ their chunk arrived.
   67 m/s made its physics unstable and the engine removed it. drive.py now drives a stock test car
   (Vivace), freezes the user's vehicle meanwhile and restores it, and stops on a non-finite or runaway
   velocity ('unstable').
+
+## Dev tools and the pause-menu settings page (docs/DEVTOOLS.md; built offline 2026-10-10)
+- `dev.lua` (extension `beamngEarth_dev`): in-world overlays (per-tile LOD tint, tile outlines by
+  state, loading heat with the next imports numbered, physics block squares, rings, under-car
+  probe) and imgui panels (stats, 60 s graphs, mini-map with click-to-inspect, controls, event
+  log). Off by default; off = no per-frame work. Tiles come from `tileindex.lua`, kept current by
+  `farfield.setWatcher` only while the tools are on.
+- `settings.lua` (extension `beamngEarth_settings`) + `ui/ui-vue/mods/beamngEarth/` (index.js,
+  EarthSettings.vue): a "BeamNG.Earth" button in the pause menu's Mods tab, values in
+  `/settings/beamngEarth.json`, defaults = today's behaviour. With the page, the imgui window is a
+  compact HUD hidden at level start (setting "Status HUD").
+- Tests: `mod/tests/test_dev.lua`, `mod/tests/test_settings.lua`. The Vue files are checked
+  in-game only.

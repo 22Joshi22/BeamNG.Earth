@@ -1,0 +1,3 @@
+{
+"beamngEarth_devToggle": {"cat":"debug", "order": 90, "ctx": "tlua", "onDown": "if beamngEarth_dev then beamngEarth_dev.toggleLast() end", "title": "BeamNG.Earth: toggle dev overlays", "desc": "Turns the last-used BeamNG.Earth dev tools preset on (default: LOD), or everything off. Unbound by default."}
+}

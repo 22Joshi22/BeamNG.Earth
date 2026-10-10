@@ -1,0 +1,203 @@
+-- luajit mod/tests/test_settings.lua  (the pause-menu settings, settings.lua; docs/DEVTOOLS.md)
+-- Defaults (= today's behaviour), load / save round trip through jsonReadFile / jsonWriteFile,
+-- validation (clamping, types, enums, unknown keys, broken files), applying values through the
+-- module that owns them, the "page exists" rule that turns the imgui window into a hidden HUD, and
+-- the page's bridge calls.
+local dir = (arg[0]:match('^(.*)[/\\]') or '.')
+local T = dofile(dir .. '/testlib.lua')
+local S = dofile(dir .. '/stubs.lua')
+local rebase = require('beamngEarth/rebase')
+local ui = require('beamngEarth/ui')
+local settings = require('beamngEarth/settings')
+
+-- in-memory settings files
+local files, writes = {}, 0
+function jsonReadFile(path)
+  local f = files[path]
+  if f == 'THROW' then error('broken json') end
+  return f
+end
+function jsonWriteFile(path, data, pretty)
+  writes = writes + 1
+  local copy = {}
+  for k, v in pairs(data) do copy[k] = v end
+  files[path] = copy
+  return true
+end
+FS = { fileExists = function(_, p) return files[p] ~= nil end }
+
+local dist0, vis0, compact0 = rebase.distance, ui.visible, ui.compact
+
+------------------------------------------------------------------------------------------
+-- defaults
+
+local vals, warn = settings.load()
+local d = settings.defaults()
+T.check(#warn == 0, 'no file: no warnings')
+local same = true
+for k, v in pairs(d) do if vals[k] ~= v then same = false end end
+T.check(same, 'no file: every value is its default')
+T.check(d.rebaseDistance == rebase.DEFAULT_DISTANCE and d.skyMode == 'real' and d.clouds == true
+  and d.viewDistanceMode == 'fixed' and d.viewDistanceKm == 100 and d.hudVisible == false,
+  'defaults are today\'s behaviour (15 km rebase, real sky, clouds on, 100 km, HUD hidden with the page)')
+for _, k in ipairs(settings.ORDER) do T.check(settings.SCHEMA[k] ~= nil, 'ORDER key in SCHEMA: ' .. k) end
+local n = 0
+for _ in pairs(settings.SCHEMA) do n = n + 1 end
+T.check(n == #settings.ORDER, 'every SCHEMA key is in ORDER')
+
+------------------------------------------------------------------------------------------
+-- validation
+
+T.check(settings.validate('rebaseDistance', '12000') == 12000, 'number from a string')
+T.check(settings.validate('rebaseDistance', 99999) == rebase.MAX_DISTANCE, 'number clamped to max')
+T.check(settings.validate('rebaseDistance', -5) == rebase.MIN_DISTANCE, 'number clamped to min')
+T.check(settings.validate('rebaseDistance', 'abc') == nil, 'not a number refused')
+T.check(settings.validate('rebaseDistance', 0 / 0) == nil, 'NaN refused')
+T.check(settings.validate('rebaseDistance', math.huge) == nil, 'inf refused')
+T.check(settings.validate('clouds', 'false') == false and settings.validate('clouds', 1) == true, 'booleans from strings / 0-1')
+T.check(settings.validate('clouds', 'maybe') == nil, 'non-boolean refused')
+T.check(settings.validate('skyMode', 'manual') == 'manual' and settings.validate('skyMode', 'night') == nil, 'enum values')
+local v, e = settings.validate('nope', 1)
+T.check(v == nil and e:match('unknown'), 'unknown key refused')
+
+------------------------------------------------------------------------------------------
+-- load: valid values taken, the rest default with a warning
+
+files[settings.FILE] = { version = 1, rebaseDistance = 30000, skyMode = 'night', clouds = false, extra = 3,
+  viewDistanceKm = '250' }
+vals, warn = settings.load()
+T.check(vals.rebaseDistance == rebase.MAX_DISTANCE and vals.clouds == false and vals.viewDistanceKm == 250,
+  'load: valid values taken (clamped, from strings)')
+T.check(vals.skyMode == 'real', 'load: an invalid enum keeps the default')
+T.check(#warn == 2, 'load: warnings for the invalid enum and the unknown key (' .. #warn .. ')')
+files[settings.FILE] = 'THROW'
+vals, warn = settings.load()
+T.check(vals.clouds == true and #warn == 1 and warn[1]:match('unreadable'), 'load: a broken file -> defaults + warning')
+files[settings.FILE] = 42
+vals, warn = settings.load()
+T.check(vals.clouds == true and #warn == 1, 'load: a non-object file -> defaults + warning')
+files[settings.FILE] = nil
+
+------------------------------------------------------------------------------------------
+-- set: validated, saved, applied through the owner
+
+local coreCalls, skyCalls = {}, {}
+beamngEarth_core = { setRebaseDistance = function(m) coreCalls[#coreCalls + 1] = m; return rebase.setDistance(m) end }
+local skyMode, clouds = 'real', true
+beamngEarth_sky = { getMode = function() return skyMode end,
+  setMode = function(m) skyCalls[#skyCalls + 1] = 'mode ' .. m; skyMode = m end,
+  setClouds = function(on) skyCalls[#skyCalls + 1] = 'clouds ' .. tostring(on); clouds = on; beamngEarth_sky.CLOUDS_ENABLED = on end,
+  CLOUDS_ENABLED = true }
+settings.load()
+writes = 0
+local r = settings.set('rebaseDistance', 9000)
+T.check(r.ok and r.value == 9000 and rebase.distance == 9000 and coreCalls[#coreCalls] == 9000,
+  'set rebaseDistance: applied through beamngEarth_core.setRebaseDistance')
+T.check(writes == 1 and files[settings.FILE].rebaseDistance == 9000 and files[settings.FILE].version == settings.VERSION,
+  'set: saved with the version')
+r = settings.set('rebaseDistance', 'x')
+T.check(not r.ok and r.value == 9000 and writes == 1, 'set invalid: refused, nothing saved')
+settings.set('skyMode', 'manual')
+settings.set('clouds', false)
+T.check(skyMode == 'manual' and clouds == false and #skyCalls == 2, 'sky mode and clouds applied through beamngEarth_sky')
+settings.set('skyMode', 'manual')
+T.check(#skyCalls == 2, 'an unchanged sky mode is not re-applied')
+-- round trip
+local saved = files[settings.FILE]
+vals = settings.load()
+T.check(vals.rebaseDistance == 9000 and vals.skyMode == 'manual' and vals.clouds == false, 'save -> load round trip')
+T.check(saved.hudVisible == false and saved.devOutlineKm == 3, 'every value is written')
+-- without the core extension: straight to rebase.lua
+beamngEarth_core = nil
+settings.set('rebaseDistance', 7000)
+T.check(rebase.distance == 7000, 'rebaseDistance without the core extension: rebase.setDistance')
+
+------------------------------------------------------------------------------------------
+-- view distance: only in our level, the default never touches the engine
+
+local post = 0
+scenetree.theLevelInfo = { visibleDistance = 100000, postApply = function() post = post + 1 end }
+local level = 'west_coast_usa'
+function getCurrentLevelIdentifier() return level end
+settings.set('viewDistanceKm', 300)
+T.check(scenetree.theLevelInfo.visibleDistance == 100000 and post == 0, 'view distance: other levels untouched')
+level = 'beamng_earth'
+settings.onClientPostStartMission()
+T.check(scenetree.theLevelInfo.visibleDistance == 300000 and post == 1, 'view distance: applied in our level, with postApply')
+settings.set('viewDistanceMode', 'horizon')
+settings.set('viewDistanceKm', 200)
+T.check(scenetree.theLevelInfo.visibleDistance == 300000 and post == 1, 'view distance: horizon mode leaves it to M1h')
+settings.uiReset()
+T.check(scenetree.theLevelInfo.visibleDistance == 100000 and post == 2, 'reset: back to 100 km (applied, it had changed)')
+settings.onClientPostStartMission()
+T.check(post == 2, 'the default at level start: the engine is not touched')
+
+------------------------------------------------------------------------------------------
+-- the page: compact HUD, hidden unless hudVisible
+
+ui.visible, ui.compact = true, false
+T.check(not settings.pageExists() and not settings.hudHiddenAtStart() and ui.compact == false,
+  'no page: the window stays as before')
+ui_pause_actions = { getVisibleModTabs = function()
+  return { { tabId = 'mod:mods', buttons = { { id = 'taa-standalone-settings' }, { id = settings.BUTTON_ID } } } }
+end }
+T.check(settings.pageExists(), 'page: found in the pause menu registry')
+T.check(settings.hudHiddenAtStart() == true and ui.compact and ui.visible == false, 'page: compact HUD, hidden at start')
+settings.set('hudVisible', true)
+T.check(ui.visible == true, 'hudVisible on: shown at once')
+T.check(settings.hudHiddenAtStart() == false and ui.visible == true, 'hudVisible on: shown at level start')
+settings.set('hudVisible', false)
+T.check(ui.visible == false, 'hudVisible off: hidden at once')
+ui_pause_actions = nil
+T.check(settings.setPageExists(true) and settings.pageExists(), 'index.js can say the page exists')
+T.check(settings.uiShowHud(true) == true and ui.visible, 'uiShowHud')
+
+------------------------------------------------------------------------------------------
+-- bridge calls
+
+local devCalls = {}
+beamngEarth_dev = { set = function(nm, on) devCalls[#devCalls + 1] = nm .. '=' .. tostring(on) end,
+  preset = function(nm) devCalls[#devCalls + 1] = 'preset ' .. nm end,
+  setParam = function(nm, v) devCalls[#devCalls + 1] = nm .. ':' .. v end,
+  state = function() return { active = true } end }
+local stTbl = { sessionId = 'abc', anchorId = 3, anchor = { lat = 1, lon = 2 }, status = 'ok', inOurLevel = true,
+  player = { lat = 1.1, lon = 2.2, dist = 500 } }
+beamngEarth_core = { _state = function() return stTbl end, attribution = function() return 'credits' end }
+local s = settings.uiState()
+T.check(s.settings.rebaseDistance == settings.get('rebaseDistance') and #s.schema == #settings.ORDER, 'uiState: settings + schema')
+T.check(s.status.connection == 'disconnected' and s.status.session == 'abc' and s.status.anchorId == 3
+  and s.status.attribution == 'credits' and s.status.dist == 500, 'uiState: status from the core')
+T.check(s.dev and s.dev.active, 'uiState: dev state')
+T.check(settings.uiDevSet('tint', true).active and devCalls[1] == 'tint=true', 'uiDevSet forwards')
+settings.uiDevPreset('lod')
+T.check(devCalls[2] == 'preset lod', 'uiDevPreset forwards')
+settings.uiSet('devOutlineKm', 5)
+T.check(devCalls[3] == 'outlineKm:5', 'dev radius applied to the dev module')
+local res = settings.uiReset()
+T.check(res.rebaseDistance == rebase.DEFAULT_DISTANCE and files[settings.FILE].rebaseDistance == rebase.DEFAULT_DISTANCE,
+  'uiReset: defaults saved')
+
+------------------------------------------------------------------------------------------
+-- the compact HUD draws (permissive imgui stub)
+
+local drawnText = {}
+ui_imgui = setmetatable({
+  BoolPtr = function(v) return { [0] = v } end, DoublePtr = function(v) return { [0] = v } end,
+  FloatPtr = function(v) return { [0] = v } end, Begin = function() return true end,
+  Button = function() return false end, TextUnformatted = function(t) drawnText[#drawnText + 1] = t end,
+}, { __index = function() return function() end end })
+beamngEarth_dev = { isActive = function() return false end, toggleLast = function() end }
+ui.visible, ui.compact = true, true
+local view = { connection = 'connected', anchorId = 2, dist = 1200, toRebase = 13800, farText = 'Far tiles: 300 live',
+  status = 'ok', defaultLat = 1, defaultLon = 2, rebaseDistance = 15000, rebaseMin = 2000, rebaseMax = 16000, attribution = 'c' }
+local okDraw, errDraw = pcall(ui.draw, view, { teleport = function() end, setRebaseDistance = function(m) return m end })
+local joined = table.concat(drawnText, '\n')
+T.check(okDraw and joined:match('rebase in 13.8 km') and joined:match('pause menu > Mods > BeamNG.Earth'),
+  'compact HUD: status line and the settings hint (' .. tostring(errDraw) .. ')')
+ui.compact, drawnText = false, {}
+okDraw = pcall(ui.draw, view, { teleport = function() end, setRebaseDistance = function(m) return m end })
+T.check(okDraw and table.concat(drawnText, '\n'):match('Anchor: #2'), 'full window still draws')
+
+-- leave the shared modules as found
+rebase.distance, ui.visible, ui.compact, ui.hudHidden = dist0, vis0, compact0, false
+T.done('test_settings')

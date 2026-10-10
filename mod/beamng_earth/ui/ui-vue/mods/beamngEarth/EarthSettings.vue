@@ -1,0 +1,701 @@
+<template>
+  <div class="earth-bng-options">
+
+    <!-- Master Header: connection / session status -->
+    <div class="options-header">
+      <div class="header-title">BeamNG.Earth</div>
+      <div class="header-status" :class="{ 'is-connected': status.connection === 'connected' }">
+        {{ connectionText }}
+      </div>
+    </div>
+
+    <!-- Status line -->
+    <div class="options-presets status-bar">
+      <span class="status-text">{{ statusText }}</span>
+    </div>
+
+    <!-- Main Scrollable List -->
+    <div class="options-list-scroll">
+
+      <details
+        v-for="(category, catIndex) in settingsSchema"
+        :key="category.name"
+        class="category-block"
+        :open="catIndex === 0"
+      >
+        <!-- Collapsible Category Header -->
+        <summary class="category-title">{{ category.name }}</summary>
+
+        <div class="category-items">
+
+          <!-- Dev tools presets (session only) -->
+          <div v-if="category.devPresets" class="options-presets dev-presets">
+            <BngButton
+              v-for="p in devPresets"
+              :key="p.id"
+              class="preset-btn"
+              :accent="dev.lastPreset === p.id && dev.active ? ACCENTS.main : ACCENTS.outlined"
+              @click="applyDevPreset(p.id)"
+            >{{ p.label }}</BngButton>
+          </div>
+
+          <div
+            v-for="item in category.items"
+            :key="item.id"
+            class="options-item-row"
+            @mouseenter="hoveredItem = item"
+            @mouseleave="hoveredItem = null"
+          >
+            <!-- Top Half: Label & Switches -->
+            <div class="row-header">
+              <div class="option-label">{{ item.name }}</div>
+
+              <!-- Read-only info -->
+              <div v-if="item.type === 'info'" class="info-value">{{ infoValue(item) }}</div>
+
+              <!-- Inline Switch for Booleans (persisted settings) -->
+              <div v-if="item.type === 'bool'" class="inline-controls">
+                <BngSwitch
+                  :modelValue="config[item.id] === true"
+                  @update:modelValue="val => onSwitchChange(item, val)"
+                  :disabled="item.disabled"
+                />
+                <div class="option-reset">
+                  <BngButton
+                    :icon="icons.undo"
+                    :accent="ACCENTS.outlined"
+                    @click="resetSetting(item)"
+                    class="bng-reset-btn"
+                    :style="{ visibility: config[item.id] !== item.default ? 'visible' : 'hidden' }"
+                    title="Reset to default"
+                  />
+                </div>
+              </div>
+
+              <!-- Inline Switch for dev tools (session only, not saved) -->
+              <div v-if="item.type === 'dev'" class="inline-controls">
+                <BngSwitch
+                  :modelValue="dev.on[item.id] === true"
+                  @update:modelValue="val => onDevChange(item, val)"
+                />
+                <div class="option-reset"></div>
+              </div>
+            </div>
+
+            <!-- Bottom Half: Native BngSlider -->
+            <div v-if="item.type === 'float'" class="stacked-controls">
+              <BngSlider
+                class="native-slider"
+                :min="item.min"
+                :max="item.max"
+                :step="item.step || 0.01"
+                :modelValue="config[item.id]"
+                @update:modelValue="val => onSliderChange(item, val)"
+                :with-input="true"
+                :disabled="item.disabled"
+              />
+              <div class="option-reset">
+                <BngButton
+                  :icon="icons.undo"
+                  :accent="ACCENTS.outlined"
+                  @click="resetSetting(item)"
+                  class="bng-reset-btn"
+                  :style="{ visibility: config[item.id] !== item.default ? 'visible' : 'hidden' }"
+                  title="Reset to default"
+                />
+              </div>
+            </div>
+
+            <!-- Bottom Half: Custom Dropdown Select -->
+            <div v-if="item.type === 'select'" class="stacked-controls select-control">
+              <!-- Invisible overlay to close dropdown when clicking outside -->
+              <div v-if="openDropdown === item.id" class="dropdown-backdrop" @click="openDropdown = null"></div>
+
+              <div class="custom-dropdown-container" :class="{ 'is-open': openDropdown === item.id }">
+                <div class="dropdown-selected" @click="toggleDropdown(item.id)">
+                  <span>{{ getOptionLabel(item, config[item.id]) }}</span>
+                  <span class="dropdown-arrow">▼</span>
+                </div>
+
+                <div class="dropdown-list" v-if="openDropdown === item.id">
+                  <div
+                    v-for="opt in item.options"
+                    :key="opt.value"
+                    class="dropdown-option"
+                    :class="{ 'is-active': config[item.id] === opt.value }"
+                    @click="selectOption(item, opt.value)"
+                  >
+                    {{ opt.label }}
+                  </div>
+                </div>
+              </div>
+
+              <div class="option-reset">
+                <BngButton
+                  :icon="icons.undo"
+                  :accent="ACCENTS.outlined"
+                  @click="resetSetting(item)"
+                  class="bng-reset-btn"
+                  :style="{ visibility: config[item.id] !== item.default ? 'visible' : 'hidden' }"
+                  title="Reset to default"
+                />
+              </div>
+            </div>
+
+            <!-- Bottom Half: wrapped text (attribution) -->
+            <div v-if="item.type === 'text'" class="stacked-controls text-block">{{ infoValue(item) }}</div>
+
+          </div>
+        </div>
+      </details>
+    </div>
+
+    <!-- Dynamic Info Panel (Always Visible at Bottom) -->
+    <div class="options-info-panel">
+      <template v-if="hoveredItem">
+        <div class="info-header">
+          <span class="info-title">{{ hoveredItem.name }}</span>
+          <span class="info-default" v-if="hoveredItem.default !== undefined">Default: {{ formatDefault(hoveredItem) }}</span>
+        </div>
+        <div class="info-desc">{{ hoveredItem.desc }}</div>
+      </template>
+      <div v-else class="info-empty">
+        Hover over a setting to see details.
+      </div>
+    </div>
+
+  </div>
+</template>
+
+<script setup>
+import { ref, computed, onMounted, onUnmounted } from "vue"
+import { BngButton, BngSwitch, BngSlider, icons, ACCENTS } from "@/common/components/base"
+
+const config = ref({})
+const status = ref({})
+const dev = ref({ on: {}, lastPreset: "lod", active: false })
+const hoveredItem = ref(null)
+const openDropdown = ref(null) // Tracks which dropdown is currently open
+let pollTimer = null
+
+// Mirrors lua/ge/extensions/beamngEarth/settings.lua SCHEMA (the Lua side validates and clamps).
+const settingsSchema = [
+  {
+    name: "Connection",
+    items: [
+      { id: "connection", type: "info", name: "Companion server", desc: "State of the connection to the BeamNG.Earth companion server (127.0.0.1:47613) and the session id it gave this game." },
+      { id: "anchor", type: "info", name: "Anchor", desc: "The current world origin (anchor) and its latitude / longitude. A rebase moves it under the player." },
+      { id: "player", type: "info", name: "Player", desc: "The player's latitude / longitude and the distance from the anchor origin." },
+    ],
+  },
+  {
+    name: "World",
+    items: [
+      { id: "rebaseDistance", type: "float", min: 2000, max: 16000, step: 100, default: 15000, name: "Rebase distance (m)", desc: "How far from the anchor origin the world moves under the player (origin rebase). 15 km keeps float precision at ~1 mm; beyond 16 km precision halves." },
+      { id: "viewDistanceMode", type: "select", default: "fixed", name: "View distance", desc: "Fixed: the renderer's view distance below. Real horizon: the far field reaches the true line-of-sight horizon (coming with v1.4 M1h; until then the fixed distance stays).",
+        options: [ { label: "Fixed distance", value: "fixed" }, { label: "Real horizon (v1.4 M1h)", value: "horizon" } ] },
+      { id: "viewDistanceKm", type: "float", min: 20, max: 1000, step: 10, default: 100, name: "Fixed view distance (km)", desc: "The renderer's view distance in km (LevelInfo visibleDistance) in fixed mode. The far field itself extends 80 km today." },
+      { id: "hazeStrength", type: "float", min: 0, max: 1, step: 0.05, default: 0, name: "Distance haze (placeholder)", desc: "Strength of the distance haze. Placeholder: the haze comes with the real-horizon far field (v1.4 M1h); this value is saved but has no effect yet.", disabled: true },
+      { id: "skyMode", type: "select", default: "real", name: "Sky", desc: "Real time: the sun, moon and stars follow the real clock and date at the player's position. Manual: hands off, use the game's own Time & Weather controls.",
+        options: [ { label: "Real time", value: "real" }, { label: "Manual", value: "manual" } ] },
+      { id: "clouds", type: "bool", default: true, name: "Clouds", desc: "A volumetric cloud layer that follows the ground under the player." },
+    ],
+  },
+  {
+    name: "Interface",
+    items: [
+      { id: "hudVisible", type: "bool", default: false, name: "Status HUD", desc: "Show the compact BeamNG.Earth status window (connection, anchor, far field, quick buttons). Also whether it opens at level start." },
+    ],
+  },
+  {
+    name: "Dev Tools",
+    devPresets: true,
+    items: [
+      { id: "tint", type: "dev", name: "LOD tint", desc: "Tints every far tile by its level: green = matches the physics ground, cyan L0, blue L1, purple L2, orange to red coarser. Applied in small batches per frame. Session only." },
+      { id: "outlines", type: "dev", name: "Tile outlines", desc: "Outlines of the tiles near the player, coloured by level (shown) or state: grey hidden-loaded, yellow in a crossover, magenta previous anchor, red doomed. Session only." },
+      { id: "loading", type: "dev", name: "Loading heat", desc: "Queued tiles flash; the next 10 imports are numbered in the order they will load. Session only." },
+      { id: "physics", type: "dev", name: "Physics block", desc: "The collidable terrain square, the pending one (dashed) and the terrain-follow prepare / commit squares. Session only." },
+      { id: "physicsTerrain", type: "dev", name: "Show physics terrain", desc: "Renders the invisible physics terrain so it can be compared with the visible tiles. Session only." },
+      { id: "rings", type: "dev", name: "Rings", desc: "Near-detail radii, the rebase and prefetch circles and the far-field square. Session only." },
+      { id: "probe", type: "dev", name: "Under-car probe", desc: "A line at the car: physics ground vs the visible tile; red when the tile under the car is not the exact level or is more than 5 cm off. Session only." },
+      { id: "stats", type: "dev", name: "Stats panel", desc: "Frame times, governor budget, imports and deletes per second, queue, objects, pops, failures, server backlog. Session only." },
+      { id: "graphs", type: "dev", name: "Graphs panel", desc: "60 s plots of frame time, queue length, imports per second and speed. Session only." },
+      { id: "map", type: "dev", name: "Mini-map panel", desc: "Top-down map of the tiles around the player; click a tile to inspect it. Session only." },
+      { id: "controls", type: "dev", name: "Controls panel", desc: "Overlay toggles, freeze LOD, force rebase, streaming budget, sky mode. Session only." },
+      { id: "log", type: "dev", name: "Event log", desc: "The last 50 mod events (terrain commits, rebases, pops, failures, status). Session only." },
+      { id: "devOutlineKm", type: "float", min: 0.5, max: 20, step: 0.5, default: 3, name: "Outline radius (km)", desc: "Tile outlines and loading heat are drawn within this distance of the player." },
+      { id: "devMapKm", type: "float", min: 1, max: 80, step: 1, default: 10, name: "Mini-map radius (km)", desc: "The mini-map's initial zoom." },
+    ],
+  },
+  {
+    name: "Attribution",
+    items: [
+      { id: "attribution", type: "text", name: "Data sources", desc: "Credits for the elevation and imagery sources in use." },
+    ],
+  },
+]
+
+const devPresets = [
+  { id: "off", label: "Off" },
+  { id: "lod", label: "LOD" },
+  { id: "loading", label: "Loading" },
+  { id: "physics", label: "Physics" },
+  { id: "all", label: "All" },
+]
+
+// Extract global defaults (persisted settings only)
+const defaultSettings = {}
+settingsSchema.forEach(cat => {
+  cat.items.forEach(item => { if (item.default !== undefined) defaultSettings[item.id] = item.default })
+})
+
+const connectionText = computed(() => {
+  const s = status.value
+  if (!s.connection) return "Mod not loaded"
+  let t = s.connection
+  if (s.session) t += ` (session ${s.session})`
+  if (s.lastError) t += ` - ${s.lastError}`
+  return t
+})
+
+const statusText = computed(() => status.value.status || "-")
+
+function fmt(v, digits) {
+  return (typeof v === "number") ? v.toFixed(digits) : "-"
+}
+
+function infoValue(item) {
+  const s = status.value
+  if (item.id === "connection") return connectionText.value
+  if (item.id === "anchor") return s.anchorId ? `#${s.anchorId}  ${fmt(s.anchorLat, 5)}, ${fmt(s.anchorLon, 5)}` : "none"
+  if (item.id === "player") return (typeof s.playerLat === "number") ? `${fmt(s.playerLat, 5)}, ${fmt(s.playerLon, 5)}  (${fmt(s.dist / 1000, 1)} km from origin)` : "-"
+  if (item.id === "attribution") return s.attribution || "-"
+  return ""
+}
+
+function formatDefault(item) {
+  if (item.type === "bool") return item.default ? "Enabled" : "Disabled"
+  if (item.type === "select") {
+    const opt = item.options.find(o => o.value === item.default)
+    return opt ? opt.label : item.default
+  }
+  return item.default
+}
+
+function luaValue(val) {
+  if (typeof val === "boolean") return val ? "true" : "false"
+  if (typeof val === "number") return String(val)
+  return JSON.stringify(String(val))
+}
+
+function engineLua(script, cb) {
+  if (!window.bngApi || !window.bngApi.engineLua) return
+  window.bngApi.engineLua(script, cb)
+}
+
+function applyState(state) {
+  if (!state) return
+  if (state.settings) config.value = { ...defaultSettings, ...state.settings }
+  if (state.status) status.value = state.status
+  if (state.dev) dev.value = state.dev
+}
+
+function refresh() {
+  engineLua("beamngEarth_settings and beamngEarth_settings.uiState() or nil", applyState)
+}
+
+function updateSetting(key) {
+  const script = `beamngEarth_settings and beamngEarth_settings.uiSet(${JSON.stringify(key)}, ${luaValue(config.value[key])}) or nil`
+  engineLua(script, res => {
+    if (res && res.value !== undefined) config.value[key] = res.value // the Lua side clamps
+  })
+}
+
+function resetSetting(item) {
+  config.value[item.id] = item.default
+  updateSetting(item.id)
+}
+
+function onSliderChange(item, val) {
+  config.value[item.id] = val
+  updateSetting(item.id)
+}
+
+function onSwitchChange(item, val) {
+  config.value[item.id] = val
+  updateSetting(item.id)
+}
+
+function onDevChange(item, val) {
+  dev.value.on[item.id] = val
+  engineLua(`beamngEarth_settings and beamngEarth_settings.uiDevSet(${JSON.stringify(item.id)}, ${luaValue(val)}) or nil`, state => {
+    if (state) dev.value = state
+  })
+}
+
+function applyDevPreset(name) {
+  engineLua(`beamngEarth_settings and beamngEarth_settings.uiDevPreset(${JSON.stringify(name)}) or nil`, state => {
+    if (state) dev.value = state
+  })
+}
+
+// Custom Dropdown Functions
+function toggleDropdown(id) {
+  openDropdown.value = openDropdown.value === id ? null : id
+}
+
+function selectOption(item, val) {
+  config.value[item.id] = val
+  updateSetting(item.id)
+  openDropdown.value = null // Close menu after selection
+}
+
+function getOptionLabel(item, val) {
+  const opt = item.options.find(o => o.value === val)
+  return opt ? opt.label : val
+}
+
+onMounted(() => {
+  config.value = { ...defaultSettings }
+  refresh()
+  pollTimer = setInterval(refresh, 2000) // status lines while the page is open
+})
+
+onUnmounted(() => {
+  if (pollTimer) clearInterval(pollTimer)
+  pollTimer = null
+})
+</script>
+
+<style scoped lang="scss">
+* {
+  box-sizing: border-box;
+}
+
+.earth-bng-options {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  min-height: 65vh;
+  overflow: hidden;
+  font-family: 'Overpass', sans-serif;
+  color: #fff;
+  background-color: var(--bng-off-black, rgba(15, 15, 15, 0.95));
+  border-radius: 6px;
+}
+
+/* Header */
+.options-header {
+  flex: 0 0 auto;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0.5em 1em 0.8em;
+  background-color: rgba(0, 0, 0, 0.2);
+  border-bottom: 2px solid var(--bng-orange-550, #f60);
+
+  .header-title {
+    font-size: 1.3rem;
+    font-weight: 600;
+  }
+
+  .header-status {
+    font-weight: 600;
+    color: #f88;
+
+    &.is-connected { color: #8f8; }
+  }
+}
+
+/* Presets / status bar */
+.options-presets {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  padding: 0.5em 1em;
+  background-color: rgba(255, 255, 255, 0.03);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+
+  .preset-btn {
+    flex: 1;
+    margin: 0 0.25em;
+    --bng-button-padding-y: 0.3em;
+    font-size: 0.9em;
+  }
+
+  .status-text {
+    font-size: 0.9em;
+    color: #ccc;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+}
+
+/* Main List Array */
+.options-list-scroll {
+  flex: 1 1 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  width: 100%;
+  padding: 0.5em;
+
+  &::-webkit-scrollbar { width: 8px; }
+  &::-webkit-scrollbar-track { background: transparent; }
+  &::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.2); border-radius: 4px; }
+  &::-webkit-scrollbar-thumb:hover { background: rgba(255, 255, 255, 0.4); }
+}
+
+/* Collapsible Details Styles */
+details.category-block {
+  margin-bottom: 0.5em;
+  width: 100%;
+  background: rgba(0, 0, 0, 0.15);
+  border-radius: 4px;
+}
+
+summary.category-title {
+  display: flex;
+  align-items: center;
+  padding: 0.5em 0.75em;
+  font-size: 1.05rem;
+  font-weight: 600;
+  color: #ddd;
+  background: rgba(255, 255, 255, 0.05);
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+  border-radius: 4px;
+  transition: background-color 0.1s ease;
+
+  &::-webkit-details-marker { display: none; }
+  &:hover { background: rgba(255, 255, 255, 0.08); }
+
+  &::before {
+    content: '▶';
+    display: inline-block;
+    margin-right: 0.5em;
+    font-size: 0.7rem;
+    color: var(--bng-orange-550, #f60);
+    transition: transform 0.2s ease;
+  }
+}
+
+details[open] > summary.category-title {
+  border-bottom-left-radius: 0;
+  border-bottom-right-radius: 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+  &::before { transform: rotate(90deg); }
+}
+
+.category-items {
+  padding: 0.25em 0;
+}
+
+/* Item Rows */
+.options-item-row {
+  display: flex;
+  flex-direction: column;
+  background-color: rgba(0, 0, 0, 0.2);
+  margin-bottom: 2px;
+  padding: 0.6em 0.8em;
+  width: 100%;
+
+  &:nth-child(even) {
+    background-color: transparent;
+  }
+
+  .row-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    width: 100%;
+
+    .option-label {
+      flex: 1 1 auto;
+      font-size: 0.95rem;
+      padding-right: 0.5em;
+    }
+
+    .info-value {
+      flex: 0 1 auto;
+      font-size: 0.9rem;
+      color: #ccc;
+      text-align: right;
+    }
+
+    .inline-controls {
+      flex: 0 0 auto;
+      display: flex;
+      align-items: center;
+      gap: 0.75em;
+    }
+  }
+
+  .stacked-controls {
+    display: flex;
+    align-items: center;
+    width: 100%;
+    margin-top: 0.6em;
+    gap: 0.75em;
+
+    .native-slider {
+      flex: 1 1 auto;
+      min-width: 0;
+    }
+  }
+
+  .text-block {
+    font-size: 0.85rem;
+    color: #ccc;
+    line-height: 1.35;
+    white-space: pre-wrap;
+  }
+}
+
+/* ==============================================================
+   Custom Dropdown CSS (Bypasses CEF OSR restrictions)
+   ============================================================== */
+
+.dropdown-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 9998;
+  cursor: default;
+}
+
+.custom-dropdown-container {
+  position: relative;
+  flex: 1 1 auto;
+  font-size: 0.95rem;
+  z-index: 1;
+
+  &.is-open {
+    z-index: 9999; /* Lift above the backdrop */
+  }
+}
+
+.dropdown-selected {
+  background: rgba(0, 0, 0, 0.4);
+  color: #fff;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 4px;
+  padding: 0.45em 0.75em;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  cursor: pointer;
+  transition: border-color 0.15s ease;
+  user-select: none;
+
+  &:hover {
+    border-color: rgba(255, 255, 255, 0.4);
+  }
+
+  .dropdown-arrow {
+    font-size: 0.7em;
+    color: rgba(255, 255, 255, 0.5);
+    margin-left: 0.5em;
+  }
+}
+
+.custom-dropdown-container.is-open .dropdown-selected {
+  border-color: var(--bng-orange-550, #f60);
+  .dropdown-arrow { color: var(--bng-orange-550, #f60); }
+}
+
+.dropdown-list {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  background: #1a1a1a;
+  border: 1px solid var(--bng-orange-550, #f60);
+  border-radius: 4px;
+  overflow: hidden;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
+}
+
+.dropdown-option {
+  padding: 0.5em 0.75em;
+  cursor: pointer;
+  color: #ddd;
+  transition: background-color 0.1s;
+
+  &:hover {
+    background: rgba(255, 102, 0, 0.2);
+    color: #fff;
+  }
+
+  &.is-active {
+    background: var(--bng-orange-550, #f60);
+    color: #fff;
+    font-weight: 600;
+  }
+}
+
+/* Reset Button Space */
+.option-reset {
+  flex: 0 0 2.5em;
+  width: 2.5em;
+  display: flex;
+  justify-content: flex-end;
+  padding-left: 0.5em;
+
+  .bng-reset-btn {
+    --bng-button-padding-x: 0.3em;
+    --bng-button-padding-y: 0.15em;
+    opacity: 0.8;
+    &:hover { opacity: 1; }
+  }
+}
+
+/* Info Panel at Bottom */
+.options-info-panel {
+  flex: 0 0 8.0em;
+  min-height: 8.0em;
+  max-height: 8.0em;
+  width: 100%;
+  background-color: rgba(0, 0, 0, 0.6);
+  border-top: 2px solid var(--bng-orange-550, #f60);
+  padding: 0.6em 1.2em;
+  overflow-y: auto;
+  overflow-x: hidden;
+
+  .info-empty {
+    height: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: rgba(255, 255, 255, 0.4);
+    font-size: 0.95em;
+    font-style: italic;
+  }
+
+  .info-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    margin-bottom: 0.2em;
+
+    .info-title {
+      font-weight: 700;
+      font-size: 1.05rem;
+      color: #fff;
+    }
+    .info-default {
+      font-family: monospace;
+      font-size: 0.9em;
+      color: rgba(255, 255, 255, 0.5);
+    }
+  }
+
+  .info-desc {
+    font-size: 0.9rem;
+    color: #ccc;
+    line-height: 1.35;
+    white-space: pre-wrap;
+  }
+}
+</style>

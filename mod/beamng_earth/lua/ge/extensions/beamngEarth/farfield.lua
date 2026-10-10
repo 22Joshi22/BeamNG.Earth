@@ -58,6 +58,12 @@
 -- crossover more than 1 cm off its height, or there is none. A previous anchor's exact tile counts
 -- as exact. stats() reports exactMiss / exactFrames / underLevel; exactState() is for the per-frame
 -- driver (tools/drive_driver.lua).
+--
+-- Dev tools (dev.lua, docs/DEVTOOLS.md): setWatcher(w) makes this module call w.onAdd(inst) when a
+-- tile's object is created, w.onRemove(id) when an object is deleted and w.onReset() when every
+-- footprint moved (rebase) or the field was forgotten; eachTile / queuedTiles / counters are
+-- read-only views; setFrozen(true) holds swap groups (inspection). Off by default: no watcher, not
+-- frozen, so none of this does anything.
 
 local M = {}
 
@@ -112,12 +118,15 @@ local under = { level = nil, old = false, miss = false } -- the tile under the p
 -- from the current frame back to that anchor's plane, applied in order } (the player lookup).
 local oldFrames = {}
 local lastFrame = { units = 0, moving = 0 }
+local watcher = nil     -- dev tools observer (setWatcher), nil = none
+local frozen = false    -- dev tools: swap groups wait (setFrozen)
 
 local function oldKey(a, key) return tostring(a) .. '/' .. key end
 
 local function deleteById(id)
   local o = scenetree.findObjectById(id)
   if o then o:delete() end
+  if watcher then watcher.onRemove(id) end
 end
 
 local function getObj(inst) return inst.id and scenetree.findObjectById(inst.id) end
@@ -215,6 +224,7 @@ local function spawn(inst)
   scenetree.MissionGroup:addObject(o)
   inst.id, inst.loaded, inst.off, inst.hidden = o:getID(), true, 0, true
   counters.imports = counters.imports + 1
+  if watcher then watcher.onAdd(inst) end
 end
 
 -- Cover state of a footprint against the committed block: 'none', 'edge' or 'interior'. In mesh
@@ -697,6 +707,7 @@ function M.transform(xf)
   end
   for _, inst in pairs(live) do move(inst) end
   for _, inst in pairs(old) do move(inst) end
+  if watcher then watcher.onReset() end
 end
 
 -- New committed anchor. keepOld=true (rebase): current tiles stay until the server removes them or
@@ -862,7 +873,7 @@ function M.update(gov, dt, cam, player)
   local stop = false
   for _, g in ipairs(groups) do
     if g.state == 'wait' then
-      local blocked = stop
+      local blocked = stop or frozen
       if not blocked then
         for _, k in ipairs(g.add) do if busy[k] then blocked = true; break end end
       end
@@ -950,7 +961,8 @@ function M.update(gov, dt, cam, player)
       end
       inst.queued = false
       nQueued = nQueued - 1
-      gov:charge(kind, now() - t1)
+      inst.importMs = now() - t1 -- shown by the dev tools' mini-map
+      gov:charge(kind, inst.importMs)
       units = units + 1
       imported = true
     end
@@ -1029,6 +1041,7 @@ function M.forget()
   matOf, doomedAnchor = {}, {}
   satmat.clearAll()
   materialChecked = false
+  if watcher then watcher.onReset() end
 end
 
 -- Previous anchors whose tile objects still exist here (shown as old tiles, or waiting in the
@@ -1063,6 +1076,37 @@ function M.stats()
     textured = counters.textured, oldCovered = counters.oldCovered, nearVisual = nearVisual,
     waitingGroups = waiting, exactLevel = exactLevel, underLevel = under.level, underOld = under.old,
     exactMiss = counters.exactMiss, exactFrames = counters.exactFrames }
+end
+
+------------------------------------------------------------------------------------------
+-- dev tools (dev.lua): see the module header
+
+function M.setWatcher(w) watcher = w end
+function M.setFrozen(on) frozen = on and true or false; return frozen end
+function M.isFrozen() return frozen end
+function M.anchorId() return anchorId end
+function M.counters() return counters end -- read-only
+
+-- Every tile instance with an object (pending, live and previous anchors'; not the delete queue).
+function M.eachTile(fn)
+  for _, set in ipairs({ pending, live, old }) do
+    for _, inst in pairs(set) do if inst.id and not inst.doomed then fn(inst) end end
+  end
+end
+
+-- The instances still to import, in queue order: group tiles, then prefetch tiles (peekImport
+-- picks among the group tiles, nearest the camera first in mesh mode).
+function M.queuedTiles()
+  local main, pre = {}, {}
+  for i = mH, mT do
+    local inst = mainQ[i]
+    if inst and pending[inst.key] == inst and inst.queued and not inst.prefetch then main[#main + 1] = inst end
+  end
+  for i = pH, pT do
+    local inst = preQ[i]
+    if inst and pending[inst.key] == inst and inst.queued and inst.prefetch then pre[#pre + 1] = inst end
+  end
+  return main, pre
 end
 
 -- for tests
