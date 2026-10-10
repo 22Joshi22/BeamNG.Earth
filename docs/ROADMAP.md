@@ -267,6 +267,22 @@ terrain at all (same fall risk). Plan:
 7. **Tests**: fault injection in the integration drive (kill the server mid-drive, restart it, drop
    network with a fake fetcher, start the mod with no server) and the same as in-game probes.
 
+## Caching (user, 2026-10-10: "save and cache stuff so we don't need to redownload it")
+Today: raw downloads are already kept on disk forever (~/.cache/beamng-earth: elevation 537 MB,
+imagery 481 MB, gravity model 145 MB, 26k files after two days of testing) and revisits reuse them;
+built tiles (meshes + textures, ~1 GB per session under the game's temp folder) are rebuilt each
+session and deleted at server start; there is no size limit.
+Plan (with the netfetch / rate-limit work):
+1. **Size cap + LRU eviction** by last use (default e.g. 20 GB, set in the settings page, with a
+   usage display and a "clear cache" button); never evict what the current session uses.
+2. **Built-tile cache across sessions**: with deterministic generation and global tile keys (v1.4 M6),
+   finished tiles are stored under a content key (tile id + generator version + data versions) and
+   reused on revisit and after restarts - no rebuild, near-instant reload of known areas.
+3. **Licence-aware lifetimes**: keep per-source rules (some services limit caching time or forbid
+   offline storage); refresh stale tiles in the background when online; "no coverage" markers expire.
+4. **Pre-download** a region or a planned route (Cannonball) for offline play, within the cap.
+5. Cache layout versioned so a generator update invalidates only what changed.
+
 ## Scheduled quick wins (user picked 2026-10-10; between the big versions)
 1. **Saved places** (smallest): bookmarks, recent places, spawn at a place; in the settings page.
 2. **Easy install and start**: server auto-start with the game / launcher, one settings file,
