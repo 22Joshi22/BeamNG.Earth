@@ -3,7 +3,9 @@
 Spots found while driving (mostly by the project owner) that show something worth checking. They are
 **benchmarks, never special cases** (docs/ROADMAP.md "Principle: improvements must generalise"):
 every fix found here must come from a rule that works everywhere, and is checked here and on
-the rest of the list before and after. Teleport with `beamngEarth_core.teleport(lat, lon)`.
+the rest of the list before and after. Teleport with `beamngEarth_core.teleport(lat, lon)`, or from
+the settings page's "Places" section: this table is the start of its saved places on a first run
+(`places.SEED`, data only, followed by a few well-known drives; the player can edit or delete them).
 
 | Place | lat, lon | What it shows | Relevant work |
 |---|---|---|---|

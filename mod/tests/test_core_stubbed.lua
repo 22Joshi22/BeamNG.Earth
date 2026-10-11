@@ -205,6 +205,10 @@ end
 serverSend({ type = 'hello', protocol = 4, format = 3, serverVersion = '0.4.0', sessionId = 's1', farFormat = 'cdae',
   material = 'bngEarthFar_v3', nearVisual = 'terrain', attribution = 'Imagery: test credits; Elevation: test' })
 T.check(pumpUntil(function() return #received('prepare_anchor') == 1 end), 'auto-teleport requested in our level')
+do -- the level start's teleport is the first recent place (places.lua; no file API here: memory only)
+  local r = require('beamngEarth/places').recentList()[1]
+  T.check(r and r.kind == 'start' and r.lat == 36.5785 and r.lon == -118.2923, 'recent places: the level start recorded')
+end
 local function uiShows(pat)
   for _, t in ipairs(uiText) do if tostring(t):match(pat) then return true end end
   return false
@@ -554,6 +558,15 @@ T.check(uiShows('Imagery: USGS The National Map') and uiShows('EOX') and uiShows
 -- console teleport validation
 T.check(core.teleport(91, 0) == false, 'invalid lat rejected')
 T.check(core.teleport(46.5, 7.9) == true, 'console teleport accepted')
+do
+  local places = require('beamngEarth/places')
+  local r = places.recentList()[1]
+  T.check(r.kind == 'teleport' and r.lat == 46.5 and r.lon == 7.9 and r.name == nil, 'recent places: a console teleport recorded')
+  local n = #places.recentList()
+  T.check(core.teleport(91, 0) == false and #places.recentList() == n, 'recent places: a refused teleport is not recorded')
+  core.teleport(46.5001, 7.9, 'Named')
+  T.check(#places.recentList() == n and places.recentList()[1].name == 'Named', 'recent places: teleport(lat, lon, name) records the name')
+end
 T.check(core.setFarBudget(3) == 3 and core.setFarBudget(10) == 4, 'far budget setter (governor target, 1-4 ms)')
 
 -- M1 (docs/V1_4_SPEC.md 3.1): a FORMAT 4 server sends hello.cells; the mod reads formats 3 and 4
