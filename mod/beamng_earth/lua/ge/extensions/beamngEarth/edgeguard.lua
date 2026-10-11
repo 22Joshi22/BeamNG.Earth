@@ -38,6 +38,12 @@ M.RESCUE_WINDOW_S = 10  -- ... only this long after it was last on the ground of
 M.RESCUE_GAP_S = 1      -- at most one rescue per this many seconds
 M.SET_EPS = 0.05        -- m/s: a smaller velocity change is not applied
 M.RAY_MARGIN = 50       -- m beyond the warn distance where the ray starts
+-- Inside the stop line the wall pulls back: the velocity component towards the edge is capped at
+-- -PULL * (STOP_M - d), at most PULL_MAX inwards. Capping it at 0 let a car under throttle creep
+-- outwards (in-game 2026-10-11: 4.6 m in 50 s), since physics accelerates it again between two GE
+-- frames by less than SET_EPS each time.
+M.PULL = 0.5            -- 1/s: pull back speed per m past the stop line
+M.PULL_MAX = 2.0        -- m/s: at most
 
 local sqrt, max, min, abs = math.sqrt, math.max, math.min, math.abs
 
@@ -49,8 +55,12 @@ end
 -- remembers for the rescue is in the old frame's coordinates.
 function M.newFrame(g) g.lastGroundZ, g.lastGroundT = nil, nil end
 
--- The highest speed towards an edge at distance d that can still stop STOP_M inside it.
-function M.cap(d) return sqrt(2 * M.DECEL * max(0, d - M.STOP_M)) end
+-- The highest speed towards an edge at distance d that can still stop STOP_M inside it; negative
+-- (a pull back inwards) inside the stop line.
+function M.cap(d)
+  if d >= M.STOP_M then return sqrt(2 * M.DECEL * (d - M.STOP_M)) end
+  return -min(M.PULL_MAX, M.PULL * (M.STOP_M - d))
+end
 
 -- Distance from the nearest edge at which a vehicle at `speed` is warned.
 function M.warnDistance(speed)
@@ -80,9 +90,10 @@ function M.step(g, inp)
     return 'air'
   end
   if not grounded then return 'air' end
-  local nvx, nvy = vx, vy
-  if vx > 0 then nvx = min(vx, M.cap(x1 - x)) elseif vx < 0 then nvx = max(vx, -M.cap(x - x0)) end
-  if vy > 0 then nvy = min(vy, M.cap(y1 - y)) elseif vy < 0 then nvy = max(vy, -M.cap(y - y0)) end
+  -- towards either edge at most its cap (a block is far wider than both stop zones, so the two
+  -- bounds never cross)
+  local nvx = max(min(vx, M.cap(x1 - x)), -M.cap(x - x0))
+  local nvy = max(min(vy, M.cap(y1 - y)), -M.cap(y - y0))
   if abs(nvx - vx) > M.SET_EPS or abs(nvy - vy) > M.SET_EPS then
     g.holds = g.holds + 1
     return 'hold', { nvx, nvy }

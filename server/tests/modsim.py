@@ -508,7 +508,9 @@ class EdgeGuard:
 
     @staticmethod
     def cap(d):
-        return math.sqrt(2 * EDGE["DECEL"] * max(0.0, d - EDGE["STOP_M"]))
+        if d >= EDGE["STOP_M"]:
+            return math.sqrt(2 * EDGE["DECEL"] * (d - EDGE["STOP_M"]))
+        return -min(EDGE["PULL_MAX"], EDGE["PULL"] * (EDGE["STOP_M"] - d))
 
     @staticmethod
     def warn_distance(speed):
@@ -531,15 +533,8 @@ class EdgeGuard:
             return "air", None, None
         if not grounded:
             return "air", None, None
-        nvx, nvy = vx, vy
-        if vx > 0:
-            nvx = min(vx, self.cap(x1 - x))
-        elif vx < 0:
-            nvx = max(vx, -self.cap(x - x0))
-        if vy > 0:
-            nvy = min(vy, self.cap(y1 - y))
-        elif vy < 0:
-            nvy = max(vy, -self.cap(y - y0))
+        nvx = max(min(vx, self.cap(x1 - x)), -self.cap(x - x0))
+        nvy = max(min(vy, self.cap(y1 - y)), -self.cap(y - y0))
         if abs(nvx - vx) > EDGE["SET_EPS"] or abs(nvy - vy) > EDGE["SET_EPS"]:
             self.holds += 1
             return "hold", (nvx, nvy), None
