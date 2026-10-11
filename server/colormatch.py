@@ -119,6 +119,7 @@ MARGIN = 6                          # px of neighbouring tiles for the inpaint s
 PREP_M = 8000.0                     # regions queued at an anchor
 REQUEST_M = 24000.0                 # regions further than this from the anchor stay raw
 RETRY_S = 60.0
+PATIENT_S, PATIENT_STEP_S = 180.0, 1.0   # a region's dropped background fetches: wait, retry (_bg_tiles)
 MEM_REGIONS = 24                    # decoded fields and seam sets kept in memory
 EMPTY = "empty"                     # a field with no seam within reach (every tile unchanged)
 PENDING = "pending"
@@ -1201,6 +1202,23 @@ class ColorMatch:
         return [(((rk[0] + dx) % n, rk[1] + dy) if 0 <= rk[1] + dy < n else None, dx, dy)
                 for dy in (-1, 0, 1) for dx in (-1, 0, 1)]
 
+    def _bg_tiles(self, im, keys):
+        """im.tiles(keys) as netfetch kind "background", patiently: when the limiter drops a request
+        (the host's bucket is kept for demand), wait and go on with what is still missing (fetched
+        tiles are cached) for up to PATIENT_S, on this region thread only. Dropping the whole region
+        instead fetched a handful of its ~70 tiles per minute (in-game 2026-10-11)."""
+        keys = list(keys)
+        deadline = time.monotonic() + PATIENT_S
+        wait = PATIENT_STEP_S
+        while True:
+            try:
+                return im.tiles(keys, kind="background")
+            except Exception as e:
+                if not getattr(e, "deferred", False) or self._closed or time.monotonic() + wait > deadline:
+                    raise
+            time.sleep(wait)
+            wait = min(wait * 1.5, 10.0)
+
     def _compute_field(self, rk):
         """(Field or EMPTY, info) of rk from the seams of its 3 x 3 regions (loaded or computed)."""
         parts, computed = [], 0
@@ -1259,14 +1277,14 @@ class ColorMatch:
         W = len(cols) * TILE
         keys = {(i, j): (usgs, GRID_Z, c % n14, r) for j, r in enumerate(rows) for i, c in enumerate(cols)
                 if 0 <= r < n14}
-        got = im.tiles(keys.values(), kind="background")     # never the demand budget (netfetch)
+        got = self._bg_tiles(im, keys.values())     # never the demand budget (netfetch)
         have = {ij for ij, key in keys.items() if got[key] is not None and not got[key].uniform}
         if not have & {(i, j) for i in range(h, h + k) for j in range(h, h + k)}:
             return _seams_empty()           # no USGS in the core (outside its coverage)
         ref, todo = {}, sorted(have)
         for name in REFS:                   # S2 2023, per tile 2016 where 2023 has nothing
             rkeys = {ij: (SOURCES[name], GRID_Z, keys[ij][2], keys[ij][3]) for ij in todo}
-            rgot = im.tiles(rkeys.values(), kind="background")
+            rgot = self._bg_tiles(im, rkeys.values())
             for ij in todo:
                 t = rgot[rkeys[ij]]
                 if t is not None and not t.uniform:
@@ -1284,7 +1302,7 @@ class ColorMatch:
             return _seams_empty()
 
         def fetch16(tiles):
-            g = im.tiles([(usgs, 16, tx, ty) for tx, ty in tiles], kind="background")
+            g = self._bg_tiles(im, [(usgs, 16, tx, ty) for tx, ty in tiles])
             return {(tx, ty): None if (t := g[(usgs, 16, tx, ty)]) is None or t.uniform else t.rgb for tx, ty in tiles}
         s = detect_region(U, S, valid, self.cell_m(rk), (h * TILE, (h + k) * TILE, h * TILE, (h + k) * TILE),
                           TileSampler(fetch16, (rows[0] * TILE * LINE_F, cols[0] * TILE * LINE_F), 16))

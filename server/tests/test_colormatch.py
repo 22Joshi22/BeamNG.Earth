@@ -603,7 +603,10 @@ class KindImagery(WorldImagery):
         kind = getattr(self._local, "kind", "demand")
         with self._lock:
             self.kinds = getattr(self, "kinds", set()) | {kind}
-        if self.defer and kind != "demand":
+        if kind != "demand" and (self.defer or getattr(self, "defer_n", 0) > 0):
+            if not self.defer:
+                with self._lock:
+                    self.defer_n -= 1
             raise imagery.ImageryError("deferred (test)", deferred=True)
         return super()._load(key)
 
@@ -623,7 +626,8 @@ class NetfetchKindTest(unittest.TestCase):
     def test_deferred_region_is_quiet_and_retried(self):
         """A region whose background fetches the limiter dropped is not ready (its tiles render raw),
         logs no warning (a cold start is no fault) and is queued again after RETRY_S."""
-        with tempfile.TemporaryDirectory() as tmp:
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(cm, "PATIENT_S", 0.3):
             w = World(seam=False)
             c = cm.ColorMatch(os.path.join(tmp, "c"), "s2", region_z=RZ)
             im = KindImagery(os.path.join(tmp, "c", "imagery"), w, colormatch=c, tone=0.0)
@@ -638,12 +642,28 @@ class NetfetchKindTest(unittest.TestCase):
             c._failed[rk] -= cm.RETRY_S             # the retry time has passed
             self.assertIs(c.wait(rk, 600), cm.EMPTY)
 
+    def test_a_few_dropped_fetches_are_waited_out(self):
+        """The limiter drops a few background fetches (bucket low): the region thread waits and goes
+        on, and the region is ready on its first attempt instead of failing."""
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(cm, "PATIENT_STEP_S", 0.01):
+            w = World(seam=False)
+            c = cm.ColorMatch(os.path.join(tmp, "c"), "s2", region_z=RZ)
+            im = KindImagery(os.path.join(tmp, "c", "imagery"), w, colormatch=c, tone=0.0)
+            self.addCleanup(im.close)
+            im.defer_n = 5
+            rk = regions(w)[0]
+            self.assertIs(c.wait(rk, 600), cm.EMPTY)
+            self.assertNotIn(rk, c._failed)
+            self.assertEqual(im.defer_n, 0)
+
     def test_dropped_region_is_retried_without_a_new_request(self):
         """A parked player asks for nothing new: a region dropped at the cold start must still be
         computed once RETRY_S has passed (in-game 2026-10-11 it never was)."""
         import time as _time
         from unittest import mock
-        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(cm, "RETRY_S", 0.4):
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(cm, "RETRY_S", 0.4), \
+                mock.patch.object(cm, "PATIENT_S", 0.3):
             w = World(seam=False)
             c = cm.ColorMatch(os.path.join(tmp, "c"), "s2", region_z=RZ)
             im = KindImagery(os.path.join(tmp, "c", "imagery"), w, colormatch=c, tone=0.0)
