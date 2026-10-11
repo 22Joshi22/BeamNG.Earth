@@ -6,6 +6,7 @@
                              [--imagery usgs,eox2023,eox2016|off] [--near-visual mesh|terrain]
                              [--cells 32|64] [--tex 256,256,256,512] [--block 1024|512] [--horizon]
                              [--deshadow off|lambert|full] [--weather on|off] [--gravity on|off]
+                             [--credits on|off]
 
 Listens on 127.0.0.1 for the mod, builds terrain-block heightmaps (1024² on a world-locked
 2 m lattice, 256 m-aligned centres; in mesh near-visual mode the block is physics only) and a
@@ -53,6 +54,7 @@ from dataclasses import dataclass, field  # noqa: E402
 import numpy as np  # noqa: E402
 
 import cdae  # noqa: E402
+import credits as creditsmod  # noqa: E402
 import dem as demmod  # noqa: E402
 import deshadow as deshadowmod  # noqa: E402
 import farfield  # noqa: E402
@@ -236,6 +238,7 @@ class TileInfo:
     texture: str | None = None      # file name of its texture (next to the shape)
     tex_bytes: int = 0
     tex_seconds: float = 0.0
+    credits: frozenset = frozenset()    # data-credit source ids (credits.tile_sources; --credits on only)
 
 
 def predict_centre(px, py, vx, vy, lead, reach=FOLLOW_REACH, grid=heightmap.GRID):
@@ -295,7 +298,7 @@ class Server:
                  hysteresis=farfield.HYSTERESIS, radius=farfield.RADIUS, far_format="cdae",
                  imagery=imagerymod.DEFAULT_CHAIN, near_visual="mesh", tex_near=TEX_NEAR, tex_far=TEX_FAR,
                  tone=1.0, near_radii=None, status_interval=STATUS_INTERVAL, cells=CELLS_DEFAULT, tex=None,
-                 block=BLOCK_DEFAULT, horizon=False, deshadow="off", weather=None, gravity=None):
+                 block=BLOCK_DEFAULT, horizon=False, deshadow="off", weather=None, gravity=None, credits=None):
         """kfun: K(L) for every level (default: the layout's K table); near_radii: the min-level
         radii (default: the layout's); cells: 32 (v1.3.1) or 64 (M1, mesh mode only); tex: texture
         px per level from the finest (default: tex_near, tex_near, tex_far with 32 cells,
@@ -376,6 +379,8 @@ class Server:
         self.weather = weather
         # Real gravity at the player (gravity.py): a gravitymod.Provider, or None (--gravity off)
         self.gravity = gravity
+        # On-screen data credits (credits.py): a creditsmod.Credits, or None (--credits off; Server()'s default)
+        self.credits = credits
 
     @staticmethod
     def _clean_old_sessions(root, cdae_root):
@@ -631,13 +636,13 @@ class Server:
         built = farfield.build_tile(anchor.frame, self.dem, tile, anchor.zooms[max(lvl, 0)], q,
                                     ref_zoom, with_sink=self.near_visual == "terrain", layout=self.layout)
         t1 = time.perf_counter()
-        material = texture = None
+        material = texture = used = None
         tex_bytes = 0
         if self.imagery is not None:
             x0, y0, _, _ = tile.bbox
             try:
                 px = self.tex_size(lvl)
-                rgb, _ = self.imagery.render(anchor.frame, *imagerymod.gutter_square(x0, y0, tile.size, px), px)
+                rgb, used = self.imagery.render(anchor.frame, *imagerymod.gutter_square(x0, y0, tile.size, px), px)
                 texture = self.texture_name(anchor.id, tile.key)
                 tex_bytes = imagerymod.write_dds(os.path.join(self.out_dir, texture), rgb)
                 material = sat_material(anchor.id, tile.key)
@@ -653,8 +658,12 @@ class Server:
         dt = time.perf_counter() - t0
         self.build_stats.append(dt)
         self.level_stats.setdefault(lvl, deque(maxlen=200)).append((dt - (t2 - t1), t2 - t1, size, tex_bytes))
+        sources = frozenset()
+        if self.credits is not None:        # the tile's imagery and DEM sources (data credits)
+            sources = creditsmod.tile_sources(anchor.frame, tile.bbox, self.dem, anchor.zooms[max(lvl, 0)],
+                                              used if material is not None else None)
         return TileInfo(built.pos, built.err, built.sink, built.skirt, built.grid, size, dt,
-                        material, texture, tex_bytes, t2 - t1)
+                        material, texture, tex_bytes, t2 - t1, sources)
 
     def tile(self, anchor, tile):
         """asyncio future for the tile's TileInfo; generated at most once per (anchorId, key)."""
@@ -830,6 +839,7 @@ class Connection:
         self.zmax_region = None
         self.weather = weathermod.Tracker()     # real weather: fetch rule, last message sent
         self.gravity = gravitymod.Tracker()     # real gravity: recompute rule, last message sent
+        self.credits = creditsmod.Tracker()     # data credits: throttle, last message sent (--credits on)
 
     def send(self, msg):
         if not self.writer.is_closing():
@@ -881,6 +891,7 @@ class Connection:
         finally:
             self.s.connections.discard(self)
             self.streamer.cancel()
+            self.credits.close()
             for t in list(self.tasks):
                 t.cancel()
             self.writer.close()
@@ -918,6 +929,8 @@ class Connection:
                 self.send(self.weather.msg)
             if self.gravity.msg is not None:        # ... and its gravity
                 self.send(self.gravity.msg)
+            if self.credits.msg is not None:        # ... and the data credits
+                self.send(self.credits.msg)
         elif kind == "prepare_anchor":
             self.spawn(self.prepare_anchor(msg))
         elif kind == "prepare_terrain":
@@ -1126,6 +1139,7 @@ class Connection:
         self.update_far()
         self.maybe_prefetch()
         self.refresh_status()
+        self.credits.poke(self)             # the player moved: the near / far credits may change
 
     def update_eye(self, frame, x, y, msg):
         """M1h: the eye's height above sea level from a pose in `frame` (the pose's anchor): the camera's
@@ -1286,6 +1300,7 @@ class Connection:
             for k in adds:
                 self.shown[(aid, k)] = self.sent.pop(k).bbox
             self.batch[2] += 1
+            self.credits.poke(self)         # other tiles on screen
         self.groups = rest
 
     def flush_old(self):
@@ -1308,6 +1323,7 @@ class Connection:
                 del self.shown[ck]
                 self._retire([ck])
                 self.send({"type": "far_remove", "anchorId": ck[0], "key": ck[1]})
+                self.credits.poke(self)
 
     def _blocked(self):
         """Groups that cannot complete now (an add failed to build)."""
@@ -1418,7 +1434,8 @@ async def main_async(args):
                     horizon=args.horizon, deshadow=args.deshadow,
                     weather=weathermod.Service() if args.weather == "on" else None,
                     gravity=(gravitymod.Provider(os.path.join(args.cache_dir, "gravity"))
-                             if args.gravity == "on" else None))
+                             if args.gravity == "on" else None),
+                    credits=creditsmod.Credits() if args.credits == "on" else None)
     srv = await asyncio.start_server(
         lambda r, w: Connection(server, r, w).run(), "127.0.0.1", args.port)
     port = srv.sockets[0].getsockname()[1]
@@ -1428,7 +1445,7 @@ async def main_async(args):
           f"horizon: {'on' if server.horizon else 'off'}, "
           f"imagery: {','.join(args.imagery) if args.imagery else 'off'}"
           f"{'' if server.deshadow is None else ', deshadow: ' + server.deshadow.mode}, "
-          f"weather: {args.weather}, gravity: {args.gravity})",
+          f"weather: {args.weather}, gravity: {args.gravity}, credits: {args.credits})",
           flush=True)
     async with srv:
         await srv.serve_forever()
@@ -1515,6 +1532,10 @@ def main():
     ap.add_argument("--gravity", choices=("on", "off"), default="on",
                     help="real gravity at the player (gravity.py: WGS84 normal + EGM2008 from <cache-dir>/gravity/, "
                          "every 2 km or 200 m of height; normal gravity while EGM2008 downloads, once, 74 MB)")
+    ap.add_argument("--credits", choices=("on", "off"), default="on",
+                    help="'credits' messages: the imagery / elevation / weather sources of the tiles within 2 km "
+                         "of the player and of the far field, for the mod's on-screen data credits (on change, "
+                         "at most once a second)")
     ap.add_argument("-v", "--verbose", action="store_true")
     args = ap.parse_args()
     args.cells = resolve_cells(args.cells, args.near_visual)

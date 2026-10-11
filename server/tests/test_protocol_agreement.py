@@ -29,7 +29,10 @@ docs/V1_2_DESIGN.md §7 as amended by §12; server/README.md documents the same 
     message (additive, no protocol bump: both sides ignore unknown types), sent in the session by an
     injected weather service; its nested cover / wind / aloft fields; the mod reads it in weather.lua;
   - real gravity (server/gravity.py Provider / Tracker): the 'gravity' message (additive the same
-    way), sent in the session by a provider on the degree-36 EGM2008 fixture; weather.lua reads it.
+    way), sent in the session by a provider on the degree-36 EGM2008 fixture; weather.lua reads it;
+  - data credits (server/credits.py, docs/DEVTOOLS.md "Data credits overlay"): the 'credits' message
+    (additive the same way; --credits on, Server()'s default sends none), sent in the session with a
+    Credits object; core.lua hands it to credits.lua, which reads near / far.
 """
 import json
 import math
@@ -50,6 +53,7 @@ from PIL import Image
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import cdae  # noqa: E402
+import credits as creditsmod  # noqa: E402
 import earthd  # noqa: E402
 import farfield as ff  # noqa: E402
 import heightmap  # noqa: E402
@@ -119,6 +123,8 @@ SERVER_TO_MOD = {
                 "pressureHpa": F(NUM), "utcOffsetS": F(int, OPT), "tz": F(str, OPT), "credit": F(str)},
     # real gravity at the player (gravity.py; additive, protocol 4): |g| in m/s^2 at (lat, lon, h m MSL)
     "gravity": {"v": F(int), "g": F(NUM), "lat": F(NUM), "lon": F(NUM), "h": F(NUM), "source": F(str)},
+    # data credits for the tiles around the player (credits.py; additive, protocol 4, --credits on)
+    "credits": {"v": F(int), "near": F(str), "far": F(str), "ids": F(list), "farIds": F(list)},
 }
 WEATHER_NESTED = {"cover": {"total", "low", "mid", "high"}, "wind": {"ms", "fromDeg", "gustMs"},
                   "aloft": {"ms", "fromDeg"}}
@@ -177,7 +183,7 @@ def mod_sends():
 def mod_reads():
     """Fields the mod reads from server messages: msg.X / p.msg.X / tr.X (terrain) in its Lua."""
     out = set()
-    for name in ("core.lua", "farfield.lua", "lattice.lua", "weather.lua"):
+    for name in ("core.lua", "farfield.lua", "lattice.lua", "weather.lua", "credits.lua"):
         text = (LUA / name).read_text()
         out |= set(re.findall(r"\bmsg\.(\w+)", text))
         out |= {"terrain." + f for f in re.findall(r"\btr\.(\w+)", text)}
@@ -220,6 +226,23 @@ class AgreementTableTest(unittest.TestCase):
         sent |= {"terrain." + f for f in TERRAIN}
         unknown = mod_reads() - sent
         self.assertFalse(unknown, f"the mod reads fields no server message has: {sorted(unknown)}")
+
+
+class CreditsAgreementTest(unittest.TestCase):
+    def test_credits_in_the_mod(self):
+        """core.lua hands 'credits' to credits.lua and clears the previous session's on hello; credits.lua
+        reads near / far (the lines the server builds); the overlay is on by default (CC BY)."""
+        core = (LUA / "core.lua").read_text()
+        on_msg = lua_function(core, "onMessage")
+        self.assertIn("credits.onMessage(msg)", on_msg[on_msg.index("t == 'credits'"):])
+        hello = on_msg[on_msg.index("t == 'hello'"):on_msg.index("t == 'status'")]
+        self.assertIn("credits.clear()", hello)
+        text = (LUA / "credits.lua").read_text()
+        self.assertEqual(set(re.findall(r"\bmsg\.(\w+)", text)), {"near", "far"})
+        self.assertIn("M.enabled = true", text)
+        settings = (LUA / "settings.lua").read_text()
+        self.assertRegex(settings, r"creditsVisible = \{ kind = 'bool', default = true")
+        self.assertIn("M.onUiChangedState = onUiChangedState", core)
 
 
 class HorizonAgreementTest(unittest.TestCase):
@@ -490,6 +513,7 @@ class ServerMessagesTest(test_server.ServerHarness):
         self.server.weather = weather.Service(fetch=test_weather.FakeFetch())     # no network
         self.server.gravity = gravitymod.Provider(model=gravitymod.GravityModel.from_npz(GRAVITY_FIXTURE),
                                                   download=False)               # no network either
+        self.server.credits = creditsmod.Credits(interval=0.1)
 
     def check(self, m):
         kind = m["type"]
@@ -550,6 +574,15 @@ class ServerMessagesTest(test_server.ServerHarness):
         if kind == "gravity":
             self.assertEqual((m["v"], m["source"]), (gravitymod.MSG_VERSION, "egm2008"))
             self.assertTrue(9.75 < m["g"] < 9.85, m)
+        if kind == "credits":
+            self.assertEqual(m["v"], creditsmod.VERSION)
+            self.assertTrue(m["near"] or m["far"], m)
+            for f in ("ids", "farIds"):
+                self.assertTrue(all(isinstance(i, str) and (i in creditsmod.ORDER or i.startswith("img:"))
+                                    for i in m[f]), m)
+            self.assertFalse(set(m["ids"]) & set(m["farIds"]), m)
+            self.assertEqual(m["near"], creditsmod.line(m["ids"]))
+            self.assertEqual(m["far"], creditsmod.line(m["farIds"], far=True))
         if kind == "far_tile" and "material" in m:
             self.assertTrue("texture" in m and "detail" in m, m)
             self.assertRegex(m["texture"], r"^/temp/beamngEarth/[^/]+/[^/]+\.dds$")

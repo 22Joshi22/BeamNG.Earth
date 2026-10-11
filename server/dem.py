@@ -69,6 +69,9 @@ class Dem:
         self._inflight = {}             # (z, x, y) -> Future
         self._lock = threading.Lock()
         self.stats = Counter()          # updated from fetch threads; read via stats_snapshot()
+        # (z, x, y) -> the provider that served the tile ("mapterhorn" / "aws-terrarium"; None: no
+        # data, zeros), for the data credits (credits.py). A few bytes per tile ever loaded.
+        self.served = {}
 
     def _count(self, what):
         with self._lock:
@@ -134,8 +137,10 @@ class Dem:
         z, x, y = key
         data = self._download(MAPTERHORN, z, x, y)
         if data is not None:
+            self.served[key] = MAPTERHORN["name"]
             return decode_terrarium(data, MAPTERHORN["size"])
         a = self._aws_tile(z, x, y)
+        self.served[key] = None if a is None else AWS["name"]
         if a is None:
             return np.zeros((TILE, TILE), np.float32)
         if z <= GLOBAL_ZOOM:
