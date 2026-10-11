@@ -525,6 +525,11 @@ cell.provenance, cell.credit_line(), cell.digest()
 
 - **Cells** (`mapcells.py`): Web-Mercator z14 tiles `14/x/y` (1.2–2.4 km), independent of the
   anchor; `cells_for_bbox()` lists the cells under any footprint (v1.4 M6 global tiles, generators).
+  A point on an edge belongs to the cell east / south of it, exactly as `bounds()` puts the edge.
+- **`own`**: build the feature in this cell. A whole feature (road, building, line...) is owned by
+  the cell holding its bbox centre; a water / land-use polygon clipped to the cell is that cell's
+  piece, owned there. Building the owned features of every cell builds each feature once and
+  every polygon whole.
 - **Layers**: `roads` (Overture segments: class, subclass, name, surface / flags / width / level /
   subclass / max speed rules along the segment, connector ids), `connectors`, `buildings` (height,
   min height, floors, roof and facade fields, the dataset the height came from), `water` and
@@ -537,9 +542,13 @@ cell.provenance, cell.credit_line(), cell.digest()
   range reads (`cog.py`, no GDAL). Overture comes from AWS, the Azure mirror when AWS cannot deliver.
 - **Cache**: `<cache-dir>/mapdata/v<VERSION>/<source>/<release>/<layer>/14/<x>/<y>.npz` per layer
   (written once, read without pickles), `<cache-dir>/mapdata/raw/<source>/<release>/...` for the
-  source files' 256 KiB range blocks and the STAC JSON (immutable, kept across VERSIONs).
+  source files' 256 KiB range blocks (plus a `size` file for the COGs) and the STAC JSON (immutable,
+  kept across VERSIONs). A layer file that does not load, or a block of the wrong length, is a miss
+  (rebuilt / fetched again), never a lasting error. Hot blocks stay in one in-memory LRU for the
+  whole process (`rangeread.MEM_BYTES`, 64 MiB).
 - **Overture release**: pinned in `overture.RELEASE` (`2026-09-23.1`); `python3 server/mapdata.py
-  --latest` prints the newest. Bump the constant to update (cells are cached per release).
+  --latest` prints the newest. Bump the constant to update (cells are cached per release). Once
+  Overture has deleted the pinned release, uncached cells raise `overture.ReleaseGone`.
 - **CLI** (development): `python3 server/mapdata.py --cell 39.2834,-76.5934 --dump --png out.png`
   (`--key 14/x/y`, `--around N` for a block of cells, `--layers`, `--offline`, `--cache-dir`).
 
@@ -552,7 +561,10 @@ Measured 2026-10-11 (this machine, home connection, one z14 cell, nothing cached
 | Kayenta solar plant 36.7874, −110.2382 (14/3174/6389) | 2.9 s (0.45 s after Monument Valley) | 0.02 s | 36 MB (0 after Monument Valley) | 83 KB | 14 roads (track, service), 11 buildings, 52 infrastructure (the power plant, substations, towers, lines, fences) |
 
 The neighbours of a fetched cell cost 1–2 s (mostly DuckDB and parsing) and 0–9 MB. Previews and the
-full dumps: `docs/research/mapdata/` (local, git-ignored).
+full dumps: `docs/research/mapdata/` (local, git-ignored). A dense city cell (review 2026-10-11,
+Midtown Manhattan 14/4824/6157): 4.8 s cold, 90 MB / 64 requests, 2.5 MB of cell files, peak RSS
+381 MB (DuckDB, 4 layers at once), ~40 MB in memory per loaded cell (16 MB of it the
+infrastructure `tags` JSON column).
 
 ## Tests
 
@@ -616,14 +628,17 @@ same messages under luajit, and the level's weather objects (each once, the name
 committed files = `tools/make_level_assets.py`'s output). No network: the fetch is injected.
 `test_mapdata.py` (no network: synthetic sources from `tests/mapfixtures.py`, generated at test time
 by DuckDB and a small TIFF writer, served with Range requests by a fake transport; the Overture
-tests are skipped without duckdb / fsspec): cell keys (benchmark cells, edges, antimeridian, owner),
-WKB and clipping, the COG reader (Deflate, predictor 2, raw, big-endian, sparse tiles), range
-reads (block cache, coalescing, mirror failover, 404 markers, one fetch per block across threads,
-request kinds), STAC filtering, roads / buildings / water / land use / infrastructure parsing,
-row-group skipping, WorldCover / CHM windows, determinism (the same digest cold, warm, layer by
-layer, after blocks fetched in reverse, with the rows shuffled inside the files, from concurrent
-calls), cache layout and hits, offline, prefetch refused then demand, the licences in the
-provenance and in CREDITS.md, the CLI (dump and PNG).
+tests are skipped without duckdb / fsspec): cell keys (benchmark cells, exact edges, the
+Web-Mercator limits, antimeridian, owner), WKB and clipping (the no-area test independent of the
+first vertex), the COG reader (Deflate, predictor 2, raw, big-endian, sparse tiles), range reads
+(block cache, coalescing, mirror failover, 404 markers, one fetch per block across threads,
+request kinds, damaged blocks, one memory budget), STAC filtering, a deleted release, roads /
+buildings / water / land use / infrastructure parsing, "build the owned features" covering every
+feature once and every polygon whole, row-group skipping, WorldCover / CHM windows, determinism
+(the same digest cold, warm, layer by layer, after blocks fetched in reverse, with the rows
+shuffled inside the files, from concurrent calls), cache layout and hits, damaged layer files
+rebuilt, invalid keys refused, offline, prefetch refused then demand, predownload, the licences
+(whole) in the provenance and in CREDITS.md, the CLI (dump and PNG).
 `test_netfetch.py` (no network: a scripted fake transport, a fake clock and sleep, a seeded rng): the
 token bucket (the burst at once, then 1/rate apart; prefetch only above half), the concurrency cap
 (16 threads, never more than 2 in flight), full-jitter backoff, Retry-After (the host paused for

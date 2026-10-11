@@ -17,8 +17,8 @@ parquet through the fsspec filesystem below, whose reads land here.
     serves re-reads of hot blocks (a parquet footer is read once per query); everything else
     comes from the disk (and the OS page cache): a long drive passes dozens of source files.
   * NetfetchFS: an fsspec filesystem over RemoteFiles for DuckDB (duckdb.register_filesystem). The
-    request kind is the protocol (nfdemand://, nfprefetch://, nfbackground://), because DuckDB
-    reads from its own threads; paths are resolved to RemoteFiles by a callable.
+    request kind is the protocol (nfdemand://, nfprefetch://, nfbackground://, nfpredownload://),
+    because DuckDB reads from its own threads; paths are resolved to RemoteFiles by a callable.
 
 Content-addressing: a block's bytes are a pure function of (file, block index) for the immutable
 release files this is used with (an Overture release, WorldCover v200, CHMv2), so the cache never

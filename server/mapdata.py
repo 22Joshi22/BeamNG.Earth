@@ -71,7 +71,8 @@ log = logging.getLogger("earthd.mapdata")
 
 LAYER_THREADS = 4               # layers of a cell built at once (each fetches through the shared limits)
 VERSION = 2                     # pipeline version: bump when what a cell's layers contain changes
-                                # (2: clipped polygon pieces are `own`ed by their cell; exact cell edges)
+                                # (2: clipped polygon pieces `own`ed by their cell, exact cell edges,
+                                # the exact no-area test of clipped rings)
 VECTOR_LAYERS = ("roads", "connectors", "buildings", "water", "land_use", "infrastructure")
 RASTER_LAYERS = ("landcover", "canopy")
 LAYERS = VECTOR_LAYERS + RASTER_LAYERS

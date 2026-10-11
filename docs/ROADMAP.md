@@ -104,9 +104,18 @@ release, deterministic (content digest), with provenance and licences. Cold 2.9-
 the three benchmark cells, warm 0.02-0.06 s. Findings for the generators: building heights are
 sparse even in Baltimore (1.9 % height, 5.1 % height or floors in the Fells Point cell: a height
 model is needed); no lane counts (width on 2 % of segments); the CHM counts solar panels as 1-8 m
-canopy (Kayenta), so trees must be masked by land use / infrastructure. Next:
+canopy (Kayenta), so trees must be masked by land use / infrastructure. Reviewed adversarially
+the same day (branch review-mapdata, 11 bugs fixed, each with a test that failed first): invalid
+keys from `cells_for_bbox` at the poles, cell edges off by one for ~1 in 7 points on a north edge,
+clipped polygons owned by one cell only ("build the owned features" built a park a quarter whole),
+a damaged cache file failing its cell forever, slivers kept or dropped by the BLAS summation order,
+a per-file memory cache growing to ~0.75 GiB, a deleted release not raising `ReleaseGone`,
+truncated Overture licence texts, the `predownload` kind; pipeline VERSION 2. A dense Midtown
+Manhattan cell: 4.8 s cold, peak RSS 381 MB. Next:
 - wire it into earthd (one MapData on the server's Fetcher; prefetch the cells ahead along the
-  velocity with kind `prefetch`; generators read CellData) and the credits overlay (`CellData.credits()`);
+  velocity with kind `prefetch`; generators read CellData) and the credits overlay (`CellData.credits()`,
+  plus the CC BY datasets the cell's provenance names);
+- store long text columns (the `tags` JSON: 16 MB of a city cell's ~40 MB in memory) ragged;
 - key v1.4 M6 global tiles' content on `mapcells.cells_for_bbox()`;
 - building parts (`buildings/building_part`), places, OSM tags (lanes, width, surface detail) joined
   by `src_record` from a cached regional extract, NLCD in the US; the cache cap's LRU over
