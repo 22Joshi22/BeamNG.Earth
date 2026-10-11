@@ -119,7 +119,7 @@ def _plan(xy, z, spec):
     # thin to VERTEX_STEP (the profile stays smooth between: linear in the grading pass)
     every = max(1, int(round(VERTEX_STEP / PROFILE_STEP)))
     keep = np.r_[np.arange(0, len(xy) - 1, every), len(xy) - 1]
-    width = roadsmod.carriageway(spec.cls, spec.kind, True) if built else spec.width
+    width = roadsmod.carriageway(spec.cls, spec.kind, True, None, spec.oneway) if built else spec.width
     return Plan(xy[keep], zs[keep], width / 2 + shoulder(spec))
 
 

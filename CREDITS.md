@@ -67,6 +67,9 @@ only, nothing redistributed. Licence notes marked *(verify)* must be re-checked 
 - Mapillary street-level photos (© Mapillary contributors, CC BY-SA 4.0), through the Mapillary API with
   the user's own token, as references for street-level comparison (tools/streetview.py; kept local, not
   redistributed).
+- USGS NAIP orthoimagery (U.S. Department of Agriculture / USGS, public domain), through the USGS
+  ImageServer, as bird's-eye references for road and intersection geometry (tools/ortho_naip.py,
+  tools/ortho_overlay.py; kept local).
 
 - BeamNG's official levels (West Coast USA, Johnson Valley, Utah, Italy, East Coast USA, Jungle Rock
   Island, Hirochi Raceway) as look references and stock-asset sources per biome (docs/ROADMAP.md). The

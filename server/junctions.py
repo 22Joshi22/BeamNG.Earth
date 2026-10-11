@@ -20,7 +20,12 @@ import math
 
 import numpy as np
 
-RADIUS = 5.0                    # m, curb return radius (US urban 3-9 m)
+RADIUS = 5.0                    # m, curb return radius when the class is not listed in RADII
+# by the larger road's class (street-view study of Fells Point, 2026-10-11: city corners are tight)
+RADII = {"residential": 3.0, "living_street": 3.0, "unclassified": 3.0, "service": 3.0,
+         "tertiary": 4.5, "secondary": 6.0, "primary": 6.0, "trunk": 8.0}
+STOP_LINE = {"m": "line_white", "tl": 6.4, "p": 2, "w": 0.45}   # 1 m before the crosswalk
+STOP_GAP = 1.0
 CORNER_ANGLES = (35.0, 150.0)   # degrees between two branches for a curb return
 BRANCH_M = 10.0                 # m of a branch used for its direction
 CROSSWALK = {"m": "crossing_white", "tl": 4.8, "p": 3, "w": 3.0}
@@ -127,7 +132,7 @@ def find(roads, has_walk, walk_w):
         for vi, p in enumerate(pts):
             key = (round(float(p[0]) / NODE_TOL), round(float(p[1]) / NODE_TOL))
             nodes.setdefault(key, []).append((ri, vi))
-    corners, cuts, crosswalks, ramps, line_cuts = [], {}, [], {}, {}
+    corners, cuts, crosswalks, ramps, line_cuts, stops = [], {}, [], {}, {}, []
     for key in sorted(nodes):
         inc = nodes[key]
         if len({ri for ri, _ in inc}) < 2:
@@ -157,10 +162,11 @@ def find(roads, has_walk, walk_w):
                 continue
             ni, nj = _left(ui), _left(uj)
             wi, wj = spi.width / 2, spj.width / 2
-            Z = _line_x(X + ni * (wi + RADIUS), ui, X - nj * (wj + RADIUS), uj)
+            radius = max(RADII.get(spi.cls, RADIUS), RADII.get(spj.cls, RADIUS))
+            Z = _line_x(X + ni * (wi + radius), ui, X - nj * (wj + radius), uj)
             if Z is None:
                 continue
-            Ti, Tj = Z - ni * RADIUS, Z + nj * RADIUS
+            Ti, Tj = Z - ni * radius, Z + nj * radius
             ti, tj = float((Ti - X) @ ui), float((Tj - X) @ uj)
             if ti <= 0 or tj <= 0 or ti > 40 or tj > 40:
                 continue
@@ -176,10 +182,10 @@ def find(roads, has_walk, walk_w):
             a0 = math.atan2(*(Ti - Z)[::-1])
             a1 = math.atan2(*(Tj - Z)[::-1])
             da = (a1 - a0 + math.pi) % (2 * math.pi) - math.pi      # the short way round
-            k = max(3, int(abs(da) * RADIUS / 1.0) + 1)
+            k = max(3, int(abs(da) * radius / 0.75) + 1)
             ang = a0 + da * np.linspace(0.0, 1.0, k)
-            arc = np.c_[Z[0] + RADIUS * np.cos(ang), Z[1] + RADIUS * np.sin(ang), np.linspace(zi, zj, k)]
-            inward = (Z[None] - arc[:, :2]) / RADIUS
+            arc = np.c_[Z[0] + radius * np.cos(ang), Z[1] + radius * np.sin(ang), np.linspace(zi, zj, k)]
+            inward = (Z[None] - arc[:, :2]) / radius
             zo = 0.5 * (zi + zj)
             outer = [(*(Tj - nj * walk_w), zj), (*O, zo), (*(Ti + ni * walk_w), zi)]
             Cc = _line_x(X + ni * wi, ui, X - nj * wj, uj)
@@ -217,11 +223,19 @@ def find(roads, has_walk, walk_w):
                        for q in crosswalks):
                     continue                    # one crosswalk where two would touch
                 crosswalks.append({"a": np.r_[a, z], "b": np.r_[b, z], "w": CROSSWALK["w"]})
+                # the stop line: across the half of the road whose traffic comes into the junction
+                # (right-hand traffic heading along -u drives on u's left), 1 m before the crosswalk;
+                # not on one-way classes (motorway links have no sidewalks anyway)
+                ts = t + CROSSWALK["w"] / 2 + STOP_GAP + STOP_LINE["w"] / 2
+                if _branch_len(roads[ri][2], vi, si) > ts + 2.0:
+                    cs = X + ui * ts
+                    zs = _z_along(roads[ri][2], vi, si, ts)
+                    stops.append({"a": np.r_[cs + nl * 0.2, zs], "b": np.r_[cs + nl * (w - 0.3), zs], "w": STOP_LINE["w"]})
                 t0, t1 = t - CROSSWALK["w"] / 2, t + CROSSWALK["w"] / 2
                 ramps.setdefault((roads[ri][0], li), []).append((X.copy(), ui, t0, t1))
                 ramps.setdefault((roads[ri][0], -li), []).append((X.copy(), ui, t0, t1))
                 line_cuts.setdefault(roads[ri][0], []).append((X.copy(), ui, t1))
-    return corners, cuts, crosswalks, ramps, line_cuts
+    return corners, cuts, crosswalks + [dict(q, stop=True) for q in stops], ramps, line_cuts
 
 
 def apply_cuts(line, cuts, near=40.0):

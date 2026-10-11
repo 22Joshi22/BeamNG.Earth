@@ -1066,6 +1066,17 @@ three days of testing: dem 741 MB / 7.5k files, imagery 1.4 GB / 35k, deshadow 7
   - At other crossings (no shared node, or angles outside 35-150 degrees), the wider road's
     sidewalk runs on to the other's curb and the other's stops against its outer edge, as before.
   - A Fells Point tile: 20 corners, 23 crosswalks, 38 ramps; 8.8k sidewalk triangles.
+  - Checked before building, otherwise the sidewalks end with a plain cut. A curb return needs
+    branches longer than its tangent points, corner asphalt within 20 m of the node, and nothing of
+    its slab or curb on any road. A crosswalk needs both ends clear of other roads, no other road
+    crossed, and 2 m to the next one. A 36-tile survey of unusual junctions (skewed multi-way, short
+    connectors, roundabouts, one-way pairs) went from 50 corners on carriageways to 4.
+  - Tuned against Mapillary photos and NAIP orthophotos (`tools/ortho_overlay.py`):
+    - corner radius by class (3 m residential, 4.5 m tertiary, 6 m secondary / primary);
+    - stop lines 1 m before crosswalks on the approach half of two-way streets;
+    - one-way streets (Overture `access_restrictions` by heading -> the `oneway` rule, roads cache
+      layer version 2) at their own driving width with parking on one side and no centre line.
+      Before, divided Broadway's one-way carriageways were drawn 14-15 m wide for 8-9 m.
 - Grading keeps the sidewalk band flat: on the classes that get sidewalks in towns, the flat
   shoulder is the sidewalk + 0.5 m instead of 1 m (everywhere, so it never depends on the land
   cover).

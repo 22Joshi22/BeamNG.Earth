@@ -84,7 +84,7 @@ LAYERS = {
                   cols=f"subtype, class, subclass, {_NAME}, {_SRC}",
                   text=("subtype", "class", "subclass", "name", "src_dataset", "src_record"),
                   extra="road_flags, speed_limits, connectors, road_surface, width_rules, level_rules, "
-                        "subclass_rules",
+                        "subclass_rules, access_restrictions",
                   rules={"surface": ("road_surface", "value", "text"),
                          "width": ("width_rules", "value", "float"),
                          "level": ("level_rules", "value", "float"),
@@ -503,6 +503,22 @@ class Reader:
         feats.rules["max_speed_kmh"] = mg.rule_table(
             [(int(fmap[fi]), v * (MPH if (u or "").lower() == "mph" else 1.0), b)
              for fi, v, u, b, uncond in rows if keep[fi] and v is not None and uncond], "float")
+        # one-way: motor traffic denied in one heading (no time, mode or vehicle conditions):
+        # +1 = one-way along the geometry (backward denied), -1 = against it
+        rows = con.execute("""SELECT fi, r.access_type, r."when".heading, r."when"."mode", r."when".during,
+                r."when"."using", r."when".recognized, r."when".vehicle, r."between" FROM
+            (SELECT fi, unnest(access_restrictions) AS r, generate_subscripts(access_restrictions, 1) AS k FROM t)
+            ORDER BY fi, k""").fetchall()
+        ow = []
+        for fi, typ, heading, mode, during, using, recognized, vehicle, b in rows:
+            if not keep[fi] or typ != "denied" or heading not in ("forward", "backward"):
+                continue
+            if during or using or recognized or vehicle:
+                continue
+            if mode and not any(m in ("motor_vehicle", "vehicle", "car") for m in mode):
+                continue
+            ow.append((int(fmap[fi]), 1.0 if heading == "backward" else -1.0, b))
+        feats.rules["oneway"] = mg.rule_table(ow, "float")
         rows = con.execute("""SELECT fi, c.connector_id, c."at" FROM
             (SELECT fi, unnest(connectors) AS c, generate_subscripts(connectors, 1) AS k FROM t)
             ORDER BY fi, k""").fetchall()
@@ -529,6 +545,7 @@ def empty(layer):
         f.rules["flags"] = mg.rule_table([], "text")
         f.rules["max_speed_kmh"] = mg.rule_table([], "float")
         f.rules["connectors"] = mg.rule_table([], "text")
+        f.rules["oneway"] = mg.rule_table([], "float")
     return f
 
 

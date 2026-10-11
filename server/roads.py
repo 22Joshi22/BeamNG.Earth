@@ -65,7 +65,11 @@ LOOK = {
     "gravel": {"m": "m_dirt_road", "tl": 88.0, "p": 21},
     "dirt": {"m": "m_dirt_road", "tl": 88.0, "p": 21},
 }
-Spec = namedtuple("Spec", "width kind urban cls")   # road_specs' result per feature (width = carriageway)
+Spec = namedtuple("Spec", "width kind urban cls oneway", defaults=(False,))   # road_specs' result per feature
+# (width = carriageway). One-way driving widths (Overture's divided roads are two one-way segments, each
+# drawn before as a full two-way street: 2026-10-11 orthophoto of Broadway, 14-15 m drawn for 8-9 m)
+ONEWAY_STYLE = {"primary": 6.5, "secondary": 6.5, "tertiary": 4.0, "residential": 3.5, "living_street": 3.5,
+                "unclassified": 3.5, "service": 3.5, "unknown": 3.5}
 
 # Sidewalks and markings (user 2026-10-11, after the first street-view comparison of Fells Point:
 # real streets have concrete sidewalks behind a curb and a double yellow centre line). Stock West
@@ -228,16 +232,20 @@ def surface_kind(cls, surface):
     return "paved" if STYLE.get(cls, STYLE["unknown"])[1] else "dirt"
 
 
-def carriageway(cls, kind, urban, rule_width=None):
+def carriageway(cls, kind, urban, rule_width=None, oneway=False):
     """Paved / dirt width (m) of a road: the width rule if any, else the class's driving width plus
-    parking lanes (urban paved streets) or edge strips (rural paved roads). Pure."""
+    parking lanes (urban paved streets; one side on a one-way street) or edge strips (rural paved
+    roads). One-way: ONEWAY_STYLE's driving width (motorways and trunks are per carriageway already).
+    Pure."""
     if rule_width is not None:
         return rule_width
     w = STYLE.get(cls, STYLE["unknown"])[0]
+    if oneway and cls in ONEWAY_STYLE:
+        w = ONEWAY_STYLE[cls]
     if kind not in BUILT:
         return w
     if urban and cls in PARKING_CLASSES:
-        return w + 2 * PARKING_M
+        return w + (1 if oneway else 2) * PARKING_M
     if not urban and cls != "service":
         return w + 2 * EDGE_STRIP_M
     return w
@@ -262,22 +270,23 @@ def road_specs(feats, urban_fn=None):
         width = _rule_value(rules.get("width"), i)
         rule_w = float(width) if width is not None and 1.0 <= float(width) <= 40.0 else None
         kind = surface_kind(cls, _rule_value(rules.get("surface"), i))
+        ow = _rule_value(rules.get("oneway"), i) is not None
         if urban_fn is not None and rule_w is None and kind in BUILT:
             a = feats.coord_off[feats.ring_off[feats.part_off[i]]]
             b = feats.coord_off[feats.ring_off[feats.part_off[i + 1]]]
             if b > a:
-                ask.append((len(out), cls, kind, a, b))
+                ask.append((len(out), cls, kind, a, b, ow))
                 out.append(None)
                 continue
-        out.append(Spec(carriageway(cls, kind, False, rule_w), kind, False, cls))
+        out.append(Spec(carriageway(cls, kind, False, rule_w, ow), kind, False, cls, ow))
     if ask:
-        ll = np.concatenate([feats.lonlat[a:b] for _, _, _, a, b in ask])
+        ll = np.concatenate([feats.lonlat[a:b] for _, _, _, a, b, _ in ask])
         u = np.asarray(urban_fn(ll[:, 1], ll[:, 0]), bool)
         k = 0
-        for j, cls, kind, a, b in ask:
+        for j, cls, kind, a, b, ow in ask:
             urban = float(np.mean(u[k:k + (b - a)])) >= URBAN_SHARE
             k += b - a
-            out[j] = Spec(carriageway(cls, kind, urban, None), kind, urban, cls)
+            out[j] = Spec(carriageway(cls, kind, urban, None, ow), kind, urban, cls, ow)
     return out
 
 
@@ -297,7 +306,8 @@ def bridge_specs(feats):
         width = _rule_value(rules.get("width"), i)
         rule_w = float(width) if width is not None and 1.0 <= float(width) <= 40.0 else None
         kind = surface_kind(cls, _rule_value(rules.get("surface"), i))
-        out.append(Spec(carriageway(cls, kind, False, rule_w), kind, False, cls))
+        ow = _rule_value(rules.get("oneway"), i) is not None
+        out.append(Spec(carriageway(cls, kind, False, rule_w, ow), kind, False, cls, ow))
     return out
 
 
@@ -681,7 +691,7 @@ def extras(spec, pts, lon):
     """The sidewalk / gutter / marking polylines of one road: [(look dict with m / tl / p, width, pts)].
     pts: its centreline (k, 3) in the anchor frame; lon: its longitude (centre line colour). Pure."""
     out = []
-    w, kind, urban, cls = spec
+    w, kind, urban, cls = spec[:4]
     if kind not in BUILT:
         return out
     if has_sidewalks(spec):
@@ -689,7 +699,7 @@ def extras(spec, pts, lon):
             out.append(({**SIDEWALK, "side": side}, SIDEWALK["w"],
                         offset_polyline(pts, side * (w / 2 + SIDEWALK["w"] / 2))))
             out.append(({**GUTTER, "side": side}, GUTTER["w"], offset_polyline(pts, side * (w / 2 - GUTTER["w"] / 2))))
-    if kind == "paved" and cls in CENTRE_CLASSES and w >= 6.0:      # no paint on cobbles
+    if kind == "paved" and cls in CENTRE_CLASSES and w >= 6.0 and not spec.oneway:   # no paint on cobbles
         look = {"m": centre_colour(lon), "tl": CENTRE["tl"], "p": CENTRE["p"]}
         for side in (1, -1):
             out.append((look, CENTRE["w"], offset_polyline(pts, side * CENTRE["gap"])))
@@ -1179,10 +1189,11 @@ def build_tile(frame, tx, ty, cells, elev, urban_fn=None, walks=None, bridges=No
                 if c["fill"] is not None:
                     chunks.append({"m": LOOK["paved"]["m"], "w": 0.0, "tl": LOOK["paved"]["tl"], "p": LOOK["paved"]["p"],
                                    "poly": [[round(float(v), 3) for v in q] for q in c["fill"]], "n": []})
-        for cw in crosswalks:
+        for cw in crosswalks:                   # crosswalks and stop lines
             mid = 0.5 * (cw["a"] + cw["b"])
             if x0 <= mid[0] < x1 and y0 <= mid[1] < y1:
-                chunks.append(_chunk(junctions.CROSSWALK, cw["w"], np.array([cw["a"], cw["b"]])))
+                look = junctions.STOP_LINE if cw.get("stop") else junctions.CROSSWALK
+                chunks.append(_chunk(look, cw["w"], np.array([cw["a"], cw["b"]])))
     for fid, spec, pts, lon in roads:
         ex = extras(spec, pts, lon)
         if not ex:

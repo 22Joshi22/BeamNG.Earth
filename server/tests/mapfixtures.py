@@ -181,7 +181,9 @@ SEG_SCHEMA = """id VARCHAR, version INTEGER, subtype VARCHAR, class VARCHAR, sub
     "between" DOUBLE[])[], level_rules STRUCT("value" INTEGER, "between" DOUBLE[])[],
     subclass_rules STRUCT("value" VARCHAR, "between" DOUBLE[])[], speed_limits STRUCT(max_speed
     STRUCT("value" INTEGER, unit VARCHAR), "between" DOUBLE[], "when" STRUCT(heading VARCHAR))[],
-    connectors STRUCT(connector_id VARCHAR, "at" DOUBLE)[]"""
+    connectors STRUCT(connector_id VARCHAR, "at" DOUBLE)[], access_restrictions STRUCT(access_type VARCHAR,
+    "when" STRUCT(heading VARCHAR, "mode" VARCHAR[], during VARCHAR, "using" VARCHAR[], recognized VARCHAR[],
+    vehicle VARCHAR[]), "between" DOUBLE[])[]"""
 CON_SCHEMA = """id VARCHAR, version INTEGER, sources STRUCT(property VARCHAR, dataset VARCHAR, license VARCHAR,
     record_id VARCHAR)[]"""
 BLD_SCHEMA = """id VARCHAR, version INTEGER, subtype VARCHAR, class VARCHAR, names STRUCT("primary" VARCHAR),
@@ -243,7 +245,11 @@ def features():
                   connectors=[{"connector_id": "con-a", "at": 0.0}, {"connector_id": "con-b", "at": 1.0}])
     seg[1].update(road_surface=[{"value": "paved", "between": [0.0, 0.5]},
                                 {"value": "gravel", "between": [0.5, 1.0]}],
-                  speed_limits=[{"max_speed": {"value": 50, "unit": "km/h"}, "between": None, "when": None}])
+                  speed_limits=[{"max_speed": {"value": 50, "unit": "km/h"}, "between": None, "when": None}],
+                  # one-way along the geometry; a delivery-only restriction that must not count
+                  access_restrictions=[{"access_type": "denied", "when": {"heading": "backward"}, "between": None},
+                                       {"access_type": "denied", "when": {"heading": "forward", "using": ["as_customer"]},
+                                        "between": None}])
     # crosses the east edge: listed here, owned by the east neighbour
     seg.append(dict(id="seg-edge", version=1, subtype="road", **{"class": "secondary"}, sources=[OSM],
                     wkt=_wkt_line([_cell_xy(0.9, 0.5), _cell_xy(1.6, 0.5)])))

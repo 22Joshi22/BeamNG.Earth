@@ -506,6 +506,8 @@ class OvertureTest(Sources, SmallBlocks, unittest.TestCase):
         self.assertEqual(r.rules["flags"].for_feature(0), [("is_bridge", 0.25, 0.5), ("is_link", 0.25, 0.5)])
         self.assertEqual(r.rules["width"].for_feature(0), [(9.5, 0.0, 1.0)])
         self.assertEqual(r.rules["level"].for_feature(0), [(1.0, 0.25, 0.5)])
+        self.assertEqual(r.rules["oneway"].for_feature(1), [(1.0, 0.0, 1.0)], "one-way; conditional ones ignored")
+        self.assertEqual(r.rules["oneway"].for_feature(0), [])
         speed = r.rules["max_speed_kmh"]
         self.assertAlmostEqual(speed.for_feature(0)[0][0], 25 * 1.609344, places=4)   # mph, unconditional only
         self.assertEqual(len(speed.for_feature(0)), 1)
@@ -695,7 +697,7 @@ class CacheTest(Sources, SmallBlocks, unittest.TestCase):
         n = t.count()
         self.assertGreater(n, 0)
         rel = os.path.relpath(md.path(mf.CELL, "roads"), cache)
-        self.assertEqual(rel, f"mapdata/v{mapdata.VERSION}/overture/{mf.RELEASE}/roads/14/4706/6244.npz")
+        self.assertEqual(rel, f"mapdata/v{mapdata.VERSION}/overture/{mf.RELEASE}/roads.{mapdata.LAYER_VERSIONS['roads']}/14/4706/6244.npz")
         self.assertTrue(os.path.relpath(md.path(mf.CELL, "landcover"), cache).startswith(
             f"mapdata/v{mapdata.VERSION}/worldcover/{maprasters.WORLDCOVER_RELEASE}/landcover/14/"))
         self.assertTrue(os.path.isdir(os.path.join(cache, "mapdata", "raw", "overture", mf.RELEASE, "stac")))

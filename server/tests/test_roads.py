@@ -241,13 +241,18 @@ class BuildTileTest(unittest.TestCase):
         cw = [c for c in chunks if c["m"] == junctions.CROSSWALK["m"]]
         self.assertEqual(len(cw), 4, "a crosswalk on each arm")
         self.assertTrue(sum(len(w["ramps"]) for w in runs) >= 8, "two curb ramps per crosswalk")
+        w = roads.carriageway("residential", "paved", True) / 2
         for c in chunks:                        # no markings through the junction or its crosswalks
-            if c["m"].startswith("line_"):
+            if c["m"].startswith("line_") and c["w"] != junctions.STOP_LINE["w"]:
                 for x, y, _ in c["n"]:
-                    self.assertGreater(max(abs(x - X[0]), abs(y - X[1])), w + junctions.RADIUS, (x, y))
+                    self.assertGreater(max(abs(x - X[0]), abs(y - X[1])), w + junctions.RADII["residential"], (x, y))
+        stops = [c for c in chunks if c["m"] == junctions.STOP_LINE["m"] and c["w"] == junctions.STOP_LINE["w"]]
+        self.assertEqual(len(stops), 4, "a stop line on each approach")
+        for c in stops:                         # on the approach half, beyond the crosswalk
+            a, b = np.array(c["n"][0][:2]), np.array(c["n"][-1][:2])
+            self.assertLess(np.hypot(*(b - a)), w)
         fills = [c for c in chunks if c.get("poly")]
         self.assertEqual(len(fills), 4, "the corner asphalt")
-        w = roads.carriageway("residential", "paved", True) / 2
         for c in corners:                       # the arc keeps RADIUS from its centre, between the curbs
             arc = c["arc"]
             d = np.hypot(arc[:, 0] - X[0], arc[:, 1] - X[1])

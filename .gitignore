@@ -21,3 +21,4 @@ docs/research/*.jsonl
 .claude/
 tools/gcpatch/build/
 docs/research/streetview/
+docs/research/ortho/
