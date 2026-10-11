@@ -187,9 +187,20 @@ local function restoreTable(cfg)
   return { importMs = ms, ok = ok, error = err, reloadMs = rl, render = renderFlag(tb) }
 end
 
+-- the player's car, deactivated by p11b, back once the collision is rebuilt (restoreTable)
+local function unfreezeCar(r)
+  local id = M.frozenCar
+  if not id then return end
+  M.frozenCar = nil
+  local v = be:getObjectByID(id)
+  if v then v:setActive(1) end
+  r.carUnfrozen = v ~= nil
+end
+
 function M.restore(cfg)
   cfg = decode(cfg)
   local r = restoreTable(cfg)
+  unfreezeCar(r)
   if cfg.resume ~= false then be:setPhysicsRunning(true) end
   return toJson(r)
 end
@@ -284,11 +295,19 @@ end
 
 -- p11b: the 512² crop at the same centre, no reloadCollision: does the area the block no longer covers
 -- (between c+512 and c+1022) stop colliding by itself? Then rays at once; the tool samples again.
+-- The player's car is deactivated first and comes back in restore: without reloadCollision physics
+-- keeps the 1024² block's origin and size over the 512² data, so the ground under a car anywhere
+-- east / north of the centre is gone (in-game 2026-10-10: the parked car 258 m from it fell through).
 function M.p11b(cfg)
   cfg = decode(cfg)
   local tb = scenetree.findObject(NAME)
   if not tb then return toJson({ error = 'no ' .. NAME }) end
   zeroInputs()
+  local veh = vehicle()
+  if veh and not M.frozenCar then
+    M.frozenCar = veh:getId()
+    veh:setActive(0)
+  end
   local o, cx, cy = cfg.orig, cfg.cx, cfg.cy
   local out = { before = rays(cx, cy, o, { { 0, 0 }, { 700, 0 }, { 0, -700 } }) }
   local ms, ok, err = import(tb, cfg.hm512, o.maxH, cfg.layer512)

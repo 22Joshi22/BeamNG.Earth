@@ -73,7 +73,12 @@ local veh = { pos = vec3(10, 20, ground(10, 20) + 0.5), cmds = {} }
 function veh:getPosition() return vec3(self.pos.x, self.pos.y, self.pos.z) end
 function veh:getVelocity() return vec3(0, 0, 0) end
 function veh:queueLuaCommand(c) self.cmds[#self.cmds + 1] = c end
+function veh:getId() return 77 end
+veh.active = 1
+function veh:setActive(a) self.active = a end
 function getPlayerVehicle() return veh end
+be = be or {}
+function be:getObjectByID(id) return id == 77 and veh or nil end
 
 local proxies = {}
 function newExtensionProxy(_, prefix)
@@ -175,10 +180,13 @@ for i = 1, 4 do out.p11samples[i] = M.p11sample() end
 T.check(out.p11samples[4].carZ == veh.pos.z and out.p11samples[1].ray == out.p11a.rayBefore, 'P11 samples')
 out.p11b = M.p11b(cfg)
 T.check(out.p11b.ok and live.n == 512 and rayAt(out.p11b.sameFrame, 700, 0) == h(700, 0), 'P11b: 512², old collision still there')
+T.check(veh.active == 0, 'P11b: the car is frozen while the collision is stale')
 out.p11bSamples = {}
 for i = 1, 4 do out.p11bSamples[i] = M.p11bSample() end
+T.check(veh.active == 0, 'P11b samples: the car stays frozen')
 out.p11restore = M.restore(cfg)
 checkRestored('P11')
+T.check(veh.active == 1 and out.p11restore.carUnfrozen == true and M.frozenCar == nil, 'P11 restore: the car is back')
 
 -- P7 (a)
 out.p7aInstall = M.p7aInstall()

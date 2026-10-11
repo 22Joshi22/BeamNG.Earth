@@ -5,8 +5,9 @@ default; nothing in the game changes for good (every terrain step ends by re-imp
 block's own heightmap at its own position, and reports the heights before / after).
 
 Run ONLY while the user is not playing (P2 and P7 (b) pause physics for a few seconds, P11 lifts
-the parked car by 0.3 m), with the game in our level, the server running as usual (--block 1024,
-the default) and the car parked (< 0.5 m/s) within 300 m of the terrain block's centre. The
+the parked car by 0.3 m and deactivates it while the shrunk block's collision is stale), with the
+game in our level, the server running with --block 1024 (the command line's default is 512 since
+these probes passed) and the car parked (< 0.5 m/s) within 300 m of the terrain block's centre. The
 probes need no mod update: the 512² heightmap is a crop of the live block's own 1024² one (the same
 lattice, so the same heights), written with its layer map to <user-dir>/temp/beamngEarth/m4probe/.
 
@@ -32,7 +33,8 @@ Pass criteria (the decisions of §3.5):
        info  setRenderEnabled(false) survives importMaps (terrain.lua re-applies it after every
              import anyway); whether collision is right in the import frame or only a frame later.
   P11  info  whether physics follows a re-import without reloadCollision (car lifted by DZ, the area
-             the smaller block left stops colliding), and after how long: "same frame" means a
+             the smaller block left stops colliding; the car is deactivated for that step and comes back
+             after the restore), and after how long: "same frame" means a
              commit could drop reloadCollision (~0.4 ms for 512²); otherwise it stays (today's code).
   P7a  info  per rebase: terrain.load, farfield.transform / switchAnchor, camshift.shift,
              reloadCollision (the gap before commit_anchor), moveVehicles, their frames, the frame's

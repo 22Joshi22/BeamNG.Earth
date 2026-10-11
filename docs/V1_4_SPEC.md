@@ -851,8 +851,9 @@ near-car rules apply only to prio-0 tiles, so a server that sends no prio disabl
 **Rollback.** `--block 1024` (server). The mod follows `hello.blockSize` and `terrain.size`.
 
 **Implementation notes (built offline 2026-10-10, docs/ARCHITECTURE.md "v1.4 M4").**
-- `--block` defaults to **1024** until P2, P7 and P11 pass (`tools/m4_probes.py`); `hello.blockSize` is
-  sent only with 512, so a 1024 session's messages are unchanged.
+- `--block` defaulted to 1024 until P2, P7 and P11 passed (`tools/m4_probes.py`, in-game 2026-10-10);
+  since then the command line defaults to **512** in mesh mode (`resolve_block`; `Server()` keeps 1024).
+  `hello.blockSize` is sent only with 512, so a 1024 session's messages are unchanged.
 - The commit-time re-check as written above discarded nearly every block in the offline model (77 of
   78 commits at 134 m/s, 0.3 s latency) and took a 250 m/s car up to 98 m off the block at 1.2 s
   latency. It is implemented with a guard: it discards only while the player stays out of the 150 m

@@ -1,6 +1,7 @@
 """The command line's defaults are exactly v1.4 M1's (docs/V1_4_SPEC.md §0: every later milestone ships
 behind a flag that is off until its in-game probes pass; M4 `--block 512`, M1h `--horizon`): the server
-`earthd.py` builds with no flags (mesh mode, 64 cells, the 1024² block, no horizon) answers hello and
+`earthd.py` builds with no flags but `--block 1024` (mesh mode, 64 cells, no horizon; the CLI's block is
+512 since M4's probes passed, test_new_flags_default_off) answers hello and
 status with the same messages, selects the same tiles (with hysteresis and HOLD_S, on a fake clock),
 groups and orders them the same way, predicts the same terrain requests (the prefetch), snaps and
 commits the same blocks, and writes the same heightmap as the M1 tree did, compared with
@@ -185,7 +186,10 @@ class CliDefaultTest(unittest.TestCase):
         finally:
             sys.path.pop(0)
         import inspect
-        self.assertEqual(earthd.BLOCK_DEFAULT, 1024)                        # M4 off until P2, P7, P11
+        self.assertEqual(earthd.BLOCK_DEFAULT, 1024)                        # Server()'s block
+        # M4 is on from the command line in mesh mode (P2, P7, P11 passed in-game); terrain mode keeps 1024
+        self.assertEqual((earthd.resolve_block(None, "mesh"), earthd.resolve_block(None, "terrain"),
+                          earthd.resolve_block(1024, "mesh")), (512, 1024, 1024))
         p = inspect.signature(earthd.Server).parameters
         self.assertEqual((p["block"].default, p["horizon"].default), (1024, False))   # M1h off until P12
 

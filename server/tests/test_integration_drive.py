@@ -1253,7 +1253,7 @@ class MeshDriveTest(DriveBase):
     """The v1.3 layout: --near-visual mesh with imagery (offline fake source), --cells 32 (the
     command line defaults to 64 cells in mesh mode since P8: MeshDrive64Test)."""
     near_visual = "mesh"
-    server_args = ("--near-visual", "mesh", "--cells", "32")
+    server_args = ("--near-visual", "mesh", "--cells", "32", "--block", "1024")
     launcher = "fake_imagery_earthd.py"
 
     def test_drive_and_rebase(self):
@@ -1267,7 +1267,7 @@ class MeshDrive64Test(DriveBase):
     far_tile.tex) and the per-kind, per-object-count cost model. (Not a MeshDriveTest subclass:
     it would inherit that class's skip flag.)"""
     near_visual = "mesh"
-    server_args = ("--near-visual", "mesh", "--cells", "64")
+    server_args = ("--near-visual", "mesh", "--cells", "64", "--block", "1024")
     launcher = "fake_imagery_earthd.py"
     cells = 64
 

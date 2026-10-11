@@ -17,8 +17,8 @@ Tile layout (docs/V1_4_SPEC.md §3.1, M1): --cells 64 (the default in mesh mode 
 passed) makes every tile 64 x 64 cells, FORMAT 4, with the exact level L-1, hello.cells and
 far_tile.tex; --cells 32 (and terrain mode) is the v1.3.1 layout, FORMAT 3.
 
-Terrain block (docs/V1_4_SPEC.md §3.5, M4): --block 512 (mesh mode only; the default stays 1024 until
-the in-game probes P2, P7 and P11 pass) makes the physics block 512² (collidable [c-512, c+510]) on
+Terrain block (docs/V1_4_SPEC.md §3.5, M4): --block 512 (mesh mode only; the default there since the
+in-game probes P2, P7 and P11 passed; Server() keeps 1024) makes the physics block 512² (collidable [c-512, c+510]) on
 a 128 m centre grid, sends hello.blockSize and terrain.size 512, and predicts the mod's 512 follow
 table (FOLLOW_RULES, with its fast mode above 150 m/s) for the prefetch.
 
@@ -75,6 +75,13 @@ PROTOCOL = 4
 # docs/research/m1_d*); terrain mode stays frozen at 32.
 CELLS_DEFAULT = 32
 CLI_CELLS_MESH = 64
+
+
+def resolve_block(block, near_visual):
+    """The --block value to use: the given one, else 512 in mesh mode and 1024 in terrain mode."""
+    if block is not None:
+        return block
+    return CLI_BLOCK_MESH if near_visual == "mesh" else heightmap.SIZE
 
 
 def resolve_cells(cells, near_visual):
@@ -145,7 +152,10 @@ FOLLOW_RULES = {
     512: FollowRule(heightmap.GRIDS[512], 128.0, 2.0, 260.0, 100.0,
                     fast_v=150.0, fast_lead=3.0, fast_reach=420.0, fast_ahead=0.75),
 }
-BLOCK_DEFAULT = 1024        # --block: 512 (M4) stays off until the in-game probes P2, P7, P11 pass
+BLOCK_DEFAULT = 1024        # Server()'s block (test_v131_default.py pins the library default)
+# The command line's block in mesh mode: M4's 512² block (in-game 2026-10-10: P2 steady import 16 ms vs
+# 45 ms, P7, P11 and the 134 m/s drive passed; docs/research/2026-10-10-m4-m1h-ingame.md)
+CLI_BLOCK_MESH = 512
 # |cx|,|cy| of an anchor's first terrain. A rebase hint stays within ~512 m of the new origin, but
 # a resync (same origin, after a server restart) asks for the block around the player, which can be
 # up to the mod's maximum rebase distance (16 km) away, plus however far the player got past it.
@@ -1473,10 +1483,10 @@ def main():
     ap.add_argument("--cells", type=int, choices=farfield.CELL_COUNTS, default=None,
                     help="tile cells per edge: 64 = docs/V1_4_SPEC.md M1 (FORMAT 4, exact level L-1; the "
                          "default in mesh mode), 32 = the v1.3.1 layout (FORMAT 3; terrain mode always)")
-    ap.add_argument("--block", type=int, choices=tuple(FOLLOW_RULES), default=BLOCK_DEFAULT,
-                    help="terrain block samples per edge: 1024 = the v1.3.1 block (default), 512 = "
-                         "docs/V1_4_SPEC.md M4 (on a 128 m grid, hello.blockSize; mesh mode only; off until "
-                         "the in-game probes P2, P7, P11 pass)")
+    ap.add_argument("--block", type=int, choices=tuple(FOLLOW_RULES), default=None,
+                    help="terrain block samples per edge: 512 = docs/V1_4_SPEC.md M4 (on a 128 m grid, "
+                         "hello.blockSize; mesh mode only; the default in mesh mode), 1024 = the v1.3.1 block "
+                         "(terrain mode always)")
     ap.add_argument("--horizon", action="store_true",
                     help="docs/V1_4_SPEC.md M1h: the far field out to the line-of-sight horizon (a disc up to "
                          "1500 km from the eye's height above sea level and the terrain in sight, L10 tiles, "
@@ -1508,6 +1518,7 @@ def main():
     ap.add_argument("-v", "--verbose", action="store_true")
     args = ap.parse_args()
     args.cells = resolve_cells(args.cells, args.near_visual)
+    args.block = resolve_block(args.block, args.near_visual)
     if args.cells != 32 and args.near_visual != "mesh":
         ap.error("--cells 64 needs --near-visual mesh (terrain mode is frozen at the v1.3.1 layout)")
     if args.block != heightmap.SIZE and args.near_visual != "mesh":
