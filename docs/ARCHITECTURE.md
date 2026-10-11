@@ -538,7 +538,14 @@ over to AWS, a 400 wrote a permanent `.404` marker, and the User-Agent lived in 
 - **Failover**: `HostUnavailable` / `RateLimited` cost no network and the chains move on: imagery
   usgs → eox2023 → eox2016 (one host, one breaker: both skipped together) → palette; DEM Mapterhorn →
   AWS for the same key (also on Mapterhorn errors now) → `DemUnavailable` (where a coarse offline DEM
-  will go). A prefetch future the limiter dropped is re-fetched as demand by the render that needs it.
+  will go). A prefetch future the limiter dropped is re-fetched as demand by the render that needs it
+  (one fetch for every render waiting on it); prefetch skips a source whose circuit is open, so it
+  warms the source render fails over to. An undecodable DEM tile leaves the cache and fails over.
+- **Review fixes (2026-10-10)**: only the half-open probe closes a breaker (a late success of a
+  request sent before it opened no longer does); demand requests waiting for a token when a
+  Retry-After pauses the host give up at once and fail over (they used to sleep out the pause and
+  then all fire); `HttpsTransport` re-sends only on a reused keep-alive connection (a fresh one that
+  timed out was tried twice, outside the bucket, doubling every timeout).
 - **Markers**: 404/410 only (a 400 is an error); `.404` files keep their format (empty, mtime = when)
   and expire after the host's `miss_ttl` (90 days; AWS never), but count as valid while the host
   cannot be asked, so an expired marker never turns a "no data" into an error. Existing caches work
@@ -565,5 +572,6 @@ over to AWS, a 400 wrote a permanent `.404` marker, and the User-Agent lived in 
 - Tests: `server/tests/test_netfetch.py` (no network: fake transport / clock / sleep, seeded rng;
   the cold-start bursts above), `test_demand.NetDemandTest` (§5.4 case 12: requests per minute and
   host from the real `farfield.select` drive, below each policy rate), plus the netfetch cases in
-  `test_imagery.py` (EOX breaker shared, marker TTL, 400, dropped prefetch, UA) and `test_weather.py`
+  `test_imagery.py` (EOX breaker shared, marker TTL, 400, dropped prefetch fetched once, prefetch past
+  an open host, UA) and `test_weather.py`
   (UA, shared in-flight fetch, Retry-After retry).

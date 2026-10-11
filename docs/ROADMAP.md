@@ -272,7 +272,9 @@ place: `server/netfetch.py` (docs/research/2026-10-10-rate-limits.md §5) rate-l
 retries with backoff, honours Retry-After, opens a circuit breaker per host and fails over along the
 source chains (USGS -> EOX 2023 -> EOX 2016 -> palette; Mapterhorn -> AWS), `--offline` serves the
 disk cache only, and the status text says "Offline - using cached data" / "Degraded: ..." (the mod
-shows it as is). Follow-ups:
+shows it as is). Reviewed adversarially the same day (late successes no longer close a breaker,
+Retry-After makes waiting demand fail over, no doubled timeouts, prefetch past an open host, an
+undecodable DEM tile leaves the cache; docs/ARCHITECTURE.md "Network"). Follow-ups:
 - Re-texture the degraded (palette-fallback) tiles once the breaker closes: `Server.degraded` lists
   them, but a rebuilt tile needs a new file name (the engine caches by path) and a same-footprint
   replace swap in the protocol, so it waits for the retex / rebuild swap of item 4.

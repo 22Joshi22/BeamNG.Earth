@@ -89,10 +89,13 @@ class Dem:
             return dict(self.stats)
 
     # --- raw tiles -------------------------------------------------------
+    def _path(self, src, z, x, y):
+        return os.path.join(self.cache_dir, src["name"], str(z), str(x), f"{y}.{src['ext']}")
+
     def _download(self, src, z, x, y):
         """Raw tile bytes from disk cache or network; None for a (cached) 404. Raises
         netfetch.FetchError when the host cannot deliver."""
-        path = os.path.join(self.cache_dir, src["name"], str(z), str(x), f"{y}.{src['ext']}")
+        path = self._path(src, z, x, y)
         miss = os.path.join(self.cache_dir, src["name"], str(z), str(x), f"{y}.404")
         if os.path.exists(path):
             self._count(src["name"] + ":disk")
@@ -120,6 +123,20 @@ class Dem:
         self._count(src["name"] + ":net")
         return data
 
+    def _decode(self, src, z, x, y, data):
+        """decode_terrarium of a source tile; a body that is no image (empty, or cut short where the
+        server sent no length) leaves the disk cache and raises netfetch.BadResponse, so the chain
+        fails over now and the tile is asked again later instead of failing every session."""
+        try:
+            return decode_terrarium(data, src["size"])
+        except (OSError, ValueError) as e:
+            try:
+                os.remove(self._path(src, z, x, y))
+            except OSError:
+                pass
+            self._count(src["name"] + ":undecodable")
+            raise netfetch.BadResponse(f"undecodable {src['name']} tile {z}/{x}/{y}: {e}") from None
+
     def _aws_tile(self, z, x, y):
         """Fallback for Mapterhorn tile (z, x, y), built from AWS z+1 (max 15)."""
         za = min(MAX_ZOOM, z + 1)
@@ -131,7 +148,7 @@ class Dem:
             for i in range(n):
                 data = self._download(AWS, za, x * n + i, y * n + j)
                 if data is not None:
-                    mosaic[j * s:(j + 1) * s, i * s:(i + 1) * s] = decode_terrarium(data, s)
+                    mosaic[j * s:(j + 1) * s, i * s:(i + 1) * s] = self._decode(AWS, za, x * n + i, y * n + j, data)
                     found = True
         return _resize(mosaic, TILE) if found else None
 
@@ -139,6 +156,7 @@ class Dem:
         z, x, y = key
         try:
             data = self._download(MAPTERHORN, z, x, y)
+            a = None if data is None else self._decode(MAPTERHORN, z, x, y, data)
         except netfetch.FetchError as e:
             # Mapterhorn cannot be asked (circuit open, rate limited, failing): the same tile from AWS,
             # as it is (with AWS bathymetry: a failure says nothing about where the sea is).
@@ -148,8 +166,8 @@ class Dem:
             except netfetch.FetchError as e2:
                 raise DemUnavailable(f"DEM tile {z}/{x}/{y}: Mapterhorn: {e}; AWS: {e2}") from None
             return np.zeros((TILE, TILE), np.float32) if a is None else a
-        if data is not None:
-            return decode_terrarium(data, MAPTERHORN["size"])
+        if a is not None:
+            return a
         try:
             a = self._aws_tile(z, x, y)
         except netfetch.FetchError as e:

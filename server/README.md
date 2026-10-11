@@ -249,8 +249,9 @@ Format decoded from engine-written files (golden pairs in `tests/fixtures/`):
   through to the next one; if no source can fill a texel because of network errors (not 404s), the
   tile is sent without imagery (palette material) rather than with a baked fallback colour, and
   counts as degraded in the status note. The far-tile prefetch asks with kind `prefetch` (only while
-  the host's bucket is above half; dropped requests are fetched on demand at build time), the
-  de-shadow region fits with kind `background`.
+  the host's bucket is above half; dropped requests are fetched on demand at build time, once for
+  every render waiting on them; a source whose circuit is open is skipped, so the prefetch warms the
+  source render fails over to), the de-shadow region fits with kind `background`.
 - **Tone curve** (`--tone`, LUT per channel): +0.06 at black, −0.10 at white, ~0 at mid-grey: lifts
   baked shadows a little and stops bright rock/sand glowing under the engine's own lighting.
 - **De-shadowing** (`--deshadow lambert|full`, default off; docs/research/2026-10-10-deshadow-prototype.md,
@@ -282,7 +283,10 @@ and are resampled onto the 512 px grid. A 404 is cached on disk as a `<y>.404` m
 expire after 90 days, so lidar it adds later is picked up; AWS's never). When Mapterhorn cannot be
 asked (circuit open, rate limited, failing after its attempts) the same tile comes from AWS as it is
 (failover, `mapterhorn:failover` in the DEM stats); if AWS fails too the tile raises
-`dem.DemUnavailable` (the terrain request gets `terrain_error`).
+`dem.DemUnavailable` (the terrain request gets `terrain_error`). A downloaded tile that does not
+decode (an empty body, or one cut short where the server sent no length) is removed from the disk
+cache and counts as that source failing (`<source>:undecodable`), so it is asked again later instead
+of failing every session.
 
 ## Network (`server/netfetch.py`; docs/research/2026-10-10-rate-limits.md §5)
 
@@ -311,13 +315,19 @@ built in `main_async` and handed to `Dem`, `Imagery`, `weather.fetch` and `gravi
 - **Retries**: 429, 500, 502, 503, 504 and network errors, 3 attempts with full-jitter backoff
   (`uniform(0, min(60, 0.5 · 2^k))` s). A `Retry-After` (seconds or an HTTP date, clamped to
   1 s – 15 min) on a 429/503 pauses the host: no retry, the bucket is emptied and its breaker opens
-  for that long. A 3xx from a tile host counts as rate limiting (EOX redirects throttled clients to
+  for that long; demand requests already waiting for a token give up at once (`RateLimited`, so
+  their chains fail over) instead of sleeping out the pause. A 3xx from a tile host counts as rate limiting (EOX redirects throttled clients to
   its home page); a 200 with an HTML page from a tile host is an error (not cached); 404/410 is
   "no data" (the caller's `.404` marker); other 4xx are errors without a marker and without retries.
 - **Circuit breaker** per host: 5 failed attempts within 30 s open it (requests fail at once with
   `HostUnavailable`, no network); after 30 s one probe goes through; a failed probe re-opens it for
-  twice as long (up to 15 min), a success closes it. The chains fail over by themselves: imagery
+  twice as long (up to 15 min), a success closes it (only the probe's: a late answer to a request
+  sent before the breaker opened leaves it open). The chains fail over by themselves: imagery
   usgs → eox2023 → eox2016 → palette, DEM Mapterhorn → AWS.
+- **Connections**: one keep-alive connection per host and worker thread; a request that fails on a
+  reused connection (the server may have closed it while idle) is sent once more on a fresh one, a
+  failure on a fresh connection (timeout, refused) is the attempt's result, so a timeout costs one
+  timeout and the next attempt goes through the bucket and the backoff.
 - **Budgets**: counted per host and UTC day, persisted in `<cache-dir>/netstats/<date>.json` (every
   60 s and at exit), so a restart keeps counting. At 80 % of the soft budget prefetch and background
   stop (one warning); at 100 % demand runs at half rate (a warning per hour); a hard budget raises
@@ -529,8 +539,10 @@ committed files = `tools/make_level_assets.py`'s output). No network: the fetch 
 `test_netfetch.py` (no network: a scripted fake transport, a fake clock and sleep, a seeded rng): the
 token bucket (the burst at once, then 1/rate apart; prefetch only above half), the concurrency cap
 (16 threads, never more than 2 in flight), full-jitter backoff, Retry-After (the host paused for
-every thread, HTTP dates, clamping, a 429 without it), the breaker (open, probe, doubling, close),
-the DEM failover to AWS and `DemUnavailable`, response classes and `.404` marker TTLs (old-style
+every thread, HTTP dates, clamping, a 429 without it, a waiting demand request giving up), the
+breaker (open, probe, doubling, close; a late success leaves it open), the transport (a fresh
+connection's failure is not repeated, a closed keep-alive one is reopened once), the DEM failover to
+AWS and `DemUnavailable` (also for an undecodable tile, which leaves the cache), response classes and `.404` marker TTLs (old-style
 markers too), the host policies (§5.2 numbers, denied hosts, interactive-only, pre-download),
 budgets (80 % / 100 % / hard, persisted per UTC day, reset the next day), the per-minute summary,
 the User-Agent (no login, host name, home directory or e-mail in any header or URL), the gravity

@@ -317,24 +317,26 @@ class Imagery:
                 return "outside"
         return "covered"
 
-    def _future(self, key, kind="demand", fresh=False):
-        """The fetch of key (started if needed, or always with fresh). Caller holds the lock."""
-        fut = None if fresh else self._inflight.get(key)
-        if fut is None:
+    def _future(self, key, kind="demand", stale=None):
+        """The fetch of key (started if needed, or when the one in flight is `stale`, a finished
+        fetch whose done callback has not run yet). Caller holds the lock."""
+        fut = self._inflight.get(key)
+        if fut is None or fut is stale:
             fut = self._inflight[key] = self.pool.submit(self._load_kind, key, kind)
             fut.add_done_callback(lambda f: self._finish(key, f))
         return fut
 
     def _result(self, key, fut, kind):
-        """fut's tile; a demand caller that met a dropped prefetch fetches the tile itself."""
-        try:
-            return fut.result()
-        except ImageryError as e:
-            if not e.deferred or kind != "demand":
-                raise
-        with self._lock:
-            fut = self._future(key, fresh=True)
-        return fut.result()
+        """fut's tile; a demand caller that met a dropped prefetch fetches the tile itself (one fetch
+        shared by every caller that met the same dropped one)."""
+        while True:                         # (a demand fetch is never dropped: this ends)
+            try:
+                return fut.result()
+            except ImageryError as e:
+                if not e.deferred or kind != "demand":
+                    raise
+            with self._lock:
+                fut = self._future(key, stale=fut)
 
     def tiles(self, keys, kind="demand"):
         """{(source, z, x, y): Tile or None (404, or outside the coverage probe)}, fetched
@@ -367,8 +369,9 @@ class Imagery:
         """Start fetching the source tiles render(frame, x0, y0, size, px) will need, without
         waiting: the first source of the chain, or the next one where every tile of the
         previous source is already known to be missing (an unknown coverage probe is fetched
-        first). Errors are left for render to meet. Stops at a source whose host takes no prefetch
-        now (policy, budget, circuit open, bucket below half): render fetches those on demand."""
+        first). Errors are left for render to meet. Skips a source whose host's circuit is open
+        (render fails over past it) and stops at one whose host takes no prefetch now (policy,
+        budget, bucket below half): render fetches those on demand."""
         t = size / px
         c = np.array([0.0, 0.5, 1.0]) * size
         E, N = np.meshgrid(x0 + c, y0 + c)
@@ -387,7 +390,10 @@ class Imagery:
             ty0, ty1 = max(0, int(math.floor(fy.min() - 1)) // TILE), min(n - 1, int(math.floor(fy.max() + 1)) // TILE)
             if (tx1 - tx0 + 1) * (ty1 - ty0 + 1) > MAX_MOSAIC:
                 return
-            if not self.fetcher.allow(netfetch.host_of(src.url), "prefetch"):
+            host = netfetch.host_of(src.url)
+            if not self.fetcher.available(host):
+                continue                    # circuit open: render fails over to the next source, warm that
+            if not self.fetcher.allow(host, "prefetch"):
                 return
             missing = True                  # every tile of this source known to be missing
             with self._lock:

@@ -159,6 +159,32 @@ class TokenBucketTest(unittest.TestCase):
         self.assertEqual(len(tr.calls), 1)
 
 
+    def test_a_pause_while_waiting_gives_up(self):
+        """A demand request waiting for a token when another worker's request meets a Retry-After does
+        not sleep out the pause and then fire (the breaker would allow one probe, not every waiter):
+        it gives up at once, RateLimited, and the caller fails over."""
+        f, clock, sleep, tr = fetcher({f"{USGS}/tile/10/999/": [(429, {"Retry-After": "20"}, b"", 0)]})
+        p = nf.POLICIES[USGS]
+        for i in range(int(p.burst)):                   # the bucket is empty: the next one waits
+            f.get(url(USGS, i))
+        h = f.host(USGS)
+        hit = []
+
+        def other_worker_meets_429(s):
+            if not hit:
+                hit.append(s)
+                with self.assertRaises(nf.RateLimited):
+                    f.get(url(USGS, 999))
+            sleep(s)
+        h.bucket.sleep = other_worker_meets_429
+        n = len(tr.calls)
+        t0 = clock()
+        with self.assertRaises(nf.RateLimited):
+            f.get(url(USGS, 1000))
+        self.assertEqual(len(tr.calls), n + 1)          # the 429 alone
+        self.assertLess(clock() - t0, 1.0)
+
+
 class ColdStartTest(unittest.TestCase):
     # The first selection's requests on a cold cache (session start or teleport), from
     # test_demand.NetDemandTest (rate-limit report §2.2): Baltimore (USGS first) and Munich (EOX
@@ -224,6 +250,60 @@ class ConcurrencyTest(unittest.TestCase):
             f.get(url(EOX), kind="prefetch")
         h.sem.release()
         f.get(url(EOX), kind="prefetch")
+
+
+class TransportTest(unittest.TestCase):
+    """HttpsTransport over a fake connection class (no sockets): a failed request is sent again on a
+    fresh connection only when it went out on a reused keep-alive one (the server may have closed it
+    while idle); a fresh connection's failure is the attempt's result, so a timeout costs one timeout
+    and the retry goes through the limiter and its backoff."""
+
+    def transport(self, errors):
+        made = []
+
+        class Resp:
+            status = 200
+
+            def getheaders(self):
+                return [("Content-Type", "image/jpeg")]
+
+            def read(self):
+                return b"ok"
+
+        class Conn:
+            def __init__(self, netloc, timeout=None):
+                made.append(self)
+                self.sent = 0
+
+            def request(self, method, path, headers=None):
+                self.sent += 1
+                e = errors.pop(0) if errors else None
+                if e is not None:
+                    raise e
+
+            def getresponse(self):
+                return Resp()
+
+            def close(self):
+                pass
+        patch = mock.patch.object(nf.http.client, "HTTPSConnection", Conn)
+        patch.start()
+        self.addCleanup(patch.stop)
+        return nf.HttpsTransport(), made
+
+    def test_fresh_connection_failure_is_not_repeated(self):
+        for err in (TimeoutError("timed out"), ConnectionRefusedError("refused"), OSError("no route")):
+            with self.subTest(err=type(err).__name__):
+                tr, made = self.transport([err])
+                with self.assertRaises(OSError):
+                    tr.request(url(), {}, 20.0)
+                self.assertEqual(sum(c.sent for c in made), 1)
+
+    def test_closed_keep_alive_connection_is_reopened_once(self):
+        tr, made = self.transport([None, nf.http.client.RemoteDisconnected("closed")])
+        self.assertEqual(tr.request(url(), {}, 20.0)[0], 200)
+        self.assertEqual(tr.request(url(), {}, 20.0)[0], 200)      # reused, closed by the server: reopened
+        self.assertEqual((len(made), [c.sent for c in made]), (2, [2, 1]))
 
 
 class RetryTest(unittest.TestCase):
@@ -343,6 +423,35 @@ class BreakerTest(unittest.TestCase):
         b.release_probe()                                       # it was dropped before the network
         self.assertEqual(b.allow()[:2], (True, True))
 
+    def test_a_late_success_does_not_close_an_open_breaker(self):
+        """A request sent before the host said Retry-After answers 200 afterwards: the breaker stays
+        open (only its probe closes it), so demand keeps failing over at once instead of sleeping out
+        the pause on the emptied bucket."""
+        gate, sent = threading.Event(), threading.Event()
+        f, clock, sleep, tr = fetcher({f"{USGS}/tile/10/1/": [(429, {"Retry-After": "20"}, b"", 0)]})
+        request = tr.request
+
+        def gated(u, headers, timeout):
+            if u == url(USGS, 0):
+                sent.set()
+                gate.wait(5)
+            return request(u, headers, timeout)
+        tr.request = gated
+        out = []
+        th = threading.Thread(target=lambda: out.append(f.get(url(USGS, 0))))
+        th.start()
+        self.assertTrue(sent.wait(5))
+        with self.assertRaises(nf.RateLimited):
+            f.get(url(USGS, 1))
+        gate.set()
+        th.join(5)
+        self.assertEqual(out[0].body, b"data")                 # the late answer is still delivered
+        self.assertEqual(f.unavailable_hosts(), [USGS])
+        n = len(tr.calls)
+        with self.assertRaises(nf.HostUnavailable):
+            f.get(url(USGS, 2))
+        self.assertEqual((len(tr.calls), sleep.sleeps), (n, []))
+
     def test_failures_outside_the_window_do_not_add_up(self):
         clock = FakeClock()
         b = nf.CircuitBreaker(3, 30.0, 10.0, 900.0, clock)
@@ -419,6 +528,20 @@ class DemFailoverTest(unittest.TestCase):
         with self.assertRaises(nf.FetchFailed):
             d._download(demmod.MAPTERHORN, 10, 5, 5)
         self.assertFalse(os.path.exists(os.path.join(self.tmp.name, "mapterhorn", "10", "5", "5.404")))
+
+    def test_undecodable_tile_fails_over_and_is_not_kept(self):
+        """A 200 whose body is no image (empty, or cut short where the server sent no length): the tile
+        comes from AWS and the bad file leaves the cache (kept, it would fail every later session)."""
+        bad = terrarium_png(50.0, 512)[:120]
+        d, f, clock, tr = self.dem({MT: [(200, {}, bad, 0)], "amazonaws": [(200, {}, terrarium_png(7.0, 256), 0)]})
+        a = d.tiles([(10, 1, 2)])[(10, 1, 2)]
+        self.assertTrue(np.allclose(a, 7.0))
+        self.assertFalse(os.path.exists(os.path.join(self.tmp.name, "mapterhorn", "10", "1", "2.webp")))
+        tr.script["amazonaws"] = [(200, {}, b"", 0)]
+        with self.assertRaises(demmod.DemUnavailable):          # AWS too: no exception from PIL
+            d.tiles([(10, 3, 3)])
+        self.assertFalse(os.path.exists(os.path.join(self.tmp.name, "aws-terrarium", "11", "6", "6.png")))
+        self.assertEqual(d.stats_snapshot()["aws-terrarium:undecodable"], 1)
 
     def test_disk_hits_offline(self):
         f, clock, sleep, tr = fetcher(offline=True)

@@ -16,12 +16,14 @@ hosts get DEFAULT_POLICY):
     (uniform(0, min(max_delay, base_delay * 2**attempt)));
   * Retry-After (delta-seconds or an HTTP date, clamped to [1 s, 15 min]) on a 429/503 pauses the
     whole host: the bucket is emptied, the breaker opens for that long and the request raises
-    RateLimited at once, so no other worker keeps hitting a host that said stop;
+    RateLimited at once, so no other worker keeps hitting a host that said stop (demand requests
+    already waiting for a token give up too: their chains fail over);
   * a circuit breaker: open after breaker_threshold failed attempts within breaker_window (or one
     Retry-After), then requests raise HostUnavailable without touching the network; after the open
-    time one probe goes through (half-open): success closes it (open time back to breaker_open),
-    failure re-opens it for twice as long (up to breaker_max). Callers fail over along their own
-    chains (imagery usgs -> eox2023 -> eox2016 -> palette; DEM Mapterhorn -> AWS);
+    time one probe goes through (half-open): its success closes it (open time back to breaker_open;
+    a late success of a request sent before it opened does not), failure re-opens it for twice as
+    long (up to breaker_max). Callers fail over along their own chains (imagery usgs -> eox2023 ->
+    eox2016 -> palette; DEM Mapterhorn -> AWS);
   * daily budgets (soft: at 80 % prefetch / background stop with one warning, at 100 % demand runs
     at half rate with a warning per hour; hard: BudgetExceeded), counted per UTC day and persisted
     in <stats_dir>/<YYYY-MM-DD>.json (every STATS_FLUSH_S and at close), so a restart keeps them;
@@ -249,12 +251,15 @@ class TokenBucket:
 
     def take(self, timeout=None):
         """Take one token, sleeping until there is one; False (nothing taken) if that would take
-        longer than timeout seconds."""
+        longer than timeout seconds, or the bucket is paused (a Retry-After, also while waiting: the
+        host's breaker is open for as long, so the caller fails over instead of sleeping it out)."""
         deadline = None if timeout is None else self.clock() + timeout
         while True:
             with self.lock:
                 now = self.clock()
                 wait = self._wait(now)
+                if self.paused_until is not None:
+                    return False
                 if wait <= 0.0:
                     self.tokens -= 1.0
                     return True
@@ -336,8 +341,11 @@ class CircuitBreaker:
             self.probing = False
 
     def success(self):
-        """True if this closed the breaker."""
+        """True if this closed the breaker. A success while open is a request that started before it
+        opened (a late answer after a Retry-After): only the probe may close it."""
         with self.lock:
+            if self.state == "open":
+                return False
             self.failures.clear()
             self.probing = False
             if self.state == "closed":
@@ -390,8 +398,9 @@ class HttpsTransport:
         conns = self._local.__dict__.setdefault("conns", {})
         path = (u.path or "/") + (f"?{u.query}" if u.query else "")
         key = (u.scheme, u.netloc)
-        for retry_closed in (0, 1):
+        while True:
             conn = conns.get(key)
+            reused = conn is not None
             if conn is None:
                 cls = http.client.HTTPSConnection if u.scheme == "https" else http.client.HTTPConnection
                 conn = conns[key] = cls(u.netloc, timeout=timeout)
@@ -403,9 +412,9 @@ class HttpsTransport:
             except (http.client.HTTPException, OSError):
                 conn.close()
                 del conns[key]
-                if retry_closed:        # a fresh connection failed too
-                    raise
-                # else: the server closed the idle keep-alive connection; reconnect once
+                if not reused:          # a fresh connection failed: that is the attempt's result (the
+                    raise               # Fetcher retries through the bucket, with backoff)
+                # else: the server may have closed the idle keep-alive connection; reconnect once
 
 
 # --- per-host state ----------------------------------------------------------------------------

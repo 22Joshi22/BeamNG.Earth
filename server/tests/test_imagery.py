@@ -10,8 +10,10 @@ import os
 import re
 import sys
 import tempfile
+import threading
 import time
 import unittest
+from concurrent import futures
 from dataclasses import replace
 from pathlib import Path
 
@@ -348,6 +350,63 @@ class ChainTest(unittest.TestCase):
         self.assertEqual(set(used), {"eox2023"})
         self.assertTrue([r for r in im.requests if r[0] == "usgs"])
         self.assertGreater(im.stats_snapshot().get("usgs:deferred", 0), 0)
+
+    def test_prefetch_skips_an_open_host(self):
+        """While USGS's circuit is open render fails over to EOX, so prefetch warms the EOX tiles
+        instead of stopping at USGS (and asks USGS nothing)."""
+        im = FakeNet(self.tmp.name, self.tile, tone=0.0)
+        im.fetcher.host("basemap.nationalmap.gov").breaker.trip(60.0)
+        im.prefetch(g.EnuFrame(LAT0, LON0), 0.0, 0.0, 256.0, 64)
+        self.idle(im)
+        self.assertEqual({r[0] for r in im.requests}, {"eox2023"})
+        n = len(im.requests)
+        _, used = self.render(im)
+        self.assertEqual(set(used), {"eox2023"})
+        self.assertEqual(len(im.requests), n)                   # render found everything prefetched
+
+    def test_dropped_prefetch_refetched_once(self):
+        """Two renders waiting on the same dropped prefetch future fetch the tile once, together (the
+        dropped future may still be in _inflight: its done callback runs after the waiters wake)."""
+        gate = threading.Event()
+
+        def serve(name, z, x, y):
+            gate.wait(5)
+            return self.tile(name, z, x, y)
+        im = FakeNet(self.tmp.name, serve, chain=("eox2023",), tone=0.0)
+        key = (imagery.SOURCES["eox2023"], 14, 100, 200)
+        stale = futures.Future()
+        stale.set_exception(imagery.ImageryError("dropped", deferred=True))
+        calls = []
+        future = im._future
+
+        def counted(*a, **kw):
+            calls.append(a)
+            return future(*a, **kw)
+        im._future = counted
+        with im._lock:
+            im._inflight[key] = stale
+        out = []
+        threads = [threading.Thread(target=lambda: out.append(im._result(key, stale, "demand"))) for _ in range(2)]
+        for t in threads:
+            t.start()
+        t0 = time.monotonic()
+        while len(calls) < 2 and time.monotonic() - t0 < 5:
+            time.sleep(0.01)
+        gate.set()
+        for t in threads:
+            t.join(5)
+        self.assertEqual(len(out), 2)
+        self.assertIs(out[0], out[1])
+        self.assertEqual(len(im.requests), 1)
+
+    @staticmethod
+    def idle(im, timeout=5.0):
+        t0 = time.monotonic()
+        while time.monotonic() - t0 < timeout:
+            with im._lock:
+                if not im._inflight:
+                    return
+            time.sleep(0.01)
 
     def test_user_agent(self):
         def serve(name, z, x, y):
