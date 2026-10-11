@@ -157,6 +157,17 @@
                 </div>
               </div>
 
+              <!-- A button that acts at once (Clear cache: asks first, below) -->
+              <div v-if="item.type === 'action'" class="inline-controls">
+                <span v-if="cacheResult" class="action-result">{{ cacheResult }}</span>
+                <BngButton
+                  :accent="ACCENTS.outlined"
+                  :disabled="cacheBusy || cacheConfirm"
+                  @click="askClearCache"
+                >{{ cacheBusy ? "Clearing..." : "Clear cache" }}</BngButton>
+                <div class="option-reset"></div>
+              </div>
+
               <!-- Inline Switch for dev tools (session only, not saved) -->
               <div v-if="item.type === 'dev'" class="inline-controls">
                 <BngSwitch
@@ -227,6 +238,13 @@
               </div>
             </div>
 
+            <!-- Clear cache: the confirmation, in the page -->
+            <div v-if="item.type === 'action' && cacheConfirm" class="stacked-controls confirm-block">
+              <span class="confirm-text">Delete the downloaded elevation and imagery? What this session used and the gravity model stay; the rest is downloaded again when needed.</span>
+              <BngButton :accent="ACCENTS.main" @click="confirmClearCache">Clear</BngButton>
+              <BngButton :accent="ACCENTS.outlined" @click="cacheConfirm = false">Cancel</BngButton>
+            </div>
+
             <!-- Short help under a control (always shown, not only on hover) -->
             <div v-if="item.note" class="option-note">{{ item.note }}</div>
 
@@ -275,6 +293,11 @@ const confirmDeleteId = ref(null)
 const placesMsg = ref("")
 const placesMsgError = ref(false)
 let confirmTimer = null
+const cacheConfirm = ref(false) // Clear cache: the confirmation is showing
+const cacheBusy = ref(false)    // Clear cache: sent, waiting for the server's answer
+const cacheResult = ref("")     // "Freed 1.2 GB" / an error
+let cacheClearsAt = 0           // status.cache.clears when the clear was sent
+let cacheSentAt = 0
 let lastWriteAt = 0 // a poll answered just after a uiSet may carry the value from before it
 
 // Mirrors lua/ge/extensions/beamngEarth/settings.lua SCHEMA (the Lua side validates and clamps).
@@ -323,6 +346,15 @@ const settingsSchema = [
         options: [ { label: "Bottom left", value: "bottom-left" }, { label: "Bottom right", value: "bottom-right" }, { label: "Top left", value: "top-left" }, { label: "Top right", value: "top-right" } ] },
       { id: "creditsSize", type: "select", default: "small", name: "Data credits size", desc: "Text size of the data credits: small (11 px) or normal (14 px).",
         options: [ { label: "Small", value: "small" }, { label: "Normal", value: "normal" } ] },
+    ],
+  },
+  {
+    name: "Download cache",
+    items: [
+      { id: "cacheUsage", type: "info", name: "Download cache", desc: "Elevation and imagery the server downloaded and keeps on disk (~/.cache/beamng-earth), so revisited places load without downloading again: the space in use, the size limit and the number of files." },
+      { id: "cacheCapGb", type: "select", default: "20", name: "Download cache size", desc: "The most the download cache may use. Over the limit, the server removes the files used longest ago (every few minutes, down to 90 % of the limit); never what this session used in the last hour or the gravity model. Kept by the server for its next start.",
+        options: [ { label: "5 GB", value: "5" }, { label: "10 GB", value: "10" }, { label: "20 GB", value: "20" }, { label: "50 GB", value: "50" }, { label: "Unlimited", value: "unlimited" } ] },
+      { id: "cacheClear", type: "action", name: "Clear cache", desc: "Deletes the downloaded elevation and imagery (and the server's de-shadowing and colour-seam data). What this session used and the gravity model stay. Places are downloaded again when you visit them." },
     ],
   },
   {
@@ -394,6 +426,7 @@ function infoValue(item) {
   if (item.id === "gravity") return s.gravity || "-"
   if (item.id === "deshadow") return s.deshadow || "off"
   if (item.id === "colormatch") return s.colormatch || "off"
+  if (item.id === "cacheUsage") return (s.cache && s.cache.line) || "-"
   return ""
 }
 
@@ -423,6 +456,14 @@ function applyState(state) {
   if (!state) return
   if (state.settings && Date.now() - lastWriteAt > 1000) config.value = { ...defaultSettings, ...state.settings }
   if (state.status) status.value = state.status
+  const c = status.value.cache
+  if (cacheBusy.value && c && c.clears > cacheClearsAt) { // the server's answer to our clear
+    cacheBusy.value = false
+    cacheResult.value = `Freed ${c.clearedText || "0 MB"}`
+  } else if (cacheBusy.value && Date.now() - cacheSentAt > 120000) { // a server without the cache, or gone
+    cacheBusy.value = false
+    cacheResult.value = "No answer from the server"
+  }
   if (state.dev) dev.value = state.dev
 }
 
@@ -463,6 +504,21 @@ function onDevChange(item, val) {
 function applyDevPreset(name) {
   engineLua(`beamngEarth_settings and beamngEarth_settings.uiDevPreset(${JSON.stringify(name)}) or nil`, state => {
     if (state) dev.value = state
+  })
+}
+
+// Clear cache: the button asks first (cacheConfirm), Clear sends it; the poll sees the answer
+function askClearCache() {
+  cacheResult.value = ""
+  cacheConfirm.value = true
+}
+
+function confirmClearCache() {
+  cacheConfirm.value = false
+  cacheClearsAt = (status.value.cache && status.value.cache.clears) || 0
+  engineLua("beamngEarth_settings and beamngEarth_settings.uiCacheClear() or nil", res => {
+    if (res && res.ok) { cacheBusy.value = true; cacheSentAt = Date.now() }
+    else cacheResult.value = (res && res.error) || "mod not loaded"
   })
 }
 
@@ -802,6 +858,20 @@ details[open] > summary.category-title {
     color: #ccc;
     line-height: 1.35;
     white-space: pre-wrap;
+  }
+
+  .action-result {
+    font-size: 0.85rem;
+    color: #ccc;
+  }
+
+  .confirm-block {
+    .confirm-text {
+      flex: 1 1 auto;
+      font-size: 0.85rem;
+      color: #ccc;
+      line-height: 1.3;
+    }
   }
 
   .option-note {

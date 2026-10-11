@@ -512,7 +512,7 @@ class DemFailoverTest(unittest.TestCase):
         n = len(tr.calls)
         self.assertIsNone(d._download(demmod.MAPTERHORN, 10, 1, 2))     # remembered
         self.assertEqual(len(tr.calls), n)
-        old = time.time() - nf.POLICIES[MT].miss_ttl - 60
+        old = clock() - nf.POLICIES[MT].miss_ttl - 60      # the fetcher's wall clock (T0), not the real one
         os.utime(miss, (old, old))                              # 90 days old (or an old-style marker)
         tr.script[MT] = [(200, {}, mt, 0)]
         self.assertEqual(d._download(demmod.MAPTERHORN, 10, 1, 2), mt)  # asked again: Mapterhorn has lidar now

@@ -6,6 +6,7 @@
 --   beamngEarth_settings.uiSet(key, value)     -> { ok, value, error } (validated, saved, applied)
 --   beamngEarth_settings.uiReset()             every setting back to its default
 --   beamngEarth_settings.uiDevSet(name, on)    beamngEarth_settings.uiDevPreset(name)  (dev tools)
+--   beamngEarth_settings.uiCacheClear()         -> { ok, error } (the server's download cache)
 --   beamngEarth_settings.setPageExists(true)   (index.js, once the button is registered)
 --   beamngEarth_settings.uiPlaces() / uiPlaceAddHere(name) / uiPlaceAdd(name, "lat, lon") /
 --     uiPlaceRename(id, name) / uiPlaceDelete(id) / uiPlaceGo(id) / uiPlaceGoText("lat, lon") /
@@ -49,12 +50,15 @@ M.SCHEMA = {
   creditsVisible = { kind = 'bool', default = true, label = 'Data credits on screen' },
   creditsCorner = { kind = 'enum', default = 'bottom-left', values = credits.CORNERS, label = 'Data credits corner' },
   creditsSize = { kind = 'enum', default = 'small', values = { 'small', 'normal' }, label = 'Data credits size' },
+  -- the server's download cache (server cache.py): its size cap in GB, sent on every hello and change
+  cacheCapGb = { kind = 'enum', default = '20', values = { '5', '10', '20', '50', 'unlimited' },
+    label = 'Download cache size' },
   devOutlineKm = { kind = 'number', default = 3, min = 0.5, max = 20, label = 'Dev outlines radius (km)' },
   devMapKm = { kind = 'number', default = 10, min = 1, max = 80, label = 'Dev mini-map radius (km)' },
 }
 M.ORDER = { 'rebaseDistance', 'viewDistanceMode', 'viewDistanceKm', 'hazeStrength', 'skyMode', 'clouds',
-  'weatherMode', 'realGravity', 'hudVisible', 'creditsVisible', 'creditsCorner', 'creditsSize', 'devOutlineKm',
-  'devMapKm' }
+  'weatherMode', 'realGravity', 'hudVisible', 'creditsVisible', 'creditsCorner', 'creditsSize', 'cacheCapGb',
+  'devOutlineKm', 'devMapKm' }
 
 -- Old values that still load (and set) as their replacement, without a warning: 'auto' weather
 -- (real unless BWM_Weather was changing the weather) is Real now, which switches itself to Manual
@@ -62,6 +66,8 @@ M.ORDER = { 'rebaseDistance', 'viewDistanceMode', 'viewDistanceKm', 'hazeStrengt
 M.MIGRATE = { weatherMode = { auto = 'real' } }
 
 local values = {}       -- the settings in use (always complete and valid)
+local cachePolls = 0    -- uiState calls (the cache usage is asked every CACHE_POLL-th)
+M.CACHE_POLL = 5
 local pageFlag = false  -- index.js said the page exists
 local appliedView = nil -- last view distance written to LevelInfo (m)
 
@@ -129,6 +135,27 @@ function M.save(path)
 end
 
 function M.get(key) return values[key] end
+
+-- The download cache's cap for the server: GB, 0 = unlimited.
+function M.cacheCapGb() return tonumber(values.cacheCapGb) or 0 end
+
+-- bytes as the page shows them: "350 MB", "1.2 GB", "20 GB" (decimal units, as the cap)
+local function size(b, whole)
+  if b < 0.1e9 then return string.format('%d MB', math.floor(b / 1e6 + 0.5)) end
+  if whole then return string.format('%g GB', math.floor(b / 1e8 + 0.5) / 10) end
+  return string.format('%.1f GB', b / 1e9)
+end
+
+-- The page's "Download cache" line from the server's 'cache' message (core.cacheState()).
+function M.cacheLine(c)
+  if type(c) ~= 'table' then return 'no information from the server' end
+  local used = size(c.usedBytes or 0)
+  if not c.ready then return 'counting files... (' .. used .. ' so far)' end
+  local files = string.format('%d files', c.files or 0)
+  if not c.managed then return used .. ', ' .. files .. ' (a newer version\'s cache: left alone)' end
+  if (c.capBytes or 0) <= 0 then return used .. ', ' .. files .. ' (no limit)' end
+  return used .. ' of ' .. size(c.capBytes, true) .. ', ' .. files
+end
 
 function M.getAll()
   local t = {}
@@ -198,6 +225,10 @@ M.APPLY = {
   creditsVisible = function(v) credits.setEnabled(v) end,
   creditsCorner = function(v) credits.setCorner(v) end,
   creditsSize = function(v) credits.setSize(v) end,
+  cacheCapGb = function()
+    local core = ext('beamngEarth_core')
+    if core and core.cacheSetCap then core.cacheSetCap(M.cacheCapGb()) end
+  end,
   devOutlineKm = function(v)
     local dev = ext('beamngEarth_dev')
     if dev and dev.setParam then dev.setParam('outlineKm', v) end
@@ -288,6 +319,13 @@ function M.uiState()
   status.gravity = w and w.gravityLine and w.gravityLine() or nil
   status.deshadow = st and st.deshadow or 'off'
   status.colormatch = st and st.colormatch or 'off'
+  -- the download cache: the server's last numbers, fresh ones asked every CACHE_POLL-th call (the page
+  -- polls every 2 s while it is open)
+  cachePolls = cachePolls + 1
+  if core and core.cacheQuery and cachePolls % M.CACHE_POLL == 1 then core.cacheQuery() end
+  local c = core and core.cacheState and core.cacheState() or nil
+  status.cache = { line = M.cacheLine(c), clears = c and c.clears or 0, clearedBytes = c and c.clearedBytes or nil,
+    clearedText = c and c.clearedBytes and size(c.clearedBytes) or nil }
   local schema = {}
   for _, k in ipairs(M.ORDER) do
     local s = M.SCHEMA[k]
@@ -305,6 +343,16 @@ function M.uiReset()
   M.save()
   M.applyAll()
   return M.getAll()
+end
+
+-- "Clear cache" (the page asked for confirmation): the server removes every download but this
+-- session's and the gravity model; its answer (core.cacheState().clears + 1) carries the bytes freed.
+function M.uiCacheClear()
+  local core = ext('beamngEarth_core')
+  if not (core and core.cacheClear) then return { ok = false, error = 'mod not loaded' } end
+  local sent, why = core.cacheClear()
+  if not sent then return { ok = false, error = why or 'server not connected' } end
+  return { ok = true }
 end
 
 function M.uiDevSet(name, on)

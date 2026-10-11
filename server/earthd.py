@@ -7,6 +7,7 @@
                              [--cells 32|64] [--tex 256,256,256,512] [--block 1024|512] [--horizon]
                              [--deshadow off|lambert|full] [--colormatch off|s2]
                              [--weather on|off] [--gravity on|off] [--offline] [--credits on|off]
+                             [--cache-cap GB]
 
 Listens on 127.0.0.1 for the mod, builds terrain-block heightmaps (1024² on a world-locked
 2 m lattice, 256 m-aligned centres; in mesh near-visual mode the block is physics only) and a
@@ -36,6 +37,12 @@ netfetch.Fetcher (per-host rate limits, priorities, retries, circuit breakers wi
 the source chains, daily budgets in <cache-dir>/netstats/, one summary line a minute in the log).
 --offline serves the disk caches only. While a host is unreachable, or tiles fell back to the
 palette, every status text carries a note ("Offline - using cached data", "Degraded: ...").
+
+Download cache (cache.py, docs/ROADMAP.md "Caching"): the raw downloads and region caches under
+<cache-dir> are capped (--cache-cap GB, default the last cap the mod's settings page set, else 20; 0 =
+unlimited); least recently used files go in a background thread, never what this session used within
+the hour, never the gravity model or netstats/. The mod's page shows the usage ('cache' message) and
+sets the cap or clears the cache ('cache' from the mod).
 """
 import os
 
@@ -59,6 +66,7 @@ from dataclasses import dataclass, field, replace  # noqa: E402
 
 import numpy as np  # noqa: E402
 
+import cache as cachemod  # noqa: E402
 import cdae  # noqa: E402
 import colormatch as colormatchmod  # noqa: E402
 import credits as creditsmod  # noqa: E402
@@ -322,7 +330,7 @@ class Server:
                  imagery=imagerymod.DEFAULT_CHAIN, near_visual="mesh", tex_near=TEX_NEAR, tex_far=TEX_FAR,
                  tone=1.0, near_radii=None, status_interval=STATUS_INTERVAL, cells=CELLS_DEFAULT, tex=None,
                  block=BLOCK_DEFAULT, horizon=False, deshadow="off", weather=None, gravity=None, net=None,
-                 colormatch="off", credits=None):
+                 colormatch="off", credits=None, cache=None):
         """kfun: K(L) for every level (default: the layout's K table); near_radii: the min-level
         radii (default: the layout's); cells: 32 (v1.3.1) or 64 (M1, mesh mode only); tex: texture
         px per level from the finest (default: tex_near, tex_near, tex_far with 32 cells,
@@ -331,7 +339,9 @@ class Server:
         far field out to the line-of-sight horizon (mesh mode only; `radius` is then unused); net:
         the netfetch.Fetcher every download goes through (main_async passes the command line's; None =
         one of its own, no statistics file); colormatch: --colormatch (off, or s2: the colour-seam
-        feather on the USGS tiles)."""
+        feather on the USGS tiles); cache: the download cache's cache.Cache (last use per file, the
+        size cap, the page's 'cache' messages; None = no bookkeeping and no 'cache' message, Server()'s
+        default)."""
         self.sid = time.strftime("%Y%m%d-%H%M%S-") + secrets.token_hex(2)
         root = os.path.join(user_dir, "temp", "beamngEarth")
         self._clean_old_sessions(root, os.path.join(user_dir, *CDAE_ROOT))
@@ -420,6 +430,12 @@ class Server:
         self.gravity = gravity
         # On-screen data credits (credits.py): a creditsmod.Credits, or None (--credits off; Server()'s default)
         self.credits = credits
+        # The download cache's bookkeeping (cache.py): every producer reports its disk hits and writes
+        self.cache = cache
+        if cache is not None:
+            for producer in (self.dem, self.imagery, self.deshadow, self.colormatch):
+                if producer is not None:
+                    producer.disk = cache
 
     @staticmethod
     def _clean_old_sessions(root, cdae_root):
@@ -1082,6 +1098,8 @@ class Connection:
                 self.send(self.credits.msg)
             if self.s.net_note():                   # --offline / hosts down: say so at once
                 self.status(self.last_status)
+            if self.s.cache is not None:            # the download cache's usage (the settings page)
+                self.send(self.s.cache.message())
         elif kind == "prepare_anchor":
             self.spawn(self.prepare_anchor(msg))
         elif kind == "prepare_terrain":
@@ -1092,8 +1110,31 @@ class Connection:
             self.commit_terrain(msg)
         elif kind == "pose":
             self.on_pose(msg)
+        elif kind == "cache":
+            self.on_cache(msg)
         else:
             log.debug("ignoring message type %r", kind)
+
+    def on_cache(self, msg):
+        """The settings page: capGb sets the cap (0 = unlimited), clear: true empties the cache (but this
+        session's files and the gravity model) on an executor; every 'cache' gets the usage back (after a
+        clear, with clearedBytes). Without a Cache (Server()'s default): ignored."""
+        cache = self.s.cache
+        if cache is None:
+            return
+        cap = msg.get("capGb")
+        if cap is not None:
+            if isinstance(cap, bool) or not isinstance(cap, (int, float)):
+                raise ValueError(f"capGb {cap!r}: a number")
+            if cache.set_cap(cap):
+                log.info("cache: cap %s (from the mod)", f"{cap:g} GB" if cap else "unlimited")
+        if msg.get("clear") is True:
+            async def run():
+                _, freed = await self.loop.run_in_executor(None, cache.clear)
+                self.send(cache.message(cleared=freed))
+            self.spawn(run())
+        else:
+            self.send(cache.message())
 
     # --- anchors and terrain ------------------------------------------------
     def _progress(self):
@@ -1579,6 +1620,7 @@ async def main_async(args):
         ml = farfield.MESH_MIN_LEVEL[args.cells]
         radii = {ml: args.near_radii[0], ml + 1: args.near_radii[1]}
     net = netfetch.Fetcher(stats_dir=os.path.join(args.cache_dir, "netstats"), offline=args.offline)
+    disk = cachemod.Cache(args.cache_dir, args.cache_cap)
     server = Server(args.user_dir, args.cache_dir, args.workers, kfun, args.hysteresis, args.far_radius, fmt,
                     imagery=args.imagery, near_visual=args.near_visual, tex_near=args.tex_near,
                     tex_far=args.tex_far, tone=args.tone, near_radii=radii,
@@ -1588,7 +1630,7 @@ async def main_async(args):
                              if args.weather == "on" else None),
                     gravity=(gravitymod.Provider(os.path.join(args.cache_dir, "gravity"), net=net)
                              if args.gravity == "on" else None), net=net,
-                    credits=creditsmod.Credits() if args.credits == "on" else None)
+                    credits=creditsmod.Credits() if args.credits == "on" else None, cache=disk)
 
     async def net_log():
         while True:
@@ -1609,7 +1651,8 @@ async def main_async(args):
           f"imagery: {','.join(args.imagery) if args.imagery else 'off'}"
           f"{'' if server.deshadow is None else ', deshadow: ' + server.deshadow.mode}"
           f"{'' if server.colormatch is None else ', colormatch: ' + server.colormatch.mode}, "
-          f"weather: {args.weather}, gravity: {args.gravity}, credits: {args.credits}"
+          f"weather: {args.weather}, gravity: {args.gravity}, credits: {args.credits}, "
+          f"cache cap: {f'{disk.cap / cachemod.GB:g} GB' if disk.cap else 'unlimited'}"
           f"{', OFFLINE' if args.offline else ''})",
           flush=True)
     try:
@@ -1618,6 +1661,16 @@ async def main_async(args):
     finally:
         ticker.cancel()
         net.close()                 # today's request counters
+        disk.close()                # the cache's last uses
+
+
+def parse_cache_cap(text):
+    """--cache-cap: GB >= 0 (0 = unlimited)."""
+    try:
+        cachemod.cap_bytes(text)
+    except ValueError as e:
+        raise argparse.ArgumentTypeError(str(e)) from None
+    return float(text)
 
 
 def parse_tex_px(text):
@@ -1712,6 +1765,10 @@ def main():
                     help="'credits' messages: the imagery / elevation / weather sources of the tiles within 2 km "
                          "of the player and of the far field, for the mod's on-screen data credits (on change, "
                          "at most once a second)")
+    ap.add_argument("--cache-cap", type=parse_cache_cap, default=None, metavar="GB",
+                    help="size cap of the download cache in GB (0 = unlimited; default: the last cap set on the "
+                         f"mod's settings page, else {cachemod.DEFAULT_CAP_GB:g}); least recently used files go, "
+                         "never what this session used within the hour, the gravity model or netstats/")
     ap.add_argument("-v", "--verbose", action="store_true")
     args = ap.parse_args()
     args.cells = resolve_cells(args.cells, args.near_visual)

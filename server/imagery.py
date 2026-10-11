@@ -41,6 +41,7 @@ from dataclasses import dataclass
 import numpy as np
 from PIL import Image
 
+import cache as cachemod
 import dem as demmod
 import netfetch
 
@@ -171,6 +172,8 @@ _SAME = object()                    # colour-match LRU marker: the tile is uncha
 
 
 class Imagery:
+    disk = cachemod.NONE    # the server's cache.Cache (last use per file, the size cap); set by earthd
+
     def __init__(self, cache_dir, chain=DEFAULT_CHAIN, fetch_workers=FETCH_WORKERS, mem_tiles=MEM_TILES,
                  tone=1.0, deshadow=None, colormatch=None, fetcher=None):
         """deshadow: an optional deshadow.Deshadow (--deshadow lambert|full): _mosaic relights its
@@ -237,14 +240,15 @@ class Imagery:
             os.remove(self._paths(src, z, x, y)[0])
         except OSError:
             pass
+        self.disk.forget(self._paths(src, z, x, y)[0])
 
     def _download(self, src, z, x, y):
         """Raw tile bytes from the disk cache or the network; None for a (remembered) 404."""
         path, miss = self._paths(src, z, x, y)
-        if os.path.exists(path):
+        data = self.disk.read(path)             # None: not cached (or evicted a moment ago)
+        if data is not None:
             self._count(src.name + ":disk")
-            with open(path, "rb") as f:
-                return f.read()
+            return data
         url = src.url.format(z=z, x=x, y=y)
         if self.fetcher.miss_alive(miss, url):
             return None
@@ -254,6 +258,7 @@ class Imagery:
         except netfetch.NotFound:               # outside the source's coverage
             os.makedirs(os.path.dirname(miss), exist_ok=True)
             open(miss, "wb").close()            # (re)written: its mtime starts the marker's TTL
+            self.disk.wrote(miss, 0)
             self._count(src.name + ":404")
             return None
         except netfetch.FetchError as e:
@@ -270,8 +275,10 @@ class Imagery:
         with open(tmp, "wb") as f:
             f.write(data)
         os.replace(tmp, path)
+        self.disk.wrote(path, len(data))
         if os.path.exists(miss):                # an expired marker: the source has data there now
             os.remove(miss)
+            self.disk.forget(miss)
         self._count(src.name + ":net")
         return data
 

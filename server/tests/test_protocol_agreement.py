@@ -32,7 +32,11 @@ docs/V1_2_DESIGN.md §7 as amended by §12; server/README.md documents the same 
     way), sent in the session by a provider on the degree-36 EGM2008 fixture; weather.lua reads it;
   - data credits (server/credits.py, docs/DEVTOOLS.md "Data credits overlay"): the 'credits' message
     (additive the same way; --credits on, Server()'s default sends none), sent in the session with a
-    Credits object; core.lua hands it to credits.lua, which reads near / far.
+    Credits object; core.lua hands it to credits.lua, which reads near / far;
+  - the download cache (server/cache.py, docs/ROADMAP.md "Caching"): 'cache' both ways (additive the
+    same way; Server()'s default has no Cache and sends none): the mod's size cap / clear / usage request
+    and the server's usage answer (clearedBytes after a clear), exercised in the session; the settings
+    page's cap values are the settings schema's.
 """
 import json
 import math
@@ -52,6 +56,7 @@ from PIL import Image
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import cache as cachemod  # noqa: E402
 import cdae  # noqa: E402
 import credits as creditsmod  # noqa: E402
 import earthd  # noqa: E402
@@ -86,6 +91,9 @@ MOD_TO_SERVER = {
              "lon": F(NUM), "speed": F(NUM), "cam": F(dict, OPT),
              # previous anchors whose tile objects the mod still has (an empty Lua table may encode as {})
              "held": F((list, dict), OPT)},
+    # the download cache (cache.py; additive): the page's size cap (GB, 0 = unlimited), a clear, or
+    # neither (fresh usage numbers); always answered with a 'cache'
+    "cache": {"capGb": F(NUM, OPT), "clear": F(bool, OPT)},
 }
 CAM = {"x", "y", "z", "fx", "fy", "fz", "fovDeg"}
 TERRAIN = {"cx": F(NUM), "cy": F(NUM), "heightmap": F(str), "size": F(int), "squareSize": F(NUM),
@@ -127,6 +135,9 @@ SERVER_TO_MOD = {
     "gravity": {"v": F(int), "g": F(NUM), "lat": F(NUM), "lon": F(NUM), "h": F(NUM), "source": F(str)},
     # data credits for the tiles around the player (credits.py; additive, protocol 4, --credits on)
     "credits": {"v": F(int), "near": F(str), "far": F(str), "ids": F(list), "farIds": F(list)},
+    # the download cache's usage (cache.py; additive, with a Cache only): after hello and every mod 'cache'
+    "cache": {"v": F(int), "usedBytes": F(int), "capBytes": F(int), "files": F(int), "ready": F(bool),
+              "managed": F(bool), "clearedBytes": F(int, OPT)},
 }
 WEATHER_NESTED = {"cover": {"total", "low", "mid", "high"}, "wind": {"ms", "fromDeg", "gustMs"},
                   "aloft": {"ms", "fromDeg"}}
@@ -245,6 +256,30 @@ class CreditsAgreementTest(unittest.TestCase):
         settings = (LUA / "settings.lua").read_text()
         self.assertRegex(settings, r"creditsVisible = \{ kind = 'bool', default = true")
         self.assertIn("M.onUiChangedState = onUiChangedState", core)
+
+
+class CacheAgreementTest(unittest.TestCase):
+    def test_cache_in_the_mod(self):
+        """core.lua sends the page's cap on hello (settings.cacheCapGb) and keeps the server's 'cache'
+        for the page (cleared on hello / disconnect); settings.lua's cap values are the page's options
+        and the page's default is the server's."""
+        core = (LUA / "core.lua").read_text()
+        on_msg = lua_function(core, "onMessage")
+        hello = on_msg[on_msg.index("t == 'hello'"):on_msg.index("t == 'status'")]
+        self.assertIn("net.send({ type = 'cache', capGb = settings.cacheCapGb() })", hello)
+        self.assertIn("cacheInfo = nil", hello)
+        self.assertIn("cacheInfo = nil", on_msg[on_msg.index("t == '_disconnected'"):on_msg.index("t == 'hello'")])
+        self.assertIn("cacheInfo = { usedBytes = tonumber(msg.usedBytes)", on_msg[on_msg.index("t == 'cache'"):])
+        settings = (LUA / "settings.lua").read_text()
+        m = re.search(r"cacheCapGb = \{ kind = 'enum', default = '(\w+)', values = \{ ([^}]*) \}", settings)
+        values = re.findall(r"'(\w+)'", m.group(2))
+        self.assertEqual((m.group(1), values), ("20", ["5", "10", "20", "50", "unlimited"]))
+        self.assertEqual(float(m.group(1)), cachemod.DEFAULT_CAP_GB, "the page's default is the server's")
+        page = (LUA.parents[3] / "ui" / "ui-vue" / "mods" / "beamngEarth" / "EarthSettings.vue").read_text()
+        row = re.search(r'\{ id: "cacheCapGb", type: "select", default: "(\w+)".*?options: \[(.*?)\] \}', page, re.S)
+        self.assertEqual(row.group(1), m.group(1))
+        self.assertEqual(re.findall(r'value: "(\w+)"', row.group(2)), values)
+        self.assertIn("beamngEarth_settings.uiCacheClear()", page)
 
 
 class HorizonAgreementTest(unittest.TestCase):
@@ -519,6 +554,8 @@ class ServerMessagesTest(test_server.ServerHarness):
         # the synthetic DEM's tiles as if Mapterhorn served them (dem.Dem.served): tiles with sources,
         # so 'credits' goes out (the weather alone sends none)
         self.server.dem.served = types.SimpleNamespace(get=lambda key: creditsmod.demmod.MAPTERHORN["name"])
+        self.server.cache = cachemod.Cache(os.path.join(self.tmp.name, "cache"), 20, start=False)
+        self.server.cache.scan()
 
     def check(self, m):
         kind = m["type"]
@@ -588,6 +625,10 @@ class ServerMessagesTest(test_server.ServerHarness):
             self.assertFalse(set(m["ids"]) & set(m["farIds"]), m)
             self.assertEqual(m["near"], creditsmod.line(m["ids"]))
             self.assertEqual(m["far"], creditsmod.line(m["farIds"], far=True))
+        if kind == "cache":
+            self.assertEqual(m["v"], cachemod.MSG_VERSION)
+            self.assertTrue(m["ready"] and m["managed"], m)
+            self.assertIn(m["capBytes"], (20_000_000_000, 10_000_000_000))
         if kind == "far_tile" and "material" in m:
             self.assertTrue("texture" in m and "detail" in m, m)
             self.assertRegex(m["texture"], r"^/temp/beamngEarth/[^/]+/[^/]+\.dds$")
@@ -618,6 +659,11 @@ class ServerMessagesTest(test_server.ServerHarness):
         c.send({"type": "hello", "protocol": modsim.CORE["PROTOCOL"], "format": modsim.CORE["FORMAT"],
                 "modVersion": "0.4.0"})
         until(lambda m: m["type"] == "hello")
+        until(lambda m: m["type"] == "cache")           # the download cache's usage follows hello
+        c.send({"type": "cache", "capGb": 10})          # the page's size cap ...
+        self.assertEqual(until(lambda m: m["type"] == "cache")["capBytes"], 10_000_000_000)
+        c.send({"type": "cache", "clear": True})        # ... and "Clear cache"
+        self.assertIn("clearedBytes", until(lambda m: m["type"] == "cache"))
         c.send({"type": "prepare_anchor", "requestId": 1, "lat": test_server.LAT, "lon": test_server.LON,
                 "cx": 0, "cy": 0})
         a = until(lambda m: m["type"] == "anchor_ready")

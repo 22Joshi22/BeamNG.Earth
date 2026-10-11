@@ -70,6 +70,7 @@ from collections import OrderedDict
 import numpy as np
 from PIL import Image
 
+import cache as cachemod
 from deshadow import SRGB2LIN, down, lonlat_of_px, luma, to_srgb
 
 log = logging.getLogger("earthd.colormatch")
@@ -904,6 +905,7 @@ def _atomic_write(path, write):
 class ColorMatch:
     """Seams and fields of the regions (one background thread) and the per-tile correction for one
     Imagery (bind()). region_z: the region zoom (12; tests use smaller regions)."""
+    disk = cachemod.NONE    # the server's cache.Cache (last use per file, the size cap); set by earthd
     PENDING = PENDING
     refs = REFS                         # the reference layers (imagery credits them)
 
@@ -996,6 +998,7 @@ class ColorMatch:
             except OSError:
                 m = None
             if m is not None:
+                self.disk.used(none)
                 return (EMPTY, m) if kind == "field" else (_seams_empty(m.get("stats", ())), m)
         if not os.path.exists(npz):
             return None
@@ -1007,6 +1010,7 @@ class ColorMatch:
                 a = {k: f[k] for k in f.files if k != "meta"}
         except (OSError, ValueError, KeyError):
             return None
+        self.disk.used(npz)
         if kind == "field":
             return Field(self.n, a["C"], a.get("sid"), a.get("line"), a.get("cA"), a.get("cB"), m), m
         s = _seams_empty(m.get("stats", ()))
@@ -1018,9 +1022,11 @@ class ColorMatch:
         m = dict(self.meta, **info)
         if (value is EMPTY) if kind == "field" else len(value["y"]) == 0:
             _atomic_write(none, lambda f: f.write(json.dumps(m).encode()))
+            self.disk.wrote(none)
             return
         arrays = value.arrays() if kind == "field" else {k: v for k, v in value.items() if k != "stats"}
         _atomic_write(npz, lambda f: np.savez_compressed(f, meta=np.array(json.dumps(m)), **arrays))
+        self.disk.wrote(npz)
 
     @staticmethod
     def _lru_put(od, k, v, size):

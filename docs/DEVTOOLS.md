@@ -211,3 +211,16 @@ player right now, e.g.:
   "Going to ..." show in a line at the top. BngInput fields (`v-bng-text-input`, so typing does not
   drive the car), BngButton text buttons, no glyphs, no ::before / ::after. The 2 s poll also
   refreshes the lists (`uiPlaces`), so a teleport from the console or the level start shows up.
+- Download cache (2026-10-11, branch feature/cache-cap; server `cache.py`, docs/ROADMAP.md "Caching"):
+  a "Download cache" section on the page with the usage line ("1.2 GB of 20 GB, 34877 files"; "counting
+  files..." while the server's start-up walk runs, "no information from the server" without a
+  server or with one that has no cache), the size cap (select: 5, 10, 20, 50 GB, Unlimited; setting
+  `cacheCapGb`, default 20 = the server's default) and a "Clear cache" button that asks in the page
+  first (a text with Clear / Cancel buttons, no browser dialog), then shows "Clearing..." and "Freed
+  1.1 GB" (or "No answer from the server" after 2 min). The cap goes to the server after every `hello`
+  and on change (`core.cacheSetCap`; the server keeps it for its next start); the page's 2 s poll asks
+  the server for fresh numbers every 5th poll (`core.cacheQuery`, `settings.CACHE_POLL`); the server's
+  `cache` message is kept in core.lua (`core.cacheState()`, outliving levels, forgotten on a disconnect
+  or a new hello). Bridge: `beamngEarth_settings.uiCacheClear()` -> `{ ok, error }` (error "server not connected", or
+  "the server has no download cache" when it sent no `cache` after its hello: no answer would come);
+  `uiState().status.cache` = `{ line, clears, clearedBytes, clearedText }`.
