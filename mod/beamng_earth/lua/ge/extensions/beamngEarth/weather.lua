@@ -15,6 +15,10 @@
 -- the engine's sea-level temperature every frame; the engine lowers it with height itself). The
 -- real UTC offset goes to beamngEarth_sky (its clock), and the cloud base above the ground too (sky
 -- owns the layer's ground-following altitude and the rebase weather-offset shift).
+-- The sun dims under a thick cloud deck (ScatterSky.brightness, the direct light only: the game's
+-- clouds cast no shadows, so under overcast the car kept a sharp sun shadow; in-game 2026-10-10 the
+-- auto exposure keeps the scene's brightness while the shadows fade). The level's own value is put
+-- back when the weather stops driving it (manual mode, a manual cloud change, a mission).
 -- Gravity follows the player (GRAVITY_ENABLED, independent of the mode): the server's 'gravity'
 -- message (server/gravity.py: WGS84 normal + EGM2008 anomaly at the player, every 2 km / 200 m of
 -- height) with the free-air gradient for the height since; normal gravity by latitude and height
@@ -82,6 +86,10 @@ M.SNOW_NAME = 'bngEarthSnow'
 M.RAIN_POOL, M.SNOW_POOL = 4000, 3000                       -- drops (probe: 9000 cost +0.2 ms)
 M.GUSTS = true
 M.GUST_TAU_S, M.GUST_STD = 4, 0.4
+-- Sun under the deck: brightness factor 1 - SUN_DIM_MAX * deck^SUN_DIM_EXP (a few clouds barely
+-- matter, overcast leaves 0.3; probe at noon: 0.35 made the car's shadow faint).
+M.SUN_DIM_MAX, M.SUN_DIM_EXP = 0.7, 1.5
+M.SUN_EPS = 0.02           -- write only when the factor moved this much (each write is a postApply)
 M.GRAVITY_ENABLED = true
 M.GRAVITY_EPS = 1e-4       -- m/s^2; ~30 m of climb (setGravity queues Lua into every vehicle)
 M.GRAVITY_CHECK_S = 1
@@ -116,6 +124,11 @@ function M.coverageFor(f, curve)
     if f <= b[1] then return a[2] + (b[2] - a[2]) * (f - a[1]) / (b[1] - a[1]) end
   end
   return curve[#curve][2]
+end
+
+-- Sky fraction of the deck (0..1) -> the sun's brightness factor.
+function M.sunDimFor(deck)
+  return 1 - M.SUN_DIM_MAX * clamp(tonumber(deck) or 0, 0, 1) ^ M.SUN_DIM_EXP
 end
 
 -- High cloud cover (%) -> cirrusCoverage, cirrusDensity.
@@ -197,6 +210,7 @@ function M.targets(msg)
   local ms = tonumber(wind.ms) or 0
   return {
     coverage = M.coverageFor(deck),
+    sunDim = M.sunDimFor(deck),
     cirrusCoverage = cc, cirrusDensity = cd,
     cloudAboveKm = clamp((tonumber(msg.baseAglM) or 1800) / 1000, M.CLOUD_ABOVE_MIN_KM, M.CLOUD_ABOVE_MAX_KM),
     cloudDirX = cx, cloudDirY = cy,
@@ -276,6 +290,7 @@ local function resetState()
     temp = { at = -math.huge, value = nil, method = nil }, dirtyFrames = 0,
     precip = { [M.RAIN_NAME] = {}, [M.SNOW_NAME] = {} },
     notified = false, bwm = false, inOurLevel = false,
+    sun = { base = nil, applied = nil }, -- the level's ScatterSky.brightness, the value we wrote
   }
 end
 resetState()
@@ -340,6 +355,8 @@ local function readEngine(e, tgt)
   local cw = e.getCloudWindDirection and e.getCloudWindDirection()
   if cw and cw.x and (cw.x ~= 0 or cw.y ~= 0) then c.cloudDirX, c.cloudDirY = cw.x, cw.y end
   c.rainPct, c.snowPct = 0, 0
+  local sun = S.sun
+  c.sunDim = (sun.applied and sun.base and sun.base > 0) and sun.applied / sun.base or 1
   return c
 end
 
@@ -414,9 +431,48 @@ local function applyPrecip(e, c)
   drivePrecip(M.SNOW_NAME, snow, M.SNOW_POOL)
 end
 
+-- The sun: ScatterSky.brightness = the level's own value * factor. Restored only while it still
+-- holds our value (another mod may have set its own since).
+local function sunObject()
+  local names = scenetree.findClassObjects and scenetree.findClassObjects('ScatterSky')
+  return names and names[1] and scenetree.findObject(names[1]) or nil
+end
+local function writeSun(factor)
+  local o = sunObject()
+  if not o then return end
+  local sun = S.sun
+  local have = tonumber(o:getField('brightness', 0))
+  if not have then return end
+  if not sun.base or (sun.applied and math.abs(have - sun.applied) > 1e-3) then
+    sun.base = have -- first write, or someone else changed it: their value is the new base
+  end
+  local want = sun.base * factor
+  if sun.applied and math.abs(want - sun.applied) < M.SUN_EPS * sun.base then return end
+  o:setField('brightness', 0, string.format('%.4f', want))
+  o:postApply()
+  sun.applied = tonumber(o:getField('brightness', 0)) or want
+end
+local function restoreSun()
+  local sun = S.sun
+  if not sun.applied then return end
+  local o = sunObject()
+  local have = o and tonumber(o:getField('brightness', 0))
+  if have and math.abs(have - sun.applied) <= 1e-3 then
+    o:setField('brightness', 0, string.format('%.4f', sun.base))
+    o:postApply()
+  end
+  sun.applied = nil
+end
+M._restoreSun = function() restoreSun() end -- tests
+
 local function apply(e)
   local c, o = S.cur, S.override
-  if not o.clouds then setIf(e.getCloudCover, e.setCloudCover, c.coverage, 0.005) end
+  if not o.clouds then
+    setIf(e.getCloudCover, e.setCloudCover, c.coverage, 0.005)
+    writeSun(c.sunDim)
+  else
+    restoreSun()
+  end
   if not o.cirrus then
     setIf(e.getCloudCirrusCoverage, e.setCloudCirrusCoverage, c.cirrusCoverage, 0.005)
     setIf(e.getCloudCirrusDensity, e.setCloudCirrusDensity, c.cirrusDensity, 0.005)
@@ -491,6 +547,7 @@ end
 
 local function hidePrecip()
   for name in pairs(S.precip) do pcall(drivePrecip, name, 0, 0) end
+  pcall(restoreSun)
 end
 
 local function checkBwm()
@@ -598,6 +655,7 @@ end
 function M.onAnyMissionChanged(state)
   if state == 'started' then
     S.mission = true
+    pcall(restoreSun)
     for g, t in pairs(S.override) do
       if t >= S.clock - M.MISSION_SETUP_S then S.override[g] = nil end -- the mission's own setup
     end

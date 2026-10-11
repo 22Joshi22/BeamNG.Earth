@@ -480,7 +480,11 @@ in 2026-10-10-weather-probe-results.md.
   menu's 0.05), ground wind from the 10 m wind with an OU gust term up to the gust speed, rain/snow
   as `setPercentage(sqrt(rate / full))` of a 4000/3000-drop pool (none above the cloud base), and a
   flat `temperatureCurveC` at the sea-level temperature (LevelInfo setter found by read-back, editor
-  dirty for 3 frames so core_environment re-reads it). The cloud base above the ground goes to
+  dirty for 3 frames so core_environment re-reads it). The sun dims under the deck: ScatterSky
+  `brightness` = the level's value × (1 − 0.7·deck^1.5) (the clouds cast no shadows, so under
+  overcast the car kept a sharp sun shadow; in-game at noon 0.35 made it faint while the auto
+  exposure kept the scene's brightness); restored in manual mode, on a manual cloud change and for
+  missions, unless someone else changed it since. The cloud base above the ground goes to
   sky.lua (it keeps the ground-following altitude and the rebase weather-offset shift); the real UTC
   offset too (`sky.todFields(..., real)` within 200 km of the reported point; Singapore +8, Delhi
   +5.5 instead of the meridian guess).

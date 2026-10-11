@@ -125,6 +125,13 @@ check(b.rainPct == 0 and b.snowPct == 0, 'Baltimore: dry')
 near(b.tempC, 20.71, 1e-12, 'Baltimore: sea-level temperature')
 
 local wt = W.targets(WHITNEY)
+-- the sun under the deck
+near(W.sunDimFor(0), 1, 1e-12, 'sun: clear sky keeps the full sun')
+near(W.sunDimFor(1), 1 - W.SUN_DIM_MAX, 1e-12, 'sun: overcast dims to 1 - SUN_DIM_MAX')
+check(W.sunDimFor(-1) == 1 and W.sunDimFor(2) == W.sunDimFor(1), 'sun: the factor clamps')
+check(W.sunDimFor(0.2) > 0.9, 'sun: a few clouds barely dim it')
+near(b.sunDim, W.sunDimFor(1), 1e-12, 'Baltimore overcast: dimmed sun')
+near(wt.sunDim, W.sunDimFor(0.43), 1e-12, 'Whitney: 43 % deck')
 near(wt.coverage, W.coverageFor(0.43), 1e-12, 'Whitney: 43 % mid deck')
 check(wt.coverage > 0.9 and wt.coverage < 1.1, 'Whitney: partly cloudy on the curve')
 near(wt.cirrusCoverage, 0.3, 1e-12, 'Whitney cirrus')
@@ -207,6 +214,10 @@ local function precip(name)
   return o
 end
 local rain, snow = precip(W.RAIN_NAME), precip(W.SNOW_NAME)
+local sun = S.newObject('ScatterSky'); sun:registerObject('sunsky')
+sun:setField('brightness', 0, '1.2')
+function sun:postApply() self.applied = (self.applied or 0) + 1 end
+local function sunB() return tonumber(sun:getField('brightness')) end
 
 weatherExt = W
 local function run(seconds, dt)
@@ -291,11 +302,27 @@ W.setMode('real')
 run(2)
 check(env.calls.fog > fogCalls, 'setMode(real) clears the overrides')
 
--- manual mode: hands off, precipitation hidden
+-- the sun follows the deck (the rain message: low 100 %, still approaching): the level's 1.2 times
+-- the factor
+check(sunB() >= 1.2 * W.sunDimFor(1) - 1e-6 and sunB() < 1.2 * (W.sunDimFor(1) + 0.1),
+  'sun dimmed under the overcast deck: ' .. tostring(sunB()))
+local sunWrites = sun.applied
+run(10)
+check(sun.applied == sunWrites, 'sun: no writes once it is there')
+
+-- manual mode: hands off, precipitation hidden, the level's sun back
 W.setMode('manual')
 local n0 = env.calls.cover
 run(5)
 check(env.calls.cover == n0 and rain.hidden == true, 'manual: no writes, rain hidden')
+near(sunB(), 1.2, 1e-6, 'manual: the level\'s sun brightness restored')
+W.setMode('real')
+run(W.LERP_S)
+check(sunB() < 1.2, 'real again: the sun is dimmed again')
+-- someone else sets the sun (another mod): that becomes the base, and a restore leaves theirs alone
+sun:setField('brightness', 0, '0.9')
+W.setMode('manual')
+near(sunB(), 0.9, 1e-6, 'manual: a value someone else set is left alone')
 W.setMode('real')
 
 -- missions: their own setup changes are not overrides, nothing is written while they run
