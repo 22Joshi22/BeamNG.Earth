@@ -25,6 +25,13 @@
 --     applied once every tile received before it is shown (v1.1 rule).
 --   far_done {anchorId, count}  the desired set is sent; after a rebase, the previous anchor's tiles
 --     go once everything received is shown.
+--   far_retex {anchorId, key, texture}  (--colormatch / --deshadow) the server rendered the texture of a
+--     tile this module shows or holds again, under a new file name: the tile's material switches to it
+--     (satmat requestRetex / retexNext: colorMap + flush + reload) as a governor unit 'retex', at most
+--     RETEX_PER_FRAME per frame. A key that is neither shown nor loading under the current anchor (gone
+--     meanwhile, or a previous anchor's) is ignored; a tile whose material is not created yet just
+--     takes the new file when it is. Nothing is deleted here: the server deletes the old file with the
+--     tile's other files.
 -- Keys are opaque. A tile's footprint is [pos.x, pos.x + 256*2^level] x [pos.y, ...] (levels below
 -- 0 are the finer near tiles of mesh mode: L-1 = 128 m, L-2 = 64 m).
 --
@@ -85,6 +92,7 @@ M.EXACT_LEVEL = -2      -- the exact (physics lattice) level of the 32-cell mesh
 M.MAX_LEVEL = 9         -- coarsest level (server farfield.MAX_LEVEL); the horizon mode's L10 tiles (M1h)
                         -- are never under the player (they split within 328 km), so shownAt stops here
 M.EXACT_OFF = 0.01      -- m; an exact tile further than this off its height (crossover) is a miss
+M.RETEX_PER_FRAME = 2   -- far_retex material switches per frame at most (each also a governor unit)
 
 local pending = {}      -- key -> instance received but not shown yet (current anchor)
 local live = {}         -- key -> shown instance (current anchor), covered or not
@@ -112,7 +120,7 @@ local clock = 0         -- s, transition clock (advanced by update)
 local materialChecked = false
 local nearVisual = 'terrain' -- 'terrain' | 'mesh' (server hello; survives forget(): a server setting)
 local counters = { imports = 0, failed = 0, crossovers = 0, instant = 0, pops = 0, textured = 0, materials = 0,
-  capWaits = 0, oldCovered = 0, exactFrames = 0, exactMiss = 0 }
+  capWaits = 0, oldCovered = 0, exactFrames = 0, exactMiss = 0, retex = 0, retexStale = 0, retexFailed = 0 }
 local exactLevel = M.EXACT_LEVEL
 local under = { level = nil, old = false, miss = false } -- the tile under the player, last update
 -- Previous anchors whose tiles may still be shown, newest first: { anchor, invs = inverse transforms
@@ -595,6 +603,26 @@ function M.onDone(msg)
   if msg.anchorId == anchorId then doneReceived = true end
 end
 
+-- far_retex: point the tile's material at its re-rendered texture (time-sliced in update). The shown
+-- instance and one still loading for the same key share the material (same name); both records take
+-- the new file, so a material created later uses it too.
+function M.onRetex(msg)
+  local key, tex = msg.key ~= nil and tostring(msg.key), msg.texture
+  if msg.anchorId ~= anchorId or not key or type(tex) ~= 'string' or tex == '' then
+    counters.retexStale = counters.retexStale + 1
+    return
+  end
+  local hit = false
+  for _, inst in ipairs({ live[key] or false, pending[key] or false }) do
+    if inst and not inst.doomed and inst.material then
+      if not satmat.isNewer(tex, inst.texture) then inst.texture = tex end -- never back to an older revision
+      satmat.requestRetex(inst.material, tex)
+      hit = true
+    end
+  end
+  if not hit then counters.retexStale = counters.retexStale + 1 end
+end
+
 ------------------------------------------------------------------------------------------
 -- terrain block
 
@@ -800,7 +828,7 @@ end
 
 -- Streaming work waiting (for the governor's budget ramp).
 function M.hasWork()
-  return nQueued > 0 or #doomed > 0 or rH <= rT or hasWaitingGroups() or satmat.hasDeletes()
+  return nQueued > 0 or #doomed > 0 or rH <= rT or hasWaitingGroups() or satmat.hasDeletes() or satmat.hasRetex()
 end
 
 local function pendingMainCount()
@@ -969,6 +997,23 @@ function M.update(gov, dt, cam, player)
     end
   end
 
+  -- 4b. far_retex: material texture switches, a few per frame within the budget (never thrown out of
+  --     the frame: a failing switch is counted and dropped)
+  local nRetex = 0
+  while nRetex < M.RETEX_PER_FRAME and satmat.hasRetex() and gov:try('retex') do
+    local t1 = now()
+    local ok, res = pcall(satmat.retexNext)
+    if not ok then
+      counters.retexFailed = counters.retexFailed + 1
+      if counters.retexFailed <= 3 then log('E', 'beamngEarth', 'far tile retexture failed: ' .. tostring(res)) end
+    elseif res then
+      counters.retex = counters.retex + 1
+    end
+    gov:charge('retex', now() - t1)
+    units = units + 1
+    nRetex = nRetex + 1
+  end
+
   -- 5. after a rebase: once far_done came and everything received is shown, the previous anchor's
   --    tiles go (progressively, through the delete queue)
   if doneReceived and oldCount > 0 and #groups == 0 and pendingMainCount() == 0 then
@@ -1076,7 +1121,8 @@ function M.stats()
     moving = lastFrame.moving, materials = satmat.count(), materialsCreated = counters.materials,
     textured = counters.textured, oldCovered = counters.oldCovered, nearVisual = nearVisual,
     waitingGroups = waiting, exactLevel = exactLevel, underLevel = under.level, underOld = under.old,
-    exactMiss = counters.exactMiss, exactFrames = counters.exactFrames }
+    exactMiss = counters.exactMiss, exactFrames = counters.exactFrames, retex = counters.retex,
+    retexStale = counters.retexStale, retexFailed = counters.retexFailed }
 end
 
 ------------------------------------------------------------------------------------------
