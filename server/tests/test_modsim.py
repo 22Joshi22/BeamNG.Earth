@@ -7,7 +7,11 @@
     (lua/farfield_trace.lua): teleport, streaming, waiting swap groups, evictions, crossovers,
     terrain-follow commits with commit gating queries, an anchor switch that keeps the old tiles,
     the old anchor's far_removes and far_done, per-tile imagery materials (created, shared,
-    deleted after their tiles) and a switch to mesh near-visual mode and back.
+    deleted after their tiles), a switch to mesh near-visual mode and back, and a restarted server
+    (a new session whose anchor ids start at 1 again while the old session's tiles are kept:
+    heldSessions / heldAnchors);
+  - edgeguard.lua step (lua/edgeguard_trace.lua) against modsim.EdgeGuard on random poses, speeds,
+    heights and blocks (docs/ROADMAP.md "Robustness" 2).
 Both must produce the same trace as the ports, frame by frame. Skipped without luajit."""
 import math
 import os
@@ -26,6 +30,7 @@ LUAJIT = shutil.which("luajit")
 HERE = Path(__file__).resolve().parent
 TRACE = HERE / "lua" / "modsim_trace.lua"
 FAR_TRACE = HERE / "lua" / "farfield_trace.lua"
+EDGE_TRACE = HERE / "lua" / "edgeguard_trace.lua"
 MOD_TESTS = modsim.MOD_ROOT.parent / "tests"
 FRAMES, SEED = 3000, 12345
 IMPORT_MS, DELETE_MS, BASE_MS = 1.75, 0.25, 11.5      # as in lua/farfield_trace.lua (exact in binary)
@@ -123,6 +128,44 @@ def python_trace(frames, seed):
     return out
 
 
+def python_edge_trace(steps, seed):
+    """lua/edgeguard_trace.lua's schedule through modsim.EdgeGuard."""
+    rnd = Rng(seed)
+    g = modsim.EdgeGuard()
+    clock = 0.0
+    f = (lambda v: f"{v:.9f}")
+    out = []
+    for i in range(1, steps + 1):
+        clock = clock + 0.05 + rnd() * 0.2
+        size = 512 if rnd() < 0.5 else 1024
+        cx, cy = math.floor((rnd() - 0.5) * 40) * 128, math.floor((rnd() - 0.5) * 40) * 128
+        x0, y0 = cx - size, cy - size
+        box = (x0, y0, x0 + (size - 1) * 2, y0 + (size - 1) * 2)
+        side, along, off = math.floor(rnd() * 4), rnd(), (rnd() - 0.4) * 500
+        if side == 0:
+            px, py = box[2] - off, box[1] + along * (box[3] - box[1])
+        elif side == 1:
+            px, py = box[0] + off, box[1] + along * (box[3] - box[1])
+        elif side == 2:
+            px, py = box[0] + along * (box[2] - box[0]), box[3] - off
+        else:
+            px, py = box[0] + along * (box[2] - box[0]), box[1] + off
+        vx, vy = (rnd() - 0.5) * 120, (rnd() - 0.5) * 120
+        gr = rnd()
+        ground = None
+        if gr < 0.6:
+            ground = rnd() * 3
+        elif gr < 0.8:
+            ground = 3 + rnd() * 6
+        z = 1000 + (rnd() - 0.5) * 40
+        mode, setv, rescue = g.step(clock, px, py, z, vx, vy, box, ground)
+        out.append(" ".join(str(v) for v in (
+            "E", i, mode, f(setv[0]) if setv else "-", f(setv[1]) if setv else "-",
+            f(rescue[0]) if rescue else "-", f(rescue[1]) if rescue else "-", f(rescue[2]) if rescue else "-",
+            f(g.last_ground_z) if g.last_ground_z is not None else "-", g.holds, g.rescues)))
+    return out
+
+
 def far_script(seed, steps=70):
     """A far-field session as script lines (see lua/farfield_trace.lua), produced the way the
     server produces it: farfield.select around a moving player with the committed and pending
@@ -144,8 +187,9 @@ def far_script(seed, steps=70):
         return (f"T {aid} {t.key} {t.level} {x0:.1f} {y0:.1f} {(rnd() - 0.5) * 100:.1f} {rnd() * 3:.3f} {sink} "
                 f"{mat}{tex}")
 
-    out += [f"A {aid} 0 0 0", "C 0 -8 3 0 1 0 60", "U 0 0 256 0"]   # nothing loaded yet: not ready
+    out += [f"A {aid} 0 0 0 s1", "C 0 -8 3 0 1 0 60", "U 0 0 256 0"]   # nothing loaded yet: not ready
     for step in range(steps):
+        out.append("H")
         px += 45.0
         py += 25.0 * math.sin(step / 7)
         out.append(f"C {px:.1f} {py - 8:.1f} 3 {0.3 * math.cos(step / 5):.3f} 1 0 60")
@@ -189,7 +233,13 @@ def far_script(seed, steps=70):
         if step == 40:                      # anchor switch keeping the old tiles (rebase-like)
             old_keys = sorted(shown)
             aid += 1
-            out.append(f"A {aid} 1 {block[0]:.0f} {block[1]:.0f}")
+            out.append(f"A {aid} 1 {block[0]:.0f} {block[1]:.0f} s1")
+            shown, refined, pending = set(), set(), None
+        if step == 60:                      # a restarted server: session s2, anchor ids from 1 again; the
+            aid = 1                         # resync keeps every tile (no far_removes for them ever come)
+            old_keys = []
+            out.append(f"A {aid} 1 {block[0]:.0f} {block[1]:.0f} s2")
+            out.append("H")
             shown, refined, pending = set(), set(), None
     # a burst of in-view replacements near the player, preloaded, then swapped all at once: more than
     # the transition cap, so near groups wait for a crossover slot
@@ -206,6 +256,7 @@ def far_script(seed, steps=70):
         out.append(f"S {aid} {gid} 1.00 1.00 1 {k} 1 {k}")
         gid += 1
     out += ["F"] * 400
+    out.append("H")
     return out
 
 
@@ -216,6 +267,7 @@ def python_far_trace(lines, final=None):
                            "cdaeTex256": IMPORT_MS, "cdaeTex512": IMPORT_MS}, lambda shape: __file__)
     gov = modsim.Governor()
     out, keys, cam, wall, frame = [], set(), None, None, 0
+    folder = "x"
 
     def h(s, v):
         for ch in s.encode():
@@ -226,7 +278,10 @@ def python_far_trace(lines, final=None):
         c = w[0]
         num = (lambda v: None if v == "-" else float(v))
         if c == "A":
-            far.switch_anchor(int(w[1]), w[2] == "1", (float(w[3]), float(w[4])))
+            far.switch_anchor(int(w[1]), w[2] == "1", (float(w[3]), float(w[4])), w[5] if len(w) > 5 else None)
+            folder = w[5] if len(w) > 5 else folder
+        elif c == "H":
+            out.append("H " + ",".join(far.held_sessions()) + " " + ",".join(str(a) for a in far.held_anchors()))
         elif c == "B":
             far.on_block_commit(float(w[1]), float(w[2]))
         elif c == "C":
@@ -235,9 +290,11 @@ def python_far_trace(lines, final=None):
             keys.add(w[2])
             mat = w[9] if len(w) > 9 and w[9] != "-" else None
             far.on_tile({"type": "far_tile", "anchorId": int(w[1]), "key": w[2], "level": int(w[3]),
-                         "shape": f"/temp/x/far_{w[2]}.cdae", "pos": [float(w[4]), float(w[5]), float(w[6])],
+                         "shape": f"/temp/beamngEarth/{folder}/far_{w[2]}.cdae",
+                         "pos": [float(w[4]), float(w[5]), float(w[6])],
                          "err": float(w[7]), "sink": num(w[8]), "state": "group", "material": mat,
-                         "texture": f"/temp/x/far_{w[2]}.dds" if mat else None, "detail": mat is not None,
+                         "texture": f"/temp/beamngEarth/{folder}/far_{w[2]}.dds" if mat else None,
+                         "detail": mat is not None,
                          "tex": num(w[10]) if len(w) > 10 else None})
         elif c == "S":
             i = 5
@@ -311,6 +368,23 @@ class ModSimTest(unittest.TestCase):
         self.assertGreater(sum(1 for b in m512 if b[8] == "discard"), 20)
         self.assertNotEqual([b[3:9] for b in m512], [b[3:9] for b in py if b[0] == "M" and b[1] == 1024])
 
+    def test_edgeguard_port_matches_lua(self):
+        res = subprocess.run([LUAJIT, str(EDGE_TRACE), str(modsim.MOD_DIR.parent), "4000", str(SEED)],
+                             capture_output=True, text=True, timeout=60)
+        self.assertEqual(res.returncode, 0, res.stderr)
+        lua = res.stdout.splitlines()
+        py = python_edge_trace(4000, SEED)
+        self.assertEqual(len(lua), len(py))
+        for i, (a, b) in enumerate(zip(lua, py)):
+            self.assertEqual(a, b, f"line {i}: lua {a!r} python {b!r}")
+        modes = [ln.split()[2] for ln in py]
+        for m in ("clear", "warn", "hold", "air"):
+            self.assertGreater(modes.count(m), 50, m)
+        last = py[-1].split()
+        self.assertGreater(int(last[-2]), 200)          # soft-wall velocity changes
+        self.assertGreater(int(last[-1]), 50)           # rescues (rate-limited)
+        self.assertGreater(sum(1 for ln in py if ln.split()[3] == "-" and ln.split()[2] == "hold"), 50)
+
     def test_farfield_port_matches_lua(self):
         lines = far_script(7)
         with tempfile.TemporaryDirectory() as tmp:
@@ -355,6 +429,19 @@ class ModSimTest(unittest.TestCase):
         u = [ln for ln in py if ln[0] == "U"]
         self.assertIn("U true", u)
         self.assertIn("U false", u)
+        # the restarted server (session s2, anchor ids from 1 again): the old session's folder is held
+        # while its tiles are, never its anchor numbers
+        h = [ln.split(" ") for ln in py if ln[0] == "H"]
+        self.assertIn(["H", "s1", "1"], h)                          # after the rebase: s1's anchor 1 held
+        both = [r for r in h if r[1] == "s1,s2"]
+        self.assertTrue(both, "the old session held next to the new one")
+        self.assertTrue(all("1" not in r[2].split(",") and "2" not in r[2].split(",") for r in both), both[:3])
+        # at the end no s1 tile object is left; s1 stays held only through materials an s2 tile of the same
+        # name (anchor 1 again, same key) still uses: satmat keeps a material's texture while it is in use
+        objs = list(far.live.values()) + list(far.old.values()) + list(far.pending.values()) + far.doomed
+        self.assertFalse([i.key for i in objs if i.loaded and modsim.folder_of(i.shape) == "s1"])
+        s1 = [n for n, t in far.mat_tex.items() if modsim.folder_of(t) == "s1"]
+        self.assertTrue(all(far.mats[n] > 0 for n in s1), s1[:5])
 
 
 if __name__ == "__main__":

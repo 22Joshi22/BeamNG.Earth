@@ -14,6 +14,11 @@
 -- Horizon (server hello.horizon, docs/V1_4_SPEC.md 3.6 M1h; none = off, v1.3.1): LevelInfo.visibleDistance
 -- follows the server's far-field radius (status.radius, +10 %) and the sky's planet radius is the
 -- tiles' (horizon.lua); the level's values come back when it ends.
+-- Robustness (docs/ROADMAP.md "Robustness: no server, lost server, lost internet" 1-3): the
+-- connection banner (banner.lua) says what is wrong with the world server, the edge guard
+-- (edgeguard.lua) holds the car on the last physics block while the server cannot move it (never
+-- while the server is healthy), and hello / pose name the session folders whose files the far
+-- tiles still use (farfield.heldSessions), so a restarted server keeps them (server/README.md).
 --
 -- World logic is active in our level (levels/beamng_earth) from the start, and in any other
 -- level once the player teleports (for testing). Console helpers:
@@ -41,6 +46,8 @@ local ui = require('beamngEarth/ui')
 local settings = require('beamngEarth/settings') -- the pause-menu page's values (docs/DEVTOOLS.md)
 local credits = require('beamngEarth/credits') -- the on-screen data credits (docs/DEVTOOLS.md)
 local places = require('beamngEarth/places') -- saved and recent places (the settings page)
+local banner = require('beamngEarth/banner') -- the connection banner (docs/DEVTOOLS.md)
+local edgeguard = require('beamngEarth/edgeguard') -- never fall off the last block (docs/ROADMAP.md)
 
 local LEVEL_ID = 'beamng_earth'
 local MOD_VERSION = '0.4.0'
@@ -58,6 +65,11 @@ local PRE_LIFT = 5             -- m above groundZ + 1 to hold the vehicle until 
 local LOADING_AFTER_TELEPORT_S = 3 -- governor loading mode (8 ms budget) this long after a teleport
 local SLOW_SPEED, SLOW_S = 1, 3    -- ... and while the player is below 1 m/s for over 3 s
 local DEFAULT_LAT, DEFAULT_LON = 36.5785, -118.2923 -- near Mt Whitney / Lone Pine, CA
+-- The server cannot move the block when it is not connected, has not said hello, or does not answer
+-- terrain requests: one unanswered for STUCK_S, or a terrain_error within ERROR_HOLD_S. Only then
+-- does the edge guard run.
+local STUCK_S = 5
+local ERROR_HOLD_S = 10
 local ATTRIBUTION = 'Elevation: Mapterhorn (CC-BY etc., see mapterhorn.com), AWS Terrain Tiles / Mapzen'
 -- shown once satellite-textured tiles arrive (docs/V1_3_SPEC.md C; EOX's required wording)
 local IMAGERY_ATTRIBUTION = 'Imagery: USGS The National Map (public domain); EOxCloudless https://cloudless.eox.at by '
@@ -71,6 +83,8 @@ local warned = {}          -- one-time warnings
 local nearVisual = 'terrain' -- from the server's hello; outlives levels like the connection
 local serverAttribution = nil -- hello.attribution (protocol 4): the credits for the sources it uses
 local blockSize = 1024        -- the session's terrain block size (hello.blockSize); outlives levels
+local guardFailed = false     -- the edge guard threw once: off for the rest of the game (logged)
+local bannerInfo = { port = net.PORT } -- banner.update's inputs, filled every frame (no allocation)
 local horizonOn = false       -- hello.horizon (M1h); outlives levels like the connection
 local farRadius = nil         -- status.radius: the server's far-field radius (m), horizon mode only
 local cacheInfo = nil         -- the server's last 'cache' message (download cache usage); outlives levels
@@ -83,6 +97,9 @@ local function resetState()
     anchor = nil,            -- geodesy anchor of the committed frame
     anchorId = nil,
     anchorKey = nil,         -- server's opaque anchor key (protocol 3), for display
+    anchorSession = nil,     -- the server session (hello.sessionId) the committed anchor belongs to
+    resync = false,          -- a server said hello while an anchor is committed: the block cannot
+                             -- follow until the resync (same origin, that server's anchor) commits
     pending = nil,           -- anchor request { requestId, purpose = 'teleport'|'rebase'|'resync', ready, msg }
     nextRequestId = 1,
     retryAt = 0,
@@ -109,6 +126,12 @@ local function resetState()
     anchorLatency = nil,     -- s from prepare_anchor to anchor_ready of the last rebase request (M4 stale rule)
     terrainLatency = nil,    -- s from prepare_terrain to terrain_ready of the last one (M4 follow re-check)
     visibleDistance = nil,   -- LevelInfo.visibleDistance set for the horizon (M1h); nil = VISIBLE_DISTANCE
+    flat = false,            -- the level-start flat block is loaded (centred on the origin), no anchor block yet
+    serverNote = nil,        -- the network note in the server's last status ('offline' / 'degraded', banner.noteOf)
+    serverNoteDetail = nil,
+    terrainErrorAt = nil,    -- clock of the last terrain_error since the last terrain arrived
+    guard = edgeguard.new(), -- the edge guard's state (mode 'off' while the block can follow)
+    guardBox = {},           -- the collidable area it guards (reused)
   }
 end
 resetState()
@@ -285,7 +308,7 @@ local function commitTeleport(msg)
     st.retryAt = st.clock + rebase.RETRY_S -- don't re-request every frame
     return false
   end
-  farfield.switchAnchor(msg.anchorId, false, { cx = tr.cx, cy = tr.cy })
+  farfield.switchAnchor(msg.anchorId, false, { cx = tr.cx, cy = tr.cy }, st.sessionId)
   st.loadingUntil = st.clock + LOADING_AFTER_TELEPORT_S
   st.placeFrames = PLACE_DELAY_FRAMES
   st.placeZ = (msg.groundZ or 0) + 1.0
@@ -301,7 +324,9 @@ local function commitTeleport(msg)
   be:reloadCollision()
 
   st.anchor, st.anchorId, st.anchorKey = geodesy.newAnchor(msg.lat, msg.lon), msg.anchorId, msg.anchorKey
-  st.block, st.terrainPending = { cx = tr.cx, cy = tr.cy }, nil
+  st.anchorSession, st.resync = st.sessionId, false
+  st.block, st.terrainPending, st.terrainErrorAt = { cx = tr.cx, cy = tr.cy }, nil, nil
+  edgeguard.newFrame(st.guard)
   sendCommits(msg.anchorId, tr.cx, tr.cy)
   activateWorld()
   st.skyTimer, st.poseTimer = SKY_INTERVAL, POSE_INTERVAL -- refresh both right away
@@ -320,12 +345,16 @@ local function finishRebase()
   local ok, err = loadBlock(tr)
   if not ok then log('E', 'beamngEarth', 'rebase terrain import failed: ' .. tostring(err)) end
   farfield.transform(xf)
-  farfield.switchAnchor(msg.anchorId, true, { cx = tr.cx, cy = tr.cy })
+  -- a resync with a restarted server keeps the previous session's tiles the same way (st.sessionId
+  -- is the new session's): they go once the new session's tiles cover them
+  farfield.switchAnchor(msg.anchorId, true, { cx = tr.cx, cy = tr.cy }, st.sessionId)
   local cs = camshift.shift(xf, rb.playerOld[1], rb.playerOld[2], rb.playerOld[3])
   be:reloadCollision()
 
   st.anchor, st.anchorId, st.anchorKey = rb.newAnchor, msg.anchorId, msg.anchorKey
-  st.block, st.terrainPending = { cx = tr.cx, cy = tr.cy }, nil
+  st.anchorSession, st.resync = st.sessionId, false
+  st.block, st.terrainPending, st.terrainErrorAt = { cx = tr.cx, cy = tr.cy }, nil, nil
+  edgeguard.newFrame(st.guard)
   sendCommits(msg.anchorId, tr.cx, tr.cy)
   activateWorld()
   st.skyTimer, st.poseTimer = SKY_INTERVAL, POSE_INTERVAL
@@ -443,16 +472,20 @@ end
 local function onMessage(msg)
   local t = msg.type
   if t == '_connected' then
-    net.send({ type = 'hello', protocol = PROTOCOL, format = FORMAT, modVersion = MOD_VERSION })
+    -- sessions: the session folders our far tiles still use (a restarted server keeps them)
+    net.send({ type = 'hello', protocol = PROTOCOL, format = FORMAT, modVersion = MOD_VERSION,
+      sessions = farfield.heldSessions() })
     setStatus('Connected to companion server')
   elseif t == '_disconnected' then
     st.pending, st.sessionId, st.terrainPending = nil, nil, nil
     cacheInfo = nil
+    st.serverNote, st.serverNoteDetail, st.terrainErrorAt = nil, nil, nil
     -- an auto-teleport lost with the connection is retried on the next hello
     if not st.anchor then st.autoTeleportDone = false end
     setStatus('Disconnected from companion server: ' .. tostring(msg.error))
   elseif t == 'hello' then
     st.sessionId = msg.sessionId
+    st.serverNote, st.serverNoteDetail = nil, nil
     -- a new server session: its own gravity message follows the first pose (none with --gravity off)
     local w = rawget(_G, 'beamngEarth_weather')
     if w and w.clearGravity then w.clearGravity() end
@@ -496,6 +529,9 @@ local function onMessage(msg)
       -- A (re)started server knows nothing of our anchor: re-register the SAME geodetic origin under
       -- a new anchorId. The transform is then the identity, so nothing in the world moves (a shift
       -- here could happen close to the origin, where camshift cannot tell positions from offsets).
+      -- Until it commits the block cannot follow (st.resync: the edge guard runs, a failed resync is
+      -- asked again in updateWorld).
+      st.resync = true
       requestAnchor(st.anchor.lat, st.anchor.lon, 'resync', resyncHint())
     elseif st.inOurLevel and not st.anchor and not st.autoTeleportDone then
       st.autoTeleportDone = true
@@ -503,6 +539,8 @@ local function onMessage(msg)
     end
   elseif t == 'status' then
     st.status = tostring(msg.text)
+    -- the server's network note ("Offline - using cached data" / "Degraded: ..."): the banner shows it
+    st.serverNote, st.serverNoteDetail = banner.noteOf(msg.text)
     -- v1.4 M0: the server's far-tile backlog (desired - shown) rides on every status; nil from a
     -- v1.3.1 server. For the harness (status()), nothing here acts on it.
     st.serverBacklog = tonumber(msg.backlog)
@@ -534,10 +572,12 @@ local function onMessage(msg)
     end
     p.ready, p.msg = true, msg -- committed by the distance rule in updateWorld()
     if p.sentAt then st.terrainLatency = st.clock - p.sentAt end
+    st.terrainErrorAt = nil
   elseif t == 'terrain_error' then
     local p = st.terrainPending
     if not p or msg.requestId ~= p.requestId then return end
     st.terrainPending, st.terrainRetryAt = nil, st.clock + follow.RETRY_S
+    st.terrainErrorAt = st.clock -- the edge guard holds the car meanwhile
     setStatus('Terrain request failed: ' .. tostring(msg.error))
   elseif t == 'far_tile' then
     farfield.onTile(msg)
@@ -614,6 +654,15 @@ local function updateSky(dt)
   end
 end
 
+-- Does the connected server know our anchor? After a server restart the committed anchor's id is
+-- the old session's, and the new server numbers its own anchors from 1 again: until the resync
+-- commits, a pose / prepare_terrain naming it would name one of the new server's anchors (its resync
+-- anchor 1 is the usual one), which it would switch to and stream tiles for that the far field files
+-- under the old session.
+local function anchorKnown()
+  return st.anchorId ~= nil and st.anchorSession == st.sessionId
+end
+
 local function updateWorld(dt)
   if st.placeFrames then
     st.placeFrames = st.placeFrames - 1
@@ -627,12 +676,23 @@ local function updateWorld(dt)
   if not pl then return end
 
   st.poseTimer = st.poseTimer + dt
-  if st.poseTimer >= POSE_INTERVAL and net.isConnected() then
+  -- no pose before the resync with a restarted server commits (anchorKnown; hello named the
+  -- session folders meanwhile)
+  if st.poseTimer >= POSE_INTERVAL and net.isConnected() and anchorKnown() then
     st.poseTimer = 0
     local c = st.cam
+    -- held: previous anchors of this server's session only (the far field's older sessions' anchor
+    -- ids are another server's); sessions: every session folder in use
     net.send({ type = 'pose', anchorId = st.anchorId, x = pl.x, y = pl.y, z = pl.z, vx = pl.vx, vy = pl.vy,
-      lat = pl.lat, lon = pl.lon, speed = pl.speed, held = farfield.heldAnchors(),
+      lat = pl.lat, lon = pl.lon, speed = pl.speed,
+      held = (farfield.session() == st.sessionId) and farfield.heldAnchors() or {},
+      sessions = farfield.heldSessions(),
       cam = c and { x = c.x, y = c.y, z = c.z, fx = c.fx, fy = c.fy, fz = c.fz, fovDeg = c.fovDeg } or nil })
+  end
+
+  -- a resync the server could not build (anchor_error: offline, never visited) is asked again
+  if st.resync and not st.pending and st.sessionId and st.clock >= st.retryAt then
+    requestAnchor(st.anchor.lat, st.anchor.lon, 'resync', resyncHint())
   end
 
   -- origin rebase first: when it commits, the terrain-follow state belongs to the old frame
@@ -686,7 +746,7 @@ local function updateWorld(dt)
   local fa, tx, ty = follow.decide(pl.x, pl.y, pl.vx, pl.vy, b and b.cx, b and b.cy, st.terrainPending,
     st.clock, st.terrainRetryAt, gate, st.terrainLatency)
   if fa == 'prepare' then
-    if net.isConnected() then
+    if net.isConnected() and anchorKnown() then
       local id = nextId()
       st.terrainPending = { requestId = id, anchorId = st.anchorId, cx = tx, cy = ty, sentAt = st.clock }
       net.send({ type = 'prepare_terrain', requestId = id, anchorId = st.anchorId, cx = tx, cy = ty })
@@ -700,6 +760,67 @@ local function updateWorld(dt)
   elseif fa == 'discard' then
     st.terrainPending = nil
   end
+end
+
+------------------------------------------------------------------------------------------
+-- robustness: the edge guard and the connection banner (docs/ROADMAP.md "Robustness" 1, 2)
+
+local function terrainStuck()
+  local tp = st.terrainPending
+  if tp and not tp.ready and tp.sentAt and st.clock - tp.sentAt > STUCK_S then return true end
+  return st.terrainErrorAt ~= nil and st.clock - st.terrainErrorAt < ERROR_HOLD_S
+end
+
+-- Can the server move the physics block? Connected, its hello arrived, an anchor block committed
+-- (terrain-follow never moves the level-start flat block), no resync pending (a server that came
+-- back: until it commits, nothing follows) and terrain requests answered.
+local function serverHealthy()
+  return net.isConnected() and st.sessionId ~= nil and st.block ~= nil and not st.resync and not terrainStuck()
+end
+
+-- The collidable area of the block in use (the anchor's, else the level-start flat block), or nil.
+local function guardBox()
+  local cx, cy
+  if st.block then cx, cy = st.block.cx, st.block.cy
+  elseif st.flat then cx, cy = 0, 0
+  else return nil end
+  local box = st.guardBox
+  box[1], box[2], box[3], box[4] = lattice.groundBox(cx, cy)
+  return box
+end
+
+-- After the frame's world update (a block commit has already moved the block): the guard runs only
+-- while the server cannot move the block, with physics running and the player placed (also on the
+-- level-start flat block, before any anchor: no server at all).
+local function updateGuard()
+  local g = st.guard
+  if guardFailed or serverHealthy() or st.placeFrames or st.paused then
+    g.mode = 'off'
+    return
+  end
+  local veh = getPlayerVehicle(0)
+  local box = guardBox()
+  if not veh or not box then
+    g.mode = 'off'
+    return
+  end
+  local ok, err = pcall(edgeguard.update, g, veh, box, st.clock)
+  if not ok then
+    guardFailed, g.mode = true, 'off'
+    log('E', 'beamngEarth', 'edge guard turned off: ' .. tostring(err))
+  end
+end
+
+local function updateBanner(dt)
+  local i = bannerInfo
+  i.net, i.session = net.state(), st.sessionId ~= nil
+  i.everConnected, i.attempts = net.everConnected(), net.attempts()
+  i.note, i.noteDetail = st.serverNote, st.serverNoteDetail
+  local m = st.guard.mode
+  i.edge = (m == 'warn' or m == 'hold') and m or nil
+  -- connected and said hello, yet the guard runs: the server does not (yet) build the terrain
+  i.stuck = (i.session and net.isConnected()) and true or false
+  banner.update(dt, i)
 end
 
 -- The credits line: the server's own (protocol 4 hello) when it sent one; else ours, with the
@@ -744,11 +865,13 @@ end
 -- attribution line. Called every frame then, so no farfield.stats() table: its counters only.
 local function creditsFallback() return attributionText(farfield.counters()) end
 
--- The imgui window and the on-screen credits (one text draw; the attribution line until the server
--- sends credits).
-local function drawUi()
+-- The imgui window, the on-screen credits (one text draw; the attribution line until the server
+-- sends credits) and the connection banner (in our level or world only; hidden like the credits).
+local function drawUi(dt)
   ui.draw(buildView(), { teleport = M.teleport, setRebaseDistance = M.setRebaseDistance })
   credits.draw(st.active, creditsFallback)
+  updateBanner(dt)
+  banner.draw(st.inOurLevel or st.active, credits.hiddenByUi())
 end
 
 local function onUpdate(dtReal, dtSim)
@@ -774,7 +897,7 @@ local function onUpdate(dtReal, dtSim)
     if rb.wait <= 0 then
       finishRebase()
     else
-      drawUi()
+      drawUi(dtReal)
       return -- positions are in neither frame for decisions this frame
     end
   end
@@ -784,8 +907,9 @@ local function onUpdate(dtReal, dtSim)
     updateWorld(dtReal)
     farfield.update(gov, (gov.w1 or dtReal * 1000) / 1000, st.cam, st.player)
     updateSky(dtReal)
+    updateGuard()
   end
-  drawUi()
+  drawUi(dtReal)
 end
 
 -- After physics, before rendering (main.lua:819-824): measure when a rebase's vehicle move became
@@ -837,6 +961,7 @@ local function onLevelStart()
   -- Something to stand on until the first anchor arrives (our level has no GroundPlane).
   local ok, err = terrain.loadFlat()
   if ok then
+    st.flat = true
     be:reloadCollision()
     st.placeFrames, st.placeZ = PLACE_DELAY_FRAMES, 1.0
   else
@@ -964,7 +1089,15 @@ function M.status()
     serverBacklog = st.serverBacklog, followCount = st.followCount, rebaseCount = st.rebaseCount,
     cells = crossover.cells(), blockSize = blockSize, anchorLatency = st.anchorLatency,
     terrainLatency = st.terrainLatency, horizon = horizonOn, farRadius = farRadius,
-    visibleDistance = st.visibleDistance or VISIBLE_DISTANCE })
+    visibleDistance = st.visibleDistance or VISIBLE_DISTANCE, banner = banner.current().id, guard = st.guard.mode,
+    sessions = farfield.heldSessions(), tileSession = farfield.session() })
+end
+
+-- The connection state line (the settings page shows it): the banner's { id, level, text } (text
+-- 'World server connected' while all is well) and the edge guard's mode.
+function M.banner()
+  local b = banner.current()
+  return { id = b.id, level = b.level, text = banner.line(), guard = st.guard.mode }
 end
 
 -- net.close() drops its '_disconnected' event, so reset the connection state here.

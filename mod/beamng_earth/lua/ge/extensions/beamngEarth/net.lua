@@ -2,6 +2,8 @@
 -- luasocket with settimeout(0): nothing here ever blocks the frame. Reconnects every 2 s.
 -- update() returns the decoded messages of this frame, plus the pseudo-messages
 -- {type='_connected'} / {type='_disconnected'} so the caller can (re)sync its state.
+-- attempts() / everConnected(): connection attempts since the last connection (the on-screen
+-- banner's "reconnecting (attempt n)") and whether this game ever reached the server.
 
 local framing = require('beamngEarth/framing')
 
@@ -21,6 +23,8 @@ local rx = framing.newReassembler()
 local outQueue = {}          -- encoded frames waiting to be sent
 local outPos = 1             -- next byte of outQueue[1] to send
 local events = {}
+local attempts = 0           -- connection attempts since the last successful connection
+local everConnected = false
 
 M.lastError = nil
 
@@ -35,6 +39,7 @@ local function closeSocket(err)
 end
 
 local function startConnect()
+  attempts = attempts + 1
   socket = socket or require('socket')
   sock = socket.tcp()
   sock:settimeout(0)
@@ -52,6 +57,7 @@ local function startConnect()
   end
   if state == 'connected' then
     M.lastError = nil
+    attempts, everConnected = 0, true
     pcall(sock.setoption, sock, 'tcp-nodelay', true)
     events[#events + 1] = { type = '_connected' }
   end
@@ -61,6 +67,7 @@ local function pollConnect(dt)
   if sock:getpeername() then
     state = 'connected'
     M.lastError = nil
+    attempts, everConnected = 0, true
     pcall(sock.setoption, sock, 'tcp-nodelay', true)
     events[#events + 1] = { type = '_connected' }
     return
@@ -142,6 +149,8 @@ end
 
 function M.state() return state end
 function M.isConnected() return state == 'connected' end
+function M.attempts() return attempts end
+function M.everConnected() return everConnected end
 
 function M.close()
   closeSocket('closed')

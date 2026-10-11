@@ -14,7 +14,11 @@ ports of:
                 the previous anchor's leftovers at far_done, cover state (edge ring sunk by the
                 server's `sink`, interior hidden; nothing covered in mesh near-visual mode),
                 onBlockCommit, uncoverReady, deletes (never in a frame that imported); mesh mode:
-                nearest-first imports, previous-anchor tiles dropped once covered.
+                nearest-first imports, previous-anchor tiles dropped once covered; server sessions
+                (switchAnchor's session: old tiles keyed by session and anchor, heldAnchors of the
+                current session only, heldSessions from the shapes and material textures).
+  edgeguard.lua step (EdgeGuard): the soft wall at the block's edge while the server cannot move
+                the block, the rescue of a car that left it (docs/ROADMAP.md "Robustness" 2).
   satmat.lua    per-tile imagery materials: created (unit 'material') before the first tile using
                 them, reference-counted, deleted (unit 'matDelete') after their last tile object.
   governor.lua  texKind: the unit kind of a textured import from far_tile.tex (FORMAT 4, M1:
@@ -112,6 +116,7 @@ CORE = lua_consts("core.lua")
 GOV = lua_consts("governor.lua")
 XO = lua_consts("crossover.lua")
 FAR = lua_consts("farfield.lua")
+EDGE = lua_consts("edgeguard.lua")
 
 
 # --- follow.lua / rebase.lua / core.lua rebaseHint ----------------------------------------
@@ -485,14 +490,99 @@ def tex_kind(px):
     return "cdaeTex"
 
 
+# --- edgeguard.lua, core.lua serverHealthy ------------------------------------------------
+class EdgeGuard:
+    """edgeguard.lua: new() and step() (docs/ROADMAP.md "Robustness" 2): the soft wall that holds a car
+    on the ground STOP_M inside the block's collidable edge, the warning before it, the rescue of a car
+    that left the block and dropped below its last ground; nothing for a vehicle off the ground."""
+
+    def __init__(self):
+        self.mode = "off"
+        self.last_ground_z = self.last_ground_t = None
+        self.last_rescue = -math.inf
+        self.holds = self.rescues = 0
+
+    def new_frame(self):
+        """edgeguard.lua newFrame: an anchor committed, the remembered ground height is the old frame's."""
+        self.last_ground_z = self.last_ground_t = None
+
+    @staticmethod
+    def cap(d):
+        return math.sqrt(2 * EDGE["DECEL"] * max(0.0, d - EDGE["STOP_M"]))
+
+    @staticmethod
+    def warn_distance(speed):
+        return max(EDGE["WARN_M"], EDGE["STOP_M"] + speed * speed / (2 * EDGE["DECEL"]) + EDGE["WARN_LEAD"])
+
+    def step(self, clock, x, y, z, vx, vy, box, ground):
+        """One frame: (mode, (vx, vy) to set or None, (x, y, z) to set the car down at or None)."""
+        x0, y0, x1, y1 = box
+        inside = x0 <= x <= x1 and y0 <= y <= y1
+        grounded = ground is not None and ground <= EDGE["NEAR_GROUND_M"]
+        if inside and grounded:
+            self.last_ground_z, self.last_ground_t = z - ground, clock
+        if not inside:
+            if (self.last_ground_z is not None and clock - self.last_ground_t <= EDGE["RESCUE_WINDOW_S"]
+                    and z < self.last_ground_z - EDGE["RESCUE_DROP"] and clock - self.last_rescue >= EDGE["RESCUE_GAP_S"]):
+                self.last_rescue = clock
+                self.rescues += 1
+                m = min(EDGE["STOP_M"], (x1 - x0) / 2, (y1 - y0) / 2)
+                return "hold", None, (min(max(x, x0 + m), x1 - m), min(max(y, y0 + m), y1 - m), self.last_ground_z + 1)
+            return "air", None, None
+        if not grounded:
+            return "air", None, None
+        nvx, nvy = vx, vy
+        if vx > 0:
+            nvx = min(vx, self.cap(x1 - x))
+        elif vx < 0:
+            nvx = max(vx, -self.cap(x - x0))
+        if vy > 0:
+            nvy = min(vy, self.cap(y1 - y))
+        elif vy < 0:
+            nvy = max(vy, -self.cap(y - y0))
+        if abs(nvx - vx) > EDGE["SET_EPS"] or abs(nvy - vy) > EDGE["SET_EPS"]:
+            self.holds += 1
+            return "hold", (nvx, nvy), None
+        d = min(x - x0, x1 - x, y - y0, y1 - y)
+        if d <= EDGE["STOP_M"] + 1:
+            return "hold", None, None
+        if d < self.warn_distance(math.sqrt(vx * vx + vy * vy)):
+            return "warn", None, None
+        return "clear", None, None
+
+
+def server_healthy(connected, session, pending, clock, error_at, block=True, resync=False):
+    """core.lua serverHealthy: connected, the hello arrived, an anchor block committed (block: terrain-
+    follow never moves the level-start flat block), no resync pending (resync: a server said hello
+    while an anchor was committed, until its resync commits) and terrain requests answered (none
+    pending for more than STUCK_S, no terrain_error within ERROR_HOLD_S). pending: {"ready", "sent"}
+    or None."""
+    stuck = pending is not None and not pending.get("ready") and clock - pending["sent"] > CORE["STUCK_S"]
+    stuck = stuck or (error_at is not None and clock - error_at < CORE["ERROR_HOLD_S"])
+    return bool(connected and session and block) and not resync and not stuck
+
+
+def anchor_known(anchor, anchor_session, session):
+    """core.lua anchorKnown: the connected server knows the committed anchor (its session's). Poses and
+    terrain requests wait for it (after a server restart, until the resync commits)."""
+    return anchor is not None and anchor_session == session
+
+
 # --- farfield.lua ----------------------------------------------------------------------
+def folder_of(path):
+    """farfield.lua folderOf: the session folder of a server-written VFS path, or None."""
+    m = re.match(r"^/temp/beamngEarth/([^/]+)/", path) if isinstance(path, str) else None
+    return m.group(1) if m else None
+
+
 class Inst:
     """One far tile instance (farfield.lua newInst). bbox0/aid: its footprint in its own
     anchor's frame (for exact coverage); x0..y1: the footprint in the current frame (AABB after
     a rebase transform, as the mod keeps it)."""
     __slots__ = ("key", "aid", "level", "bbox0", "x0", "y0", "x1", "y1", "z", "err", "sink", "seq",
                  "prefetch", "kind", "path", "queued", "loaded", "failed", "shown", "doomed", "removing",
-                 "cover", "cover_hide", "anim_end", "grp", "material", "mat", "mat_failed")
+                 "cover", "cover_hide", "anim_end", "grp", "material", "mat", "mat_failed", "session", "shape",
+                 "texture")
 
     def __init__(self, msg, seq, path, cells=None):
         self.key, self.aid = str(msg["key"]), msg["anchorId"]
@@ -509,6 +599,9 @@ class Inst:
         mat = msg.get("material")
         self.material = mat if isinstance(mat, str) and mat else None   # per-tile imagery material
         self.mat, self.mat_failed = None, False                         # held reference
+        self.shape = msg["shape"]
+        self.texture = msg.get("texture") if isinstance(msg.get("texture"), str) else None
+        self.session = None             # the server session of its anchor (FarField.on_tile)
         if not msg["shape"].lower().endswith(".cdae"):
             self.kind = "dae"
         else:
@@ -557,12 +650,13 @@ class FarField:
         self.n_queued = 0
         self.groups = []
         self.active_groups = 0
-        self.removals = deque()           # (inst, seq, oldKey or None)
+        self.removals = deque()           # (inst, seq, oldKey or None); oldKey = (session, anchorId, key)
         self.doomed = []
         self.moving = set()
         self.lossy = set()
         self.block = None
         self.anchor_id = None
+        self.session = None               # server session of the current anchor (switch_anchor)
         self.done = False
         self.seq_n = 0
         self.clock = 0.0
@@ -572,6 +666,7 @@ class FarField:
         self.dropped_old = set()          # (anchorId, key) dropped by drop_covered_old (diagnostics)
         self.near_visual = "terrain"
         self.mats = {}                    # satmat.lua: material name -> references
+        self.mat_tex = {}                 # ... and its texture (heldSessions)
         self.mat_del = []                 # names whose references reached 0 (FIFO)
         self.mat_queued = set()
         self.unknown_removes = []
@@ -701,6 +796,7 @@ class FarField:
             self.mat_queued.discard(name)
             if self.mats.get(name) == 0:
                 del self.mats[name]
+                self.mat_tex.pop(name, None)
                 return True
         return False
 
@@ -880,6 +976,7 @@ class FarField:
             self.doom(prev)
         self.seq_n += 1
         inst = Inst(msg, self.seq_n, self.path_of(msg["shape"]), self.cells)
+        inst.session = self.session
         if inst.material:
             self.counters["textured"] += 1
         self.pending[key] = inst
@@ -901,7 +998,7 @@ class FarField:
     def on_remove(self, msg):
         key, aid = str(msg["key"]), msg.get("anchorId")
         if aid != self.anchor_id:
-            ok = (aid, key)
+            ok = (self.session, aid, key)
             inst = self.old.get(ok)
             if inst is not None and not inst.removing and aid not in self.lossy:
                 inst.removing = True
@@ -931,14 +1028,15 @@ class FarField:
             if not inst.doomed:
                 inst.x0, inst.y0, inst.x1, inst.y1 = ff.transform_bbox(src, dst, (inst.x0, inst.y0, inst.x1, inst.y1))
 
-    def switch_anchor(self, new_id, keep_old, blk):
+    def switch_anchor(self, new_id, keep_old, blk, session=None):
+        """session: the new anchor's server session (None = unchanged); a new one forgets lossy."""
         self.finish_all()
         keep = deque()
         if keep_old:
             due = self.min_pending_seq()
             for inst, seq, okey in self.removals:
                 if seq < due and not inst.doomed:
-                    keep.append((inst, 0, okey or (self.anchor_id, inst.key)))
+                    keep.append((inst, 0, okey or (self.session, self.anchor_id, inst.key)))
             dropped = False
             for inst in self.pending.values():
                 if not inst.prefetch:
@@ -947,7 +1045,7 @@ class FarField:
             if dropped and self.anchor_id is not None:
                 self.lossy.add(self.anchor_id)
             for key, inst in self.live.items():
-                self.old[(self.anchor_id, key)] = inst
+                self.old[(self.session, self.anchor_id, key)] = inst
         else:
             for d in (self.live, self.old, self.pending):
                 for inst in d.values():
@@ -958,6 +1056,9 @@ class FarField:
         self.groups, self.active_groups, self.moving = [], 0, set()
         self.removals = keep
         self.anchor_id = new_id
+        if session is not None and session != self.session:
+            self.lossy = set()
+            self.session = session
         self.done = False
         if blk is not None:
             self.set_block(*blk)
@@ -1080,8 +1181,13 @@ class FarField:
                     if not gov.try_("material"):
                         break
                     self.mats[inst.material] = 0
+                    self.mat_tex[inst.material] = inst.texture
                     self.counters["materials"] += 1
                     self._unit(gov, "material", self.costs["material"])
+                # satmat.ref: an unused material re-sent with another texture is pointed at it
+                old_tex = self.mat_tex.get(inst.material)
+                if inst.texture and old_tex and inst.texture != old_tex and self.mats[inst.material] == 0:
+                    self.mat_tex[inst.material] = inst.texture
                 self.mats[inst.material] += 1
                 inst.mat = inst.material
                 continue
@@ -1116,6 +1222,23 @@ class FarField:
                 self.mat_delete_next()
                 self.counters["mat_deletes"] += 1
                 self._unit(gov, "matDelete", self.costs["matDelete"])
+
+    def held_anchors(self):
+        """farfield.lua heldAnchors: previous anchors of the current session with objects here."""
+        out = {i.aid for i in self.old.values() if i.aid is not None and i.aid != self.anchor_id
+               and i.session == self.session}
+        out |= {i.aid for i in self.doomed if i.aid != self.anchor_id and i.session == self.session}
+        return sorted(out)
+
+    def held_sessions(self):
+        """farfield.lua heldSessions: session folders of every tile object's shape (shown, kept, loaded
+        hidden or waiting for deletion) and of every material's texture."""
+        out = set()
+        for d in (self.pending, self.live, self.old):
+            out |= {folder_of(i.shape) for i in d.values() if i.loaded}
+        out |= {folder_of(i.shape) for i in self.doomed}
+        out |= {folder_of(t) for t in self.mat_tex.values()}
+        return sorted(f for f in out if f)
 
     def eager_keys(self):
         """Current-anchor keys shown once the received swaps have run (far_done's count)."""

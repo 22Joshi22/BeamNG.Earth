@@ -9,6 +9,11 @@
       </div>
     </div>
 
+    <!-- Connection state: the same line as the on-screen banner (banner.lua; docs/ROADMAP.md "Robustness") -->
+    <div v-if="bannerText" class="options-presets state-bar" :class="'state-' + bannerLevel">
+      <span class="state-text">{{ bannerText }}</span>
+    </div>
+
     <!-- Status line -->
     <div class="options-presets status-bar">
       <span class="status-text">{{ statusText }}</span>
@@ -411,6 +416,11 @@ const connectionText = computed(() => {
 
 const statusText = computed(() => status.value.status || "-")
 
+// the connection banner's state line (core.banner(): starting / not running / lost / offline / degraded
+// / connected, plus the edge guard's line) and its level (info / ok / warn / error)
+const bannerText = computed(() => (status.value.banner && status.value.banner.text) || "")
+const bannerLevel = computed(() => (status.value.banner && status.value.banner.level) || "info")
+
 function fmt(v, digits) {
   return (typeof v === "number") ? v.toFixed(digits) : "-"
 }
@@ -708,6 +718,21 @@ onUnmounted(() => {
 
     &.is-connected { color: #8f8; }
   }
+}
+
+/* Connection state line (the on-screen banner's text); a plain div, nothing focusable */
+.state-bar {
+  border-left: 4px solid #6af;
+
+  .state-text {
+    font-size: 0.95em;
+    font-weight: 600;
+    white-space: pre-line;
+  }
+
+  &.state-ok { border-left-color: #4c4; }
+  &.state-warn { border-left-color: #fa3; background-color: rgba(255, 170, 51, 0.10); }
+  &.state-error { border-left-color: #f54; background-color: rgba(255, 85, 68, 0.12); }
 }
 
 /* Presets / status bar */

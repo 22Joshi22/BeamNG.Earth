@@ -790,3 +790,56 @@ three days of testing: dem 741 MB / 7.5k files, imagery 1.4 GB / 35k, deshadow 7
   requests only with a session). Still to check in-game: the page section (select, the confirmation
   row, "Clearing..." / "Freed"), a clear while driving (nothing around the player re-downloads), the
   start-up walk's time on the real cache, and the log line of the first eviction with a small cap.
+
+## Robustness: no server, lost server (docs/ROADMAP.md "Robustness" 1-3; built offline 2026-10-11, feature/robustness)
+- **Banner** (`banner.lua`, docs/DEVTOOLS.md "Connection banner"): a pure state machine fed once per
+  frame by core.lua from net.lua (state, `attempts()`, `everConnected()`), the server's hello and the
+  network note of its last status (`banner.noteOf`: "Offline - using cached data" / "Degraded: ...",
+  server `net_note`), and the edge guard's mode. Drawn on the background draw list at the top centre,
+  hidden in the pause menu / big map (`credits.hiddenByUi`), in our world only. `core.banner()` feeds
+  the settings page.
+- **Edge guard** (`edgeguard.lua`): core.lua's `serverHealthy()` = connected, the hello arrived, an
+  anchor block committed (terrain-follow never moves the level-start flat block), no resync pending
+  (`st.resync`, from a hello while an anchor is committed until that server's resync anchor commits;
+  a failed resync is asked again every `rebase.RETRY_S`), no terrain request unanswered for `STUCK_S`
+  (5 s) and no terrain_error within `ERROR_HOLD_S` (10 s). Only when it is false (and physics runs, the player is placed) does `updateGuard` run, after the
+  frame's world update (a block commit has already moved the block), against the collidable area of
+  the committed block (`lattice.groundBox`; before any anchor, the level-start flat block). Far inside
+  it returns without a call; near an edge one `castRayStatic` down from the vehicle decides "on the
+  ground" (within 6 m); on the ground the velocity towards each edge is capped at
+  sqrt(2 DECEL (d - STOP_M)) by setting the velocity (`applyClusterVelocityScaleAdd(-1, 0, vx, vy,
+  vz)`, idempotent if the reading lags a frame; an add would brake twice); off the block and 3 m below
+  the ground it last stood on (within 10 s), the car is set down `STOP_M` inside
+  (`spawn.safeTeleport(..., false)`: no reset, as the game's own upright recovery) once per second.
+  Off the ground (jumps, aircraft) nothing is touched. Any error turns it off once (logged). An
+  anchor commit (a new frame) forgets the remembered ground height (`edgeguard.newFrame`).
+  Offline: 30 m/s rests 15 m inside, braking <= 6.6 m/s^2; 134 m/s on a 512 block stays on it (cut to
+  the profile when it engages); an aircraft at 500 m flies off untouched.
+- **Session adoption** (server `Server._scan_sessions / claim_sessions / release_session /
+  sweep_sessions`, mod `farfield.heldSessions`): see server/README.md "Run" and the protocol table
+  (`hello.sessions`, `pose.sessions`; the server's own messages are unchanged, so a default session is
+  byte-for-byte as before). farfield.lua keys previous anchors' tiles by (session, anchor, key),
+  `heldAnchors` names only the current session's anchors. Until the resync with a restarted server
+  commits, the committed anchor id is the old session's while the new server numbers its own from 1
+  again (its resync anchor is usually 1, as is a mod that never rebased): core.lua `anchorKnown()`
+  holds back every pose and terrain request meanwhile (review 2026-10-11: a pose naming anchor 1 made
+  the new server switch to its anchor 1 before the mod did and stream tiles the far field filed under
+  the old session; the server then never re-sent them, holes once the old tiles went at far_done;
+  `test_restart.RestartDriveTest.test_kill_and_restart_anchor_1`). hello still names the folders.
+  The server's sweep removes unclaimed orphans in a worker thread (`sweep_sessions_async`; a session
+  is thousands of files), and a folder carrying the new session's own id is never an orphan.
+  Known limit: a material name (`bngEarthSat_<anchor>_<key>`) the new session repeats while the old
+  tile still uses it keeps the old texture (satmat: a material in use keeps its file); the new tile
+  then holds the old folder until that material goes (the usual case is the same anchor id for the
+  same origin, so the same imagery; only the deletion waits). A previous anchor's tile of the old
+  session whose id the new session reuses for another origin would lend its texture to the new tile
+  until it goes (rare: a restart within the seconds after a rebase).
+- **Tests**: `server/tests/test_restart.py` (the fault-injection drive: a 64-cell / 512² session
+  killed mid-drive and restarted in the same folder; 4127 coverage checks within 512 m without a hole,
+  no vanished file, the guard warned and held the car 15 m inside the edge during the 25 s gap and
+  until the resync committed, never while the server was healthy, the old folder held while named
+  and deleted after the mod let go; run with the mod's anchor 2 and with its anchor 1, the resync
+  commit waiting the governor's `CALM_TIMEOUT` so poses go out meanwhile),
+  `test_protocol_agreement.SessionsAgreementTest`, `test_modsim` (the guard's step and the
+  farfield sessions, Lua against port), `test_server.SessionCleanupTest`; luajit `test_banner`,
+  `test_edgeguard`, `test_core_robustness`.
