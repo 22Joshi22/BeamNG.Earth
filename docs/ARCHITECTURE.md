@@ -463,7 +463,7 @@ in 2026-10-10-weather-probe-results.md.
   the engine's temperature and the menu stops showing −273 °C).
 - **Server** `server/weather.py` + three hooks in earthd (`Server(weather=...)`, `Connection.weather`
   in `on_pose`, re-send on `hello`; `--weather on|off`, default on; the credit "Weather data by
-  Open-Meteo.com" in `hello.attribution`). One keyless GET per fetch (generic user agent), at the 0.1°
+  Open-Meteo.com" in `hello.attribution`). One keyless GET per fetch (the project User-Agent, through `netfetch`), at the 0.1°
   cell of the player, when there is none yet, every 600 s or after 25 km; cached per (cell, 15-min
   slot). `derive()` keeps the physics (rates per hour from the 15-min sums, fog-code visibility,
   cloud base, sea-level temperature, winds aloft, the real UTC offset); the `weather` message is
@@ -521,3 +521,49 @@ in 2026-10-10-weather-probe-results.md.
   compact HUD hidden at level start (setting "Status HUD").
 - Tests: `mod/tests/test_dev.lua`, `mod/tests/test_settings.lua`. The Vue files are checked
   in-game only.
+
+## Network: rate limits, failover, offline (`server/netfetch.py`; built offline 2026-10-10, feature/netfetch)
+docs/research/2026-10-10-rate-limits.md §5. Before, the thread pools were the only limiter (cold start
+~30 req/s to USGS, up to ~80 req/s to Mapterhorn, the same after every teleport), 429/503 and
+Retry-After were treated like any error, the DEM had no breaker and a Mapterhorn error never fell
+over to AWS, a 400 wrote a permanent `.404` marker, and the User-Agent lived in two copies.
+- **One `Fetcher` per server** (`main_async`), handed to `Dem`, `Imagery`, `weather.fetch` and
+  `gravity.Provider`. Per host (`POLICIES`, §5.2 for today's hosts; unknown hosts 2/s, 2 at once, no
+  prefetch): a token bucket and a concurrency semaphore (apart from the pools), priorities (demand
+  waits up to 30 s; prefetch / background take a token only above 1/2 / 3/4 of the burst and are
+  dropped, not queued), 3 attempts with full-jitter backoff, Retry-After pausing the whole host (bucket
+  emptied, breaker open for that long), a circuit breaker (5 failures in 30 s; 30 s open, doubled per
+  failed probe up to 15 min), daily soft/hard budgets in `<cache>/netstats/<UTC date>.json`, one
+  summary log line a minute. Injectable clock, sleep, rng, transport and wall clock (tests).
+- **Failover**: `HostUnavailable` / `RateLimited` cost no network and the chains move on: imagery
+  usgs → eox2023 → eox2016 (one host, one breaker: both skipped together) → palette; DEM Mapterhorn →
+  AWS for the same key (also on Mapterhorn errors now) → `DemUnavailable` (where a coarse offline DEM
+  will go). A prefetch future the limiter dropped is re-fetched as demand by the render that needs it.
+- **Markers**: 404/410 only (a 400 is an error); `.404` files keep their format (empty, mtime = when)
+  and expire after the host's `miss_ttl` (90 days; AWS never), but count as valid while the host
+  cannot be asked, so an expired marker never turns a "no data" into an error. Existing caches work
+  as they are.
+- **Offline / degraded**: `--offline` makes every request raise `Offline` (disk hits only, no weather
+  fetch, no EGM2008 download); `Fetcher.offline` is also true when every imagery and DEM host is open.
+  `Server.net_note()` → every `status` text gets " | Offline - using cached data" or " | Degraded:
+  <hosts> unreachable; <n> tiles without imagery" (re-sent when it changes; unchanged text otherwise,
+  so the golden tests are byte-identical). Palette-fallback tiles are recorded in `Server.degraded`.
+- **Measured (offline, fake clock; `test_netfetch.ColdStartTest`, `test_demand.NetDemandTest`)**:
+  the cold-start / teleport burst of the default layout (64 cells) is 1,431 USGS tiles at Baltimore,
+  1,185 EOX tiles at Munich, 177–237 Mapterhorn tiles and up to 300 AWS tiles (no lidar). Through the
+  limiter: USGS 60 at once, then 15/s (91 s in all, ≤ 74 in any second, 959 in the first minute;
+  before: ~30 req/s for 45–130 s); EOX 30 at once, then 6/s (193 s; before: as fast as 6 workers
+  allowed, so EU cold starts now fill their imagery about 2–3× more slowly); Mapterhorn ≤ 99 in any
+  second, 7.8 s (before: up to ~80 req/s sustained); AWS 4 s. Steady driving, busiest minute (cold
+  cache, rebase every 10 km): 134 m/s USGS 797/min (13.3/s of 15), EOX 310/min (5.2/s of 6),
+  Mapterhorn 140/min (2.3/s of 20), AWS 304/min (5.1/s of 50); 30 m/s at most 3.8/s. The 250 m/s
+  flight (~21 req/s to USGS, §2.2) is capped by the bucket.
+- **Not yet**: re-texturing degraded tiles once a breaker closes (the tile's files keep their name and
+  the engine caches by path, so it needs a versioned name and a replace swap), the near-terrain
+  heightmap prefetch as kind `prefetch` (it is demand today), Mapterhorn revalidation after 180 days,
+  the per-host state in `status` for the dev tools; see docs/ROADMAP.md "Robustness".
+- Tests: `server/tests/test_netfetch.py` (no network: fake transport / clock / sleep, seeded rng;
+  the cold-start bursts above), `test_demand.NetDemandTest` (§5.4 case 12: requests per minute and
+  host from the real `farfield.select` drive, below each policy rate), plus the netfetch cases in
+  `test_imagery.py` (EOX breaker shared, marker TTL, 400, dropped prefetch, UA) and `test_weather.py`
+  (UA, shared in-flight fetch, Retry-After retry).

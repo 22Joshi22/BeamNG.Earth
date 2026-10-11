@@ -22,7 +22,7 @@ python3 server/earthd.py --port 47613 --user-dir ~/.local/share/BeamNG/BeamNG.dr
 |---|---|---|
 | `--port` | `47613` | TCP port on 127.0.0.1 (`0` picks a free port and prints it) |
 | `--user-dir` | `~/.local/share/BeamNG/BeamNG.drive/current` | BeamNG user folder. Output goes to `<user-dir>/temp/beamngEarth/<sessionId>/`, which the game sees as `/temp/beamngEarth/<sessionId>/` |
-| `--cache-dir` | `~/.cache/beamng-earth` | Download cache root. DEM tiles: `<cache-dir>/dem/<source>/<z>/<x>/<y>.<ext>` |
+| `--cache-dir` | `~/.cache/beamng-earth` | Download cache root. DEM tiles: `<cache-dir>/dem/<source>/<z>/<x>/<y>.<ext>`; per-host request counters of each UTC day: `<cache-dir>/netstats/<YYYY-MM-DD>.json` |
 | `--workers` | `3` | Far-tile worker threads. Keep ≤ 3 so tile building cannot starve the game (§4.5) |
 | `--far-format` | `cdae` | `cdae`: server-written binary shapes (default). `dae`: Collada fallback (the engine then compiles each tile itself, ~5× slower to load) |
 | `--lod-k` | per level | One K for every level. Default: the layout's K table, K(L1) = K(L2) = 3, K(L3+) = 2.5 with 32 cells (§3); K' = {L1 0.75, L2 1.5, L3 1.5, L4+ 1.25} with 64 |
@@ -43,6 +43,7 @@ python3 server/earthd.py --port 47613 --user-dir ~/.local/share/BeamNG/BeamNG.dr
 | `--status-interval` | `0` | Re-send the last status with the current far-tile backlog every S s while it changes (0 = v1.3.1: on events only; `tools/drive.py` runs use 1) |
 | `--weather` | `on` | Real weather at the player from Open-Meteo.com (keyless, non-commercial; `weather` messages, see below). `off`: no requests, no message |
 | `--gravity` | `on` | Real gravity at the player (`gravity.py`: WGS84 normal + EGM2008 anomaly from `<cache-dir>/gravity/`; `gravity` messages, see below). Normal gravity while EGM2008 is not cached yet; it then downloads once (74 MB) in the background. `off`: no message (the mod falls back to normal gravity by latitude) |
+| `--offline` | off | No network at all (`netfetch.Fetcher(offline=True)`): elevation and imagery come from the disk cache only; an uncached imagery tile leaves its far tile with the palette material, uncached terrain fails (`terrain_error`), no weather fetch, no EGM2008 download. Every `status` text then ends in "Offline - using cached data" |
 | `-v` | off | Debug logging |
 
 Requirements: Python 3 (3.10+), numpy, Pillow (≥ 11, for its DXT1 encoder) with WebP support. No
@@ -86,7 +87,7 @@ as JSON floats (`512.0`). All positions are in the ENU plane of the anchor named
 | Message | Notes |
 |---|---|
 | `{"type":"hello","protocol":4,"format":3,"serverVersion":"0.4.0","sessionId":"…","farFormat":"cdae"\|"dae","material":"bngEarthFar_v3","nearVisual":"mesh"\|"terrain","attribution":"…","cells":64,"blockSize":512,"horizon":true,"deshadow":"full"}` | `format`: 3 with `--cells 32` (v1.3.1), 4 with `--cells 64`; `cells` (v1.4 M1) only with format 4: the tiles' cells per edge (the mod's crossover fallback error and the exact level of its `exactMiss` metric; 32 without it). `blockSize` (v1.4 M4) only with `--block 512`: the terrain block's samples per edge; the mod configures its lattice, terrain-follow table, layer / flat maps and rebase staleness rule from it before anything else (1024 without it); every `terrain.size` of the session is this size. `horizon` (v1.4 M1h) only with `--horizon`: every `status` then carries `radius`; the mod sets the sky's planet radius to 6371 km and its view distance from the radius. `deshadow` only with `--deshadow lambert|full`: the mode (the mod's settings page shows it; it is server-side only). `farFormat` tells which shape type the tiles are; `material` is the static palette material (tiles without imagery). `nearVisual`: `mesh` = disable the TerrainBlock's rendering (physics only), the tiles draw all the ground; `terrain` = v1.2. `attribution`: the credit line for the sources in use, e.g. "Imagery: USGS The National Map (public domain); EOxCloudless https://cloudless.eox.at by EOX IT Services GmbH (Contains modified Copernicus Sentinel data 2023), CC BY-NC-SA 4.0; EOxCloudless https://cloudless.eox.at by EOX IT Services GmbH (Contains modified Copernicus Sentinel data 2016 & 2017), CC BY 4.0; Weather data by Open-Meteo.com; Elevation: Mapterhorn (see mapterhorn.com/attribution), AWS Terrain Tiles / Mapzen". |
-| `{"type":"status","text":"…","backlog":n,"radius":m}` | Progress text, and protocol/format mismatch warnings. `backlog` (v1.4 M0): desired far tiles of the current anchor not shown yet; with `--status-interval S` the last status is re-sent every S s while it changes. `radius` (v1.4 M1h, `--horizon` only): the far-field radius in m (80 km to 1500 km); the last status is re-sent when it moves by more than 2 %. The mod sets `LevelInfo.visibleDistance` = max(100 km, 1.1 × radius), with 10 % hysteresis. |
+| `{"type":"status","text":"…","backlog":n,"radius":m}` | Progress text, and protocol/format mismatch warnings; while the network is degraded or `--offline`, the text ends in " \| Degraded: …" / " \| Offline - using cached data" (see "Network"; re-sent when that changes). `backlog` (v1.4 M0): desired far tiles of the current anchor not shown yet; with `--status-interval S` the last status is re-sent every S s while it changes. `radius` (v1.4 M1h, `--horizon` only): the far-field radius in m (80 km to 1500 km); the last status is re-sent when it moves by more than 2 %. The mod sets `LevelInfo.visibleDistance` = max(100 km, 1.1 × radius), with 10 % hysteresis. |
 | `{"type":"anchor_ready","requestId":N,"anchorId":A,"lat":d,"lon":d,"groundZ":m,"terrain":{"cx","cy","heightmap","size":1024,"squareSize":2.0,"zBase","maxHeight","q"}}` | `size`: 1024, or 512 with `--block 512` (`hello.blockSize`). `groundZ` = terrain height at (0, 0) of the new frame (bilinear on the quantised grid, i.e. what the game will report), or `null` if (0, 0) is outside the block. `q` = height quantum, `maxHeight = q·65536`, `zBase` a multiple of 64 m (so of `q`). No `anchorKey` yet (lattice anchors are phase 5). |
 | `{"type":"anchor_error","requestId":N,"error":"…"}` | |
 | `{"type":"terrain_ready","requestId":N,"anchorId":A,"cx","cy","heightmap","size":1024,"squareSize":2.0,"zBase","maxHeight","q"}` | Same terrain fields as in `anchor_ready`. |
@@ -96,7 +97,7 @@ as JSON floats (`512.0`). All positions are in the ENU plane of the anchor named
 | `{"type":"far_remove","anchorId":A,"key":"L_i_j"}` | For the **active** anchor: eviction of a tile sent as `far_tile` that no group needs any more (the desired set changed before its swap); delete it, it was never shown. For a **previous** anchor (after a rebase): remove that shown tile; it is sent only after every `far_swap` whose adds cover its area (footprints compared in the new frame), so apply it once the swaps received before it have run. |
 | `{"type":"far_done","anchorId":A,"count":K}` | Every swap group for the current desired set has been sent. K = number of tiles the mod shows once those swaps have run. Sent again after each later change completes. |
 | `{"type":"gravity","v":1,"g":m/s²,"lat","lon","h":m,"source":"egm2008"\|"normal"}` | Real gravity (`server/gravity.py` Provider / Tracker; additive like `weather`). \|g\| at the player's pose (geodetic lat/lon from the pose's anchor frame, `h` = metres above sea level, `msl=True` for EGM2008): computed on the provider's own thread (never the event loop) after the first pose on a known anchor, again when the player moved > 2 km or > 200 m in height from the last value, or when EGM2008 became available; re-sent on `hello`. `source` `"normal"` = WGS84 normal gravity (EGM2008 not on disk yet: a daemon thread downloads it, a failure is retried after 10 min). The mod (`weather.lua`) writes `g − 3.086e-6 × (z − h)` through `core_environment.setGravity` in steps of ≤ 1e-3 m/s² per second; it clears the value on a new `hello`. |
-| `{"type":"weather","v":1,"t":epoch,"lat","lon","code":wmo,"isDay","cover":{"total","low","mid","high"},"baseM","baseAglM","rainMmH","snowCmH","visM","fog","thunder","wind":{"ms","fromDeg","gustMs"},"aloft":{"ms","fromDeg"},"tempC","dewC","elevM","slTempC","pressureHpa","utcOffsetS","tz","credit"}` | Real weather (`server/weather.py`; additive, no protocol bump: both sides ignore unknown types). Open-Meteo's current (15-min) conditions at the 0.1° cell of the player's `pose.lat/lon`, fetched when there is none yet, every 10 min, or after 25 km (one request in flight; a failure keeps the last weather and retries after 2 min); cached per (cell, 15-min slot) for all connections; re-sent on `hello`. Rates per hour from the 15-min sums (`× 3600 / interval`); a weather code with a zero sum gets a light floor (drizzle 0.3, rain 1, thunder 4 mm/h; snow 0.5 cm/h). `visM` (null = unknown) is ≤ 800 m with fog codes 45/48. `baseM`/`baseAglM`: the drawn deck's base (= max(low, mid)): a low deck at the LCL (125 m/K × (T − Td)), a mid deck ≥ 3000 m ASL; clamped 200–6000 m above the model ground `elevM`. `slTempC` = `tempC` + 0.0065 × `elevM` (the game lowers it with height). `aloft` = 700 hPa wind (cloud drift). `utcOffsetS`/`tz` = the place's real time zone (`timezone=auto`). `credit` = "Weather data by Open-Meteo.com" (CC BY 4.0), also in `hello.attribution` while weather is on. The mod's mapping is `beamngEarth/weather.lua`. |
+| `{"type":"weather","v":1,"t":epoch,"lat","lon","code":wmo,"isDay","cover":{"total","low","mid","high"},"baseM","baseAglM","rainMmH","snowCmH","visM","fog","thunder","wind":{"ms","fromDeg","gustMs"},"aloft":{"ms","fromDeg"},"tempC","dewC","elevM","slTempC","pressureHpa","utcOffsetS","tz","credit"}` | Real weather (`server/weather.py`; additive, no protocol bump: both sides ignore unknown types). Open-Meteo's current (15-min) conditions at the 0.1° cell of the player's `pose.lat/lon`, fetched when there is none yet, every 10 min, or after 25 km (one request in flight; a failure keeps the last weather and retries after 2 min, or after the host's Retry-After / open circuit if longer; concurrent requests for one cell share a fetch); cached per (cell, 15-min slot) for all connections; re-sent on `hello`. Rates per hour from the 15-min sums (`× 3600 / interval`); a weather code with a zero sum gets a light floor (drizzle 0.3, rain 1, thunder 4 mm/h; snow 0.5 cm/h). `visM` (null = unknown) is ≤ 800 m with fog codes 45/48. `baseM`/`baseAglM`: the drawn deck's base (= max(low, mid)): a low deck at the LCL (125 m/K × (T − Td)), a mid deck ≥ 3000 m ASL; clamped 200–6000 m above the model ground `elevM`. `slTempC` = `tempC` + 0.0065 × `elevM` (the game lowers it with height). `aloft` = 700 hPa wind (cloud drift). `utcOffsetS`/`tz` = the place's real time zone (`timezone=auto`). `credit` = "Weather data by Open-Meteo.com" (CC BY 4.0), also in `hello.attribution` while weather is on. The mod's mapping is `beamngEarth/weather.lua`. |
 
 Far-field state per connection (`earthd.Connection`): **D** the desired set, **C** the tiles of
 emitted swaps (what the mod shows), **S** the tiles sent but not yet swapped in. Groups are
@@ -231,7 +232,7 @@ Format decoded from engine-written files (golden pairs in `tests/fixtures/`):
   MESH transform; error < 0.01 texel even on 131 km tiles). Row 0 = north, column 0 = west.
   `--tex-near` (512) for the two finest levels of the mode, `--tex-far` (256) beyond.
 - **Coverage**: each texel takes the first source of the chain whose four bilinear taps have data.
-  A source tile counts as missing when it is 404/400 or blank (every channel within 2 levels — USGS
+  A source tile counts as missing when it is 404 or blank (every channel within 2 levels — USGS
   answers with white tiles outside the US at low zooms) unless it is the last source (EOX paints the
   open ocean one uniform deep blue). USGS is used only from z10 up (it serves a global low-res
   basemap at z ≤ 9, which would put a different look on the far rings abroad) and only where its
@@ -239,13 +240,17 @@ Format decoded from engine-written files (golden pairs in `tests/fixtures/`):
   1132 requests that 404'd). US borders: a partly covered USGS tile keeps its white fill (no
   blending at coverage edges, per spec). No source anywhere (beyond ±85°): the dirt colour.
 - **Caching / fetching**: raw tiles in `<cache-dir>/imagery/<source>/<z>/<x>/<y>.jpg`, 404s as
-  `<y>.404` markers, decoded tiles in a 512-entry LRU, ≤ 6 concurrent requests with the same
-  User-Agent as the DEM fetcher, one persistent HTTPS connection per host and fetch thread, 3
-  attempts. A source whose fetch failed all attempts is skipped for 30 s (`SOURCE_BACKOFF`), so an
-  outage costs each texture nothing instead of ~3.5 s (offline) to ~60 s (timeouts) per source and
-  the tile workers keep up. An unreachable source falls through to the next one; if no source can fill a texel
-  because of network errors (not 404s), the tile is sent without imagery (palette material) rather
-  than with a baked fallback colour.
+  `<y>.404` markers (valid 90 days, see "Network"), decoded tiles in a 512-entry LRU, a pool of 6
+  fetch threads, every request through `netfetch` (the host's rate and concurrency cap, 3 attempts,
+  its circuit breaker; one persistent HTTPS connection per host and fetch thread). Once a host's
+  circuit is open its tiles fail at once, so an outage costs each texture nothing instead of ~3.5 s
+  (offline) to ~60 s (timeouts) per source and the tile workers keep up; `eox2023` and `eox2016` share
+  one host and so one breaker. A 400 is an error, not a miss (no marker). An unreachable source falls
+  through to the next one; if no source can fill a texel because of network errors (not 404s), the
+  tile is sent without imagery (palette material) rather than with a baked fallback colour, and
+  counts as degraded in the status note. The far-tile prefetch asks with kind `prefetch` (only while
+  the host's bucket is above half; dropped requests are fetched on demand at build time), the
+  de-shadow region fits with kind `background`.
 - **Tone curve** (`--tone`, LUT per channel): +0.06 at black, −0.10 at white, ~0 at mid-grey: lifts
   baked shadows a little and stops bright rock/sand glowing under the engine's own lighting.
 - **De-shadowing** (`--deshadow lambert|full`, default off; docs/research/2026-10-10-deshadow-prototype.md,
@@ -273,7 +278,58 @@ Format decoded from engine-written files (golden pairs in `tests/fixtures/`):
 
 Mapterhorn (`tiles.mapterhorn.com`, Terrarium WebP) uses 512 px tiles. It is global on
 land up to z12 and deeper where lidar exists. AWS Terrain Tiles (256 px PNG, z ≤ 15) fill a 404
-and are resampled onto the 512 px grid. A 404 is cached on disk as a `<y>.404` marker.
+and are resampled onto the 512 px grid. A 404 is cached on disk as a `<y>.404` marker (Mapterhorn's
+expire after 90 days, so lidar it adds later is picked up; AWS's never). When Mapterhorn cannot be
+asked (circuit open, rate limited, failing after its attempts) the same tile comes from AWS as it is
+(failover, `mapterhorn:failover` in the DEM stats); if AWS fails too the tile raises
+`dem.DemUnavailable` (the terrain request gets `terrain_error`).
+
+## Network (`server/netfetch.py`; docs/research/2026-10-10-rate-limits.md §5)
+
+Every download (DEM, imagery, weather, the EGM2008 archive) goes through one `netfetch.Fetcher`,
+built in `main_async` and handed to `Dem`, `Imagery`, `weather.fetch` and `gravity.Provider`.
+
+| Host | rate / burst | at once | daily soft (hard) | prefetch | .404 marker TTL |
+|---|---|---|---|---|---|
+| `basemap.nationalmap.gov` (USGS) | 15/s, 60 | 6 | 60,000 | above half a bucket | 90 days |
+| `tiles.maps.eox.at` (both EOX layers) | 6/s, 30 | 4 | 20,000 | above half a bucket | 90 days |
+| `tiles.mapterhorn.com` | 20/s, 80 | 8 | 30,000 | above half a bucket | 90 days |
+| `s3.amazonaws.com` (AWS Terrain Tiles) | 50/s, 100 | 8 | — | above half a bucket | never |
+| `api.open-meteo.com` | 0.1/s, 2 | 1 | 500 (500 = 1,000 calls) | no | — |
+| `downloads.sourceforge.net` (EGM2008) | 1/s, 1 | 1 | — | no | — |
+| `overpass-api.de`, `vector.openstreetmap.org`, `build.protomaps.com` | never at runtime (`PolicyDenied`) | | | | |
+| any other host | 2/s, 4 | 2 | 5,000 | no | 30 days |
+
+- **Priorities**: `demand` (a texture or heightmap being built) waits for a token (up to 30 s, then
+  `RateLimited`); `prefetch` takes one only while the bucket holds more than half its burst and a
+  request slot is free, `background` (de-shadow region fits, weather) only above three quarters;
+  both are dropped (`Deferred`), never queued. The concurrency cap is a semaphore per host, apart
+  from the thread pools. With these rates the cold-start burst (about 1,430 USGS or 1,190 EOX
+  tiles and 180–400 DEM tiles) runs at ≤ 15 req/s to USGS (91 s; it was up to ~30 req/s), ≤ 6 req/s
+  to EOX (193 s, so an EU cold start fills its imagery 2–3× more slowly than before) and ≤ 20 req/s
+  to Mapterhorn (it was up to ~80); measured in `test_netfetch.ColdStartTest`.
+- **Retries**: 429, 500, 502, 503, 504 and network errors, 3 attempts with full-jitter backoff
+  (`uniform(0, min(60, 0.5 · 2^k))` s). A `Retry-After` (seconds or an HTTP date, clamped to
+  1 s – 15 min) on a 429/503 pauses the host: no retry, the bucket is emptied and its breaker opens
+  for that long. A 3xx from a tile host counts as rate limiting (EOX redirects throttled clients to
+  its home page); a 200 with an HTML page from a tile host is an error (not cached); 404/410 is
+  "no data" (the caller's `.404` marker); other 4xx are errors without a marker and without retries.
+- **Circuit breaker** per host: 5 failed attempts within 30 s open it (requests fail at once with
+  `HostUnavailable`, no network); after 30 s one probe goes through; a failed probe re-opens it for
+  twice as long (up to 15 min), a success closes it. The chains fail over by themselves: imagery
+  usgs → eox2023 → eox2016 → palette, DEM Mapterhorn → AWS.
+- **Budgets**: counted per host and UTC day, persisted in `<cache-dir>/netstats/<date>.json` (every
+  60 s and at exit), so a restart keeps counting. At 80 % of the soft budget prefetch and background
+  stop (one warning); at 100 % demand runs at half rate (a warning per hour); a hard budget raises
+  `BudgetExceeded`.
+- **Log**: one line a minute with each host's requests, MB, status classes, retries, dropped and
+  refused requests and open circuits (`net: ...`); nothing when idle.
+- **Status**: while a host's circuit is open, or far tiles fell back to the palette, every `status`
+  text ends in " | Degraded: <hosts> unreachable; <n> tiles without imagery"; with `--offline`, or
+  when every imagery and DEM host is open, in " | Offline - using cached data". The note is re-sent
+  as soon as it changes (on the next pose, or within a minute). The text is unchanged otherwise.
+- **User-Agent**: `BeamNG.Earth/<server version> (+https://github.com/TecnaGamer/BeamNG.Earth)`
+  (`netfetch.USER_AGENT`, the only one); no user name, e-mail, machine name, location or session id.
 
 ## Timings v1.3 (this machine, warm DEM cache, 2026-10-10, real server process)
 
@@ -365,7 +421,8 @@ gravity.normal_gravity(lat, h)  # Somigliana + 2nd-order free-air series, numpy,
   the correction, 77 MB, read with mmap so that a truncated model loads only its prefix. The
   archive stays next to it (145 MB in all); deleting the archive is safe. First use takes about
   10 s plus the download (11 s in all on a fast mirror); later loads take 0.2 s. The only request
-  is the GET, with the generic `BeamNG.Earth/0.1` user agent.
+  is the GET, with the project User-Agent (`netfetch.USER_AGENT`), through `netfetch` (one
+  request at a time, Retry-After and the circuit breaker honoured; none with `--offline`).
 - Licence: EGM2008 is a US Government (NGA) product released for public use, and NGA attaches no
   licence terms. GeographicLib (MIT) only repackages it.
 - The tests ship a 23 kB degree-36 truncation, `tests/fixtures/egm2008_n36.npz`.
@@ -435,7 +492,8 @@ the gates (flat DEM, low r², separation), the region cache (round trip, version
 the imagery hook, and `--deshadow off` byte-identical to the pre-hook renders (`DESHADOW_TIMING=1`:
 per-tile cost). `test_imagery.py`: a landmark lat/lon lands on its texel (within 0.2 m, two frames), orientation,
 zoom choice, the source chain (404, blank, last-source blank, unreachable, undecodable, coverage
-probes, min zoom), disk cache and remembered 404s, prefetch, tone curve, DDS mip chain (each level
+probes, min zoom), disk cache and remembered 404s (their TTL, a 400 leaves none), the EOX breaker
+shared by both layers, a dropped prefetch fetched on demand, the User-Agent, prefetch, tone curve, DDS mip chain (each level
 the BC1 of the box-reduced previous one, readable by Pillow); plus three real-network checks (USGS
 at Whitney, EOX in the Alps, the open ocean), skipped offline. `test_server.py` runs full
 protocol-4 sessions against an in-process server with a synthetic DEM (no network): terrain mode
@@ -462,11 +520,26 @@ download (never blocks, one download, then EGM2008), the retry after a failed on
 recompute rule, and an in-process server (sent after a pose, recomputed, re-sent on hello, none off).
 `test_weather.py`: the Open-Meteo responses recorded 2026-10-10 (`fixtures/openmeteo_baltimore.json`,
 `openmeteo_whitney.json`) into messages, synthetic codes (fog, rain/drizzle floors, snow, thunder,
-rates from `interval`), the request (no key, generic user agent), the cell/slot cache, the 600 s /
-25 km / retry rule, the in-process server (sent after a pose, re-sent on hello, the credit in
+rates from `interval`), the request (no key, the project User-Agent through `netfetch`), the
+cell/slot cache and its shared in-flight fetch, the 600 s / 25 km / retry rule (and a longer
+Retry-After), the in-process server (sent after a pose, re-sent on hello, the credit in
 `hello.attribution`, nothing on failure or with weather off), the mod's `weather.lua` mapping of the
 same messages under luajit, and the level's weather objects (each once, the names the mod uses, the
 committed files = `tools/make_level_assets.py`'s output). No network: the fetch is injected.
+`test_netfetch.py` (no network: a scripted fake transport, a fake clock and sleep, a seeded rng): the
+token bucket (the burst at once, then 1/rate apart; prefetch only above half), the concurrency cap
+(16 threads, never more than 2 in flight), full-jitter backoff, Retry-After (the host paused for
+every thread, HTTP dates, clamping, a 429 without it), the breaker (open, probe, doubling, close),
+the DEM failover to AWS and `DemUnavailable`, response classes and `.404` marker TTLs (old-style
+markers too), the host policies (§5.2 numbers, denied hosts, interactive-only, pre-download),
+budgets (80 % / 100 % / hard, persisted per UTC day, reset the next day), the per-minute summary,
+the User-Agent (no login, host name, home directory or e-mail in any header or URL), the gravity
+download through a session, `--offline` / all hosts open (the status note, a degraded tile), and the
+cold-start bursts of §2.2 through each host's bucket (peak per second and per minute, drain time; a
+pool of 8 threads cannot outrun it). `test_demand.NetDemandTest` (§5.4 case 12) counts the upstream
+requests per minute and host of 30 and 134 m/s drives from Baltimore and Munich (the real
+`farfield.select`, the imagery / DEM zoom rules, a rebase every 10 km, cold cache) and checks the
+busiest minute against each host's policy rate.
 `test_drive_tool.py` checks `tools/drive.py` and `tools/drive_driver.lua` offline (profile rule on both
 sides, nominal speed, the summary, the driver under luajit, `run_ge` with a fake MCP: polls >= 1 s
 apart and an uninstall on every failure path). `test_v131_default.py` checks that a default
