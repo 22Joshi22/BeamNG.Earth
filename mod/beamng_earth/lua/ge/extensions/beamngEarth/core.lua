@@ -39,6 +39,7 @@ local stopwatch = require('beamngEarth/stopwatch')
 local horizon = require('beamngEarth/horizon')
 local ui = require('beamngEarth/ui')
 local settings = require('beamngEarth/settings') -- the pause-menu page's values (docs/DEVTOOLS.md)
+local credits = require('beamngEarth/credits') -- the on-screen data credits (docs/DEVTOOLS.md)
 
 local LEVEL_ID = 'beamng_earth'
 local MOD_VERSION = '0.4.0'
@@ -60,6 +61,7 @@ local ATTRIBUTION = 'Elevation: Mapterhorn (CC-BY etc., see mapterhorn.com), AWS
 -- shown once satellite-textured tiles arrive (docs/V1_3_SPEC.md C; EOX's required wording)
 local IMAGERY_ATTRIBUTION = 'Imagery: USGS The National Map (public domain); EOxCloudless https://cloudless.eox.at by '
   .. 'EOX IT Services GmbH (Contains modified Copernicus Sentinel data 2023 / 2016 & 2017; CC BY-NC-SA 4.0 / CC BY 4.0)'
+local FULL_ATTRIBUTION = IMAGERY_ATTRIBUTION .. '\n' .. ATTRIBUTION
 
 local st -- all runtime state, see resetState()
 local rebaseLag = 0 -- frames between a vehicle move request and its visibility (measured, see commitRebase)
@@ -443,6 +445,8 @@ local function onMessage(msg)
     local w = rawget(_G, 'beamngEarth_weather')
     if w and w.clearGravity then w.clearGravity() end
     st.deshadow = msg.deshadow -- server-side imagery de-shadowing ('lambert' / 'full'; nil = off), shown on the settings page
+    -- the on-screen credits: this session's own follow (the attribution line until then)
+    credits.clear()
     -- M4: the terrain block size first (everything below may use the lattice / follow table); a
     -- server without hello.blockSize has the v1.3.1 1024² block
     local size, okSize = M.setBlockSize(msg.blockSize or 1024)
@@ -533,6 +537,9 @@ local function onMessage(msg)
     -- real gravity at the player (server gravity.py): applied by beamngEarth_weather's setGravity path
     local w = rawget(_G, 'beamngEarth_weather')
     if w and w.onGravity then w.onGravity(msg) end
+  elseif t == 'credits' then
+    -- the sources around the player (server credits.py): msg.near, msg.far, drawn by credits.lua
+    credits.onMessage(msg)
   end
 end
 
@@ -671,7 +678,7 @@ end
 -- imagery credits once satellite-textured tiles arrived.
 local function attributionText(fs)
   if serverAttribution then return serverAttribution end
-  return (fs.textured > 0) and (IMAGERY_ATTRIBUTION .. '\n' .. ATTRIBUTION) or ATTRIBUTION
+  return (fs.textured > 0) and FULL_ATTRIBUTION or ATTRIBUTION
 end
 
 local function buildView()
@@ -705,6 +712,17 @@ local function buildView()
   }
 end
 
+-- The on-screen credits before the server's first credits message (or from an older server): the
+-- attribution line. Called every frame then, so no farfield.stats() table: its counters only.
+local function creditsFallback() return attributionText(farfield.counters()) end
+
+-- The imgui window and the on-screen credits (one text draw; the attribution line until the server
+-- sends credits).
+local function drawUi()
+  ui.draw(buildView(), { teleport = M.teleport, setRebaseDistance = M.setRebaseDistance })
+  credits.draw(st.active, creditsFallback)
+end
+
 local function onUpdate(dtReal, dtSim)
   dtReal = dtReal or 0
   st.clock = st.clock + dtReal
@@ -728,7 +746,7 @@ local function onUpdate(dtReal, dtSim)
     if rb.wait <= 0 then
       finishRebase()
     else
-      ui.draw(buildView(), { teleport = M.teleport, setRebaseDistance = M.setRebaseDistance })
+      drawUi()
       return -- positions are in neither frame for decisions this frame
     end
   end
@@ -739,7 +757,7 @@ local function onUpdate(dtReal, dtSim)
     farfield.update(gov, (gov.w1 or dtReal * 1000) / 1000, st.cam, st.player)
     updateSky(dtReal)
   end
-  ui.draw(buildView(), { teleport = M.teleport, setRebaseDistance = M.setRebaseDistance })
+  drawUi()
 end
 
 -- After physics, before rendering (main.lua:819-824): measure when a rebase's vehicle move became
@@ -764,6 +782,11 @@ local function onPreRender(dtReal, dtSim)
       log('W', 'beamngEarth', 'rebase: vehicle move not visible after ' .. LAG_PROBE_FRAMES .. ' frames')
     end
   end
+end
+
+-- The game's UI state (pause menu, loading screens): the credits hide in the pause menu.
+local function onUiChangedState(toState, fromState)
+  credits.setUiState(toState)
 end
 
 ------------------------------------------------------------------------------------------
@@ -917,12 +940,16 @@ end
 -- The credits line in use (the settings page shows it).
 function M.attribution() return attributionText(farfield.stats()) end
 
+-- The on-screen data credits in use: the server's (near + far), else the attribution line.
+function M.credits() return credits.text(creditsFallback) end
+
 function M._state() return st end -- read-only: the dev tools and the settings page
 function M._rebaseLag() return rebaseLag end -- for tests
 function M._governor() return gov end
 
 M.onUpdate = onUpdate
 M.onPreRender = onPreRender
+M.onUiChangedState = onUiChangedState
 M.onClientStartMission = onClientStartMission
 M.onClientEndMission = onClientEndMission
 M.onExtensionLoaded = onExtensionLoaded

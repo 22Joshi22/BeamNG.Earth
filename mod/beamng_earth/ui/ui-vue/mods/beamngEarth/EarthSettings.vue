@@ -211,6 +211,11 @@ const settingsSchema = [
     name: "Interface",
     items: [
       { id: "hudVisible", type: "bool", default: false, name: "Status HUD", desc: "Show the compact BeamNG.Earth status window (connection, anchor, far field, quick buttons). Also whether it opens at level start." },
+      { id: "creditsVisible", type: "bool", default: true, name: "Data credits on screen", desc: "Small text in a screen corner naming the sources of the imagery, elevation and weather around you right now (the far field's own sources on a second line). On by default: CC BY and similar licences ask for visible attribution. Hidden in the pause menu and the big map." },
+      { id: "creditsCorner", type: "select", default: "bottom-left", name: "Data credits corner", desc: "The screen corner of the data credits.",
+        options: [ { label: "Bottom left", value: "bottom-left" }, { label: "Bottom right", value: "bottom-right" }, { label: "Top left", value: "top-left" }, { label: "Top right", value: "top-right" } ] },
+      { id: "creditsSize", type: "select", default: "small", name: "Data credits size", desc: "Text size of the data credits: small (11 px) or normal (14 px).",
+        options: [ { label: "Small", value: "small" }, { label: "Normal", value: "normal" } ] },
     ],
   },
   {
@@ -236,6 +241,7 @@ const settingsSchema = [
   {
     name: "Attribution",
     items: [
+      { id: "credits", type: "text", name: "On screen now", desc: "The data credits for what is around you now, as drawn in the screen corner (sent by the server whenever they change)." },
       { id: "attribution", type: "text", name: "Data sources", desc: "Credits for the elevation and imagery sources in use." },
     ],
   },
@@ -276,6 +282,7 @@ function infoValue(item) {
   if (item.id === "anchor") return s.anchorId ? `#${s.anchorId}  ${fmt(s.anchorLat, 5)}, ${fmt(s.anchorLon, 5)}` : "none"
   if (item.id === "player") return (typeof s.playerLat === "number") ? `${fmt(s.playerLat, 5)}, ${fmt(s.playerLon, 5)}  (${fmt(s.dist / 1000, 1)} km from origin)` : "-"
   if (item.id === "attribution") return s.attribution || "-"
+  if (item.id === "credits") return s.credits || "-"
   if (item.id === "weather") return s.weather || "-"
   if (item.id === "gravity") return s.gravity || "-"
   if (item.id === "deshadow") return s.deshadow || "off"
