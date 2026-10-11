@@ -191,7 +191,8 @@ player right now, e.g.:
   the default. Weather and Sky stay on Real and switch themselves to Manual when the weather or the
   time is changed in the game (the pause menu, another mod; ARCHITECTURE.md "Real weather"):
   weather.lua / sky.lua save `manual` through `settings.set` and show one toast; a short note under
-  both dropdowns says so. The page's 2 s poll (`uiState`) refreshes the values too, so the dropdown
+  both dropdowns says so. Choosing Real weather is always applied (even when it already is: it clears
+  a gravity change made in the game); after a Lua reload both read the saved mode back. The page's 2 s poll (`uiState`) refreshes the values too, so the dropdown
   shows Manual within 2 s (a poll answered within 1 s of the page's own write is not applied to the
   values, so it cannot flip a choice back). The dev overlays stay per session. The Connection section also shows the server
   features as status lines: the weather line, the gravity in use and its source, and the imagery

@@ -365,7 +365,12 @@ local function onLevel()
 end
 M.onClientStartMission = onLevel
 function M.onClientEndMission() inOurLevel, pending = false, nil end
+-- A Lua reload mid-level: settings.lua loads (and applies) before this extension, and no level
+-- start follows to apply again, so the saved mode is read here.
 function M.onExtensionLoaded()
+  local st = rawget(_G, 'beamngEarth_settings')
+  local saved = st and st.get and st.get('skyMode')
+  if saved then M.setMode(saved) end
   if scenetree.MissionGroup and getCurrentLevelIdentifier and getCurrentLevelIdentifier() then onLevel() end
 end
 

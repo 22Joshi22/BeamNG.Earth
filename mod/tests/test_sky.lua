@@ -203,6 +203,21 @@ check(sky.getMode() == 'manual' and #toasts == 2, 'play off: manual')
 sky.setMode('real')
 run(0.1)
 
+-- a Lua reload mid-level: settings.lua loads (and applies) before this extension, so the saved mode
+-- is read back here
+beamngEarth_settings.get = function(k) return k == 'skyMode' and 'manual' or nil end
+sky.onExtensionLoaded()
+check(sky.getMode() == 'manual', 'reload: the saved Manual comes back')
+local t0 = tod.time
+now = now + 600
+run(31)
+check(tod.time == t0, 'reload: manual, not re-synced')
+beamngEarth_settings.get = nil
+sky.setMode('real')
+sky.onExtensionLoaded()
+check(sky.getMode() == 'real', 'reload without settings.get: the mode is kept')
+run(0.1)
+
 -- other levels: never switched
 getCurrentLevelIdentifier = function() return 'west_coast_usa' end
 sky.onClientEndMission()

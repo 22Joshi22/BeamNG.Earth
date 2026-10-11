@@ -168,10 +168,11 @@ M.APPLY = {
   end,
   -- real weather and gravity (weather.lua; the server's --weather / --gravity decide whether data come).
   -- weather.lua and sky.lua save 'manual' here themselves when the weather / time is changed in the
-  -- game; the mode is then already set, so it is not applied again.
+  -- game; the mode is then already set, so it is not applied again. 'real' always is: it also clears
+  -- a gravity change made in the game (weather.lua keeps that until setMode('real')).
   weatherMode = function(v)
     local w = ext('beamngEarth_weather')
-    if w and w.setMode and not (w.getMode and w.getMode() == v) then w.setMode(v) end
+    if w and w.setMode and not (v == 'manual' and w.getMode and w.getMode() == v) then w.setMode(v) end
   end,
   realGravity = function(v)
     local w = ext('beamngEarth_weather')

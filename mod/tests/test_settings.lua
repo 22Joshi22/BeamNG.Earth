@@ -141,6 +141,11 @@ T.check(settings.load().weatherMode == 'manual', 'switch to manual: kept for the
 settings.set('weatherMode', 'real')
 settings.set('skyMode', 'real')
 T.check(wCalls[#wCalls] == 'mode real' and skyCalls[#skyCalls] == 'mode real', 'Real again from the page: applied')
+-- Real chosen while already real (the dropdown, a reset to defaults): applied as before, which clears
+-- a gravity change made in the game (weather.lua keeps it until setMode('real'))
+nCalls = #wCalls
+settings.set('weatherMode', 'real')
+T.check(#wCalls == nCalls + 1 and wCalls[#wCalls] == 'mode real', 'Real while real: applied again (the gravity override)')
 settings.set('realGravity', true)
 -- without the core extension: straight to rebase.lua
 beamngEarth_core = nil

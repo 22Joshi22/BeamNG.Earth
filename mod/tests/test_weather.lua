@@ -117,6 +117,16 @@ check(keys(W.changedKeys({ groundWind = vec3(1, 2, 0) }, stubEnv, { groundWind =
   'a reference value wins over the engine\'s')
 check(keys(W.changedKeys({ numOfDrops = 500, cloudAltitudeKm = 2 }, stubEnv)) == 'cloudAltitudeKm,numOfDrops', 'no getter: a change')
 check(not W.valueDiffers('cloudCover', 'x', 1, 0.01) and W.valueDiffers('cloudCover', 1, nil, 0.01), 'unreadable values')
+-- the menu's sliders (0.39 EnvWeather.vue) send their value rounded to the step when the number field
+-- loses focus, unedited: within half a step is no change, one step is
+local function deg(a) return { x = math.sin(math.rad(a)), y = math.cos(math.rad(a)), z = 0 } end
+local menuEnv = { getCloudCover = function() return 0.913 end, getWindSpeed = function() return 0.112 end,
+  getCloudWindDirection = function() local d = deg(32.6); return vec3(d.x, d.y, 0) end,
+  getFogDensity = function() return 6.74e-5, {} end }
+check(keys(W.changedKeys({ cloudCover = 0.91, windSpeed = 0.1, cloudWindDirection = deg(35), fogDensity = 0.065 }, menuEnv)) == '',
+  'the menu\'s rounding to its step (cover 0.01, cloud speed 0.1, direction 5 deg, fog 0.005): no change')
+check(keys(W.changedKeys({ cloudCover = 0.92, windSpeed = 0.2, cloudWindDirection = deg(40), fogDensity = 0.075 }, menuEnv))
+  == 'cloudCover,cloudWindDirection,fogDensity,windSpeed', 'one step of the menu\'s sliders: a change')
 -- the BWM_Weather rule (named in the toast)
 check(not W.bwmFighting(nil), 'no BWM')
 check(not W.bwmFighting({ currentPreset = 'clear', targetPreset = 'clear', automaticWeather = false }), 'BWM on clear')
@@ -400,6 +410,13 @@ env.cover = 0.1
 run(10)
 check(env.calls.cover == nCover and env.fog == 0.03 and #toasts == nToasts + 1 and #saved == 1,
   'manual: hands off, further changes no toast')
+-- manual: a cloud altitude set in the menu is kept (the layer stops following the ground); the same
+-- altitude repeated is not
+sky.follow = true
+W.onEnvironmentChanged({ cloudAltitudeKm = env.cloudAlt })
+check(sky.follow == true, 'manual: a repeated cloud altitude leaves the ground following on')
+W.onEnvironmentChanged({ cloudAltitudeKm = env.cloudAlt + 1 })
+check(sky.follow == false, 'manual: a cloud altitude set in the menu stops the ground following')
 -- Real again (the settings page): driven again, the sun dims again
 W.setMode('real')
 run(W.LERP_S)
@@ -524,6 +541,21 @@ BWM_Weather_main = nil
 W.setMode('real')
 run(W.LERP_S)
 check(W.getMode() == 'real' and env.calls.cover > 0, 'real again after BWM')
+
+-- a Lua reload mid-level: settings.lua loads (and applies) before this extension, so the saved mode
+-- is read back here; without the settings extension (or a get) the default stays
+beamngEarth_settings = { get = function(k) return k == 'weatherMode' and 'manual' or nil end, set = beamngEarth_settings.set }
+W.onExtensionLoaded()
+check(W.getMode() == 'manual', 'reload: the saved Manual comes back')
+nToasts, nSaved = #toasts, #saved
+run(W.GRACE_S + 5)
+W.onEnvironmentChanged({ cloudCover = env.cover + 0.5 })
+run(W.MISSION_SETUP_S + 0.5)
+check(#toasts == nToasts and #saved == nSaved, 'reload: manual, no switch and no toast')
+beamngEarth_settings = { set = beamngEarth_settings.set }
+W.setMode('real')
+W.onExtensionLoaded()
+check(W.getMode() == 'real', 'reload without settings.get: the mode is kept')
 
 -- other levels: nothing happens there
 level = 'west_coast_usa'

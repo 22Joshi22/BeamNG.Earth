@@ -580,15 +580,18 @@ in 2026-10-10-weather-probe-results.md.
   wind direction / speed, fog density / height, ground wind, cloud altitude, precipitation; compared
   with the engine's value through the core_environment getters, since the hook fires before the value
   is applied; fog in either scale, setState carries the menu's x1000; keys without a value to compare
-  count as changes) stops all writes at once (3 s quiet, env's 1.15 s menu lerp) and, unless a
+  count as changes; every tolerance is at least half the menu's slider step, since its number field
+  sends the value rounded to the step when it loses focus, even unedited) stops all writes at once (3 s quiet, env's 1.15 s menu lerp) and, unless a
   mission starts within 2 s (its setup comes just before `started`), switches to manual: rain and
   snow hidden, the level's sun brightness back, one toast ("Weather set to Manual because it was
   changed ...", naming BWM_Weather when it is changing the weather at that moment), and
-  `beamngEarth_settings.set('weatherMode', 'manual')` so the settings page shows it (its apply sees
-  the mode already set). A setState repeating the current values is no change. `setGroundWind`
+  `beamngEarth_settings.set('weatherMode', 'manual')` so the settings page shows it (its apply skips
+  a repeated manual; Real is always applied, which clears a gravity change as before). A setState
+  repeating the current values is no change. `setGroundWind`
   applies before its hook, so the ground wind is compared with the value we wrote last. BWM_Weather
   no longer switches anything by itself; its changes count like the player's. Choosing Real again
-  drives everything again. Missions and the big map (`freeroam_bigMapMode`: fog 0, clouds 0, its own
+  drives everything again. A cloud altitude someone else sets is kept in manual mode too (the layer
+  stops following the ground until Real). Missions and the big map (`freeroam_bigMapMode`: fog 0, clouds 0, its own
   time, put back as it closes; `onBeforeBigMapActivated` / `onDeactivateBigMapCallback` + 2 s) pause
   it and their changes are not edits. Gravity is its own setting: a gravity change by the game (the
   menu's presets) is kept until `setMode('real')`, as before, and does not switch the weather.
@@ -597,7 +600,9 @@ in 2026-10-10-weather-probe-results.md.
   TimeOfDay and the real clock, another date, `play = false`, a day length other than 86400 s or
   another UTC offset (`sky.timeChanges`) switches the sky to manual (saved as `skyMode`, one toast).
   Its own re-syncs write the TimeOfDay fields directly and never reach the hook. Missions and the big
-  map also pause the re-sync now; it runs at once when they end.
+  map also pause the re-sync now; it runs at once when they end. After a Lua reload mid-level both
+  read the saved mode back (`beamngEarth_settings.get`): settings.lua loads and applies first, and no
+  level start follows to apply it again.
 - **Gravity** by latitude and height (WGS84 Somigliana minus 3.086e-6·h; 9.7803 equator, 9.8322 pole)
   through `core_environment.setGravity` when it changes by 1e-4 (~30 m of climb); `GRAVITY_ENABLED`
   (on); a menu gravity change is respected; off restores 9.81.

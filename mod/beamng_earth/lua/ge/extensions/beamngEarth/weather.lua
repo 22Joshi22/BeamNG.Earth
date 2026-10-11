@@ -115,14 +115,18 @@ M.FREE_AIR = 3.086e-6      -- m/s^2 per m of height (normal free-air gradient)
 -- of the engine's value (the hook fires before a value is applied) and the tolerance within which
 -- an incoming value is no change. Vectors by component; fogDensity relative, in either scale
 -- (setState carries the menu's x1000, setFogDensity the engine's); numOfDrops is no engine field, so
--- getPrecipitation may have nothing to compare with (a change).
+-- getPrecipitation may have nothing to compare with (a change). The menu's sliders (0.39
+-- EnvWeather.vue) send their value rounded to their step when the number field loses focus, unedited:
+-- a tolerance is at least half a step (cover 0.01, cloud speed 0.1, direction 5 deg, fog 0.005 x1000),
+-- and below one step.
+M.FOG_STEP_HALF = 2.6e-6   -- the fog tolerance never goes below half the menu's step (engine scale)
 M.WEATHER_KEYS = {
-  cloudCover = { 'getCloudCover', 0.01 },
+  cloudCover = { 'getCloudCover', 0.006 },
   cloudCirrusCoverage = { 'getCloudCirrusCoverage', 0.01 },
   cloudCirrusDensity = { 'getCloudCirrusDensity', 0.01 },
   cloudCirrusAltitudeKm = { 'getCloudCirrusAltitudeKm', 0.05 },
-  cloudWindDirection = { 'getCloudWindDirection', 0.02 },
-  windSpeed = { 'getWindSpeed', 0.002 },
+  cloudWindDirection = { 'getCloudWindDirection', 0.045 }, -- unit vector: ~2.6 deg
+  windSpeed = { 'getWindSpeed', 0.051 },
   fogDensity = { 'getFogDensity', 0.02 },
   fogAtmosphereHeight = { 'getFogAtmosphereHeight', 1 },
   groundWind = { 'getGroundWind', 0.2 },
@@ -287,7 +291,7 @@ function M.valueDiffers(key, v, have, tol)
   if v == nil then return false end -- nothing the setter would apply
   if have == nil then return true end
   if key == 'fogDensity' then
-    local t = math.max(tol * have, 1e-6)
+    local t = math.max(tol * have, M.FOG_STEP_HALF)
     return math.abs(v - have) > t and math.abs(v / 1000 - have) > t
   end
   return math.abs(v - have) > tol
@@ -726,13 +730,16 @@ function M.onEnvironmentChanged(changes)
     S.gravityOverride = S.clock
     S.quietUntil = S.clock + M.USER_QUIET_S
   end
-  if mode ~= 'real' or bigMapBusy() then return end
+  if bigMapBusy() then return end
+  -- a cloud altitude someone else sets is kept, in manual mode too: the layer stops following the ground
+  if changes.cloudAltitudeKm ~= nil and #M.changedKeys({ cloudAltitudeKm = changes.cloudAltitudeKm }, env()) > 0
+    and sky() and sky().setCloudFollow then sky().setCloudFollow(false) end
+  if mode ~= 'real' then return end
   -- the ground wind: setGroundWind applies before its hook, so compare with what we wrote last
   local keys = M.changedKeys(changes, env(), { groundWind = S.windSent })
   if #keys == 0 then return end
   S.quietUntil = S.clock + M.USER_QUIET_S
   if not S.pending then S.pending = { at = S.clock, keys = keys } end
-  if changes.cloudAltitudeKm ~= nil and sky() and sky().setCloudFollow then sky().setCloudFollow(false) end
 end
 
 function M.onAnyMissionChanged(state)
@@ -767,7 +774,12 @@ local function onLevel()
 end
 M.onClientStartMission = onLevel
 function M.onClientEndMission() resetState() end
+-- A Lua reload mid-level: settings.lua loads (and applies) before this extension, and no level
+-- start follows to apply again, so the saved mode is read here.
 function M.onExtensionLoaded()
+  local st = rawget(_G, 'beamngEarth_settings')
+  local saved = st and st.get and st.get('weatherMode')
+  if saved then M.setMode(saved) end
   if scenetree.MissionGroup and getCurrentLevelIdentifier and getCurrentLevelIdentifier() then onLevel() end
 end
 
