@@ -128,6 +128,11 @@ POLICIES = {
                  "overturemapswestus2.blob.core.windows.net",
                  "esa-worldcover.s3.eu-central-1.amazonaws.com",
                  "dataforgood-fb-data.s3.amazonaws.com")},
+    # OurAirports' nightly CSV dump on GitHub Pages (airports.py): two files (~3 MB gzipped) once a week,
+    # one request at a time, a hard cap well above a week's need; the copy on disk serves offline
+    "davidmegginson.github.io": HostPolicy(rate=0.2, burst=2.0, max_conc=1, daily_budget=20, daily_hard=40,
+                                           offline_ok=True, miss_ttl=None, binary=True, timeout=120.0,
+                                           max_attempts=2, base_delay=5.0),
     # never at runtime (OSM Overpass, OSMF vector tiles, Protomaps builds): §3.3
     "overpass-api.de": HostPolicy(denied=True, daily_hard=0),
     "vector.openstreetmap.org": HostPolicy(denied=True, daily_hard=0),

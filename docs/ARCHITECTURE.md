@@ -1003,3 +1003,57 @@ CLI). The only change to an existing module: host policies in `netfetch.POLICIES
   restored in a finally (each step independent, also of a second Ctrl-C, the camera last); a failed
   or uncommitted teleport takes no shots; a timed-out MCP call is retried once; `restore <run>`
   after a hard kill.
+
+## Airports and runways (`server/airports.py`, `runwaygeom.py`, `runwaymarks.py`; built offline 2026-10-11, branch feature/airports)
+Groundwork for docs/ROADMAP.md quick win 4; design, data quality and the test places in
+docs/research/2026-10-11-airports.md. Not wired into earthd or the mod yet. New modules only, plus the
+host policy `netfetch.POLICIES["davidmegginson.github.io"]` and `airports` in `cache.KEPT`.
+- **Data**: OurAirports' nightly CSV dump (public domain), `airports.csv` + `runways.csv` from GitHub Pages
+  through netfetch (0.2 req/s, one at a time, hard cap 40 a day; gzip: 5.2 MB on the wire for 16.7 MB).
+  `<cache>/airports/ourairports/<gen>/` + `current.json`: a new generation is written to a temp dir,
+  checked (columns, a full parse, >= half the previous rows), renamed, then the pointer replaced; refreshed
+  weekly (kind `background` when a copy exists), retried at most every 6 h after a failure, the last good
+  copy used whatever fails (offline too). `cache.py` counts it and never evicts or clears it.
+- **Model** (`AirportDB`, a pure function of the two files, sorted by OurAirports' persistent ids,
+  `Runway.key = "oa:<id>"`, `snapshot` = their content hash): both ends (lat/lon, elevation m, true
+  heading, displaced threshold), length, width (data or the ICAO minimum per code), surface (668 free-text
+  values classified; BeamNG ground models: ASPHALT, ASPHALT_OLD, COBBLESTONE, GRASS, GRAVEL, DIRT, SAND,
+  SNOW, ICE, METAL, WOOD; water none), lighted, closed, flags and a quality: `surveyed` (both ends),
+  `derived` (one end + heading + length), `arp` (the only runway, centred on the airport point: excluded
+  by default). 2026-10-11: 16,563 runways placed of 48,336 rows (7,584 helipads, kept apart; 24,064 rows
+  have no end position); large airports 94 % placed, small 29 %. Load 1.6-1.9 s.
+- **Queries**: `near(lat, lon, r)` (distance to the centreline, ~1 ms), `in_cell(key)` (mapcells z14:
+  the influence footprint, exact rectangle test), `group(rw)` / `groups_in_cell(key)` (runways graded
+  together: overlapping footprints, transitively, built from the whole file), `helipads_near`.
+- **Grading** (`runwaygeom`): per runway an ENU frame at its midpoint, s/t along/across; zones runway
+  (crown 1.25 % paved / 2 % unpaved), shoulders (paved, 2.5 %), graded strip (ICAO half-width and end
+  extension by code; the terrain clamped to 2.5-3 % from the pavement, the end grade continued), blend
+  (20-250 m, smoothstep, at most 1:4 added). Longitudinal profile: the DEM along the centreline (crown-aware
+  median of 5 across), the ends at the DEM's level with the data's end-to-end difference when they agree,
+  a Whittaker smoother at the smallest lambda meeting the code's vertical-curve radius and grade; steep
+  runways (altiports) and relaxed unpaved strips keep the terrain's shape (radius >= 400 m, >= 50 x the
+  pixel on coarse DEMs). Several runways: longest first, each fitted on the field graded before it, a
+  crossing keeps the main runway's surface. `apply(plans, lat, lon, elev)` returns the graded elevation,
+  weight and zone; outside every footprint the DEM bit for bit. `graded_elev_fn(elev_fn, plans)` is the
+  drop-in sampler for `heightmap.surface` and the tiles (no change to heightmap.py; the physics block and
+  the exact-level mesh tiles then sample the same function on the same lattice).
+- **Markings** (`runwaymarks`): strokes (segment + width in s/t, each a 2-node DecalRoad, probes P1-P3)
+  for threshold stripes, designations (seven-segment glyphs, the data's ident or the heading), centreline,
+  aiming point, touchdown zone, side stripes, displaced-threshold bar and arrows, closed-runway crosses;
+  FAA style in the US, ICAO elsewhere; class (precision / non-precision / visual / unpaved / closed) from
+  length, lighting, surface and airport type.
+- **CLI**: `python3 server/airports.py --near lat,lon --radius km`, `--airport IDENT`, `--preview IDENT out.png`
+  (`airportpreview.py`: hillshade + zones + markings, the height change, the profiles; JSON report),
+  `--stats`, `--refresh`, `--offline`, `--cache-dir`.
+- **Test places** (Mapterhorn / AWS DEM): KBWI, KLAX, LXGB, EGLM grade within ICAO limits (max 0.2-1.4 %,
+  0.02-0.22 m RMSE from the DEM, data end elevations within 1.2 m of lidar DEMs); Courchevel keeps its
+  19 % knee, Lukla 14.7 % on an SRTM-class DEM, Lele (PNG) 9.9 %, Johnson Creek relaxed to 4.8 %. Plan
+  13-56 ms per runway, `apply` up to 0.6 s for 2.2 M points (a whole airport preview).
+- **Integration plan** (docs/research/2026-10-11-airports.md §6): one Store per server; plans per group
+  cached by (ids, snapshot, versions, DEM sampler at a fixed zoom per place); the earthd hook wraps the
+  block's and the tiles' `elev_fn` (after v1.4 M6, which rewrites that code); runway ground models in the
+  v1.5 layer masks (+4-5 ms per 512² commit for 8 layers); groups per map-data cell; M6 tile content keys
+  gain the OurAirports snapshot and the runwaygeom version; DecalRoad markings within ~2 km; runway ends
+  as spawn places; taxiways / aprons / buildings from Overture / OSM later.
+- Tests: `server/tests/test_airports.py`, `test_runwaygeom.py`, `test_runwaymarks.py` (synthetic files from
+  `airportfixtures.py`, synthetic DEMs, fake netfetch transport and wall clock; no network).

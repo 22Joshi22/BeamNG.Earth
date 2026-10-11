@@ -12,6 +12,8 @@ Layout of the cache root (~/.cache/beamng-earth by default):
                       one is a miss, built or fetched again). Not used by earthd yet, so nothing
                       there is protected as this session's: the walk's mtime is its last use
   gravity/            counted, never evicted or cleared (the 145 MB EGM2008 model, downloaded once)
+  airports/           the same (airports.py: OurAirports' CSV files, ~17 MB, the last good copy kept for
+                      offline use; airports.py replaces it weekly and deletes the old generation itself)
   netstats/ (and anything else)           not tracked: the daily request budgets must survive a clear
 
 Last use = the server's own record of every disk hit and write (dem.py, imagery.py, the de-shadow and
@@ -49,7 +51,7 @@ VERSION_FILE = "VERSION"
 INDEX_FILE = "index.tsv"
 INDEX_HEADER = "# beamng-earth cache index 1"
 MANAGED = ("dem", "imagery", "colormatch", "deshadow", "mapdata")     # evicted and cleared
-KEPT = ("gravity",)                                         # counted only
+KEPT = ("gravity", "airports")                              # counted only
 DEFAULT_CAP_GB = 20.0
 MAX_CAP_GB = 1e6            # 1 PB: anything above is a mistake (and would overflow)
 GB = 1e9                    # the page's GB (decimal, as disk sizes are sold)
