@@ -49,7 +49,9 @@ python3 server/earthd.py --port 47613 --user-dir ~/.local/share/BeamNG/BeamNG.dr
 | `-v` | off | Debug logging |
 
 Requirements: Python 3 (3.10+), numpy, Pillow (≥ 11, for its DXT1 encoder) with WebP support. No
-API keys, no other packages (the `.cdae` writer has its own msgpack encoder).
+API keys, no other packages (the `.cdae` writer has its own msgpack encoder). The map-data pipeline
+(`mapdata.py`, "Map data" below; not used by earthd yet) also needs `duckdb` (≥ 1.5) and `fsspec`:
+`pip install -r server/requirements.txt`.
 
 The v1.2 behaviour is `--near-visual terrain --imagery off` (the integration drive and `test_e2e.py`
 run that way).
@@ -322,6 +324,8 @@ built in `main_async` and handed to `Dem`, `Imagery`, `weather.fetch` and `gravi
 | `s3.amazonaws.com` (AWS Terrain Tiles) | 50/s, 100 | 8 | — | above half a bucket | never |
 | `api.open-meteo.com` | 0.1/s, 2 | 1 | 500 (500 = 1,000 calls) | no | — |
 | `downloads.sourceforge.net` (EGM2008) | 1/s, 1 | 1 | — | no | — |
+| `stac.overturemaps.org` (map data: the Overture STAC index) | 5/s, 10 | 2 | 5,000 | above half a bucket | 30 days |
+| `overturemaps-us-west-2.s3.us-west-2.amazonaws.com`, `overturemapswestus2.blob.core.windows.net` (Overture GeoParquet, AWS then the Azure mirror), `esa-worldcover.s3.eu-central-1.amazonaws.com`, `dataforgood-fb-data.s3.amazonaws.com` (canopy height) | 20/s, 40 | 4 | — | above half a bucket | never |
 | `overpass-api.de`, `vector.openstreetmap.org`, `build.protomaps.com` | never at runtime (`PolicyDenied`) | | | | |
 | any other host | 2/s, 4 | 2 | 5,000 | no | 30 days |
 
@@ -505,6 +509,51 @@ changes in between.
 | North Pole, sea level | +14.90 m | 9.832248 | 9.832139 | +10.9 | +6.2 | – |
 | Kansas 38.5, −98.0, 10 km | −27.99 m | 9.769524 | 9.769665 | −14.1 | −5.6 | −1.6″, +4.1″ |
 
+## Map data (`server/mapdata.py`; docs/ARCHITECTURE.md "Map data")
+
+The shared input of every content feature (roads, buildings, water, land use, trees, ground
+types): per global cell, compact numpy structures in the cell's local frame plus a provenance
+record. Not wired into earthd yet; the API is the integration surface.
+
+```python
+md = mapdata.MapData(cache_dir, fetcher)          # the server's netfetch.Fetcher
+cell = md.cell(mapcells.cell_of(lat, lon))        # CellData; md.prefetch(key) / kind="background"
+cell.layers["roads"].attrs["class"]               # mapgeom.Features: ids (GERS), parts(i, xy), attrs, rules, own
+cell.layers["landcover"].sample(lon, lat)         # maprasters.Raster (WorldCover classes); "canopy": CHM metres
+cell.provenance, cell.credit_line(), cell.digest()
+```
+
+- **Cells** (`mapcells.py`): Web-Mercator z14 tiles `14/x/y` (1.2–2.4 km), independent of the
+  anchor; `cells_for_bbox()` lists the cells under any footprint (v1.4 M6 global tiles, generators).
+- **Layers**: `roads` (Overture segments: class, subclass, name, surface / flags / width / level /
+  subclass / max speed rules along the segment, connector ids), `connectors`, `buildings` (height,
+  min height, floors, roof and facade fields, the dataset the height came from), `water` and
+  `land_use` (clipped to the cell), `infrastructure` (power, barriers, bridges...), `landcover`
+  (ESA WorldCover 2021 10 m, native pixels), `canopy` (Meta/WRI CHMv2 1.19 m, 2048² per cell).
+- **Fetch**: the Overture release's STAC index picks the files whose bbox touches the cell; the
+  footers, then the bbox columns of the row groups whose statistics touch it, then the used columns
+  of the row groups with a match are fetched in parallel through netfetch (4 at once), and DuckDB
+  (no extensions, its own prefetching off) reads them from the block cache. The rasters are COG
+  range reads (`cog.py`, no GDAL). Overture comes from AWS, the Azure mirror when AWS cannot deliver.
+- **Cache**: `<cache-dir>/mapdata/v<VERSION>/<source>/<release>/<layer>/14/<x>/<y>.npz` per layer
+  (written once, read without pickles), `<cache-dir>/mapdata/raw/<source>/<release>/...` for the
+  source files' 256 KiB range blocks and the STAC JSON (immutable, kept across VERSIONs).
+- **Overture release**: pinned in `overture.RELEASE` (`2026-09-23.1`); `python3 server/mapdata.py
+  --latest` prints the newest. Bump the constant to update (cells are cached per release).
+- **CLI** (development): `python3 server/mapdata.py --cell 39.2834,-76.5934 --dump --png out.png`
+  (`--key 14/x/y`, `--around N` for a block of cells, `--layers`, `--offline`, `--cache-dir`).
+
+Measured 2026-10-11 (this machine, home connection, one z14 cell, nothing cached, STAC included):
+
+| place | cold | warm | downloaded | cell files | contents |
+|---|---|---|---|---|---|
+| Fells Point 39.2834, −76.5934 (14/4706/6244) | 3.6 s | 0.06 s | 69 MB, 63 requests | 3.3 MB | 3,013 road segments, 12,458 buildings (1.9 % height, 5.1 % height or floors), 25 water, 204 land use, 4,113 infrastructure; 84 % built-up; canopy to 25 m |
+| Monument Valley 36.7818, −110.1393 (14/3179/6389) | 2.9 s | 0.02 s | 36 MB, 49 requests | 59 KB | 10 roads (tertiary, track, unclassified; 4 with surface), 1 building (Microsoft ML, no height); 92.5 % bare |
+| Kayenta solar plant 36.7874, −110.2382 (14/3174/6389) | 2.9 s (0.45 s after Monument Valley) | 0.02 s | 36 MB (0 after Monument Valley) | 83 KB | 14 roads (track, service), 11 buildings, 52 infrastructure (the power plant, substations, towers, lines, fences) |
+
+The neighbours of a fetched cell cost 1–2 s (mostly DuckDB and parsing) and 0–9 MB. Previews and the
+full dumps: `docs/research/mapdata/` (local, git-ignored).
+
 ## Tests
 
 ```sh
@@ -565,6 +614,16 @@ Retry-After), the in-process server (sent after a pose, re-sent on hello, the cr
 `hello.attribution`, nothing on failure or with weather off), the mod's `weather.lua` mapping of the
 same messages under luajit, and the level's weather objects (each once, the names the mod uses, the
 committed files = `tools/make_level_assets.py`'s output). No network: the fetch is injected.
+`test_mapdata.py` (no network: synthetic sources from `tests/mapfixtures.py`, generated at test time
+by DuckDB and a small TIFF writer, served with Range requests by a fake transport; the Overture
+tests are skipped without duckdb / fsspec): cell keys (benchmark cells, edges, antimeridian, owner),
+WKB and clipping, the COG reader (Deflate, predictor 2, raw, big-endian, sparse tiles), range
+reads (block cache, coalescing, mirror failover, 404 markers, one fetch per block across threads,
+request kinds), STAC filtering, roads / buildings / water / land use / infrastructure parsing,
+row-group skipping, WorldCover / CHM windows, determinism (the same digest cold, warm, layer by
+layer, after blocks fetched in reverse, with the rows shuffled inside the files, from concurrent
+calls), cache layout and hits, offline, prefetch refused then demand, the licences in the
+provenance and in CREDITS.md, the CLI (dump and PNG).
 `test_netfetch.py` (no network: a scripted fake transport, a fake clock and sleep, a seeded rng): the
 token bucket (the burst at once, then 1/rate apart; prefetch only above half), the concurrency cap
 (16 threads, never more than 2 in flight), full-jitter backoff, Retry-After (the host paused for

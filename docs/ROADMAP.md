@@ -94,6 +94,26 @@ physics ground (car visibly floating). This is the top priority.
    block off when far above ground; far field to the horizon (~350 km at 10 km altitude).
 Target: 300 mph sustained with the near ground always detailed, and a rebase that is invisible.
 
+## Shared map data (the input of v1.5-v1.9 content)
+Status (2026-10-11, built offline on branch feature/mapdata; docs/ARCHITECTURE.md "Map data"):
+`server/mapdata.py` gives per global Web-Mercator z14 cell the Overture roads (class, subclass,
+surface / flags / width / level / speed rules, connectors), buildings (heights, floors, roof and
+facade fields), water and land use (clipped to the cell), infrastructure, ESA WorldCover 10 m and
+Meta/WRI CHMv2 1.19 m canopy height, in the cell's local metres with GERS ids, cached per layer and
+release, deterministic (content digest), with provenance and licences. Cold 2.9-3.6 s per cell on
+the three benchmark cells, warm 0.02-0.06 s. Findings for the generators: building heights are
+sparse even in Baltimore (1.9 % height, 5.1 % height or floors in the Fells Point cell: a height
+model is needed); no lane counts (width on 2 % of segments); the CHM counts solar panels as 1-8 m
+canopy (Kayenta), so trees must be masked by land use / infrastructure. Next:
+- wire it into earthd (one MapData on the server's Fetcher; prefetch the cells ahead along the
+  velocity with kind `prefetch`; generators read CellData) and the credits overlay (`CellData.credits()`);
+- key v1.4 M6 global tiles' content on `mapcells.cells_for_bbox()`;
+- building parts (`buildings/building_part`), places, OSM tags (lanes, width, surface detail) joined
+  by `src_record` from a cached regional extract, NLCD in the US; the cache cap's LRU over
+  `<cache>/mapdata/`;
+- track Overture releases: the pinned one (`overture.RELEASE`) disappears from the buckets after
+  some months (`mapdata.py --latest`).
+
 ## v1.5 "Ground truth"
 - Per-cell surface physics: the invisible TerrainBlock gets material layers from ESA WorldCover
   (+ OSM roads): ASPHALT / DIRT / GRASS / SAND / GRAVEL / ROCK / MUD / SNOW (no more dust on roads).
