@@ -904,7 +904,8 @@ three days of testing: dem 741 MB / 7.5k files, imagery 1.4 GB / 35k, deshadow 7
 - Masks are evicted with their heightmap. Off by default until more in-game checks; the tyre contact
   material per class was checked at Fells Point, Serengeti, Everest Base Camp and Monument Valley.
 - Ground cover (`groundcover.lua`): stock GroundCover definitions read at runtime from official levels
-  (Hirochi Raceway green grass, West Coast USA dry grass and scrub; their material files loaded first)
+  (Hirochi Raceway green grass, West Coast USA dry grass and scrub, sparse green grass between the scrub;
+  their material files loaded first)
   and recreated with every plant type's `layer` set to ours (`bngEarthGroundGrass`,
   `bngEarthGroundDusty`) and `maxElements` scaled. Made once per level, on the first layered import.
   An empty `layer` places nothing (not "everywhere").

@@ -125,6 +125,14 @@ do
   for i = 1, #calls do same = same and again[i][1] == calls[i][1] and again[i][2] == calls[i][2] and again[i][3] == calls[i][3] end
   T.check(same, 'deterministic order')
   T.check(gc.fieldsFor({ maxElements = 10 }, 'x', 0.01)[1][3] == '1', 'at least one element')
+  local names = {}
+  local unique = true
+  for _, d in ipairs(gc.DEFS) do
+    local n = d.name or d.src
+    unique = unique and not names[n]
+    names[n] = true
+  end
+  T.check(unique, 'one object name per definition (a stock one on two layers gets its own name)')
 end
 
 T.done('test_surface_layers')

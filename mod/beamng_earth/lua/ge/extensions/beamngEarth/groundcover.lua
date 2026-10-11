@@ -10,9 +10,9 @@
 -- into the mod; Polish Roads is not used, CREDITS.md): their materials are loaded first (a shape whose
 -- material is missing when it is first drawn stays "no material"), then each GroundCover is recreated
 -- with its plant types' layer pointed at ours and its element count scaled by `share`. Green Hirochi
--- Raceway grass with a little of West Coast USA's dry grass on grassland, West Coast scrub on dusty
--- ground. Generic: one rule for every place; per-biome / per-climate / per-season variants are a later
--- step. Console: beamngEarth_groundcover.setEnabled(bool), .status()
+-- Raceway grass with a little of West Coast USA's dry grass on grassland, West Coast scrub with sparse
+-- green grass between on dusty ground. Generic: one rule for every place; per-biome / per-climate /
+-- per-season variants are a later step. Console: beamngEarth_groundcover.setEnabled(bool), .status()
 
 local terrain = require('beamngEarth/terrain')
 
@@ -25,12 +25,16 @@ M.SOURCES = {
   wcusa = { materials = WCUSA .. 'art/groundcover/main.materials.json',
             items = WCUSA .. 'main/MissionGroup/vegetation/items.level.json' },
 }
--- stock GroundCover (source, name) -> our layer, element share
+-- stock GroundCover (source, src name) -> our layer, element share; `name` (default src) names our
+-- object, for a stock definition used on two layers
 M.DEFS = {
   { source = 'hirochi', src = 'small_grass_close', layer = 'bngEarthGroundGrass', share = 0.5 },
   { source = 'hirochi', src = 'long_grass_distant', layer = 'bngEarthGroundGrass', share = 0.5 },
   { source = 'wcusa', src = 'grass_dry_1', layer = 'bngEarthGroundGrass', share = 0.15 },
   { source = 'wcusa', src = 'shrubs_near', layer = 'bngEarthGroundDusty', share = 0.25 },
+  -- sparse grass between the shrubs (user 2026-10-11: a hard line between grassland and shrubland)
+  { source = 'hirochi', src = 'small_grass_close', name = 'small_grass_close_scrub', layer = 'bngEarthGroundDusty', share = 0.2 },
+  { source = 'hirochi', src = 'long_grass_distant', name = 'long_grass_distant_scrub', layer = 'bngEarthGroundDusty', share = 0.15 },
 }
 M.PREFIX = 'bngEarthGC_'
 M.enabled = true
@@ -122,7 +126,7 @@ function M.ensure()
       end
       local def = defs[d.source][d.src]
       if def then
-        local name = M.PREFIX .. d.src
+        local name = M.PREFIX .. (d.name or d.src)
         if not scenetree.findObject(name) then
           local gc = createObject('GroundCover')
           for _, c in ipairs(M.fieldsFor(def, d.layer, d.share)) do gc:setField(c[1], c[2], c[3]) end

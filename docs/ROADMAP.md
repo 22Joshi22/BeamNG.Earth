@@ -218,7 +218,8 @@ Manhattan cell: 4.8 s cold, peak RSS 381 MB. Next:
   back to an older revision.
 - Sky: CloudLayer + wind, haze, per-biome cubemap, black night colours.
 - GroundCover grass: done with v1.5 surfaces (2026-10-11, groundcover.lua): green Hirochi Raceway grass
-  with some dry West Coast tufts on the grass layer, West Coast scrub on dusty ground, +1.1 ms/frame.
+  with some dry West Coast tufts on the grass layer, West Coast scrub with sparse green grass between on
+  dusty ground (no hard grass / shrub line), +1.1 ms/frame before the shrubland grass.
   Next: per-climate / per-season picks (dry savanna, green temperate, alpine), a settings toggle and
   density presets.
 
