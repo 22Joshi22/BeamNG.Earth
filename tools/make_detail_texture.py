@@ -68,15 +68,17 @@ def encode(levels_):
     h, w = levels_[0].shape
     head = (b"DDS " + struct.pack("<7I", 124, DDSD, h, w, w * 4, 0, len(levels_))
             + struct.pack("<11I", *((0,) * 11))
-            + struct.pack("<2I4s5I", 32, 0x41, b"\0\0\0\0", 32,     # DDPF_RGB | ALPHAPIXELS
-                          0x00FF0000, 0x0000FF00, 0x000000FF, 0xFF000000)
+            # DDPF_RGB | ALPHAPIXELS, R8G8B8A8 byte order: the game's DDS reader logs "only RGB
+            # formats are supported!" for the A8R8G8B8 masks (it loads it anyway; in-game 2026-10-10)
+            + struct.pack("<2I4s5I", 32, 0x41, b"\0\0\0\0", 32,
+                          0x000000FF, 0x0000FF00, 0x00FF0000, 0xFF000000)
             + struct.pack("<5I", 0x1000 | 0x400000 | 0x8, 0, 0, 0, 0))
     assert len(head) == 128
     body = []
     for lv in levels_:
         g = np.clip(np.rint(lv * 255), 0, 255).astype(np.uint8)
-        bgra = np.stack([g, g, g, np.full_like(g, 255)], -1)
-        body.append(bgra.tobytes())
+        rgba = np.stack([g, g, g, np.full_like(g, 255)], -1)
+        body.append(rgba.tobytes())
     return head + b"".join(body)
 
 
