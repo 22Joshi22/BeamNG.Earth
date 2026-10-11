@@ -731,7 +731,8 @@ three days of testing: dem 741 MB / 7.5k files, imagery 1.4 GB / 35k, deshadow 7
   markers included, but protecting everything this server process used (the current session's files,
   not only the last hour's), on an executor; the answer carries `clearedBytes`. `usage()` (the
   message, built on the event loop) reads the totals without the lock, which a pass over a full cache
-  holds for a few tenths of a second. A missing or empty `VERSION` is written atomically.
+  holds for a few tenths of a second. A missing or empty `VERSION` is written atomically; a
+  non-finite time or an overflowing cap in the index is damage (skipped), never a value.
 - **Layout version** (ROADMAP 5): `<cache>/VERSION` = 1, written when missing; any other value (a newer
   server's layout, or garbage) leaves the cache alone: counted for the page (`managed: false`), never
   evicted, cleared or indexed. Producer versions are in the paths (`colormatch/v1/`,

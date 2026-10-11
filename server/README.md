@@ -318,8 +318,8 @@ file, header `# beamng-earth cache index 1\tcap=<bytes>`), and the data director
   cap, at most every 3 min (`EVICT_S`), checked every 30 s and after a write over the cap. Protected:
   files this server process used within the last hour (`PROTECT_S`), `gravity/`, empty markers.
   Directories stay (a producer may be about to write into one). The index is saved every 10 min when
-  something changed, after a clear and at shutdown (atomic replace; a damaged line is skipped, a
-  damaged header drops the index: last uses then come from the mtimes).
+  something changed, after a clear and at shutdown (atomic replace; a damaged line, e.g. a `nan`
+  time, is skipped, a damaged header drops the index: last uses then come from the mtimes).
 - **Clear** (`cache` with `clear: true`): every tracked file of the four data directories but the
   ones this server process used (the current session's, however long ago: tiles read at its start may
   still be in the producers' memory caches), markers included; returns the bytes freed.
@@ -635,8 +635,9 @@ down to 90 % of the cap, a hit moving a file to the back, unlimited / raised cap
 rules (this session's last hour, `gravity/`, empty markers, `netstats/` and unknown directories not
 tracked, a use during a pass winning, a previous session's uses not protecting), index persistence
 (last uses and the page's cap across a restart, `--cache-cap` overriding it, vanished files, newer
-downloads) and damage (header, lines, paths outside the data directories), the `VERSION` file (written
-when missing or empty; a newer or unreadable one leaves the cache alone), per-source lifetimes, clear
+downloads) and damage (header, lines, non-finite times and caps, paths outside the data directories),
+the `VERSION` file (written when missing or empty; a newer or unreadable one leaves the cache alone),
+per-source lifetimes, clear
 (what stays, every file this session used even hours ago, directories kept, waiting for the walk),
 eight producer threads writing and reading while passes evict and save (byte count = entries, every
 entry's file exists, no torn reads), uses during the start-up walk, the message not waiting for the

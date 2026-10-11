@@ -368,7 +368,10 @@ cache is left alone: counted, never evicted or cleared); per-producer versions s
 (`colormatch/v1/`, `imagery/usgs-ds1-<mode>/`) and an outdated directory ages out through the LRU.
 Reviewed (branch review-cache): Clear keeps every file this server session used (not only the last
 hour's, as the plan says), the page's usage message never waits for the cache's lock on the event
-loop, and an empty `VERSION` is written again (atomically) instead of leaving the cache alone.
+loop, an empty `VERSION` is written again (atomically) instead of leaving the cache alone, a
+`nan` / `-inf` time in the index is a damaged line (it made every later save raise, so a clear never
+answered) and an overflowing cap no longer stops the server, and a clear is not sent to a server
+without a cache (the page waited 2 min).
 Waiting for its in-game check. Follow-ups: refreshing stale tiles in the background (3), the
 built-tile cache (2) and pre-download within the cap (4).
 

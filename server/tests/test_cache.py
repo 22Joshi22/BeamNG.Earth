@@ -234,6 +234,26 @@ class IndexTest(Base):
         self.assertTrue(c.save())
         self.assertTrue(Path(self.root, cachemod.INDEX_FILE).read_text().startswith(cachemod.INDEX_HEADER))
 
+    def test_non_finite_numbers_are_damage(self):
+        """'nan' / '-inf' times and a cap too large for a float are damaged values, not data: a nan last
+        use made every later save() raise (int(nan)), so the index was never written again and a clear
+        (which saves) never answered the page; an overflowing cap stopped the server at start."""
+        for i in range(3):
+            put(self.root, f"imagery/usgs/16/1/{i}.jpg", MB, T0 - 3 * DAY)
+        Path(self.root, cachemod.INDEX_FILE).write_text(
+            f"{cachemod.INDEX_HEADER}\tcap={'9' * 400}\n"
+            f"nan\t{MB}\timagery/usgs/16/1/0.jpg\n"
+            f"-inf\t{MB}\timagery/usgs/16/1/1.jpg\n"
+            f"{int(T0 - DAY)}\t{MB}\timagery/usgs/16/1/2.jpg\n")
+        with self.assertLogs("earthd.cache", "WARNING") as logs:
+            c = self.make()
+        self.assertIn("2 damaged lines", "\n".join(logs.output))
+        self.assertEqual(c.cap, cachemod.cap_bytes(cachemod.DEFAULT_CAP_GB))
+        self.assertEqual([c._entries[f"imagery/usgs/16/1/{i}.jpg"][1] for i in range(3)],
+                         [T0 - 3 * DAY, T0 - 3 * DAY, T0 - DAY], "the mtimes instead")
+        self.assertTrue(c.save())
+        self.assertEqual(c.clear(), (3, 3 * MB))
+
 
 class VersionTest(Base):
     def test_version_written_for_a_cache_without_one(self):

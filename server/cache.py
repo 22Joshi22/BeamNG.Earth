@@ -34,6 +34,7 @@ is never read again, so it ages out through the LRU instead of being deleted at 
 Memory: about 200 bytes per tracked file (a 20 GB cache of 30 KB imagery tiles: ~130 MB).
 """
 import logging
+import math
 import os
 import threading
 import time
@@ -253,7 +254,7 @@ class Cache(NoCache):
             if item.startswith("cap="):
                 try:
                     cap = cap_bytes(int(item[4:]) / GB)
-                except ValueError:
+                except (ValueError, OverflowError):     # (a digit run too long for a float)
                     cap = None
         bad = 0
         for line in lines[1:]:
@@ -265,7 +266,9 @@ class Cache(NoCache):
             except (ValueError, IndexError):
                 bad += 1
                 continue
-            if size < 0 or set(key.split("/")) & {"", ".", ".."} or self._key(self._path(key)) != key:
+            # a non-finite time ("nan", "-inf") would break the sort and every later save (int(nan))
+            if (size < 0 or not math.isfinite(last) or set(key.split("/")) & {"", ".", ".."}
+                    or self._key(self._path(key)) != key):
                 bad += 1
                 continue
             # sizes are checked by the walk; a time from a clock that ran ahead must not protect a file
