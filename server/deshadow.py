@@ -13,7 +13,9 @@ replaces lam * lit by the flat-ground sun sin(el) (the albedo lit by a flat sun)
 with rho_c = amb_c / sun_c, all channels of a pixel capped together (keeps the hue).
 
 Per USGS z12 region (~8 km; the source is a mosaic of flights, so the sun is fitted per region),
-computed once in a background thread when an anchor is set and cached on disk:
+computed once in a background thread when an anchor is set and cached on disk (its imagery is
+fetched as netfetch kind "background": dropped while the host's bucket is kept for demand, and the
+region is tried again after RETRY_S):
   - the region grid is the z14 pixel grid (~7.7 m at 36 N): z14 imagery, DEM z13 (512 px tiles:
     the same pixels), padded by PAD_M for the horizon march and EXT cells for tile margins;
   - sun fit: for candidate (az, el), score = signed r^2 of luminance against lam * lit plus
@@ -854,7 +856,9 @@ class Deshadow:
             except Exception as e:      # network / DEM trouble: tried again later
                 if self._closed:
                     return
-                log.warning("deshadow region %s: %s: %s", rk, type(e).__name__, e)
+                # deferred: the imagery host's bucket is kept for demand (a cold start): not a fault
+                (log.debug if getattr(e, "deferred", False) else log.warning)(
+                    "deshadow region %s: %s: %s", rk, type(e).__name__, e)
                 with self._lock:
                     self._failed[rk] = time.monotonic()
                     self._events.pop(rk).set()
@@ -886,7 +890,7 @@ class Deshadow:
         src = im.chain[[s.name for s in im.chain].index(SOURCE)]
         k = GRID_N // TILE
         keys = [(src, GRID_Z, rk[0] * k + i, rk[1] * k + j) for j in range(k) for i in range(k)]
-        got = im.tiles(keys)
+        got = im.tiles(keys, kind="background")     # never the demand budget (netfetch)
         lat_c, _ = self._region_center(rk)
         if any(got[key] is None or got[key].uniform for key in keys):
             return dict(version=VERSION, ok=False, cast=False, reason="no full imagery coverage"), None
@@ -905,7 +909,7 @@ class Deshadow:
         def fine(P, grids):             # z16 tiles at the shadow edges, for haze, rho and the classifier
             k = 2 ** (FINE_Z - REGION_Z)
             fk = [(src, FINE_Z, rk[0] * k + c, rk[1] * k + r) for c, r in edge_tiles(grids)]
-            fgot = im.tiles(fk)
+            fgot = im.tiles(fk, kind="background")
             return [(np.pad(fgot[key].rgb, ((M, M), (M, M), (0, 0)), mode="edge"),
                      sample_grids(grids, rk[0], rk[1], FINE_Z, key[2], key[3]))
                     for key in fk if fgot[key] is not None and not fgot[key].uniform]

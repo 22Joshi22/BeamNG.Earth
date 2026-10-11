@@ -14,6 +14,15 @@ Each row must reproduce the spec within ±10 % (adds/s and tiles), and per level
 The M1 rows (64-cell layout, --cells 64: the K' table, NEAR_RADII {-1: 150, 0: 400}, min level -1)
 run with the same driver. Hooks for later milestones (clearly marked below): M3a the capsule /
 speed-scale rows and D(s) against the simulation, M5 the flight rows.
+
+NetDemandTest (docs/research/2026-10-10-rate-limits.md §2.2 and §5.4 case 12): the same driver
+counts the upstream requests the added tiles cause (every imagery or DEM source tile not seen
+before is one HTTP request: a cold disk cache), per minute and host, for the default CLI layout (64
+cells) at 30 and 134 m/s with a rebase every 10 km, starting in the US (USGS first) and in Europe
+(EOX first). The busiest minute of every host must stay below its netfetch policy rate, so a layout
+change that raises network demand fails here instead of against a server. The 250 m/s flight is
+left out: §2.2 measured ~21 req/s to USGS there (the far field selects by horizontal distance), so
+the limiter caps it (ROADMAP: select by 3D distance in flight).
 """
 import math
 import sys
@@ -22,7 +31,13 @@ from collections import Counter
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import dem as demmod  # noqa: E402
 import farfield as ff  # noqa: E402
+import geodesy  # noqa: E402
+import imagery  # noqa: E402
+import netfetch  # noqa: E402
+
+import numpy as np  # noqa: E402
 
 HZ = 4.0                    # pose rate of the drive (above 30 m/s from M3a; the review's model used 4 Hz)
 SECS, WARM = 60.0, 10.0
@@ -140,6 +155,135 @@ class DemandTest(unittest.TestCase):
         tiles, rate, _ = demand(select_m1, straight(0.0))
         self.assertEqual(rate, 0.0)
         self.assertTrue(280 <= tiles <= 330, tiles)
+
+
+# --- network demand per host (rate-limit report §2.2 / §5.4 case 12) ---------------------------------
+NET_LAYOUT = ff.Layout(64)          # the default CLI layout (mesh, 64 cells)
+REBASE_M = 10000.0                  # the mod's default rebaseDistance
+NET_STARTS = {"US": (39.2904, -76.6122, "usgs"), "EU": (48.1374, 11.5755, "eox2023")}   # Baltimore, Munich
+
+
+def imagery_keys(frame, tile, px, src):
+    """Source tile keys of one far tile's texture from src (imagery.render's zoom and mosaic rules)."""
+    x0, y0, _, _ = tile.bbox
+    gx0, gy0, size = imagery.gutter_square(x0, y0, tile.size, px)
+    c = np.array([0.0, 0.5, 1.0]) * size
+    E, N = np.meshgrid(gx0 + c, gy0 + c)
+    lat, lon, _ = frame.enu_to_geodetic(E, N, 0.0)
+    z = min(imagery.zoom_for(float(lat[1, 1]), size / px), src.max_zoom)
+    while True:
+        n = 2 ** z
+        fx, fy = imagery.mercator_px(lat.ravel(), lon.ravel(), z)
+        tx0, tx1 = int(math.floor(fx.min() - 1)) // imagery.TILE, int(math.floor(fx.max() + 1)) // imagery.TILE
+        ty0 = max(0, int(math.floor(fy.min() - 1)) // imagery.TILE)
+        ty1 = min(n - 1, int(math.floor(fy.max() + 1)) // imagery.TILE)
+        if (tx1 - tx0 + 1) * (ty1 - ty0 + 1) <= imagery.MAX_MOSAIC or z == 0:
+            break
+        z -= 1
+    return {(z, tx % n, ty) for ty in range(ty0, ty1 + 1) for tx in range(tx0, tx1 + 1)}
+
+
+def dem_keys(frame, tile, zoom):
+    """Mapterhorn 512 px tile keys a far tile's build samples at this zoom."""
+    x0, y0, x1, y1 = tile.bbox
+    c = np.linspace(0, 1, 5)
+    E, N = np.meshgrid(x0 + c * (x1 - x0), y0 + c * (y1 - y0))
+    lat, lon, _ = frame.enu_to_geodetic(E, N, 0.0)
+    n = 2 ** zoom
+    fx = (lon / 360.0 + 0.5) * n * demmod.TILE
+    fy = (0.5 - np.arcsinh(np.tan(np.radians(lat))) / (2 * np.pi)) * n * demmod.TILE
+    tx0, tx1 = int(math.floor(fx.min())) // demmod.TILE, int(math.floor(fx.max()) + 1) // demmod.TILE
+    ty0, ty1 = int(math.floor(fy.min())) // demmod.TILE, int(math.floor(fy.max()) + 1) // demmod.TILE
+    return {(zoom, tx % n, ty) for ty in range(ty0, ty1 + 1) for tx in range(tx0, tx1 + 1)}
+
+
+def net_demand(lat, lon, src, v, minutes, heading=HEADING, hz=HZ):
+    """(requests of the first selection, [per minute after it]) as {host: requests}, for a straight
+    drive at v m/s from (lat, lon) with a rebase every REBASE_M. Mapterhorn counts every new DEM key;
+    the AWS row is the worst case where Mapterhorn has no lidar (its 404s above GLOBAL_ZOOM fall back
+    to AWS z+1, 4 tiles each)."""
+    img_host = netfetch.host_of(src.url)
+    mt, aws = netfetch.host_of(demmod.MAPTERHORN["url"]), netfetch.host_of(demmod.AWS["url"])
+    seen_img, seen_dem = set(), set()
+    hx, hy = math.sin(math.radians(heading)), math.cos(math.radians(heading))
+
+    def anchor(la, lo):
+        zooms = {lvl: NET_LAYOUT.dem_zoom(la, lvl) for lvl in range(1, ff.MAX_LEVEL + 2)}
+        zooms[0] = demmod.zoom_for(la, 2.5)
+        return geodesy.EnuFrame(la, lo), zooms
+
+    frame, zooms = anchor(lat, lon)
+    prev, changed, cur = set(), {}, None
+    ox = oy = 0.0
+    first, per_min, acc = None, [], Counter()
+    for k in range(int(minutes * 60 * hz) + 1):
+        t = k / hz
+        px, py = ox + v * hx * t, oy + v * hy * t
+        if math.hypot(px, py) > REBASE_M:           # the mod rebases: a new anchor at the player
+            la, lo, _ = frame.enu_to_geodetic(px, py, 0.0)
+            frame, zooms = anchor(float(la), float(lo))
+            prev, changed, cur = set(), {}, None
+            ox, oy, px, py = -v * hx * t, -v * hy * t, 0.0, 0.0
+        hold = {n for n, tc in changed.items() if t - tc < ff.HOLD_S}
+        new, refined = ff.select(px, py, (), prev, NET_LAYOUT.k, ff.HYSTERESIS, ff.RADIUS, hold=hold,
+                                 min_level=NET_LAYOUT.min_level, radii=NET_LAYOUT.near_radii, layout=NET_LAYOUT)
+        if cur is not None:
+            for n in refined ^ prev:
+                changed[n] = t
+        req = Counter()
+        for key, tile in new.items():
+            if cur is not None and key in cur:
+                continue
+            new_img = imagery_keys(frame, tile, NET_LAYOUT.tex_size(tile.level), src) - seen_img
+            seen_img |= new_img
+            req[img_host] += len(new_img)
+            for z in {zooms[max(tile.level, 0)]} | ({zooms[tile.level - 1]} if tile.level > 0 else set()):
+                new_dem = dem_keys(frame, tile, z) - seen_dem
+                seen_dem |= new_dem
+                req[mt] += len(new_dem)
+                if z > demmod.GLOBAL_ZOOM:
+                    req[aws] += len(new_dem) * 4 ** (min(demmod.MAX_ZOOM, z + 1) - z)
+        prev, cur = refined, new
+        if first is None:
+            first = req
+            continue
+        acc.update(req)
+        if k % int(60 * hz) == 0:
+            per_min.append(acc)
+            acc = Counter()
+    return first, per_min
+
+
+class NetDemandTest(unittest.TestCase):
+    MINUTES = 3
+
+    def test_steady_demand_below_the_host_rates(self):
+        """The busiest minute of every host, cold cache, stays below its policy rate (§5.2)."""
+        for start, (lat, lon, name) in NET_STARTS.items():
+            for v in (30, 134):
+                with self.subTest(start=start, v=v):
+                    first, per_min = net_demand(lat, lon, imagery.SOURCES[name], v, self.MINUTES)
+                    self.assertEqual(len(per_min), self.MINUTES)
+                    peak = Counter()
+                    for m in per_min:
+                        for host, n in m.items():
+                            peak[host] = max(peak[host], n)
+                    print(f"\n  {start} {v:3d} m/s: start burst " + ", ".join(f"{h} {n}" for h, n in sorted(first.items()))
+                          + "; peak/min " + ", ".join(f"{h} {n} ({n / 60:.1f}/s)" for h, n in sorted(peak.items())),
+                          file=sys.stderr)
+                    for host, n in peak.items():
+                        rate = netfetch.POLICIES[host].rate
+                        self.assertLess(n / 60.0, rate, f"{host}: {n} requests in a minute, policy {rate}/s")
+
+    def test_start_burst_is_what_the_limiter_spreads(self):
+        """The first selection's requests (a cold start or a teleport, §2.2: ~1,430 USGS, ~1,190 EOX)
+        exceed every imagery host's burst many times over: they are what the token bucket spreads out
+        (test_netfetch.ColdStartTest), not something the pools alone may send."""
+        for start, (lat, lon, name) in NET_STARTS.items():
+            with self.subTest(start=start):
+                first, _ = net_demand(lat, lon, imagery.SOURCES[name], 0.0, 0)
+                host = netfetch.host_of(imagery.SOURCES[name].url)
+                self.assertGreater(first[host], 10 * netfetch.POLICIES[host].burst)
 
 
 if __name__ == "__main__":

@@ -361,7 +361,7 @@ class ProviderTest(unittest.TestCase):
     def test_background_download_never_blocks(self):
         release, calls = threading.Event(), []
 
-        def fake_ensure(cache_dir, log=print):          # the 74 MB download, held until released
+        def fake_ensure(cache_dir, log=print, net=None):    # the 74 MB download, held until released
             calls.append(cache_dir)
             release.wait(10)
             for n in ("egm2008_rowmajor.npy", "egm2008_rowmajor.json"):
@@ -389,7 +389,7 @@ class ProviderTest(unittest.TestCase):
     def test_failed_download_retried_later(self):
         calls = []
 
-        def failing(cache_dir, log=print):
+        def failing(cache_dir, log=print, net=None):
             calls.append(1)
             raise OSError("no network in tests")
 

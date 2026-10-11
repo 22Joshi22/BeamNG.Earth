@@ -8,24 +8,27 @@ Fallback: AWS Terrain Tiles, 256 px PNG, z<=15, global, includes bathymetry.
 
 All sampling happens on the Mapterhorn grid (512 px tiles). A fallback tile is
 assembled from AWS tiles of the same footprint and resampled to 512 px.
+
+Requests go through a netfetch.Fetcher (rate limit, retries, circuit breaker per host). When
+Mapterhorn cannot be asked (circuit open, rate limited, failing) the same tile comes from AWS
+(failover); if AWS fails too, DemUnavailable. 404s are remembered as <y>.404 markers that expire
+after the host's miss_ttl (Mapterhorn 90 days: it adds lidar areas; AWS never).
 """
 import io
 import logging
 import math
 import os
 import threading
-import time
-import urllib.error
-import urllib.request
 from collections import Counter, OrderedDict
 from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
 from PIL import Image
 
+import netfetch
+
 log = logging.getLogger("earthd.dem")
 
-USER_AGENT = "BeamNG.Earth/0.1 (+personal mod)"
 TILE = 512                  # sampling grid tile size (Mapterhorn)
 MAX_ZOOM = 15               # AWS stops at z15; nothing in v1 needs more
 GLOBAL_ZOOM = 12            # Mapterhorn is complete on land up to here
@@ -36,6 +39,10 @@ MAPTERHORN = dict(name="mapterhorn", ext="webp", size=512,
                   url="https://tiles.mapterhorn.com/{z}/{x}/{y}.webp")
 AWS = dict(name="aws-terrarium", ext="png", size=256,
            url="https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png")
+
+
+class DemUnavailable(IOError):
+    """Neither Mapterhorn nor AWS could deliver a tile (network, offline)."""
 
 
 def zoom_for(lat, pixel_m, max_zoom=MAX_ZOOM):
@@ -61,8 +68,11 @@ def _resize(a, size):
 
 class Dem:
     # mem_tiles: decoded float32 512² tiles kept in memory (1 MB each; 512 per docs/V1_2_DESIGN.md §4.3).
-    def __init__(self, cache_dir, fetch_workers=8, mem_tiles=512):
+    # fetcher: the server's netfetch.Fetcher (shared rate limits); None = a Fetcher of its own.
+    def __init__(self, cache_dir, fetch_workers=8, mem_tiles=512, fetcher=None):
         self.cache_dir = cache_dir
+        self.fetcher = fetcher if fetcher is not None else netfetch.Fetcher()
+        self.fetcher.register_chain("dem", (MAPTERHORN["url"], AWS["url"]))
         self.pool = ThreadPoolExecutor(fetch_workers, thread_name_prefix="dem-fetch")
         self.mem_tiles = mem_tiles
         self._lru = OrderedDict()       # (z, x, y) -> float32 [TILE, TILE]
@@ -80,38 +90,33 @@ class Dem:
 
     # --- raw tiles -------------------------------------------------------
     def _download(self, src, z, x, y):
-        """Raw tile bytes from disk cache or network; None for a (cached) 404."""
+        """Raw tile bytes from disk cache or network; None for a (cached) 404. Raises
+        netfetch.FetchError when the host cannot deliver."""
         path = os.path.join(self.cache_dir, src["name"], str(z), str(x), f"{y}.{src['ext']}")
         miss = os.path.join(self.cache_dir, src["name"], str(z), str(x), f"{y}.404")
         if os.path.exists(path):
             self._count(src["name"] + ":disk")
             with open(path, "rb") as f:
                 return f.read()
-        if os.path.exists(miss):
+        url = src["url"].format(z=z, x=x, y=y)
+        if self.fetcher.miss_alive(miss, url):
             return None
         os.makedirs(os.path.dirname(path), exist_ok=True)
-        url = src["url"].format(z=z, x=x, y=y)
-        req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
-        for attempt in range(4):
-            try:
-                with urllib.request.urlopen(req, timeout=20) as r:
-                    data = r.read()
-                break
-            except urllib.error.HTTPError as e:
-                if e.code == 404:
-                    open(miss, "wb").close()
-                    self._count(src["name"] + ":404")
-                    return None
-                err = e
-            except (urllib.error.URLError, OSError) as e:
-                err = e
-            time.sleep(0.5 * 2 ** attempt)
-        else:
-            raise IOError(f"DEM fetch failed: {url}: {err}")
+        try:
+            data = self.fetcher.get(url).body
+        except netfetch.NotFound:
+            open(miss, "wb").close()        # (re)written: its mtime starts the marker's TTL
+            self._count(src["name"] + ":404")
+            return None
+        except netfetch.FetchError:
+            self._count(src["name"] + ":error")
+            raise
         tmp = f"{path}.{threading.get_ident()}.tmp"
         with open(tmp, "wb") as f:
             f.write(data)
         os.replace(tmp, path)
+        if os.path.exists(miss):            # an expired marker: the host has data there now
+            os.remove(miss)
         self._count(src["name"] + ":net")
         return data
 
@@ -132,10 +137,23 @@ class Dem:
 
     def _load_tile(self, key):
         z, x, y = key
-        data = self._download(MAPTERHORN, z, x, y)
+        try:
+            data = self._download(MAPTERHORN, z, x, y)
+        except netfetch.FetchError as e:
+            # Mapterhorn cannot be asked (circuit open, rate limited, failing): the same tile from AWS,
+            # as it is (with AWS bathymetry: a failure says nothing about where the sea is).
+            self._count("mapterhorn:failover")
+            try:
+                a = self._aws_tile(z, x, y)
+            except netfetch.FetchError as e2:
+                raise DemUnavailable(f"DEM tile {z}/{x}/{y}: Mapterhorn: {e}; AWS: {e2}") from None
+            return np.zeros((TILE, TILE), np.float32) if a is None else a
         if data is not None:
             return decode_terrarium(data, MAPTERHORN["size"])
-        a = self._aws_tile(z, x, y)
+        try:
+            a = self._aws_tile(z, x, y)
+        except netfetch.FetchError as e:
+            raise DemUnavailable(f"DEM tile {z}/{x}/{y}: AWS: {e}") from None
         if a is None:
             return np.zeros((TILE, TILE), np.float32)
         if z <= GLOBAL_ZOOM:
