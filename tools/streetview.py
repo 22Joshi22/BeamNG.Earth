@@ -165,6 +165,10 @@ def cmd_fetch(a):
 
 def cmd_run(a):
     d = place_dir(a.name)
+    game = os.path.join(d, "game")
+    if os.path.exists(game):                    # keep the previous shots: game_<time of that run>
+        stamp = time.strftime("%Y%m%d-%H%M%S", time.localtime(os.path.getmtime(game)))
+        os.rename(game, os.path.join(d, f"game_{stamp}"))
     cmd = [sys.executable, os.path.join(ROOT, "tools", "benchmark.py"), "run", "--benchmarks", os.path.join(d, "set.json"),
            "--places", a.name, "--label", f"streetview-{a.name}", "--out", os.path.join(d, "game"), "--weather", "clear"]
     if a.force:

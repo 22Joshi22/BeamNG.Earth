@@ -22,6 +22,7 @@ import json
 import logging
 import math
 import os
+from collections import namedtuple
 
 import numpy as np
 
@@ -55,6 +56,21 @@ LOOK = {
     "dirt": {"m": "m_dirt_road", "tl": 88.0, "p": 21},
 }
 SKIP_FLAGS = {"is_bridge", "is_tunnel"}
+Spec = namedtuple("Spec", "width kind urban cls")   # road_specs' result per feature (width = carriageway)
+
+# Sidewalks and markings (user 2026-10-11, after the first street-view comparison of Fells Point:
+# real streets have concrete sidewalks behind a curb and a double yellow centre line). Stock West
+# Coast USA materials. renderPriority: lower draws on top (WCUSA: lines 2-6, the asphalt strip 20).
+SIDEWALK = {"m": "sidewalk_concrete", "tl": 6.0, "p": 16, "w": 2.5}      # beyond the carriageway, city streets
+GUTTER = {"m": "gutter1", "tl": 8.0, "p": 14, "w": 0.5}                  # at the curb line
+CENTRE = {"tl": 12.0, "p": 6, "w": 0.12, "gap": 0.12}                    # a double line: two lines this far from the centre
+EDGE_LINE = {"m": "line_white", "tl": 6.4, "p": 2, "w": 0.15, "inset": 0.3}
+SIDEWALK_CLASSES = {"residential", "tertiary", "secondary", "primary", "unclassified", "living_street"}
+CENTRE_CLASSES = {"primary", "secondary", "tertiary", "trunk"}
+EDGE_LINE_CLASSES = {"primary", "secondary", "tertiary", "trunk", "motorway"}
+CUT_MARGIN = 0.5                # m: a sidewalk / line stops this far outside a crossing road's carriageway
+MIN_PIECE_M = 3.0               # shorter sidewalk / line pieces are dropped
+NEAR_M = 40.0                   # roads this far outside the tile still cut its sidewalks / lines
 # Carriageway = driving width + parking lanes on city streets or paved edge strips on rural roads
 # (docs/research/2026-10-11-official-road-study.md §2: rural paved surface = AI width + 2-2.5 m;
 # West Coast USA's plain streets 12.5 m for 8 m of driving: ~2.3 m of parking each side). A width
@@ -128,7 +144,97 @@ def road_specs(feats, urban_fn=None):
                               feats.coord_off[feats.ring_off[feats.part_off[i + 1]]]]
             if len(ll):
                 urban = float(np.mean(np.asarray(urban_fn(ll[:, 1], ll[:, 0]), bool))) >= URBAN_SHARE
-        out.append((carriageway(cls, kind, urban, rule_w), kind))
+        out.append(Spec(carriageway(cls, kind, urban, rule_w), kind, urban, cls))
+    return out
+
+
+def centre_colour(lon):
+    """Centre line colour: yellow in the Americas, white elsewhere (the country rule comes later)."""
+    return "line_yellow" if -170.0 <= float(lon) <= -30.0 else "line_white"
+
+
+def offset_polyline(pts, d):
+    """The polyline moved d m to its left (xy; z kept), with mitred joints (miter at most 2x). Pure."""
+    pts = np.asarray(pts, np.float64)
+    if len(pts) < 2:
+        return pts.copy()
+    t = np.diff(pts[:, :2], axis=0)
+    L = np.hypot(t[:, 0], t[:, 1])
+    L[L < 1e-9] = 1e-9
+    t /= L[:, None]
+    nrm = np.stack([-t[:, 1], t[:, 0]], axis=1)          # left normals per segment
+    vn = np.empty((len(pts), 2))
+    vn[0], vn[-1] = nrm[0], nrm[-1]
+    if len(pts) > 2:
+        m = nrm[:-1] + nrm[1:]
+        ml = np.hypot(m[:, 0], m[:, 1])
+        ml[ml < 1e-9] = 1e-9
+        m /= ml[:, None]
+        cosh = np.clip(np.sum(m * nrm[1:], axis=1), 0.5, 1.0)  # miter scale 1/cos(half angle), at most 2
+        vn[1:-1] = m / cosh[:, None]
+    out = pts.copy()
+    out[:, :2] += vn * d
+    return out
+
+
+def _seg_dist(p, a, b):
+    """Distance from points p (N, 2) to segments a-b (M, 2): (N, M)."""
+    ab = b - a
+    L2 = np.maximum(np.sum(ab * ab, axis=1), 1e-12)
+    ap = p[:, None, :] - a[None, :, :]
+    t = np.clip(np.sum(ap * ab[None], axis=2) / L2[None], 0.0, 1.0)
+    q = a[None] + t[..., None] * ab[None]
+    return np.hypot(p[:, None, 0] - q[..., 0], p[:, None, 1] - q[..., 1])
+
+
+def cut_outside(pts, blockers, spacing=2.0):
+    """The pieces of a polyline (k, 3) outside every blocker (centreline xy (m, 2), half width): densified
+    to `spacing`, points inside a blocker removed, runs of at least MIN_PIECE_M kept. Pure."""
+    if not blockers:
+        return [pts]
+    d = densify(np.asarray(pts, np.float64), spacing)
+    inside = np.zeros(len(d), bool)
+    for line, hw in blockers:
+        if len(line) < 2:
+            continue
+        lo, hi = line.min(axis=0) - hw, line.max(axis=0) + hw
+        near = (d[:, 0] >= lo[0]) & (d[:, 0] <= hi[0]) & (d[:, 1] >= lo[1]) & (d[:, 1] <= hi[1]) & ~inside
+        if not near.any():
+            continue
+        idx = np.nonzero(near)[0]
+        dist = _seg_dist(d[idx, :2], line[:-1], line[1:]).min(axis=1)
+        inside[idx[dist < hw]] = True
+    out, start = [], None
+    for k in range(len(d) + 1):
+        if k < len(d) and not inside[k]:
+            if start is None:
+                start = k
+        elif start is not None:
+            run = d[start:k]
+            if len(run) >= 2 and float(np.sum(np.hypot(*np.diff(run[:, :2], axis=0).T))) >= MIN_PIECE_M:
+                out.append(run)
+            start = None
+    return out
+
+
+def extras(spec, pts, lon):
+    """The sidewalk / gutter / marking polylines of one road: [(look dict with m / tl / p, width, pts)].
+    pts: its centreline (k, 3) in the anchor frame; lon: its longitude (centre line colour). Pure."""
+    out = []
+    w, kind, urban, cls = spec
+    if kind != "paved":
+        return out
+    if urban and cls in SIDEWALK_CLASSES:
+        for side in (1, -1):
+            out.append((SIDEWALK, SIDEWALK["w"], offset_polyline(pts, side * (w / 2 + SIDEWALK["w"] / 2))))
+            out.append((GUTTER, GUTTER["w"], offset_polyline(pts, side * (w / 2 - GUTTER["w"] / 2))))
+    if cls in CENTRE_CLASSES and w >= 6.0:
+        look = {"m": centre_colour(lon), "tl": CENTRE["tl"], "p": CENTRE["p"]}
+        for side in (1, -1):
+            out.append((look, CENTRE["w"], offset_polyline(pts, side * CENTRE["gap"])))
+    if not urban and cls in EDGE_LINE_CLASSES:
+        for side in (1, -1):
+            out.append((EDGE_LINE, EDGE_LINE["w"], offset_polyline(pts, side * (w / 2 - EDGE_LINE["inset"]))))
     return out
 
 
@@ -244,12 +350,19 @@ def cells_of_tile(frame, tx, ty):
     return mapcells.cells_for_bbox(float(np.min(lat)), float(np.min(lon)), float(np.max(lat)), float(np.max(lon)))
 
 
+def _chunk(look, w, c):
+    return {"m": look["m"], "w": round(float(w), 2), "tl": look["tl"], "p": look["p"],
+            "n": [[round(float(v), 3) for v in p] for p in c]}
+
+
 def build_tile(frame, tx, ty, cells, elev, urban_fn=None):
     """The chunks of one tile. cells: the mapgeom.Features of the "roads" layer of every cell touching
-    the tile; elev(lat, lon) -> metres (the DEM); urban_fn: as road_specs. Features in several cells are taken once (by id).
-    Pure given its inputs (sorted by feature id, so the output does not depend on cell order)."""
+    the tile; elev(lat, lon) -> metres (the DEM); urban_fn: as road_specs. Features in several cells are
+    taken once (by id). The carriageways, then each road's sidewalks / gutters / markings (extras), cut
+    where another road's carriageway crosses them. Pure given its inputs (sorted by feature id)."""
     x0, y0, x1, y1 = tile_bbox(tx, ty)
     box = (x0 - OVERLAP, y0 - OVERLAP, x1 + OVERLAP, y1 + OVERLAP)
+    near = (x0 - NEAR_M, y0 - NEAR_M, x1 + NEAR_M, y1 + NEAR_M)
     seen = {}
     for feats in cells:
         if feats is None or len(feats) == 0:
@@ -259,9 +372,9 @@ def build_tile(frame, tx, ty, cells, elev, urban_fn=None):
             if specs[i] is None or str(feats.ids[i]) in seen:
                 continue
             seen[str(feats.ids[i])] = (feats, i, specs[i])
-    chunks = []
+    roads = []                                  # (fid, spec, centreline (k, 3), lon) near the tile
     for fid in sorted(seen):
-        feats, i, (w, kind) = seen[fid]
+        feats, i, spec = seen[fid]
         for part in feats.parts(i):
             for ring in part:
                 if len(ring) < 2:
@@ -270,16 +383,27 @@ def build_tile(frame, tx, ty, cells, elev, urban_fn=None):
                 h = np.asarray(elev(lat, lon), np.float64)
                 e, n, u = frame.geodetic_to_enu(lat, lon, h)
                 pts = np.stack([e, n, u], axis=1)
-                if (pts[:, 0].max() < box[0] or pts[:, 0].min() > box[2] or pts[:, 1].max() < box[1]
-                        or pts[:, 1].min() > box[3]):
+                if (pts[:, 0].max() < near[0] or pts[:, 0].min() > near[2] or pts[:, 1].max() < near[1]
+                        or pts[:, 1].min() > near[3]):
                     continue
-                for piece in clip_polyline(pts, *box):
-                    piece = densify(simplify(piece))
-                    for c in split(piece):
+                roads.append((fid, spec, pts, float(np.mean(lon))))
+    chunks = []
+    for fid, spec, pts, _ in roads:
+        for piece in clip_polyline(pts, *box):
+            for c in split(densify(simplify(piece))):
+                if len(c) >= 2:
+                    chunks.append(_chunk(LOOK[spec.kind], spec.width, c))
+    for fid, spec, pts, lon in roads:
+        ex = extras(spec, pts, lon)
+        if not ex:
+            continue
+        blockers = [(p2[:, :2], s2.width / 2 + CUT_MARGIN) for f2, s2, p2, _ in roads if f2 != fid]
+        for look, w, line in ex:
+            for piece in clip_polyline(line, *box):
+                for run in cut_outside(piece, blockers):
+                    for c in split(densify(simplify(run))):
                         if len(c) >= 2:
-                            look = LOOK[kind]
-                            chunks.append({"m": look["m"], "w": round(w, 2), "tl": look["tl"], "p": look["p"],
-                                           "n": [[round(float(v), 3) for v in p] for p in c]})
+                            chunks.append(_chunk(look, w, c))
     return chunks
 
 

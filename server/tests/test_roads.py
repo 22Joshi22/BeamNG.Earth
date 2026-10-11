@@ -66,11 +66,11 @@ class RulesTest(unittest.TestCase):
         f = features([[(0, 0), (10, 0)]] * 6, ["residential", "footway", "primary", "tertiary", "track", "secondary"],
                      surfaces=[(4, "gravel")], widths=[(2, 14.0)], levels=[(3, 1.0)], flags=[(5, "is_bridge")])
         s = roads.road_specs(f)
-        self.assertEqual(s[0], (roads.STYLE["residential"][0] + 2 * roads.EDGE_STRIP_M, "paved"), "rural: edge strips")
+        self.assertEqual(s[0][:2], (roads.STYLE["residential"][0] + 2 * roads.EDGE_STRIP_M, "paved"), "rural: edge strips")
         self.assertIsNone(s[1], "footways left out")
-        self.assertEqual(s[2], (14.0, "paved"), "width rule")
+        self.assertEqual(s[2][:2], (14.0, "paved"), "width rule")
         self.assertIsNone(s[3], "off ground level (bridge / tunnel) left out")
-        self.assertEqual(s[4], (roads.STYLE["track"][0], "gravel"))
+        self.assertEqual(s[4][:2], (roads.STYLE["track"][0], "gravel"))
         self.assertIsNone(s[5], "bridge flag left out")
 
     def test_carriageway_parking_and_strips(self):
@@ -121,8 +121,8 @@ class GeometryTest(unittest.TestCase):
 class BuildTileTest(unittest.TestCase):
     def test_build_clips_and_styles(self):
         f = features([[(-300, 50), (300, 50)], [(100, 10), (100, 200)]], ["primary", "track"])
-        chunks = roads.build_tile(FRAME, 0, 0, [f], flat)
-        self.assertEqual(len(chunks), 2)
+        chunks = [c for c in roads.build_tile(FRAME, 0, 0, [f], flat) if c["m"] in {l["m"] for l in roads.LOOK.values()}]
+        self.assertEqual(len(chunks), 2, "one surface chunk per road (lines and sidewalks aside)")
         prim = next(c for c in chunks if c["w"] == roads.STYLE["primary"][0] + 2 * roads.EDGE_STRIP_M)
         xs = [n[0] for n in prim["n"]]
         self.assertAlmostEqual(min(xs), -roads.OVERLAP, delta=0.05)
@@ -132,6 +132,39 @@ class BuildTileTest(unittest.TestCase):
         track = next(c for c in chunks if c is not prim)
         self.assertEqual(track["m"], roads.LOOK["dirt"]["m"])
         self.assertTrue(all(abs(n[2] - 10.0) < 0.05 for n in prim["n"]), "z on the DEM (flat, near the anchor)")
+
+    def test_city_street_sidewalks_and_lines_stop_at_crossings(self):
+        f = features([[(-300, 100), (300, 100)], [(120, -100), (120, 300)]], ["secondary", "residential"])
+        chunks = roads.build_tile(FRAME, 0, 0, [f], flat, lambda la, lo: np.ones(np.shape(la), bool))
+        by = {}
+        for c in chunks:
+            by.setdefault(c["m"], []).append(c)
+        self.assertIn(roads.SIDEWALK["m"], by, "city streets get sidewalks")
+        self.assertIn(roads.GUTTER["m"], by)
+        self.assertIn("line_yellow", by, "double yellow centre line (Americas)")
+        self.assertNotIn(roads.EDGE_LINE["m"], by, "no rural edge lines in the city")
+        sec_w = roads.carriageway("secondary", "paved", True)
+        res_w = roads.carriageway("residential", "paved", True)
+        for c in by["line_yellow"]:              # the secondary's centre lines stop at the residential street
+            for x, y, _ in c["n"]:
+                self.assertFalse(abs(x - 120) < res_w / 2, (x, y))
+        for c in by[roads.SIDEWALK["m"]]:        # no sidewalk crosses another street's carriageway
+            for x, y, _ in c["n"]:
+                on_sec = abs(y - 100) < sec_w / 2
+                on_res = abs(x - 120) < res_w / 2
+                self.assertFalse(on_sec and on_res, (x, y))
+        yc = next(c["n"][0][1] for c in by[roads.LOOK["paved"]["m"]] if abs(c["n"][0][1] - 100) < 1)
+        ys = sorted({round(c["n"][0][1], 3) for c in by["line_yellow"]})
+        self.assertTrue(any(abs(y - (yc + roads.CENTRE["gap"])) < 0.01 for y in ys) and
+                        any(abs(y - (yc - roads.CENTRE["gap"])) < 0.01 for y in ys), (yc, ys))
+
+    def test_offset_and_colour(self):
+        pts = np.array([[0.0, 0, 5], [10, 0, 5], [10, 10, 5]])
+        o = roads.offset_polyline(pts, 1.0)
+        self.assertTrue(np.allclose(o[0], [0, 1, 5]) and np.allclose(o[-1], [9, 10, 5]))
+        self.assertTrue(np.allclose(o[1], [9, 1, 5]), "mitred corner")
+        self.assertEqual(roads.centre_colour(-76.6), "line_yellow")
+        self.assertEqual(roads.centre_colour(12.5), "line_white")
 
     def test_feature_in_two_cells_once_and_deterministic(self):
         f = features([[(-300, 50), (300, 50)]], ["primary"])

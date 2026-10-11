@@ -170,7 +170,7 @@ def paint_roads(idx, lat, lon, feats_list, square, urban_fn=None):
             if specs[i] is None or fid in seen:
                 continue
             seen.add(fid)
-            width, kind = specs[i]
+            width, kind = specs[i].width, specs[i].kind
             px = max(1, int(round(width / square)))
             for part in feats.parts(i):
                 for ring in part:
