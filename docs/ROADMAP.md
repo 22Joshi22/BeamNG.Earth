@@ -196,8 +196,14 @@ Manhattan cell: 4.8 s cold, peak RSS 381 MB. Next:
   used to keep the raw texture until it was sent again (a teleport); now the server re-renders the
   shown tiles of a region that turns ready (nearest first, `--retex-rate` 5/s, one render at a time)
   under a new file name and sends `far_retex`; the mod switches the material's colour map, at most
-  2 a frame through the governor. To check in-game: the seam fading out on screen without a
-  teleport, no hitch per switch (governor `retex` cost; prior 1 ms guessed), no orange textures.
+  2 a frame through the governor. In-game 2026-10-11 (UT/CO line 38.50,-109.075, fresh regions):
+  474 live swaps in 20 min, 0 failed, measured governor `retex` cost 0.63 ms, no orange textures.
+  More in-game checks the same night (same camera, same time before/after): KS/NE farmland 39.995,
+  -98.25 - the state-line step is gone, fields keep their contrast (no false seams at field edges);
+  CO/NM 36.995,-105.75 (high desert by the Rio Grande gorge) - seam gone; Mount Rainier 46.80,
+  -121.73 - "no seam within reach" in every region, snow/glaciers/meadows untouched. Images in the
+  owner's ~/Pictures (beamng_earth_seam_*). Remaining before default-on: none blocking; the
+  state-boundary prior, the far rings and faster detection stay follow-ups.
   Review (2026-10-11): coarse L5/L6 tiles span up to 9/16 regions each and are now re-rendered for
   every one (the first cut stopped at 8 revisions); a failed region over an unusable cache file no
   longer reads as ready (that re-rendered shown tiles in a loop); the mod never switches a material
@@ -362,6 +368,14 @@ terrain at all (same fall risk). Plan:
 6. **Pre-download** (candidate): cache a region or route for fully offline play.
 7. **Tests**: fault injection in the integration drive (kill the server mid-drive, restart it, drop
    network with a fake fetcher, start the mod with no server) and the same as in-game probes.
+
+In-game 2026-10-11 (items 1-3): a server restart mid-session is seamless - the new server adopts
+the session whose tiles the game still shows (`adopting session ...`), releases and deletes its
+1522 files once the resync committed, 0 missing-file errors (twice, old->new and new->new). Edge
+guard (Owens Lake playa, server stopped, a stock test car at 17.7 m/s towards the block edge): it
+braked and held the car 15 m inside the edge, banner "connection lost"; under sustained throttle it
+then crept 4.6 m outwards in 50 s, fixed (fix/edge-creep: a pull back inside the stop line).
+tools/restart_game.sh restarts a crashed or frozen game unattended (Steam, MCP wait, level load).
 
 Status (2026-10-10, built offline, merged to main): the server side of 1 and 4 is in
 place: `server/netfetch.py` (docs/research/2026-10-10-rate-limits.md §5) rate-limits every host,
