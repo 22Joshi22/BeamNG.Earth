@@ -423,9 +423,13 @@ check(W.getMode() == 'manual', 'BWM fighting: manual by default')
 check(#toasts == 1 and toasts[1][1] == 'toastrMsg', 'one notice')
 run(10)
 check(#toasts == 1, 'notice once')
+run(W.GRACE_S)
+W.onEnvironmentChanged({ cloudCover = 0.3 })        -- a change while it is manual (BWM or the user)
+check(W.getMode() == 'manual' and W.statusLine():find('manual overrides', 1, true), 'manual: the change is recorded')
 BWM_Weather_main = { getWeatherState = function() return { currentPreset = 'clear', targetPreset = 'clear', automaticWeather = false } end }
 run(W.BWM_CHECK_S + 0.5)
 check(W.getMode() == 'real', 'BWM on clear: real again')
+check(not W.statusLine():find('manual overrides', 1, true), 'back to real: changes made while manual are not overrides')
 
 -- other levels: nothing happens there
 level = 'west_coast_usa'

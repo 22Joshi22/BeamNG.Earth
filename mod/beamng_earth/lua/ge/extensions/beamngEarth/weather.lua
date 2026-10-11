@@ -589,7 +589,8 @@ local function checkBwm()
     local want = S.bwm and 'manual' or 'real'
     if want ~= mode then
       mode = want
-      if mode == 'manual' then hidePrecip() else S.cur = nil end
+      -- back to real: changes made while it was manual were not overrides of real weather
+      if mode == 'manual' then hidePrecip() else S.cur, S.override, S.quietUntil = nil, {}, 0 end
     end
   end
   if S.bwm and not S.notified then
