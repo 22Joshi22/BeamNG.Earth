@@ -591,6 +591,27 @@ class MetricsTest(unittest.TestCase):
             w = bm.image_metrics(pc, pc, width=40)                   # compared at 40 px wide
             self.assertEqual(w["size"], [40, 30])
 
+    def test_local_change_is_flagged(self):
+        """A small object moved on a textured scene: the mean SSIM stays above the flag, the
+        changed-pixel share flags it."""
+        self.assertTrue(bm.shot_changed({"ssim": 0.99, "changed": 0.02}))
+        self.assertTrue(bm.shot_changed({"ssim": 0.95, "changed": 0.0}))
+        self.assertFalse(bm.shot_changed({"ssim": 0.99, "changed": 0.005}))
+        with tempfile.TemporaryDirectory() as tmp:
+            bg = np.random.default_rng(0).integers(40, 140, (200, 300, 1)).repeat(3, axis=2).astype(np.uint8)
+            img, moved = bg.copy(), bg.copy()
+            img[80:100, 100:140] = 250
+            moved[80:100, 120:160] = 250
+            pa, pb = os.path.join(tmp, "a.png"), os.path.join(tmp, "b.png")
+            Image.fromarray(img).save(pa)
+            Image.fromarray(moved).save(pb)
+            m = bm.image_metrics(pa, pb)
+            self.assertGreater(m["ssim"], bm.SSIM_FLAG)
+            self.assertGreater(m["changed"], bm.CHANGED_FLAG)
+            self.assertTrue(bm.shot_changed(m))
+            self.assertFalse(bm.shot_changed(m, changed_flag=0.5))
+            self.assertFalse(bm.shot_changed(bm.image_metrics(pa, pa)))
+
     def test_number_delta(self):
         d = bm.number_delta("perf.fps", 60.0, 50.0)
         self.assertEqual((d["delta"], d["verdict"]), (-10.0, "worse"))

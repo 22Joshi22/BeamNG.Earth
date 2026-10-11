@@ -86,6 +86,7 @@ PLACE_NUMBERS = ("load.ready_s", "load.anchor_s", "load.farDone_s", "tiles.live"
                  "tiles.failed", "tiles.textured", "exact.missLoad", "exact.missAfter")
 VIEW_NUMBERS = ("perf.fps", "perf.p50", "perf.p95", "perf.p99", "perf.maxMs", "perf.over50")
 SSIM_FLAG = 0.98            # compare: an image below this SSIM is "changed"
+CHANGED_FLAG = 0.01          # ... or with more than this share of its pixels changed (|dY| > CHANGED_DY)
 
 ID_RE = re.compile(r"^[a-z0-9_]+$")
 
@@ -774,6 +775,12 @@ def number_delta(key, a, b):
     return out
 
 
+def shot_changed(m, ssim_flag=SSIM_FLAG, changed_flag=CHANGED_FLAG):
+    """A shot pair differs beyond the noise: a low mean SSIM (a change all over), or many changed
+    pixels (a local change the mean hides)."""
+    return m["ssim"] < ssim_flag or m["changed"] > changed_flag
+
+
 def _thumb(src, dest, width=THUMB_WIDTH):
     from PIL import Image
     with Image.open(src) as im:
@@ -789,7 +796,7 @@ def load_run(path):
         return json.load(f)
 
 
-def compare(run_a, run_b, out_dir, width=METRIC_WIDTH, log=print, ssim_flag=SSIM_FLAG):
+def compare(run_a, run_b, out_dir, width=METRIC_WIDTH, log=print, ssim_flag=SSIM_FLAG, changed_flag=CHANGED_FLAG):
     """Side by side of two runs (see the module doc). Returns the report (also compare.json)."""
     run_a, run_b, out_dir = Path(run_a), Path(run_b), Path(out_dir)
     ra, rb = load_run(run_a), load_run(run_b)
@@ -798,7 +805,7 @@ def compare(run_a, run_b, out_dir, width=METRIC_WIDTH, log=print, ssim_flag=SSIM
     pb = {p["id"]: p for p in rb.get("places", [])}
     order = [i for i in pa] + [i for i in pb if i not in pa]
     rep = {"a": str(run_a), "b": str(run_b), "labels": [ra.get("label"), rb.get("label")],
-           "metricWidth": width, "ssimFlag": ssim_flag, "places": []}
+           "metricWidth": width, "ssimFlag": ssim_flag, "changedFlag": changed_flag, "places": []}
     for pid in order:
         A, B = pa.get(pid), pb.get(pid)
         row = {"id": pid, "name": (A or B).get("name", pid), "inA": A is not None, "inB": B is not None,
@@ -820,7 +827,7 @@ def compare(run_a, run_b, out_dir, width=METRIC_WIDTH, log=print, ssim_flag=SSIM
                 vr["diff"] = f"img/diff_{stem}.png"
                 vr["metrics"] = image_metrics(run_a / x["file"], run_b / y["file"], width, out_dir / vr["diff"])
                 _thumb(out_dir / vr["diff"], out_dir / vr["diff"])
-                vr["changed"] = vr["metrics"]["ssim"] < ssim_flag
+                vr["changed"] = shot_changed(vr["metrics"], ssim_flag, changed_flag)
             if x and y:
                 vr["numbers"] = {k: number_delta(k, get_path(x, k), get_path(y, k)) for k in VIEW_NUMBERS}
                 if get_path(x, "perf.focused") is False or get_path(y, "perf.focused") is False:
@@ -837,7 +844,7 @@ def compare(run_a, run_b, out_dir, width=METRIC_WIDTH, log=print, ssim_flag=SSIM
     (out_dir / "index.html").write_text(compare_html(rep))
     s = rep["summary"]
     log(f"{s['shots']} shot pairs: mean mad {s['meanMad']}, mean ssim {s['meanSsim']}, {s['changedShots']} changed "
-        f"(ssim < {ssim_flag}); {s['worse']} number(s) worse, {s['better']} better; {s['missing']} shot(s) missing")
+        f"(ssim < {ssim_flag} or > {changed_flag * 100:g} % of the pixels); {s['worse']} number(s) worse, {s['better']} better; {s['missing']} shot(s) missing")
     return rep
 
 
@@ -848,7 +855,7 @@ def summarize_compare(rep):
     return {"shots": len(ms),
             "meanMad": round(sum(m["mad"] for m in ms) / len(ms), 3) if ms else None,
             "meanSsim": round(sum(m["ssim"] for m in ms) / len(ms), 4) if ms else None,
-            "changedShots": sum(1 for m in ms if m["ssim"] < rep["ssimFlag"]),
+            "changedShots": sum(1 for p in rep["places"] for v in p["views"] if v.get("changed")),
             "missing": sum(1 for p in rep["places"] for v in p["views"] if not v.get("metrics")),
             "worse": verdicts.count("worse"), "better": verdicts.count("better")}
 
@@ -878,6 +885,7 @@ def _numbers_table(nums):
 def compare_html(rep):
     s = rep["summary"]
     e = html.escape
+    mean_ssim = "-" if s["meanSsim"] is None else f"{s['meanSsim']:.4f}"
     parts = [f"""<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Benchmark compare</title><style>
@@ -901,8 +909,9 @@ tr.worse td {{ color: var(--worse); }} tr.better td {{ color: var(--better); }}
 </style></head><body>
 <h1>Benchmark compare</h1>
 <p class="muted">A: <code>{e(rep['a'])}</code><br>B: <code>{e(rep['b'])}</code><br>
-{s['shots']} shot pairs, mean MAD {_fmt(s['meanMad'])}, mean SSIM {_fmt(s['meanSsim'])}, {s['changedShots']} changed
-(SSIM &lt; {rep['ssimFlag']}); numbers: {s['worse']} worse, {s['better']} better; {s['missing']} shot(s) missing.
+{s['shots']} shot pairs, mean MAD {_fmt(s['meanMad'])}, mean SSIM {mean_ssim},
+{s['changedShots']} changed (SSIM &lt; {rep['ssimFlag']} or more than {rep['changedFlag'] * 100:g} % of the pixels
+changed by more than {CHANGED_DY} in luminance); numbers: {s['worse']} worse, {s['better']} better; {s['missing']} shot(s) missing.
 Metrics at {rep['metricWidth']} px wide; heat map = |&Delta; luminance| x4.</p>"""]
     for p in rep["places"]:
         miss = "" if p["inA"] and p["inB"] else f" <span class='changed'>(only in {'A' if p['inA'] else 'B'})</span>"
@@ -974,6 +983,8 @@ def main(argv=None):
     cp.add_argument("--metric-width", type=int, default=METRIC_WIDTH)
     cp.add_argument("--ssim-flag", type=float, default=SSIM_FLAG,
                     help="a shot below this SSIM is 'changed' (set it from two runs of the same build)")
+    cp.add_argument("--changed-flag", type=float, default=CHANGED_FLAG,
+                    help="... or with more than this share of its pixels changed (0-1)")
     sp = sub.add_parser("restore")
     sp.add_argument("run", help="a run folder (its state.json)")
     a = ap.parse_args(argv)
@@ -981,7 +992,7 @@ def main(argv=None):
     if a.cmd == "compare":
         A, B = Path(a.run_a), Path(a.run_b)
         out = a.out or str(RUNS_DIR / f"compare-{A.name}-vs-{B.name}")
-        compare(A, B, out, a.metric_width, ssim_flag=a.ssim_flag)
+        compare(A, B, out, a.metric_width, ssim_flag=a.ssim_flag, changed_flag=a.changed_flag)
         print(f"wrote {out}/index.html")
         return 0
     if a.cmd == "check":

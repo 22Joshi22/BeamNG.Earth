@@ -272,13 +272,17 @@ Screenshots stay in the game's `screenshots/mcp/` too (copied, like the other to
 `docs/research/benchmarks/compare-<A>-vs-<B>/`). Per image, at `--metric-width` px wide (1280;
 both resized the same way, B to A's size if they differ): MAD (mean |A - B| over RGB, 0-255), SSIM
 (mean over 7 x 7 box windows on luminance, Wang et al. 2004 constants; 1 = identical) and the share
-of pixels whose luminance moved by more than 16. A shot below `--ssim-flag` (0.98) is "changed".
+of pixels whose luminance moved by more than 16. A shot is "changed" when its SSIM is below
+`--ssim-flag` (0.98: a change all over) or more than `--changed-flag` (1 %) of its pixels changed
+(a local change the mean hides: a 20 x 40 px object moved 20 px in a 300 x 200 image is SSIM 0.980,
+1.3 % changed).
 Numbers: per place load / tiles / exactMiss, per view fps / p50 / p95 / p99 / max / over50, as A,
 B, delta and %; "worse" / "better" when they moved beyond the tolerance (load +-20 % and 2 s, fps
 5 % and 1 fps, p95 10 % and 1 ms, max 25 % and 10 ms, any new failed tile or exactMiss frame after
 ready). Cost: ~0.5 s per 4K pair at 1280 px (3 s at full size). **Noise floor:** two runs of the
 same build differ (TAA, animated water and grass, streaming order, JPG): run the same build twice
-first and set `--ssim-flag` just under the lowest SSIM that comparison shows.
+first and set `--ssim-flag` just under the lowest SSIM and `--changed-flag` just over the highest
+changed share that comparison shows.
 
 GE side: `tools/benchmark.lua` (sent through MCP `run_lua`, global `BNGE_BENCH`: info, zeroInputs,
 teleport, progress, setTime, setWeather, view, perfStart / perfRead, restore). No mod file and no
