@@ -466,9 +466,17 @@ their chunk arrived.
   1. seams (`<cache>/colormatch/v1/usgs/12/x/y.seams.npz`, `.seams.none`): z14 USGS and EOX S2 2023
      (2016 per tile) over the region plus a 1-tile halo, reliability weights, IRLS, the oriented
      step filter (15 m grid, 36 angles, 5 x 240 m segments, the S2 gate), NMS, hysteresis and the
-     component filter (>= 1.5 km, consistent step vector); per seam cell of the core: normal, local
-     step (cut blur at 300 m), sub-pixel line from the z16 profile (z16 tiles only along the seam;
-     the centroid re-centred twice, ≤ 0.2 px on synthetic slants with texture).
+     component filter (>= 1.5 km, consistent step vector, and USGS carries the step: the median
+     USGS step on the 300 m cut blurs over the component's median ratio step >= 0.5); per seam cell
+     of the core: normal, local step (cut blur at 300 m), sub-pixel line from the z16 profile (z16
+     tiles only along the seam; the centroid re-centred twice, ≤ 0.2 px on synthetic slants with
+     texture). The USGS-share filter came out of the review: the S2 gate (|D_s2| − 0.03 < 1.5 |D|)
+     lets a step in S2 only through (|D_s2| ≈ |D|, score ≈ |D|/3), so the edge of the per-tile 2016
+     fallback and EOX compositing steps were "corrected" into USGS (Monument Valley window, 2016 on
+     its west half: two false seams of 0.45/0.83/1.08 log; a 20 % step put into S2: one); research
+     §5 assumed the gate rejected them. Now those are dropped (share ≤ 0.4; the AZ/UT seam 0.9–1.0,
+     its output byte-identical); below about twice the texture's 45 m band-step noise a step in S2
+     only cannot be told from a USGS step plus texture.
   2. field (`.npz`, `.none`): from the seams of the 3 x 3 regions, on a 30 m grid: half-steps
      scattered on each side, extended with the cut blur (300 m; 1500 m without support), faded with
      a Gaussian of the distance (σ_f 1500 m, smoothstep taper to 0 at 6 km = one region at most),
@@ -477,7 +485,8 @@ their chunk arrived.
 - Per tile (`Field.apply`): bilinear gain from the 30 m field (phase-sliced upsample); in the band
   each pixel takes its side's gain from its signed distance to the line (2 z16 px ramp); at z15/z16
   the |d| ≤ 1.5 px strip (the mosaic's blend row) is inpainted along the normal from d = ±2.5 px,
-  with MARGIN px of the neighbouring raw tiles where it nears the edge; z12/z13 average the band
+  with MARGIN px of the neighbouring tiles where it nears the edge (as the mosaic shows them: relit
+  with `--deshadow`; raw neighbours put the strip ~20 % off there); z12/z13 average the band
   gains over each pixel. No seam within reach: the input itself (~0 ms). Gain-1 pixels keep their
   exact bytes.
 - Order with `--deshadow` (§6, tested): raw → de-shadow → colour gain → tone curve. Seams are
@@ -490,7 +499,13 @@ their chunk arrived.
   (the engine caches textures by path; the mod's `satmat.ref` points an unused material at the new
   file). A tile on screen keeps its raw texture until it is sent again: the live swap is V1_4_SPEC
   M3a's `far_retex`. An evicted stale / re-rendered tile's next build continues the revision
-  (`tex_rev`); `prune` deletes every revision with the anchor's files.
+  (`tex_rev`), and so does one evicted while a region was still pending (the listener cannot mark
+  it any more, and its next build may render the corrected texture); `prune` deletes every
+  revision with the anchor's files.
+- Threads: the region worker computes; tile workers read fields from disk (`field`, without holding
+  the ColorMatch lock); the calls made on earthd's event loop (`prepare` at an anchor, `request`
+  from prefetch, `status` when a tile is done) look at memory, the queue and the files' existence
+  only, never decoding a field (~4 ms each).
 - Real data (offline, the research windows served from the prototype's cached tiles, no network):
   Monument Valley's AZ/UT line ΔE 17.6 → 0.77 (200 m bands) and 17.9 → 0.56 (20 m), survey step
   +62/+96/+50 % → +0.3/+1.8/+0.2 %, mean change 9.7 levels, log-HF ratio 1.005 (the prototype's
@@ -502,8 +517,7 @@ their chunk arrived.
   unchanged.
 - Limits / follow-ups: moderate seams in farmland and cities are not detected (research §5: a
   geometric prior along candidate lines; a state-boundary prior only from a generic boundary dataset,
-  never hard-coded lines); z10–z11 source tiles (far rings) stay raw; the inpaint margin is the raw
-  neighbours even with `--deshadow` (a few px at tile edges); detection speed (30 m grid, candidate
+  never hard-coded lines); z10–z11 source tiles (far rings) stay raw; detection speed (30 m grid, candidate
   prefilter); de-shadow could fit its sun per flight using these seams (§6); in-game check of a
   handful of known state-line seams before default-on.
 ## Real weather, level parity, gravity (quick wins 1, 2, 4; built offline 2026-10-10, feature/weather)

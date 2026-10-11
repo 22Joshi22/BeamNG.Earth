@@ -261,7 +261,8 @@ Format decoded from engine-written files (golden pairs in `tests/fixtures/`):
   §7): USGS is a mosaic of NAIP flights flown per state and year, so flight boundaries are colour
   steps (Monument Valley's AZ/UT line: ΔE 17.6). Per USGS z12 region (~8 km) one background thread
   detects the survey seams on the z14 grid against EOX S2 2023 (2016 per tile where 2023 has
-  nothing): long, consistent steps of the USGS/S2 ratio that S2 does not have (a 1-tile halo of
+  nothing): long, consistent steps of the USGS/S2 ratio that S2 does not have and USGS does (a
+  step in S2 only, e.g. at the edge of the 2016 fallback, is not imported; a 1-tile halo of
   neighbouring tiles; the sub-pixel line from z16 tiles fetched along the seam), then builds the
   feather field from the seams of the region and its 8 neighbours: each side of a seam moves half
   its local step, faded out with the distance (σ 1.5 km, 0 beyond 6 km), clamped to ×2; gain
@@ -269,7 +270,7 @@ Format decoded from engine-written files (golden pairs in `tests/fixtures/`):
   `<cache>/colormatch/v1/usgs/12/x/y.seams.npz` and `.npz` (a `.none` marker where there is nothing:
   the common case). `Imagery._mosaic` then corrects each USGS z12–z16 source tile (after
   de-shadowing, before the tone curve; the 3 px blend row on the line is inpainted from the
-  neighbours) into a second memory LRU; the raw tiles stay untouched. Until a region is ready its
+  neighbours, relit too with `--deshadow`) into a second memory LRU; the raw tiles stay untouched. Until a region is ready its
   tiles render raw and `render(pending=)` reports it; the server marks those far tiles stale when
   the region turns out to change them and renders their texture again (only the texture, under a
   new `_r<rev>` name) the next time the tile is sent. z10–11 source tiles stay raw.
@@ -451,12 +452,14 @@ cap, sun recovery, relit ratio, halo bound and 20 px misregistration on a synthe
 the gates (flat DEM, low r², separation), the region cache (round trip, version bump, lambert reuse),
 the imagery hook, and `--deshadow off` byte-identical to the pre-hook renders (`DESHADOW_TIMING=1`:
 per-tile cost). `test_colormatch.py`: the cut blur, seam detection at every angle (noise, natural
-edges and a 600 m crop-change patch rejected), the sub-pixel line, the feather end to end on a
+edges, a 600 m crop-change patch and steps in S2 only rejected, also the edge of the per-tile 2016
+fallback end to end), the sub-pixel line, the feather end to end on a
 synthetic world (a +40 % flight seam: residual < 2 %, texture kept, blend row inpainted, gain 1 far
 away), per-tile == whole region, the no-seam identity, the disk cache, the same bytes whatever order
-the regions were computed in, the order with `--deshadow`, the field at the production scale (fade,
-clamp, z12–z15 against z16), the per-tile cost (< 10 ms), `--colormatch off` byte-identical and the
-server's stale-texture bookkeeping. `test_imagery.py`: a landmark lat/lon lands on its texel (within 0.2 m, two frames), orientation,
+the regions were computed in, the order with `--deshadow` (and the relit inpaint margin), the field
+at the production scale (fade, clamp, z12–z15 against z16), the per-tile cost (< 10 ms),
+`--colormatch off` byte-identical, no field decoded on the event loop and the server's stale-texture
+bookkeeping (also for a tile evicted while its region was pending). `test_imagery.py`: a landmark lat/lon lands on its texel (within 0.2 m, two frames), orientation,
 zoom choice, the source chain (404, blank, last-source blank, unreachable, undecodable, coverage
 probes, min zoom), disk cache and remembered 404s, prefetch, tone curve, DDS mip chain (each level
 the BC1 of the box-reduced previous one, readable by Pillow); plus three real-network checks (USGS

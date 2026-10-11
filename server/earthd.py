@@ -773,7 +773,9 @@ class Server:
 
     def _evict_tile(self, ck):
         info = self.tiles.pop(ck)
-        if info.stale or info.rev:          # --colormatch: a later build must not reuse its texture's name
+        # --colormatch: a later build must not reuse its texture's name (re-rendered, or rendered raw
+        # for a region that may finish before the tile is built again: the listener misses it then)
+        if info.stale or info.rev or info.cm_pending:
             self.tex_rev[ck] = info.rev + 1
         # through the rate-limited queue: the mod loaded most of these files once (P9)
         files = self.tile_files(self.tile_name(*ck), info.texture if info.rev else None)

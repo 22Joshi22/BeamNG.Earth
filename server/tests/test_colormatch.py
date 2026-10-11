@@ -193,6 +193,31 @@ def mosaic(tiles, world):
     return out
 
 
+def whole_region(F, img, rk, world):
+    """(region rk of the z16 mosaic img (the world's 2048² box) corrected at once by its Field F,
+    pixels with neighbours on every side): the reference of the per-tile path."""
+    M = cm.MARGIN
+    x0, y0 = (rk[0] - world.X0) * 1024, (rk[1] - world.Y0) * 1024
+    canvas = np.pad(img, ((M, M), (M, M), (0, 0)), mode="edge")[y0:y0 + 1024 + 2 * M, x0:x0 + 1024 + 2 * M]
+    core = canvas[M:-M, M:-M]
+    g = F.gain[cm.PADC - 1:cm.PADC + 64 + 1, cm.PADC - 1:cm.PADC + 64 + 1]
+    G = cm.upsample(g, 16).copy()
+    sc = F.sid[F.pb:F.pb + 256, F.pb:F.pb + 256]
+    by, bx = np.nonzero(sc >= 0)
+    strip = F._band(G, (by, bx, sc[by, bx]), 4.0, 0, 0, 16)
+    x = ds.to_lin(core) * G
+    if strip is not None:
+        F._inpaint(x, core, strip, 4.0, lambda: canvas)
+    ref = cm._LUT16[np.minimum(x * 65535 + 0.5, 65535).astype(np.uint16)]
+    same = (G == 1).all(-1)
+    if strip is not None:
+        same[strip[0], strip[1]] = False
+    ref[same] = core[same]
+    inside = np.zeros((2048, 2048), bool)          # the box's outer edge: no neighbours to sample
+    inside[M:-M, M:-M] = True
+    return ref, inside[y0:y0 + 1024, x0:x0 + 1024]
+
+
 def lonlat(world, gx, gy):
     lon, lat = ds.lonlat_of_px(gx, gy, 16)
     return float(lat), float(lon)
@@ -309,6 +334,33 @@ class DetectTest(unittest.TestCase):
         patch = ((np.abs(xx - DN / 2) < side / 2) & (np.abs(yy - DN / 2) < side / 2))[..., None] * self.D
         self.assertFalse(self.detect(T + patch, S)[0].any())          # 600 m crop change in USGS only
 
+    def test_step_in_s2_only_rejected(self):
+        """A straight step in S2 only (an EOX compositing seam, or the edge of the per-tile 2016
+        fallback) is not a survey seam: correcting it would import S2's step into USGS (§5). The
+        USGS / S2 ratio has the same step as for a flight seam and the S2 gate lets |D_s2| ~ |D|
+        through, so detect_region drops the components whose step USGS does not carry (before:
+        detected along the whole line). Below about twice this texture's band-step noise (0.15 log
+        per 240 m segment) the two cannot be told apart; in the real Monument Valley window a 20 %
+        step in S2 only was detected before and is rejected now, the AZ/UT seam kept."""
+        T = det_texture(1)
+        S = T + 0.08 * np.random.default_rng(2).standard_normal(T.shape).astype(np.float32)
+        n = 2 * DN                                  # detect_region's cells: half the detection grid
+        up = lambda a: np.exp(np.repeat(np.repeat(a, 2, 0), 2, 1)).astype(np.float32)   # noqa: E731
+        yy, xx = np.mgrid[0:DN, 0:DN] + 0.5
+
+        def seams(Lu, Ls):
+            return cm.detect_region(up(Lu), up(Ls), np.ones((n, n), bool), DET_M / 2, (0, n, 0, n))
+        for mag in (0.3, 0.6, 1.0):
+            for deg in (0, 35, 90):
+                a = math.radians(deg)
+                d = (xx - DN / 2) * -math.sin(a) + (yy - DN / 2) * math.cos(a)
+                step = (d > 0)[..., None] * np.array([mag, 0.9 * mag, 0.8 * mag], np.float32)
+                self.assertEqual(len(seams(T, S + step)["y"]), 0, (mag, deg))
+                self.assertEqual(len(seams(T, S - step)["y"]), 0, (mag, deg))
+                s = seams(T + step, S)              # the same step in USGS: kept
+                self.assertGreater(len(s["y"]), n / 2, (mag, deg))
+                self.assertTrue(all(st["share"] >= cm.MIN_SHARE for st in s["stats"]), s["stats"])
+
 
 # --- 3. the sub-pixel line -------------------------------------------------------------------
 class SeamLineTest(unittest.TestCase):
@@ -411,29 +463,10 @@ class WorldTest(unittest.TestCase):
         """§7 test 5: per-tile results (each with its neighbours as margin) == the whole region
         corrected at once, within 1 level."""
         w = self.world
-        M = cm.MARGIN
         for rk in regions(w):
-            F = self.c.field(rk, enqueue=False)
+            ref, inside = whole_region(self.c.field(rk, enqueue=False), self.before, rk, w)
             x0, y0 = (rk[0] - w.X0) * 1024, (rk[1] - w.Y0) * 1024
-            canvas = np.pad(self.before, ((M, M), (M, M), (0, 0)), mode="edge")[y0:y0 + 1024 + 2 * M, x0:x0 + 1024 + 2 * M]
-            core = canvas[M:-M, M:-M]
-            g = F.gain[cm.PADC - 1:cm.PADC + 64 + 1, cm.PADC - 1:cm.PADC + 64 + 1]
-            G = cm.upsample(g, 16).copy()
-            sc = F.sid[F.pb:F.pb + 256, F.pb:F.pb + 256]
-            by, bx = np.nonzero(sc >= 0)
-            strip = F._band(G, (by, bx, sc[by, bx]), 4.0, 0, 0, 16)
-            x = ds.to_lin(core) * G
-            if strip is not None:
-                F._inpaint(x, core, strip, 4.0, lambda: canvas)
-            ref = cm._LUT16[np.minimum(x * 65535 + 0.5, 65535).astype(np.uint16)]
-            same = (G == 1).all(-1)
-            if strip is not None:
-                same[strip[0], strip[1]] = False
-            ref[same] = core[same]
             got = self.after[y0:y0 + 1024, x0:x0 + 1024]
-            inside = np.zeros((2048, 2048), bool)      # the box's outer edge: no neighbours to sample
-            inside[M:-M, M:-M] = True
-            inside = inside[y0:y0 + 1024, x0:x0 + 1024]
             diff = np.abs(ref.astype(int) - got.astype(int)).max(-1)
             self.assertLessEqual(int(diff[inside].max()), 1, rk)
 
@@ -522,6 +555,73 @@ class NoSeamTest(unittest.TestCase):
             self.assertTrue((got == want).all())
             F = cm.Field(256, np.zeros((68, 68, 3), np.float32))
             self.assertIsNone(F.apply(t.rgb, 16, key[2], key[3], RZ))
+
+
+class FallbackImagery(WorldImagery):
+    """S2 2023 missing on the world's east column of z14 tiles: the per-tile fallback takes S2 2016
+    there, in a palette of its own (a straight step in S2 only, along the tile edge)."""
+    TINT16 = np.array([0.8, 0.9, 1.35], np.float32)
+
+    def _load(self, key):
+        src, z, x, y = key
+        if z == 14 and src.name in cm.REFS and self.world.covered(z, x, y) and x == self.world.X0 + 1:
+            with self._lock:
+                self.loads[(src.name, z)] = self.loads.get((src.name, z), 0) + 1
+            if src.name == "eox2023":
+                return None
+            return imagery.as_tile(ds.to_srgb(np.clip(ds.to_lin(self.world.s2(x, y)) * self.TINT16, 0, 1)))
+        return super()._load(key)
+
+
+class S2OnlyStepTest(unittest.TestCase):
+    def test_fallback_edge_not_imported(self):
+        """The edge between S2 2023 and the 2016 fallback is not a survey seam: no field, USGS
+        unchanged (§5: a step in S2 only is never imported into USGS)."""
+        with tempfile.TemporaryDirectory() as tmp:
+            w = World(seam=False)
+            c = cm.ColorMatch(os.path.join(tmp, "c"), "s2", region_z=RZ)
+            im = FallbackImagery(os.path.join(tmp, "c", "imagery"), w, colormatch=c, tone=0.0)
+            self.addCleanup(im.close)
+            for rk in regions(w)[:2]:               # either side of the edge
+                self.assertIs(c.wait(rk, 600), cm.EMPTY, rk)
+            self.assertGreater(im.loads.get(("eox2016", 14), 0), 0)
+            for rk in regions(w):
+                s, _ = c._seams_of(rk)
+                self.assertEqual(len(s["y"]), 0, rk)
+
+
+class LoopSideTest(unittest.TestCase):
+    def test_no_field_decoded_on_the_event_loop(self):
+        """prepare (anchor), request (prefetch) and status (a finished tile) run on earthd's event
+        loop: they never decode a field (stat calls only); field() (tile workers) decodes it without
+        holding the lock the loop takes."""
+        with tempfile.TemporaryDirectory() as tmp:
+            c = cm.ColorMatch(tmp, "s2", region_z=RZ)
+            c.close()                               # no worker: nothing is computed
+            w = World()
+            rk, rk2 = regions(w)[:2]
+            s = line_seams(256, 12.0, np.log(GAIN), (256 + 100.3, 256 + 75.0), 7.6)
+            c._store(rk, "field", cm.build_field(s, (0, 0), (192, 192), (64, 64), 256, 7.6,
+                                                 cm.fade_cut(7.6, 256)), {})
+            c._store(rk2, "field", cm.EMPTY, {})
+            calls = []
+            load = c._load
+
+            def spy(k, kind):
+                calls.append((k, kind, c._lock._is_owned()))
+                return load(k, kind)
+            c._load = spy
+            c.prepare(*lonlat(w, *w.P))
+            c.request((U, 16, rk[0] * 4, rk[1] * 4))
+            self.assertIs(c.status(rk), True)
+            self.assertIs(c.status(rk2), False)
+            self.assertEqual(calls, [])
+            self.assertFalse({rk, rk2} & set(c._events))      # on disk: not queued
+            self.assertIsInstance(c.field(rk), cm.Field)
+            self.assertIs(c.field(rk2), cm.EMPTY)
+            self.assertEqual(calls, [(rk, "field", False), (rk2, "field", False)])
+            self.assertIs(c.status(rk), True)                  # from memory now
+            self.assertEqual(len(calls), 2)
 
 
 class CacheTest(unittest.TestCase):
@@ -876,6 +976,28 @@ class DeshadowOrderTest(unittest.TestCase):
         for k in ("y", "x", "ang", "step", "off"):
             np.testing.assert_array_equal(s4[k], s1[k], k)
 
+    def test_inpaint_margin_relit(self):
+        """With --deshadow the strip's samples beyond a tile edge come from the neighbours as the
+        mosaic shows them (relit), like those inside: per-tile == the relit region corrected at
+        once (before: raw neighbour samples, the strip ~20 % off for a few px at each tile edge)."""
+        tmp, cache, world, c, im, raw, out, _ = world_run()
+        root = tempfile.mkdtemp(dir=tmp.name)
+        shutil.copytree(cache, root, dirs_exist_ok=True)
+        c2 = cm.ColorMatch(root, "s2", region_z=RZ)
+        im2 = WorldImagery(os.path.join(root, "imagery"), world, colormatch=c2, deshadow=FakeDeshadow())
+        self.addCleanup(im2.close)
+        keys = z16_tiles(world)
+        got = {}
+        for k, t in im2.tiles(keys).items():
+            got[k] = im2._colormatched(k, im2.deshadow.relight(k, t, im2), True, None)
+        after = mosaic(got, world)
+        relit = ds.to_srgb(np.clip(ds.to_lin(mosaic(raw, world)) * RELIGHT, 0, 1))
+        for rk in regions(world):
+            ref, inside = whole_region(c2.field(rk, enqueue=False), relit, rk, world)
+            x0, y0 = (rk[0] - world.X0) * 1024, (rk[1] - world.Y0) * 1024
+            diff = np.abs(ref.astype(int) - after[y0:y0 + 1024, x0:x0 + 1024].astype(int)).max(-1)
+            self.assertLessEqual(int(diff[inside].max()), 1, rk)
+
 
 # --- earthd: textures rendered raw are rendered again once their region is ready ------------
 class FakeDem:
@@ -948,6 +1070,24 @@ class ServerRetextureTest(unittest.TestCase):
         s._evict_tile(ck)                           # a later full build takes the next name
         self.assertEqual(s.tex_rev[ck], 2)
         self.assertEqual(s.texture_name(a.id, tile.key, s.tex_rev[ck]), f"far_{a.id}_0_0_0_r2.dds")
+
+    def test_evicted_while_pending_takes_the_next_name(self):
+        """A tile evicted while one of its regions is still pending is not marked stale (it is gone
+        when the region finishes), but its next build may render the corrected texture: it must not
+        reuse the raw texture's file name (the engine caches textures by path)."""
+        with tempfile.TemporaryDirectory() as tmp:
+            s = earthd.Server(tmp, os.path.join(tmp, "cache"), imagery=None)
+            self.addCleanup(s.tile_pool.shutdown)
+            self.addCleanup(s.hm_pool.shutdown)
+            ck = (0, "0_0_0")
+            s.tiles[ck] = earthd.TileInfo([0, 0, 0], 0.0, None, 0.0, None, 0, 0.0, "m", "far_0_0_0_0.dds",
+                                          cm_pending=frozenset({(1, 2)}))
+            s._evict_tile(ck)
+            self.assertEqual(s.tex_rev.get(ck), 1)
+            ck2 = (0, "0_0_1")
+            s.tiles[ck2] = earthd.TileInfo([0, 0, 0], 0.0, None, 0.0, None, 0, 0.0, "m", "far_0_0_0_1.dds")
+            s._evict_tile(ck2)                      # nothing pending, never re-rendered: the name stays
+            self.assertNotIn(ck2, s.tex_rev)
 
 
 if __name__ == "__main__":

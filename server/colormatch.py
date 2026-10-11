@@ -19,9 +19,11 @@ out the same whatever order its regions were computed in, from whichever anchor:
      robust blur: cast shadows differ between NAIP and S2), an oriented step filter on a 15 m grid
      (36 angles, 5 segments of 240 m that must agree, S2 gate), NMS, hysteresis and a component filter
      (>= 1.5 km, consistent step vector: a flight seam has one gain ratio along its length, crop-change
-     field edges do not). Kept per seam cell of the core: the normal, the local step (cut blur of the
-     ratio at SIGMA_S_M, sampled 4 cells either side) and the sub-pixel line, fitted on the z16 USGS
-     profile across the seam (z16 tiles fetched only along the seam). No seam: a ".seams.none" marker.
+     field edges do not; USGS carries the step on the 300 m cut blurs: a step in S2 only, e.g. at the
+     edge of the per-tile 2016 fallback, is not imported). Kept per seam cell of the core: the normal,
+     the local step (cut blur of the ratio at SIGMA_S_M, sampled 4 cells either side) and the
+     sub-pixel line, fitted on the z16 USGS profile across the seam (z16 tiles fetched only along
+     the seam). No seam: a ".seams.none" marker.
   2. field (feather_field, <cache>/colormatch/v1/usgs/12/x/y.npz): from the seams of the region and
      its 8 neighbours (the fade reaches FADE_CUT <= one region), on a 30 m grid (COARSE cells, one z12
      pixel): the half-steps scattered on each side, extended along the sides with the cut blur (300 m;
@@ -40,14 +42,17 @@ z <= 11 source tiles span several regions and stay raw (a documented follow-up).
 Order with --deshadow (§6): raw -> de-shadow -> colour gain -> tone LUT. The seam analysis runs on
 the raw imagery (de-shadow's model needs the source radiometry; cast shadows are outliers of the
 robust ratio anyway, and a gain from sunlit cells is right for the relit tile), and the gain is
-applied to the relit tile; imagery keeps the corrected tiles in a second LRU keyed by the input
-(raw or relit), the raw tiles stay untouched.
+applied to the relit tile (and the inpaint margin is taken from the relit neighbours); imagery
+keeps the corrected tiles in a second LRU keyed by the input (raw or relit), the raw tiles stay
+untouched.
 
 Regions are computed by one background thread, nearest the anchor first (queued at an anchor within
 PREP_M, and by prefetch / render for the tiles they need, within REQUEST_M). Until a region is ready
 its tiles render raw; render() reports the regions it lacked (pending=) so the server can rebuild
 those textures once they are ready (earthd: the listener marks the far tiles stale). Tiles of regions
-beyond REQUEST_M render raw without being reported (nothing is queued for them).
+beyond REQUEST_M render raw without being reported (nothing is queued for them). The calls earthd
+makes on its event loop (prepare, request, status) never decode a field (stat calls only); tile
+workers read fields from disk without holding the lock.
 """
 import heapq
 import json
@@ -94,6 +99,7 @@ SEG_M, NSEG, DEPTH_M = 240.0, 5, 45.0   # tested line: 5 segments of 240 m, 45 m
 N_ANG = 36                          # 5 deg
 THR, HYST_LOW = 0.12, 0.35          # hysteresis 0.12 / 0.042
 GATE = 1.5                          # S2 gate: |D_s2| - 0.03 < GATE |D|
+MIN_SHARE = 0.5                     # share of a component's step USGS carries (~1; a step in S2 only ~0)
 AGREE = 0.75                        # segments that must agree
 MIN_LEN_M = 1500.0
 MAX_INCONS = 0.3                    # step vector consistency along a component
@@ -205,18 +211,22 @@ def base_weights(U, S, valid=None):
     return w
 
 
-def smooth_ratio(U, S, w0, sigma, cut=None, robust=2, tau=0.25):
+def smooth_ratio(U, S, w0, sigma, cut=None, robust=2, tau=0.25, usgs=False):
     """(Lsm, w): log ratio USGS / S2 of edge-aware weighted blurs, with IRLS outlier rejection
-    (residuals against the blur, tau in log units)."""
+    (residuals against the blur, tau in log units). usgs: also the log of the weighted USGS blur
+    alone, (Lsm, w, Lu) (the weight blurred as one more channel: the others are unchanged)."""
     L = np.log(U + EPS) - np.log(S + EPS)
     w = w0.copy()
     for it in range(robust + 1):
-        X = np.concatenate([U * w[..., None], S * w[..., None]], -1)
+        last = usgs and it == robust
+        X = np.concatenate([U * w[..., None], S * w[..., None]] + ([w[..., None]] if last else []), -1)
         B = dt_blur(X, sigma, cut)
-        Lsm = np.log(B[..., :3] + EPS * 0.25) - np.log(B[..., 3:] + EPS * 0.25)
+        Lsm = np.log(B[..., :3] + EPS * 0.25) - np.log(B[..., 3:6] + EPS * 0.25)
         if it < robust:
             r = np.sqrt(((L - Lsm) ** 2).mean(-1))
             w = w0 * np.exp(-0.5 * (r / tau) ** 2)
+    if usgs:
+        return Lsm, w, np.log(B[..., :3] / np.maximum(B[..., 6:], 1e-6) + EPS)
     return Lsm, w
 
 
@@ -498,7 +508,7 @@ def detect_region(U, S, valid, cell_m, core, fine=None):
     D_c = np.zeros((h, wd, 3), np.float32)
     D_c[:sm.shape[0] * f, :sm.shape[1] * f] = rep(Dd)
     cut = dilate(seam, 1)
-    Lc, _ = smooth_ratio(U, S, w0, SIGMA_S_M / cell_m, cut)
+    Lc, _, Lu = smooth_ratio(U, S, w0, SIGMA_S_M / cell_m, cut, usgs=True)
     ys, xs = np.nonzero(seam)
     a = ang_c[ys, xs]
     nx, ny = normals(a)
@@ -507,6 +517,34 @@ def detect_region(U, S, valid, cell_m, core, fine=None):
     (ya, xa), (yb, xb) = P(1), P(-1)
     ok = ~cut[ya, xa] & ~cut[yb, xb] & (valid[ya, xa] & valid[yb, xb])
     step = (Lc[ya, xa] - Lc[yb, xb]).astype(np.float32)     # local step across the seam
+    # The USGS share of each component's step (its medians over the cells): a step in S2 only (an
+    # EOX compositing seam, the edge of the per-tile 2016 fallback) has the same ratio step and
+    # passes the S2 gate when |D_s2| ~ |D|, but USGS has none of it (share ~0; a survey seam ~1).
+    # Measured on the 300 m cut blurs: on the detector's 45 m bands texture decides, and the gate
+    # picks the offsets where USGS' texture mimics the step. Dropped components leave a cut behind
+    # (their cells were cut above): nothing reaches across it, nothing is scattered from it.
+    ustep = Lu[ya, xa] - Lu[yb, xb]
+    lab_d = np.full(sm.shape, -1, np.int64)
+    dys, dxs, roots = _components(sm)
+    lab_d[dys, dxs] = np.unique(roots, return_inverse=True)[1]      # stats order (_drop_small)
+    lab = rep(lab_d)[ys, xs]
+    keep = np.ones(len(ys), bool)
+    stats_kept = []
+    for k, st in enumerate(stats):
+        m = (lab == k) & ok
+        if m.any():
+            md = np.median(step[m], 0)
+            share = float(np.median(ustep[m], 0) @ md) / max(float(md @ md), 1e-12)
+            st = dict(st, share=round(share, 2))
+            if share < MIN_SHARE:
+                keep &= lab != k
+                continue
+        stats_kept.append(st)
+    out["stats"] = stats_kept
+    if not keep.all():
+        ys, xs, a, ok, step = ys[keep], xs[keep], a[keep], ok[keep], step[keep]
+        if not len(ys):
+            return out
     y0, y1, x0, x1 = core
     near = (ys >= y0 - LINE_R) & (ys < y1 + LINE_R) & (xs >= x0 - LINE_R) & (xs < x1 + LINE_R)
     if fine is not None:
@@ -987,24 +1025,23 @@ class ColorMatch:
             od.popitem(last=False)
 
     # --- requests ------------------------------------------------------------------------------
-    def _known(self, rk):
-        """The field of rk if in memory or on disk (EMPTY included), else None. Caller holds the lock."""
-        v = self._fields.get(rk)
-        if v is not None:
-            self._fields.move_to_end(rk)
-            return v
-        if rk in self._events:              # queued or being computed: not on disk yet
-            return None
-        got = self._load(rk, "field")
-        if got is None:
-            return None
-        self._lru_put(self._fields, rk, got[0], self.mem)
-        self._log_region(rk, got[0], got[1], cached=True)
-        return got[0]
+    # prepare, request and status run on earthd's event loop: memory, the queue and stat calls only
+    # (a field is decoded by field(), on a tile worker, outside the lock)
+    def _on_disk(self, rk):
+        """True (a field file of rk), False (its no-seam marker) or None: stat calls only."""
+        npz, none = self._paths(rk, "field")
+        return True if os.path.exists(npz) else False if os.path.exists(none) else None
+
+    def _peek(self, rk):
+        """Whether rk is in memory, queued or on disk (then a tile worker reads it when needed)."""
+        with self._lock:
+            if rk in self._fields or rk in self._events:
+                return True
+        return self._on_disk(rk) is not None
 
     def _enqueue(self, rk):
         """Queue the field of rk (once). Caller holds the lock."""
-        if rk in self._events:
+        if rk in self._events or rk in self._fields:
             return
         f = self._failed.get(rk)
         if f is not None and time.monotonic() - f < RETRY_S:
@@ -1027,10 +1064,11 @@ class ColorMatch:
         with self._lock:
             self._center = (lat, lon)
             self._queue = sorted((self._distance(rk), s, rk) for _, s, rk in self._queue)
-            for ry in range(int((y - rpx) // TILE), int((y + rpx) // TILE) + 1):
-                for rx in range(int((x - rpx) // TILE), int((x + rpx) // TILE) + 1):
-                    rk = (rx % n, ry)
-                    if 0 <= ry < n and self._distance(rk) <= radius + 6000 and self._known(rk) is None:
+        for ry in range(int((y - rpx) // TILE), int((y + rpx) // TILE) + 1):
+            for rx in range(int((x - rpx) // TILE), int((x + rpx) // TILE) + 1):
+                rk = (rx % n, ry)
+                if 0 <= ry < n and self._distance(rk) <= radius + 6000 and not self._peek(rk):
+                    with self._lock:
                         self._enqueue(rk)
 
     def handles(self, key):
@@ -1039,22 +1077,48 @@ class ColorMatch:
         return getattr(src, "name", src) == SOURCE and self.rz <= z <= MAX_Z
 
     def request(self, key):
-        """A source tile will be needed (prefetch): queue its region's field (never waits)."""
-        if self.handles(key):
-            self.field(self.region_of(*key[1:]))
+        """A source tile will be needed (prefetch, on the event loop): queue its region's field
+        unless it is known (never waits, never decodes)."""
+        if not self.handles(key):
+            return
+        rk = self.region_of(*key[1:])
+        if not self._peek(rk):
+            with self._lock:
+                if self._wanted(rk):
+                    self._enqueue(rk)
 
     def field(self, rk, enqueue=True):
-        """The region's Field, EMPTY, or None if not ready (then queued, within REQUEST_M)."""
+        """The region's Field, EMPTY, or None if not ready (then queued, within REQUEST_M). Reads
+        it from disk if needed, without holding the lock (tile workers)."""
         with self._lock:
-            v = self._known(rk)
-            if v is None and enqueue and self._wanted(rk):
-                self._enqueue(rk)
-            return v
+            v = self._fields.get(rk)
+            if v is not None:
+                self._fields.move_to_end(rk)
+                return v
+            busy = rk in self._events       # queued or being computed: not on disk yet
+        if not busy:
+            got = self._load(rk, "field")
+            if got is not None:
+                with self._lock:
+                    self._lru_put(self._fields, rk, got[0], self.mem)
+                    self._log_region(rk, got[0], got[1], cached=True)
+                return got[0]
+        if enqueue:
+            with self._lock:
+                if self._wanted(rk):
+                    self._enqueue(rk)
+        return None
 
     def status(self, rk):
-        """None (not ready), False (ready, nothing to correct) or True (ready with a correction)."""
-        v = self.field(rk, enqueue=False)
-        return None if v is None else v is not EMPTY
+        """None (not ready), False (ready, nothing to correct) or True (ready with a correction).
+        On the event loop: from memory, else the files on disk (stat calls only)."""
+        with self._lock:
+            v = self._fields.get(rk)
+            if v is not None:
+                return v is not EMPTY
+            if rk in self._events:
+                return None
+        return self._on_disk(rk)
 
     def wait(self, rk, timeout):
         """The field of rk, queued if needed, waiting up to timeout s (tests, tools)."""
@@ -1242,10 +1306,19 @@ class ColorMatch:
             big = np.pad(rgb, ((MARGIN, MARGIN), (MARGIN, MARGIN), (0, 0)), mode="edge")
             cut = {-1: (slice(0, MARGIN), slice(TILE - MARGIN, TILE)), 0: (slice(MARGIN, MARGIN + TILE), slice(0, TILE)),
                    1: (slice(MARGIN + TILE, None), slice(0, MARGIN))}     # (in big, in the neighbour)
+            ds_ = getattr(imagery, "deshadow", None)
             for (dx, dy), k in nb.items():
                 t = got.get(k)
                 if t is not None and not t.uniform:
-                    big[cut[dy][0], cut[dx][0]] = t.rgb[cut[dy][1], cut[dx][1]]
+                    # the neighbour as the mosaic shows it before its own gain: relit with --deshadow
+                    # (the samples are taken times this tile's side gains, like those inside)
+                    r = None
+                    if ds_ is not None:
+                        try:
+                            r = ds_.relight(k, t, imagery)
+                        except Exception as e:  # ImageryError: raw this time, and not cached
+                            failed.append(e)
+                    big[cut[dy][0], cut[dx][0]] = (t.rgb if r is None else r)[cut[dy][1], cut[dx][1]]
             return big
         t0 = time.perf_counter()
         out = F.apply(rgb, z, x, y, self.rz, margin)
