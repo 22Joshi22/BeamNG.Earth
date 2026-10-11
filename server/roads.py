@@ -28,6 +28,7 @@ from collections import namedtuple
 
 import numpy as np
 
+import junctions
 import mapcells
 
 log = logging.getLogger("earthd.roads")
@@ -687,7 +688,7 @@ def extras(spec, pts, lon):
         for side in (1, -1):
             out.append(({**SIDEWALK, "side": side}, SIDEWALK["w"],
                         offset_polyline(pts, side * (w / 2 + SIDEWALK["w"] / 2))))
-            out.append((GUTTER, GUTTER["w"], offset_polyline(pts, side * (w / 2 - GUTTER["w"] / 2))))
+            out.append(({**GUTTER, "side": side}, GUTTER["w"], offset_polyline(pts, side * (w / 2 - GUTTER["w"] / 2))))
     if kind == "paved" and cls in CENTRE_CLASSES and w >= 6.0:      # no paint on cobbles
         look = {"m": centre_colour(lon), "tl": CENTRE["tl"], "p": CENTRE["p"]}
         for side in (1, -1):
@@ -1161,26 +1162,59 @@ def build_tile(frame, tx, ty, cells, elev, urban_fn=None, walks=None, bridges=No
                     if len(c) >= 2:
                         chunks.append(_chunk(look, lw, c))
     chunks.extend(_bridge_chunks(frame, bseen, elev, (x0, y0, x1, y1), bridges, cells))
+    exact = (x0, y0, x1, y1)
+    corners, jcuts, crosswalks, jramps, jlines = ({}, {}, [], {}, {}) if walks is None else \
+        junctions.find(roads, has_sidewalks, SIDEWALK["w"])
+    cornered = set()                            # road pairs whose sidewalks meet at a curb return
+    if walks is not None:
+        for (fid, side), cl in jcuts.items():
+            for X, u, t in cl:
+                for f2, s2, p2, _ in roads:
+                    if f2 != fid and np.hypot(*(p2[:, :2] - X).T).min() < 1.0:
+                        cornered.add((fid, f2))
+        for c in corners:                       # each corner / crosswalk made by the tile it is in
+            p = c["arc"][len(c["arc"]) // 2]
+            if x0 <= p[0] < x1 and y0 <= p[1] < y1:
+                walks.append({"corner": c})
+                if c["fill"] is not None:
+                    chunks.append({"m": LOOK["paved"]["m"], "w": 0.0, "tl": LOOK["paved"]["tl"], "p": LOOK["paved"]["p"],
+                                   "poly": [[round(float(v), 3) for v in q] for q in c["fill"]], "n": []})
+        for cw in crosswalks:
+            mid = 0.5 * (cw["a"] + cw["b"])
+            if x0 <= mid[0] < x1 and y0 <= mid[1] < y1:
+                chunks.append(_chunk(junctions.CROSSWALK, cw["w"], np.array([cw["a"], cw["b"]])))
     for fid, spec, pts, lon in roads:
         ex = extras(spec, pts, lon)
         if not ex:
             continue
         blockers = [(p2[:, :2], s2.width / 2 + CUT_MARGIN) for f2, s2, p2, _ in roads if f2 != fid]
-        walk_blockers = [(p2[:, :2], sidewalk_stop(spec, fid, s2, f2)) for f2, s2, p2, _ in roads if f2 != fid]
+        walk_blockers = [(p2[:, :2], s2.width / 2 if (fid, f2) in cornered else sidewalk_stop(spec, fid, s2, f2))
+                         for f2, s2, p2, _ in roads if f2 != fid]
         for look, w, line in ex:
             walk = look["m"] == SIDEWALK["m"]
+            side = look.get("side")
             if walk and walks is not None:
-                exact = (x0, y0, x1, y1)
                 for piece in clip_polyline(line, *exact):
-                    for run in cut_outside(piece, walk_blockers, 0.5):
-                        run = densify(simplify(run))
-                        if len(run) < 2:
-                            continue
-                        caps = (not _on_box(run[0], exact), not _on_box(run[-1], exact))
-                        walks.append({"pts": run, "side": look["side"], "caps": caps})
-                        chunks.extend(drains(run, look["side"], caps))
+                    for cpiece, (j0, j1) in junctions.apply_cuts(piece, jcuts.get((fid, side), [])):
+                        for run in cut_outside(cpiece, walk_blockers, 0.5):
+                            run = densify(simplify(run))
+                            if len(run) < 2:
+                                continue
+                            at_j0 = j0 and np.hypot(*(run[0, :2] - cpiece[0, :2])) < 0.6
+                            at_j1 = j1 and np.hypot(*(run[-1, :2] - cpiece[-1, :2])) < 0.6
+                            caps = (not _on_box(run[0], exact) and not at_j0, not _on_box(run[-1], exact) and not at_j1)
+                            ramps = junctions.ramp_ranges(run, jramps.get((fid, side), []))
+                            walks.append({"pts": run, "side": side, "caps": caps, "ramps": ramps})
+                            chunks.extend(drains(run, side, (caps[0] or at_j0, caps[1] or at_j1)))
                 continue
-            for piece in clip_polyline(line, *box):
+            if walks is not None and look["m"] == GUTTER["m"]:     # gutters end where their curb turns
+                gcuts = jcuts.get((fid, side), [])
+                pieces = [cp for p in clip_polyline(line, *box) for cp, _ in junctions.apply_cuts(p, gcuts)]
+            elif walks is not None and jlines.get(fid):             # markings stop at the crosswalks
+                pieces = [cp for p in clip_polyline(line, *box) for cp, _ in junctions.apply_cuts(p, jlines[fid])]
+            else:
+                pieces = clip_polyline(line, *box)
+            for piece in pieces:
                 for run in cut_outside(piece, walk_blockers if walk else blockers, 0.5 if walk else 2.0):
                     for c in split(densify(simplify(run))):
                         if len(c) >= 2:
@@ -1253,8 +1287,12 @@ def write_tile(out_dir, vfs_dir, aid, tx, ty, chunks, walks=None, road_mesh=None
         x0, y0, _, _ = tile_bbox(tx, ty)
         b = sidewalks.Builder((x0, y0, 0.0))
         for wk in walks:
+            if "corner" in wk:
+                c = wk["corner"]
+                b.add_corner(c["arc"], c["inward"], c["outer"])
+                continue
             curb, out = sidewalks.run_geometry(wk["pts"], wk["side"], SIDEWALK["w"])
-            b.add_run(curb, out, SIDEWALK["w"], caps=wk["caps"])
+            b.add_run(curb, out, SIDEWALK["w"], caps=wk["caps"], ramps=wk.get("ramps", ()))
         if not b.empty():
             shape = f"walks_{aid}_{tx}_{ty}.cdae"
             b.write(os.path.join(out_dir, shape))

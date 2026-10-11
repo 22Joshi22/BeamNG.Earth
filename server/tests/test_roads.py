@@ -225,6 +225,45 @@ class BuildTileTest(unittest.TestCase):
             looks = n[face][near_curb] @ o3
             self.assertTrue((looks < 0).any() and (looks > 0).any(), "a face toward the road and a back face")
 
+    def test_junction_corners_crosswalks_ramps(self):
+        import tempfile
+        import junctions
+        import sidewalks
+        # four residential streets meeting at (120, 120) (Overture: split at the junction)
+        X = (120.0, 120.0)
+        arms = [[X, (300, 120)], [X, (120, 300)], [X, (-60, 120)], [X, (120, -60)]]
+        f = features(arms, ["residential"] * 4)
+        walks = []
+        chunks = roads.build_tile(FRAME, 0, 0, [f], flat, lambda la, lo: np.ones(np.shape(la), bool), walks=walks)
+        corners = [w["corner"] for w in walks if "corner" in w]
+        runs = [w for w in walks if "corner" not in w]
+        self.assertEqual(len(corners), 4, "a curb return in each quadrant")
+        cw = [c for c in chunks if c["m"] == junctions.CROSSWALK["m"]]
+        self.assertEqual(len(cw), 4, "a crosswalk on each arm")
+        self.assertTrue(sum(len(w["ramps"]) for w in runs) >= 8, "two curb ramps per crosswalk")
+        for c in chunks:                        # no markings through the junction or its crosswalks
+            if c["m"].startswith("line_"):
+                for x, y, _ in c["n"]:
+                    self.assertGreater(max(abs(x - X[0]), abs(y - X[1])), w + junctions.RADIUS, (x, y))
+        fills = [c for c in chunks if c.get("poly")]
+        self.assertEqual(len(fills), 4, "the corner asphalt")
+        w = roads.carriageway("residential", "paved", True) / 2
+        for c in corners:                       # the arc keeps RADIUS from its centre, between the curbs
+            arc = c["arc"]
+            d = np.hypot(arc[:, 0] - X[0], arc[:, 1] - X[1])
+            self.assertTrue((d > w - 0.5).all(), d.min())
+        near = [r for r in runs if np.hypot(*(r["pts"][0, :2] - X)) < 30 or np.hypot(*(r["pts"][-1, :2] - X)) < 30]
+        for r in near:                          # sidewalk ends at a corner: no end cap there
+            for end, cap in ((r["pts"][0], r["caps"][0]), (r["pts"][-1], r["caps"][1])):
+                if np.hypot(*(end[:2] - X)) < 30:
+                    self.assertFalse(cap)
+        with tempfile.TemporaryDirectory() as d:
+            mesh = __import__("roadmesh").build(FRAME, chunks, flat, (0.0, 0.0, 0.0))
+            path, n = roads.write_tile(d, "/vfs", 1, 0, 0, chunks, walks, mesh)
+            import cdae
+            shape = cdae.read(os.path.join(d, "walks_1_0_0.cdae"))
+            self.assertEqual([m["name"] for m in shape["materials"]], list(sidewalks.MATERIALS))
+
     def test_cobblestone_strips_no_paint(self):
         self.assertEqual(roads.surface_kind("residential", "paving_stones"), "cobble")
         f = features([[(-300, 50), (300, 50)]], ["tertiary"], surfaces=[(0, "paving_stones")])

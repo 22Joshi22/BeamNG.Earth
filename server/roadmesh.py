@@ -85,11 +85,13 @@ def build(frame, chunks, elev, origin):
     relative to origin, tris, uvs, materials, tri material index), or None. elev(lat, lon) -> m (graded,
     as the physics block). One elev call."""
     rb = ribbons(chunks)                        # deck surfaces too: their asphalt over deck()'s concrete
-    if not rb:
+    polys = [c for c in chunks if c.get("poly")]
+    if not rb and not polys:
         return None
     draped = [r for r in rb if r[5] is None]
-    if draped:
-        edges = np.concatenate([np.concatenate([l, r]) for l, r, _, _, _, _ in draped])
+    pv = [np.asarray(c["poly"], np.float64)[:, :2] for c in polys]
+    if draped or pv:
+        edges = np.concatenate([np.concatenate([l, r]) for l, r, _, _, _, _ in draped] + pv)
         la, lo, _ = frame.enu_to_geodetic(edges[:, 0], edges[:, 1], 0.0)
         h = np.asarray(elev(la, lo), np.float64)
         _, _, u = frame.geodetic_to_enu(la, lo, h)
@@ -114,6 +116,23 @@ def build(frame, chunks, elev, origin):
         T.append(np.concatenate([np.stack([A, B, B1], 1), np.stack([A, B1, A1], 1)]))
         M.append(np.full(2 * (k - 1), mi))
         nverts += 2 * k
+    for c in polys:                             # filled polygons (corner asphalt): a fan from vertex 0
+        q = np.asarray(c["poly"], np.float64)
+        k = len(q)
+        z = u[k0:k0 + k] + LIFT[layer_of(c)]
+        k0 += k
+        if c["m"] not in mats:
+            mats.append(c["m"])
+        P.append(np.c_[q[:, :2], z])
+        UV.append(np.c_[q[:, 0] / 8.0, q[:, 1] / float(c.get("tl") or 10.0)])
+        fan = np.array([(nverts, nverts + a, nverts + a + 1) for a in range(1, k - 1)])
+        pts = np.c_[q[:, :2], z]
+        nrm = np.cross(pts[fan[:, 1] - nverts] - pts[fan[:, 0] - nverts], pts[fan[:, 2] - nverts] - pts[fan[:, 0] - nverts])
+        flip = nrm[:, 2] < 0
+        fan[flip] = fan[flip][:, ::-1]
+        T.append(fan)
+        M.append(np.full(len(fan), mats.index(c["m"])))
+        nverts += k
     P = np.concatenate(P) - np.asarray(origin, np.float64)
     return P, np.concatenate(T), np.concatenate(UV), mats, np.concatenate(M)
 

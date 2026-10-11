@@ -32,7 +32,7 @@ CURB_W = 0.15           # m of curb top band
 CROSS_SLOPE = 0.015     # sidewalk cross slope, rising away from the road
 CURB_REPEAT_M = 9.0     # m of curb per texture width (3 joints of 3 m)
 SLAB_REPEAT_M = 45.0    # m of sidewalk per texture width (4096 px, a 205 px strip ~ 2.25 m)
-MATERIALS = ("curbs", "sidewalk1")      # West Coast USA (art/shapes/roads), loaded by the mod
+MATERIALS = ("curbs", "sidewalk1", "tactile_indicator")   # West Coast USA (art/shapes/roads), loaded by the mod
 
 # curbs sheet (1024 x 512, 8 bands of 64 px; Collada v up, so band 0 is v in [7/8, 1]):
 # rows 0-40 of a band are the light curb top, 40-64 the darker face
@@ -70,21 +70,54 @@ def _normals_2d(xy):
     return n
 
 
-def profile(h=CURB_H, w=2.5):
-    """The cross-section points (offset from the curb line outwards, height above the road), in
-    order face bottom, face top, nose end, top end, slab outer top, back bottom."""
-    return np.array([[0.0, -SINK], [BATTER, h - NOSE], [NOSE_W, h], [CURB_W, h],
-                     [w, h + w * CROSS_SLOPE], [w, -SINK]])
+RAMP_RUN = 1.8          # m over which a curb ramp's slab climbs back to the sidewalk (1:12)
+RAMP_FLARE = 0.6        # m of curb sloping down on each side of a ramp
+RAMP_H = 0.01           # m: the curb at a ramp (flush with the gutter)
+TACTILE_REPEAT_M = 0.6  # m per tactile pad texture repeat
 
 
-# strips: (from profile point, to point, material index, v at from, v at to)
+def profile(h=CURB_H, w=2.5, hr=None):
+    """The cross-section points (offset from the curb line outwards, height above the road): face
+    bottom, face top, nose end, curb top end, ramp end, slab outer top, back bottom. hr: the curb's
+    height (h, or lower at a curb ramp: the slab then climbs from hr at the curb top to h at
+    RAMP_RUN)."""
+    hr = h if hr is None else hr
+    f = hr / h if h > 0 else 0.0
+    return np.array([[0.0, -SINK], [BATTER * f, hr - NOSE * f], [NOSE_W * f, hr], [CURB_W, hr],
+                     [RAMP_RUN, h + RAMP_RUN * CROSS_SLOPE], [w, h + w * CROSS_SLOPE], [w, -SINK]])
+
+
+# strips: (from profile point, to point, material index, v at from, v at to); material 1 on the
+# ramp strip is replaced by 2 (tactile) where the curb is lowered
+_SL = (RAMP_RUN - CURB_W) / (2.5 - CURB_W)
+V_SLAB_MID = V_SLAB_IN + _SL * (V_SLAB_OUT - V_SLAB_IN)
 STRIPS = ((0, 1, 0, V_BAND_LOW, V_LIGHT_LOW), (1, 2, 0, V_LIGHT_LOW, V_BAND_TOP - 0.02),
-          (2, 3, 0, V_BAND_TOP - 0.02, V_BAND_TOP), (3, 4, 1, V_SLAB_IN, V_SLAB_OUT),
-          (4, 5, 0, V_LIGHT_LOW, V_BAND_LOW))
+          (2, 3, 0, V_BAND_TOP - 0.02, V_BAND_TOP), (3, 4, 1, V_SLAB_IN, V_SLAB_MID),
+          (4, 5, 1, V_SLAB_MID, V_SLAB_OUT), (5, 6, 0, V_LIGHT_LOW, V_BAND_LOW))
+CURB_STRIPS = STRIPS[:3]
+
+
+def curb_heights(s, ramps, h=CURB_H):
+    """The curb height at arc lengths s along a run with curb ramps [(s0, s1)]: RAMP_H inside, sloping
+    back to h over RAMP_FLARE either side. Pure."""
+    hr = np.full(len(s), float(h))
+    for s0, s1 in ramps:
+        d = np.maximum(s0 - s, s - s1)          # < 0 inside the ramp
+        f = np.clip(d / RAMP_FLARE, 0.0, 1.0)
+        hr = np.minimum(hr, RAMP_H + f * (h - RAMP_H))
+    return hr
+
+
+def refine(s, ramps, step=0.5, margin=1.0):
+    """Arc lengths s with points added every `step` m around the ramps (so they have their shape)."""
+    extra = [np.arange(max(0.0, a - RAMP_FLARE - margin), min(s[-1], b + RAMP_FLARE + margin), step)
+             for a, b in ramps]
+    ends = [v for a, b in ramps for v in (a, b, a - RAMP_FLARE, b + RAMP_FLARE) if 0 < v < s[-1]]
+    return np.unique(np.r_[s, np.concatenate(extra) if extra else [], ends])
 
 
 class Builder:
-    """Accumulates sidewalk runs into one mesh (positions relative to `origin`)."""
+    """Accumulates sidewalk runs and corners into one mesh (positions relative to `origin`)."""
 
     def __init__(self, origin):
         self.origin = np.asarray(origin, np.float64)
@@ -98,49 +131,106 @@ class Builder:
         self.n += len(P)
         return k
 
-    def add_run(self, curb, toward_out, w, h=CURB_H, caps=(True, True)):
-        """One sidewalk run: curb (k, 3) the curb line (z = the road there), toward_out (k, 2) unit
-        vectors from the curb outwards (scaled by the miter), w its width; caps: end caps at the
-        (start, end) (not where the run goes on in the next tile)."""
-        curb = np.asarray(curb, np.float64)
+    def _sections(self, curb, toward_out, w, h, hr):
+        """ring (k, 7, 3) of the cross-sections, and the per-point profiles (k, 7, 2)."""
         k = len(curb)
-        if k < 2:
-            return
-        prof = profile(h, w)
-        s = np.r_[0.0, np.cumsum(np.hypot(*np.diff(curb[:, :2], axis=0).T))]
-        ring = np.empty((k, len(prof), 3))
-        for j, (off, dz) in enumerate(prof):
-            ring[:, j, :2] = curb[:, :2] + toward_out * off
-            ring[:, j, 2] = curb[:, 2] + dz
-        ring -= self.origin
-        for a, b, mat, va, vb in STRIPS:
+        prof = np.stack([profile(h, w, float(x)) for x in hr])
+        ring = np.empty((k, prof.shape[1], 3))
+        ring[:, :, :2] = curb[:, None, :2] + toward_out[:, None, :] * prof[:, :, 0:1]
+        ring[:, :, 2] = curb[:, None, 2] + prof[:, :, 1]
+        return ring - self.origin, prof
+
+    def _strips(self, ring, prof, toward_out, s, strips, tactile=None):
+        k = len(ring)
+        for a, b, mat, va, vb in strips:
             rep = CURB_REPEAT_M if mat == 0 else SLAB_REPEAT_M
             P = np.concatenate([ring[:, a], ring[:, b]])
             UV = np.concatenate([np.stack([s / rep, np.full(k, va)], 1), np.stack([s / rep, np.full(k, vb)], 1)])
+            mats = np.full(k - 1, mat)
+            if tactile is not None and a == 3:  # the ramp's slope: a tactile pad where lowered
+                mats[tactile] = 2
+                UV = UV.copy()
+                tu = s / TACTILE_REPEAT_M
+                UV[:k, 0] = np.where(np.r_[tactile, tactile[-1:]], tu, UV[:k, 0])
+                UV[k:, 0] = np.where(np.r_[tactile, tactile[-1:]], tu, UV[k:, 0])
             base = self._add(P, UV)
             i = np.arange(k - 1)
             A, A1, B1, B = base + i, base + i + 1, base + k + i + 1, base + k + i
             tris = np.concatenate([np.stack([A, B1, A1], 1), np.stack([A, B, B1], 1)])
             # counter-clockwise seen from outside (dae convention): the profile runs clockwise
             # (offset out, z up), so an edge's outward normal is its left normal (-dz, doff)
-            doff, dz = prof[b] - prof[a]
+            dp = 0.5 * ((prof[:-1, b] - prof[:-1, a]) + (prof[1:, b] - prof[1:, a]))
             o3 = np.concatenate([toward_out[i], np.zeros((k - 1, 1))], 1)
-            want = -dz * o3 + doff * np.array([0.0, 0.0, 1.0])
+            want = -dp[:, 1:2] * o3 + dp[:, 0:1] * np.array([0.0, 0.0, 1.0])
             self.T.append(base + _orient(tris - base, P, np.concatenate([want, want])))
-            self.M.append(np.full(2 * (k - 1), mat))
+            self.M.append(np.r_[mats, mats])
+
+    def add_run(self, curb, toward_out, w, h=CURB_H, caps=(True, True), ramps=()):
+        """One sidewalk run: curb (k, 3) the curb line (z = the road there), toward_out (k, 2) unit
+        vectors from the curb outwards (scaled by the miter), w its width; caps: end caps at the
+        (start, end) (not where the run goes on in the next tile or meets a corner piece); ramps:
+        curb ramps [(s0, s1)] in arc length along the curb."""
+        curb = np.asarray(curb, np.float64)
+        toward_out = np.asarray(toward_out, np.float64)
+        if len(curb) < 2:
+            return
+        s = np.r_[0.0, np.cumsum(np.hypot(*np.diff(curb[:, :2], axis=0).T))]
+        if ramps:
+            s2 = refine(s, ramps)
+            curb = np.stack([np.interp(s2, s, curb[:, c]) for c in range(3)], axis=1)
+            toward_out = np.stack([np.interp(s2, s, toward_out[:, c]) for c in range(2)], axis=1)
+            s = s2
+        k = len(curb)
+        hr = curb_heights(s, ramps, h)
+        ring, prof = self._sections(curb, toward_out, w, h, hr)
+        low = hr < h - 1e-6
+        tactile = (low[:-1] | low[1:]) if low.any() else None
+        self._strips(ring, prof, toward_out, s, STRIPS, tactile)
         for end, sgn, cap in ((0, -1, caps[0]), (k - 1, 1, caps[1])):   # end caps: a fan over the profile
             if not cap:
                 continue
             P = ring[end]
-            UV = np.stack([prof[:, 0] / CURB_REPEAT_M, V_BAND_LOW + (prof[:, 1] + SINK) / (h + SINK + 0.05)
+            pr = prof[end]
+            UV = np.stack([pr[:, 0] / CURB_REPEAT_M, V_BAND_LOW + (pr[:, 1] + SINK) / (h + SINK + 0.05)
                            * (V_LIGHT_LOW - V_BAND_LOW)], 1)
             base = self._add(P, UV)
-            fan = [(base, base + j, base + j + 1) for j in range(1, len(prof) - 1)]
-            fan = np.array(fan)
+            fan = np.array([(base, base + j, base + j + 1) for j in range(1, len(pr) - 1)])
             t = curb[min(end + 1, k - 1), :2] - curb[max(end - 1, 0), :2]
             t = np.r_[t / max(np.hypot(*t), 1e-9), 0.0] * sgn
             self.T.append(base + _orient(fan - base, P, t))
             self.M.append(np.full(len(fan), 0))
+
+    def add_corner(self, arc, inward, outer, h=CURB_H):
+        """A corner piece: the curb along the arc (k, 3) (inward: unit vectors toward the sidewalk),
+        the slab from the curb top to the outer corner points [(x, y, z) ...] (from the second
+        sidewalk's end round to the first's), and the back faces along the outer edges."""
+        arc = np.asarray(arc, np.float64)
+        inward = np.asarray(inward, np.float64)
+        k = len(arc)
+        s = np.r_[0.0, np.cumsum(np.hypot(*np.diff(arc[:, :2], axis=0).T))]
+        ring, prof = self._sections(arc, inward, 2.5, h, np.full(k, h))
+        self._strips(ring, prof, inward, s, CURB_STRIPS)
+        inner = ring[:, 3]                                  # the curb top's inner edge, at h
+        out = np.asarray(outer, np.float64) - self.origin
+        out[:, 2] = out[:, 2] + h + 2.5 * CROSS_SLOPE
+        poly = np.vstack([inner, out])                      # arc from Ti to Tj, then Tj_out, O, Ti_out
+        o_idx = k + 1                                       # O
+        UV = np.c_[(poly[:, 0] + poly[:, 1]) / SLAB_REPEAT_M, np.full(len(poly), V_SLAB_MID)]
+        base = self._add(poly, UV)
+        m = len(poly)
+        fan = np.array([(o_idx, a, (a + 1) % m) for a in range(m) if a != o_idx and (a + 1) % m != o_idx])
+        self.T.append(base + _orient(fan, poly, np.array([0.0, 0.0, 1.0])))
+        self.M.append(np.full(len(fan), 1))
+        c = poly[:, :2].mean(axis=0)
+        for a, b in ((out[0], out[1]), (out[1], out[2])):  # back faces down to the ground
+            P = np.array([a, b, b - [0, 0, h + SINK + 2.5 * CROSS_SLOPE], a - [0, 0, h + SINK + 2.5 * CROSS_SLOPE]])
+            UV = np.array([[0, V_LIGHT_LOW], [1, V_LIGHT_LOW], [1, V_BAND_LOW], [0, V_BAND_LOW]])
+            mid = 0.5 * (a[:2] + b[:2])
+            want = np.r_[mid - c, 0.0]
+            base = self._add(P, UV)
+            quad = np.array([(0, 1, 2), (0, 2, 3)])
+            self.T.append(base + _orient(quad, P, want))
+            self.M.append(np.zeros(2, int))
 
     def empty(self):
         return self.n == 0

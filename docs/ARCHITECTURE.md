@@ -1049,9 +1049,23 @@ three days of testing: dem 741 MB / 7.5k files, imagery 1.4 GB / 35k, deshadow 7
   - No sidewalk decals any more.
 - Storm drain inlets: a metal grate DecalRoad (1 x 0.45 m) in the gutter, 2.5 m in from each real
   end of a sidewalk run (the corners) and every 60 m along it.
-- Corners: where two streets with sidewalks cross, the wider road's sidewalk (then the smaller id)
-  runs on to the other's curb, and the other's stops against its outer edge. There is no gap and
-  no overlap. Sidewalks are cut at 0.5 m resolution.
+- **Intersections** (`server/junctions.py`). The user found square corners that did not join, and
+  no crosswalks or ramps. Overture splits roads at junctions, so a junction is a shared node; its
+  branches are sorted by angle.
+  - **Curb returns.** Between neighbouring branches with sidewalks meeting at 35-150 degrees, a
+    5 m radius arc tangent to both curb lines. Sidewalks and gutters are cut exactly at the tangent
+    points (a cross-section square to the road, interpolated, uncapped). A corner piece
+    (`Builder.add_corner`) has the curb along the arc, the slab out to the outer corner, and back
+    faces. The asphalt between the arc and the old square corner is filled (a polygon in the road
+    mesh).
+  - **Crosswalks.** On a branch with corners on both sides, a zebra (`crossing_white`, 3 m) crosses
+    the road 0.5 m beyond the corners. The branch's centre and edge lines stop at its outer edge.
+  - **Curb ramps.** Where a crosswalk meets a sidewalk, the curb drops to 1 cm over the crosswalk
+    (0.6 m flares). The slab climbs back over 1.8 m (1:12), with the `tactile_indicator` pad on the
+    slope. Runs are refined to 0.5 m around ramps.
+  - At other crossings (no shared node, or angles outside 35-150 degrees), the wider road's
+    sidewalk runs on to the other's curb and the other's stops against its outer edge, as before.
+  - A Fells Point tile: 20 corners, 23 crosswalks, 38 ramps; 8.8k sidewalk triangles.
 - Grading keeps the sidewalk band flat: on the classes that get sidewalks in towns, the flat
   shoulder is the sidewalk + 0.5 m instead of 1 m (everywhere, so it never depends on the land
   cover).
