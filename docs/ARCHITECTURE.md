@@ -728,7 +728,10 @@ three days of testing: dem 741 MB / 7.5k files, imagery 1.4 GB / 35k, deshadow 7
   stay (a producer may be between `makedirs` and its write). A de-shadow region whose grids were
   evicted while its parameters were in memory is computed again (it used to stay "pending").
 - **Clear** (the page's button, `cache` with `clear: true`): the same files regardless of the cap,
-  markers included, on an executor; the answer carries `clearedBytes`.
+  markers included, but protecting everything this server process used (the current session's files,
+  not only the last hour's), on an executor; the answer carries `clearedBytes`. `usage()` (the
+  message, built on the event loop) reads the totals without the lock, which a pass over a full cache
+  holds for a few tenths of a second. A missing or empty `VERSION` is written atomically.
 - **Layout version** (ROADMAP 5): `<cache>/VERSION` = 1, written when missing; any other value (a newer
   server's layout, or garbage) leaves the cache alone: counted for the page (`managed: false`), never
   evicted, cleared or indexed. Producer versions are in the paths (`colormatch/v1/`,

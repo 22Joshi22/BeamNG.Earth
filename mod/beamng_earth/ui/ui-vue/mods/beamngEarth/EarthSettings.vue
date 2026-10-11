@@ -155,7 +155,7 @@
 
             <!-- Clear cache: the confirmation, in the page -->
             <div v-if="item.type === 'action' && cacheConfirm" class="stacked-controls confirm-block">
-              <span class="confirm-text">Delete the downloaded elevation and imagery? What this session used in the last hour and the gravity model stay; the rest is downloaded again when needed.</span>
+              <span class="confirm-text">Delete the downloaded elevation and imagery? What this session used and the gravity model stay; the rest is downloaded again when needed.</span>
               <BngButton :accent="ACCENTS.main" @click="confirmClearCache">Clear</BngButton>
               <BngButton :accent="ACCENTS.outlined" @click="cacheConfirm = false">Cancel</BngButton>
             </div>
@@ -254,7 +254,7 @@ const settingsSchema = [
       { id: "cacheUsage", type: "info", name: "Download cache", desc: "Elevation and imagery the server downloaded and keeps on disk (~/.cache/beamng-earth), so revisited places load without downloading again: the space in use, the size limit and the number of files." },
       { id: "cacheCapGb", type: "select", default: "20", name: "Download cache size", desc: "The most the download cache may use. Over the limit, the server removes the files used longest ago (every few minutes, down to 90 % of the limit); never what this session used in the last hour or the gravity model. Kept by the server for its next start.",
         options: [ { label: "5 GB", value: "5" }, { label: "10 GB", value: "10" }, { label: "20 GB", value: "20" }, { label: "50 GB", value: "50" }, { label: "Unlimited", value: "unlimited" } ] },
-      { id: "cacheClear", type: "action", name: "Clear cache", desc: "Deletes the downloaded elevation and imagery (and the server's de-shadowing and colour-seam data). What this session used in the last hour and the gravity model stay. Places are downloaded again when you visit them." },
+      { id: "cacheClear", type: "action", name: "Clear cache", desc: "Deletes the downloaded elevation and imagery (and the server's de-shadowing and colour-seam data). What this session used and the gravity model stay. Places are downloaded again when you visit them." },
     ],
   },
   {

@@ -21,7 +21,8 @@ Eviction (a background thread): when the tracked bytes exceed the cap, least rec
 until LOW_WATER (90 %) of the cap is left, at most every EVICT_S. Never evicted: gravity/, files this
 server process used within PROTECT_S (an hour: the area around the player), and empty files (404 and
 "no seams" markers: they save requests; clear() removes them). Directories stay (a writer may be about
-to put a file there). clear() removes every MANAGED file but the protected ones.
+to put a file there). clear() removes every MANAGED file but the ones this server process used at all
+(the current session's, however long ago).
 
 Per-source lifetimes (ROADMAP "Caching" 3): LIFETIMES maps a path prefix to the longest a file may be
 kept after its download (s); the start-up walk deletes older ones. Empty today: none of the current
@@ -49,7 +50,7 @@ DEFAULT_CAP_GB = 20.0
 MAX_CAP_GB = 1e6            # 1 PB: anything above is a mistake (and would overflow)
 GB = 1e9                    # the page's GB (decimal, as disk sizes are sold)
 LOW_WATER = 0.9             # evict down to this share of the cap
-PROTECT_S = 3600.0          # used by this server within an hour: never evicted or cleared
+PROTECT_S = 3600.0          # used by this server within an hour: never evicted (clear: any use this session)
 EVICT_S = 180.0             # at most one eviction pass per 3 minutes
 SAVE_S = 600.0              # index saved at most every 10 minutes (and on close)
 TICK_S = 30.0               # the background thread's check interval
@@ -132,17 +133,21 @@ class Cache(NoCache):
             with open(path) as f:
                 text = f.read().strip()
         except FileNotFoundError:
+            text = ""
+        except OSError as e:
+            log.warning("cache: cannot read %s (%s): not managed", path, e)
+            return False
+        if not text:        # missing, or empty (a write cut short): no newer layout, ours from now on
+            tmp = f"{path}.{os.getpid()}.{threading.get_ident()}.tmp"
             try:
                 os.makedirs(self.root, exist_ok=True)
-                with open(path, "w") as f:
+                with open(tmp, "w") as f:
                     f.write(f"{LAYOUT_VERSION}\n")
+                os.replace(tmp, path)       # atomic: a second server never reads a half-written file
             except OSError as e:
                 log.warning("cache: cannot write %s (%s): not managed", path, e)
                 return False
             return True
-        except OSError as e:
-            log.warning("cache: cannot read %s (%s): not managed", path, e)
-            return False
         if text == str(LAYOUT_VERSION):
             return True
         log.warning("cache: %s says layout %r (this server: %d): left alone (no eviction, no clear)",
@@ -424,11 +429,13 @@ class Cache(NoCache):
             return e[0] or 0
 
     def clear(self, wait=60.0):
-        """"Clear cache": every MANAGED file but the ones this server used within PROTECT_S (gravity/
-        and netstats/ stay). Waits up to `wait` s for the start-up walk. Returns (files, bytes)."""
+        """"Clear cache": every MANAGED file but the ones this server process used (the current
+        session's, however long ago: tiles read at its start may still be in the producers' memory
+        caches; gravity/ and netstats/ stay). Waits up to `wait` s for the start-up walk. Returns
+        (files, bytes)."""
         if not self.managed or not self._ready_ev.wait(wait):
             return 0, 0
-        floor = self._floor()
+        floor = self.started
         with self._lock:
             keys = [k for k, e in self._entries.items() if e[1] < floor and k.split("/", 1)[0] in MANAGED]
         n = b = 0
@@ -445,9 +452,10 @@ class Cache(NoCache):
 
     # --- status ----------------------------------------------------------------------------------
     def usage(self):
-        """(bytes, files) tracked now."""
-        with self._lock:
-            return self._used, len(self._entries)
+        """(bytes, files) tracked now. No lock: the event loop asks (the 'cache' message), and an
+        eviction pass or an index save holds the lock for a few tenths of a second on a full cache;
+        two reads of a moment apart are good enough for the page."""
+        return self._used, len(self._entries)
 
     def message(self, cleared=None):
         """The `cache` message for the mod's settings page (cleared: bytes freed by a clear)."""

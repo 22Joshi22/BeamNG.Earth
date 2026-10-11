@@ -83,7 +83,7 @@ as JSON floats (`512.0`). All positions are in the ENU plane of the anchor named
 | `{"type":"commit_anchor","anchorId":A}` | Switches the far field to A and commits A's first terrain (from `anchor_ready`). Tiles of the previous anchor that were sent but never swapped in are forgotten: the mod drops them. |
 | `{"type":"prepare_terrain","requestId":N,"anchorId":A,"cx":m,"cy":m}` | `cx`,`cy` multiples of 256 (`--block 512`: 128; other values are snapped). For the active anchor this block becomes the **pending** block: in terrain mode the far field is refined to L0 over it at once and its 64 L0 tiles are built first (mesh mode: no tile depends on a block). |
 | `{"type":"commit_terrain","anchorId":A,"cx":m,"cy":m}` | The committed block. **No far-tile key changes**; in terrain mode only the forced-L0 area moves, in mesh mode nothing at all changes. For a newer known anchor it implies `commit_anchor`. |
-| `{"type":"cache","capGb":n,"clear":true}` | The download cache (`server/cache.py`; additive like `weather`): both fields optional. `capGb` = the settings page's size cap in GB (0 = unlimited; sent after every `hello` and on change), `clear: true` = "Clear cache" (everything but this session's last hour and the gravity model, on an executor), neither = fresh usage numbers (the page asks every 10 s while it is open). Always answered with a `cache`; ignored by a `Server()` without a `Cache`. |
+| `{"type":"cache","capGb":n,"clear":true}` | The download cache (`server/cache.py`; additive like `weather`): both fields optional. `capGb` = the settings page's size cap in GB (0 = unlimited; sent after every `hello` and on change), `clear: true` = "Clear cache" (everything but the files this server session used and the gravity model, on an executor), neither = fresh usage numbers (the page asks every 10 s while it is open). Always answered with a `cache`; ignored by a `Server()` without a `Cache`. |
 | `{"type":"pose","anchorId":A,"x","y","z","vx","vy","lat","lon","speed","cam":{"x","y","z","fx","fy","fz","fovDeg"}}` | ~2 Hz. Drives LOD selection, the predicted block and the terrain prefetch. `cam` is optional and only stored for now (the camera-weighted priority is phase 4). A pose with a newer known anchor implies `commit_anchor`; a late pose of the previous anchor is transformed into the active frame. |
 
 ### server → mod
@@ -295,7 +295,7 @@ Format decoded from engine-written files (golden pairs in `tests/fixtures/`):
 
 ## Download cache (`server/cache.py`; docs/ROADMAP.md "Caching" 1, parts of 3 and 5)
 
-`<cache-dir>` holds `VERSION` (the layout, `1`; written when missing, so an older cache is adopted as
+`<cache-dir>` holds `VERSION` (the layout, `1`; written atomically when missing or empty, so an older cache is adopted as
 it is; any other value leaves the cache alone), `index.tsv` (`<unix s>\t<bytes>\t<path>` per tracked
 file, header `# beamng-earth cache index 1\tcap=<bytes>`), and the data directories:
 
@@ -321,7 +321,8 @@ file, header `# beamng-earth cache index 1\tcap=<bytes>`), and the data director
   something changed, after a clear and at shutdown (atomic replace; a damaged line is skipped, a
   damaged header drops the index: last uses then come from the mtimes).
 - **Clear** (`cache` with `clear: true`): every tracked file of the four data directories but the
-  protected ones, markers included; returns the bytes freed.
+  ones this server process used (the current session's, however long ago: tiles read at its start may
+  still be in the producers' memory caches), markers included; returns the bytes freed.
 - **Lifetimes** (`LIFETIMES`, path prefix → max age after download): enforced by the start-up walk.
   Empty today: none of the current sources limits caching time (the 404 markers expire through
   netfetch's `miss_ttl`).
@@ -635,10 +636,11 @@ rules (this session's last hour, `gravity/`, empty markers, `netstats/` and unkn
 tracked, a use during a pass winning, a previous session's uses not protecting), index persistence
 (last uses and the page's cap across a restart, `--cache-cap` overriding it, vanished files, newer
 downloads) and damage (header, lines, paths outside the data directories), the `VERSION` file (written
-when missing; a newer or unreadable one leaves the cache alone), per-source lifetimes, clear (what
-stays, directories kept, waiting for the walk), eight producer threads writing and reading while
-passes evict and save (byte count = entries, every entry's file exists, no torn reads), uses during
-the start-up walk, the background thread's pacing (`EVICT_S`, `SAVE_S`), the hooks in `dem.py`,
+when missing or empty; a newer or unreadable one leaves the cache alone), per-source lifetimes, clear
+(what stays, every file this session used even hours ago, directories kept, waiting for the walk),
+eight producer threads writing and reading while passes evict and save (byte count = entries, every
+entry's file exists, no torn reads), uses during the start-up walk, the message not waiting for the
+lock, the background thread's pacing (`EVICT_S`, `SAVE_S`), the hooks in `dem.py`,
 `imagery.py`, `colormatch.py`, `deshadow.py` (a de-shadow region whose grids were evicted is computed
 again) and earthd's `cache` messages (after hello, cap, usage, clear; none and ignored without a
 `Cache`; bad caps refused; `--cache-cap` parsing). No network: a stub fetcher.

@@ -366,6 +366,9 @@ without a `Cache` sends none, so the golden streams are unchanged). From 3: per-
 404 markers already expire through netfetch). From 5: a `VERSION` file at the root (a newer layout's
 cache is left alone: counted, never evicted or cleared); per-producer versions stay in the paths
 (`colormatch/v1/`, `imagery/usgs-ds1-<mode>/`) and an outdated directory ages out through the LRU.
+Reviewed (branch review-cache): Clear keeps every file this server session used (not only the last
+hour's, as the plan says), the page's usage message never waits for the cache's lock on the event
+loop, and an empty `VERSION` is written again (atomically) instead of leaving the cache alone.
 Waiting for its in-game check. Follow-ups: refreshing stale tiles in the background (3), the
 built-tile cache (2) and pre-download within the cap (4).
 

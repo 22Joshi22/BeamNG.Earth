@@ -245,6 +245,17 @@ class VersionTest(Base):
         cachemod.Cache(sub, now=self.clock, start=False)
         self.assertTrue(os.path.isfile(os.path.join(sub, "VERSION")), "a new root is created with its VERSION")
 
+    def test_empty_version_is_written_again(self):
+        """An empty VERSION (a write cut short, or a second server reading it while the first one writes)
+        is no newer layout: it is written again (atomically) and the cache is managed."""
+        Path(self.root, "VERSION").write_text("")
+        put(self.root, "imagery/usgs/16/1/0.jpg", MB, T0 - DAY)
+        c = self.make(cap_gb=0.0001)
+        self.assertTrue(c.managed)
+        self.assertEqual(Path(self.root, "VERSION").read_text().strip(), str(cachemod.LAYOUT_VERSION))
+        self.assertEqual(c.evict(), (1, MB))
+        self.assertEqual([n for n in os.listdir(self.root) if n.endswith(".tmp")], [], "no temporary file left")
+
     def test_unknown_version_is_left_alone(self):
         for text in ("2\n", "banana"):
             with self.subTest(text=text):
@@ -303,6 +314,22 @@ class ClearTest(Base):
         m = c.message(cleared=b)
         self.assertEqual(m["clearedBytes"], 3 * MB + 100)
         self.assertTrue(os.path.exists(os.path.join(self.root, cachemod.INDEX_FILE)), "saved after a clear")
+
+    def test_clear_keeps_everything_this_session_used(self):
+        """Clear keeps the current session's files (ROADMAP "Caching": "everything except gravity/ and the
+        current session's files"), also those used more than an hour ago, which eviction may take: a
+        tile read at the start of a long drive may still be in the server's memory caches."""
+        old = T0 - 3 * DAY
+        early = put(self.root, "imagery/usgs/16/1/0.jpg", MB, old)
+        put(self.root, "imagery/usgs/16/1/1.jpg", MB, old)
+        c = self.make()
+        c.used(early)                                   # at the start of the session
+        self.clock.t += 2 * cachemod.PROTECT_S
+        self.assertEqual(c.clear(), (1, MB))
+        self.assertTrue(exists(self.root, "imagery/usgs/16/1/0.jpg"), "used this session: kept")
+        self.assertFalse(exists(self.root, "imagery/usgs/16/1/1.jpg"))
+        c.set_cap(0.0001)
+        self.assertEqual(c.evict(), (1, MB), "eviction protects the last hour only")
 
     def test_clear_waits_for_the_walk(self):
         put(self.root, "imagery/usgs/16/1/0.jpg", MB, T0 - DAY)
@@ -381,6 +408,20 @@ class ConcurrencyTest(Base):
         self.assertEqual(c._entries["dem/mapterhorn/12/1/0.webp"], [1000, T0])
         self.assertEqual(c._entries["dem/mapterhorn/12/2/0.webp"][0], 500)
         self.assertEqual(c.usage(), (50 * 1000 + 500, 51))
+
+    def test_the_message_never_waits_for_the_lock(self):
+        """earthd builds the 'cache' message on the event loop (after hello, every 10 s while the page is
+        open): it must not wait for the lock, which an eviction pass's sort or an index save over
+        ~700k files holds for a few tenths of a second."""
+        put(self.root, "dem/mapterhorn/12/1/0.webp", 1000, T0 - DAY)
+        c = self.make()
+        got = []
+        with c._lock:                   # a pass in progress
+            t = threading.Thread(target=lambda: got.append(c.message()), daemon=True)
+            t.start()
+            t.join(2.0)
+            self.assertFalse(t.is_alive(), "message() waited for the lock")
+        self.assertEqual((got[0]["usedBytes"], got[0]["files"]), (1000, 1))
 
 
 class ThreadTest(Base):
