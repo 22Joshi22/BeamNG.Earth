@@ -54,7 +54,9 @@ M.EST_ALPHA = 0.2          -- cost EMA gain
 -- cdaeTex256 / cdaeTex512: the in-game P8 EMA for 64-cell tiles (2026-10-10, ~300 objects, Baltimore:
 -- 4.03 / 4.21 ms; the texture size barely matters next to the 348 KB shape); cdaeTex128 not measured
 -- (scaled from 256 by the shape's share, ~3.9).
-M.PRIOR = { cdae = 3.0, dae = 8.0, reveal = 0.05, delete = 0.3, cdaeTex = 3.0, material = 0.3, matDelete = 0.2, cdaeTex128 = 3.9, cdaeTex256 = 4.0, cdaeTex512 = 4.2 }
+-- 'retex' (far_retex: a material's colorMap switched, flush + reload, the new texture loaded) is not
+-- measured yet: a guess between a material (0.3) and a textured import (4).
+M.PRIOR = { cdae = 3.0, dae = 8.0, reveal = 0.05, delete = 0.3, cdaeTex = 3.0, material = 0.3, matDelete = 0.2, cdaeTex128 = 3.9, cdaeTex256 = 4.0, cdaeTex512 = 4.2, retex = 1.0 }
 
 -- Unit kind of a textured .cdae import from its far_tile.tex (px): cdaeTex<px> for a size with a
 -- prior, else (FORMAT 3 tiles have no tex) 'cdaeTex'.

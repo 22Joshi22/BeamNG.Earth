@@ -712,12 +712,18 @@ class Deshadow:
         self._center = None                 # (lat, lon) of the last anchor
         self._cv = threading.Condition(self._lock)
         self._closed = False
+        self._listeners = []
         self.stats = {}
         self._thread = threading.Thread(target=self._worker, name="deshadow", daemon=True)
         self._thread.start()
 
     def bind(self, imagery):
         self.imagery = imagery
+
+    def add_listener(self, fn):
+        """fn(rk, changed) from the worker thread once a region is ready (changed: it relights, so
+        textures rendered raw over it while it was pending differ from what they would be now)."""
+        self._listeners.append(fn)
 
     def _count(self, what, n=1):
         with self._lock:
@@ -851,6 +857,36 @@ class Deshadow:
                 self._grids.popitem(last=False)
         return Region(P, g)
 
+    def pending_region(self, key, tile):
+        """The region of a source tile whose relight is still to come: its region is not ready but
+        wanted (within REQUEST_M of the anchor), else None. Tile workers call it BEFORE relight(),
+        so a region finishing in between is reported pending (one extra re-render) rather than
+        missed (a texture left raw for good)."""
+        src, z, x, y = key
+        if getattr(src, "name", src) != SOURCE or not MIN_Z <= z <= MAX_Z or tile is None or tile.uniform:
+            return None
+        rk = region_of(z, x, y)
+        with self._lock:
+            if self._load_params(rk) is not None:
+                return None
+            if self._center is not None and self._distance(rk) > REQUEST_M:
+                return None
+        return rk
+
+    def status(self, rk):
+        """None (not ready), False (ready, leaves the imagery as it is) or True (ready, relights).
+        On earthd's event loop: memory, else the region file's existence (a stat call). A region that
+        failed (tried again later) is not ready: a file it has is one renders cannot use (another
+        VERSION), else it would not have been computed; calling it ready made earthd re-render a
+        shown tile in a loop (the render reports it pending again)."""
+        with self._lock:
+            P = self._params.get(rk)
+            if P is not None:
+                return bool(P.get("ok"))
+            if rk in self._events or rk in self._failed:
+                return None
+        return True if os.path.exists(self._paths(rk)[0]) else None
+
     def _worker(self):
         while True:
             with self._lock:
@@ -893,6 +929,11 @@ class Deshadow:
             else:
                 log.info("deshadow region %s: left unchanged (%s; sun az %s el %s), %.1f s", rk, P.get("reason"),
                          P.get("az"), P.get("el"), P.get("total_s", 0.0))
+            for fn in list(self._listeners):
+                try:
+                    fn(rk, bool(P.get("ok")))
+                except Exception:
+                    log.exception("deshadow listener")
 
     def _compute(self, rk):
         """Fetch the region's z14 imagery and DEM, then compute_region()."""

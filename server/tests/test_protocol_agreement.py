@@ -36,7 +36,10 @@ docs/V1_2_DESIGN.md §7 as amended by §12; server/README.md documents the same 
   - the download cache (server/cache.py, docs/ROADMAP.md "Caching"): 'cache' both ways (additive the
     same way; Server()'s default has no Cache and sends none): the mod's size cap / clear / usage request
     and the server's usage answer (clearedBytes after a clear), exercised in the session; the settings
-    page's cap values are the settings schema's.
+    page's cap values are the settings schema's;
+  - live retexture (--colormatch / --deshadow): the 'far_retex' message (additive the same way), sent
+    in a session whose colour-match regions turn ready once the far field is shown; core.lua hands it
+    to farfield.onRetex, which reads anchorId / key / texture.
 """
 import json
 import math
@@ -65,6 +68,7 @@ import farfield as ff  # noqa: E402
 import heightmap  # noqa: E402
 import imagery  # noqa: E402
 import modsim  # noqa: E402
+import test_retex  # noqa: E402
 import test_server  # noqa: E402
 import colormatch as colormatchmod  # noqa: E402
 import deshadow as deshadowmod  # noqa: E402
@@ -130,6 +134,9 @@ SERVER_TO_MOD = {
                  "dOut": F(NUM)},
     "far_remove": {"anchorId": F(int), "key": F(str)},
     "far_done": {"anchorId": F(int), "count": F(int)},
+    # --colormatch / --deshadow: a shown (or held) tile's texture rendered again under a new name
+    # (additive, protocol 4; exercised by RetexMessagesTest, a session whose colour-match regions turn ready)
+    "far_retex": {"anchorId": F(int), "key": F(str), "texture": F(str)},
     # real weather at the player (weather.py; additive, protocol 4)
     "weather": {"v": F(int), "t": F(int), "lat": F(NUM), "lon": F(NUM), "code": F(int), "isDay": F(bool),
                 "cover": F(dict), "baseM": F(NUM), "baseAglM": F(NUM), "rainMmH": F(NUM), "snowCmH": F(NUM),
@@ -146,6 +153,8 @@ SERVER_TO_MOD = {
 }
 WEATHER_NESTED = {"cover": {"total", "low", "mid", "high"}, "wind": {"ms", "fromDeg", "gustMs"},
                   "aloft": {"ms", "fromDeg"}}
+# message types the plain session cannot produce (each has its own session test below)
+EXERCISED_ELSEWHERE = {"far_retex"}
 # events the mod's net.lua makes up itself (not on the wire)
 MOD_INTERNAL = {"_connected": set(), "_disconnected": {"error"}}
 
@@ -651,6 +660,9 @@ class ServerMessagesTest(test_server.ServerHarness):
             self.assertEqual(t["zBase"] % t["q"], 0)
         if kind == "far_swap":
             self.assertTrue(all(isinstance(k, str) for k in m["add"] + m["remove"]))
+        if kind == "far_retex":                 # the next revision's file next to the shape
+            self.assertRegex(m["texture"], rf"^/temp/beamngEarth/[^/]+/far_{m['anchorId']}_{m['key']}_r\d+\.dds$")
+            self.assertEqual(m["key"], ff.tile_of(m["key"]).key)
         if kind == "status":                    # M1h: the radius with --horizon only, at least 80 km
             self.assertEqual("radius" in m, self.horizon, m)
             if self.horizon:
@@ -742,7 +754,8 @@ class ServerMessagesTest(test_server.ServerHarness):
         until(lambda m: m["type"] == "far_done" and m["anchorId"] == b["anchorId"], 120)
         seen += c.drain(0.3)
         kinds = {m["type"] for m in seen}
-        self.assertEqual(kinds, set(SERVER_TO_MOD), "a message type was not exercised or is not in the table")
+        self.assertEqual(kinds, set(SERVER_TO_MOD) - EXERCISED_ELSEWHERE,
+                         "a message type was not exercised or is not in the table")
         for m in seen:
             self.check(m)
         old_removes = [m for m in seen if m["type"] == "far_remove" and m["anchorId"] == aid]
@@ -808,6 +821,48 @@ class ColormatchHelloTest(test_server.ServerHarness):
         self.assertEqual(m["colormatch"], "s2")
         self.assertIn("colormatch", SERVER_TO_MOD["hello"])
         self.assertIn(m["colormatch"], colormatchmod.MODES)
+
+
+class RetexMessagesTest(ServerMessagesTest):
+    """far_retex (--colormatch / --deshadow): a session whose colour-match regions turn ready after the
+    far field is shown (test_retex.FakeColorMatch); every message checked against the table, the
+    re-rendered textures exist, and the mod routes far_retex to farfield.onRetex."""
+    near_visual = "mesh"
+    with_imagery = True
+    cells = 64
+
+    def test_session_messages(self):
+        cm = test_retex.install_colormatch(self)
+        self.server.retex_rate = 200.0
+        c = self.c
+        c.send({"type": "hello", "protocol": modsim.CORE["PROTOCOL"], "format": modsim.CORE["FORMAT"],
+                "modVersion": "0.4.0"})
+        seen = [c.until(lambda m: m["type"] == "hello")[0]]
+        c.send({"type": "prepare_anchor", "requestId": 1, "lat": test_server.LAT,
+                "lon": test_retex.MeshHarness.LON, "cx": 0, "cy": 0})
+        a, before = c.until(lambda m: m["type"] == "anchor_ready")
+        seen += before + [a]
+        aid = a["anchorId"]
+        c.send({"type": "commit_anchor", "anchorId": aid})
+        c.send({"type": "commit_terrain", "anchorId": aid, "cx": 0, "cy": 0})
+        self.pose(aid, 0, 0)
+        m, before = c.until(lambda m: m["type"] == "far_done", 120)
+        seen += before + [m]
+        regions = {rk for t in self.server.tiles.values() for rk in t.cm_pending}
+        self.assertTrue(regions)
+        for rk in sorted(regions):
+            cm.make_ready(rk)
+        m, before = c.until(lambda m: m["type"] == "far_retex", 60)
+        seen += before + [m] + c.drain(1.0)
+        retex = [m for m in seen if m["type"] == "far_retex"]
+        self.assertTrue(retex)
+        for m in seen:
+            self.check(m)
+        for m in retex:
+            self.assertTrue(os.path.exists(self.fs(m["texture"])), m)
+        core = (LUA / "core.lua").read_text()
+        self.assertRegex(core, r"t == 'far_retex' then\s+farfield\.onRetex\(msg\)")
+        self.assertIn("function M.onRetex(msg)", (LUA / "farfield.lua").read_text())
 
 
 class MeshImageryMessagesTest(ServerMessagesTest):

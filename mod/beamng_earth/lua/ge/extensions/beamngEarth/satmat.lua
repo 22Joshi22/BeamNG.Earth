@@ -15,6 +15,14 @@
 --           'matDelete' AFTER the objects using it are gone (never delete a Material in use).
 -- Tiles without `material` (protocol 3, `--imagery off`) keep the static far-tile material and
 -- never come here.
+--
+-- Live retexture (server far_retex, --colormatch / --deshadow): the server rendered a shown tile's
+-- texture again under the next revision's name (far_<a>_<key>_r<n>.dds; the engine caches textures by
+-- path). requestRetex queues the material's switch to it, retexNext (a governor unit 'retex', run by
+-- farfield.lua) does one: setField colorMap + flush + reload, as dev.lua's tint does. The newest
+-- revision wins; an older one is ignored. A material in use that is re-sent (same name, a tile sent
+-- again) with a newer revision of its own texture switches the same way, time-sliced, instead of
+-- keeping the old file (ref).
 
 local M = {}
 
@@ -39,10 +47,13 @@ M.DETAIL_FIELDS = {
 }
 M.FALLBACK_COLOR = '0.39 0.35 0.27 1' -- texture file missing: the terrain's macro dirt colour
 
-local mats = {}       -- name -> { refs = n, texture = path }
+local mats = {}       -- name -> { refs = n, texture = path, fallback = diffuse set for a missing file }
 local delQ = {}       -- names whose refs reached 0, to delete (FIFO); checked again when run
 local queued = {}     -- name -> true while in delQ
 local nMats = 0
+local retexQ, rqH, rqT = {}, 1, 0 -- names with a texture switch to run (FIFO)
+local retexWant = {}  -- name -> the texture to switch to (the newest asked for)
+local nRetex = 0      -- switches done
 local detailChecked, detailOk = false, false
 local warned = {}
 
@@ -64,6 +75,24 @@ end
 -- Is the Material for this name created (and still ours)?
 function M.exists(name) return mats[name] ~= nil end
 
+-- A tile texture's revision: far_<a>_<key>_r<n>.dds -> n, the first render (no suffix) -> 0.
+function M.revision(path)
+  return tonumber(type(path) == 'string' and path:match('_r(%d+)%.dds$') or nil) or 0
+end
+
+-- The tile a texture belongs to: its path without the revision suffix (same session folder, same
+-- anchor and key).
+local function tileOf(path)
+  if type(path) ~= 'string' then return nil end
+  return (path:gsub('_r%d+%.dds$', '.dds'))
+end
+
+-- Is `new` a later revision of the same tile's texture than `old`?
+function M.isNewer(old, new)
+  local t = tileOf(old)
+  return t ~= nil and t == tileOf(new) and M.revision(new) > M.revision(old)
+end
+
 -- Create the Material (as planet.lua:77-91 / p_sat.lua: createObject, setField, canSave = false,
 -- registerObject). Object name = mapTo name, like the static far material. Returns true on success.
 -- A Material of that name left over from an earlier session (e.g. an extension reload) is adopted,
@@ -72,6 +101,7 @@ function M.exists(name) return mats[name] ~= nil end
 function M.create(name, texture, detail)
   if mats[name] then return true end
   local m = scenetree.findObject(name)
+  local fallback = false
   if m then
     if texture and FS:fileExists(texture) then m:setField('colorMap', 0, texture) end
   else
@@ -82,6 +112,7 @@ function M.create(name, texture, detail)
     else
       warnOnce('tex:' .. tostring(texture), 'imagery texture missing: ' .. tostring(texture))
       m:setField('diffuseColor', 0, M.FALLBACK_COLOR)
+      fallback = true
     end
     for _, f in ipairs(M.FIELDS) do m:setField(f[1], 0, f[2]) end
     if detail and hasDetail() then
@@ -91,7 +122,7 @@ function M.create(name, texture, detail)
     m.canSave = false
     m:registerObject(name)
   end
-  mats[name] = { refs = 0, texture = texture }
+  mats[name] = { refs = 0, texture = texture, fallback = fallback }
   nMats = nMats + 1
   return true
 end
@@ -101,10 +132,18 @@ end
 -- (waiting for deletion) is pointed at the new file; one still in use keeps its texture, since its
 -- tiles' loaded shapes keep theirs anyway - unless its file is gone (the restarted server deleted
 -- the old session's folder: in-game 2026-10-11 every tile showed the engine's orange "no texture"),
--- then it takes the new file too and reloads.
+-- then it takes the new file too and reloads. A later revision of the same tile's texture (the
+-- server re-rendered it, --colormatch / --deshadow) is what every instance of the tile should show:
+-- an in-use material switches to it through the retex queue (time-sliced, see requestRetex).
 function M.ref(name, texture)
   local e = mats[name]
   if not e then return false end
+  if texture and e.texture and texture ~= e.texture and e.refs > 0 and M.isNewer(e.texture, texture)
+    and FS:fileExists(e.texture) then
+    M.requestRetex(name, texture)
+    e.refs = e.refs + 1
+    return true
+  end
   if texture and e.texture and texture ~= e.texture then
     local gone = not FS:fileExists(e.texture)
     local m = (e.refs == 0 or gone) and scenetree.findObject(name)
@@ -137,6 +176,64 @@ function M.unref(name)
   end
 end
 
+-- Queue the material's switch to `texture` (far_retex, or a re-sent tile's newer revision). Returns
+-- false when there is no such material (a tile whose material is not created yet takes the texture
+-- from its own record when it is) or when `texture` is older than the one it shows or will show.
+function M.requestRetex(name, texture)
+  local e = mats[name]
+  if not e or type(texture) ~= 'string' or texture == '' then return false end
+  local cur = retexWant[name] or e.texture
+  if texture == cur then return true end
+  if cur and M.isNewer(texture, cur) then return false end -- an older revision: the newer one stays
+  if retexWant[name] == nil then
+    rqT = rqT + 1
+    retexQ[rqT] = name
+  end
+  retexWant[name] = texture
+  return true
+end
+
+-- Texture switches waiting.
+function M.hasRetex() return rqH <= rqT end
+
+-- Run the next texture switch (a governor unit 'retex'): colorMap + flush + reload. Returns true if a
+-- material was switched, false if the entry was stale (material deleted meanwhile, already on that
+-- texture, or the file missing: it keeps its texture).
+function M.retexNext()
+  if rqH > rqT then return false end
+  local name = retexQ[rqH]
+  retexQ[rqH] = nil
+  rqH = rqH + 1
+  if rqH > rqT then retexQ, rqH, rqT = {}, 1, 0 end
+  local want = retexWant[name]
+  retexWant[name] = nil
+  local e = mats[name]
+  if not e or not want or want == e.texture then return false end
+  -- the material took a later revision meanwhile (re-sent while unused: ref points it at the file at
+  -- once): the queued switch is stale, never back to an older file
+  if M.isNewer(want, e.texture) then return false end
+  if not FS:fileExists(want) then
+    warnOnce('retexfile:' .. name, 'retextured imagery missing: ' .. want .. '; keeping ' .. tostring(e.texture))
+    return false
+  end
+  local m = scenetree.findObject(name)
+  if not m then return false end
+  m:setField('colorMap', 0, want)
+  if e.fallback then -- created without its file: the fallback colour would tint the imagery
+    m:setField('diffuseColor', 0, '1 1 1 1')
+    e.fallback = false
+  end
+  pcall(function() m:flush() end)
+  pcall(function() m:reload() end)
+  e.texture = want
+  nRetex = nRetex + 1
+  return true
+end
+
+-- The texture a material shows (nil: no such material); switches done so far.
+function M.texture(name) local e = mats[name]; return e and e.texture end
+function M.retexCount() return nRetex end
+
 -- Materials waiting for deletion that nobody uses again.
 function M.hasDeletes()
   for _, name in ipairs(delQ) do
@@ -155,6 +252,7 @@ function M.deleteNext()
     local e = mats[name]
     if e and e.refs == 0 then
       mats[name] = nil
+      retexWant[name] = nil -- its queued switch (if any) is dropped when it comes up
       nMats = nMats - 1
       local m = scenetree.findObject(name)
       if m then m:delete() end -- editor/api/material.lua:234 deletes Materials the same way
@@ -172,6 +270,7 @@ function M.clearAll()
     if m then m:delete() end
   end
   mats, delQ, queued, nMats = {}, {}, {}, 0
+  retexQ, rqH, rqT, retexWant = {}, 1, 0, {}
   detailChecked = false
 end
 

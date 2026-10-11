@@ -587,6 +587,8 @@ local function onMessage(msg)
     farfield.onRemove(msg)
   elseif t == 'far_done' then
     farfield.onDone(msg)
+  elseif t == 'far_retex' then
+    farfield.onRetex(msg) -- a shown tile's re-rendered texture (--colormatch / --deshadow)
   elseif t == 'weather' then
     -- real weather (server weather.py): applied by the separate beamngEarth_weather extension
     local w = rawget(_G, 'beamngEarth_weather')

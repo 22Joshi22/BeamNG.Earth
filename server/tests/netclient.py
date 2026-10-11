@@ -87,6 +87,12 @@ class FarState:
                     self.tiles[(aid, k)] = self.held.pop((aid, k))
                 self.order.append(("swap", aid, m))
                 self.swaps.append(m)
+            elif t == "far_retex":         # only for a tile shown or held (the server's rule)
+                ck = (aid, m["key"])
+                tile = self.tiles.get(ck) or self.held.get(ck)
+                assert tile is not None, m
+                tile["texture"] = m["texture"]
+                self.order.append(("retex", aid, m["key"]))
             elif t == "far_remove":
                 ck = (aid, m["key"])
                 if ck in self.held:
