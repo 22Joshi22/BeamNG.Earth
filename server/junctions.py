@@ -26,6 +26,8 @@ RADII = {"residential": 3.0, "living_street": 3.0, "unclassified": 3.0, "service
          "tertiary": 4.5, "secondary": 6.0, "primary": 6.0, "trunk": 8.0}
 STOP_LINE = {"m": "line_white", "tl": 6.4, "p": 2, "w": 0.45}   # 1 m before the crosswalk
 STOP_GAP = 1.0
+BULB_M = 6.0                    # m a curb extension runs along the street past the corner
+TAPER_M = 3.0                   # m over which it returns to the parking curb
 CORNER_ANGLES = (35.0, 150.0)   # degrees between two branches for a curb return
 BRANCH_M = 10.0                 # m of a branch used for its direction
 CROSSWALK = {"m": "crossing_white", "tl": 4.8, "p": 3, "w": 3.0}
@@ -86,15 +88,16 @@ def _seg_dist(p, line):
     return np.hypot(*(p[:, None, :] - q).transpose(2, 0, 1)).min(axis=1)
 
 
-def _on_carriageway(pts, roads, near, margin=0.3):
+def _on_carriageway(pts, roads, near, margin=0.3, half=None):
     """Whether any point (m, 2) lies on a carriageway (centreline distance < width / 2 - margin) of
-    the roads within `near` (centre (2,), radius)."""
+    the roads within `near` (centre (2,), radius); half: {fid: half width} overrides."""
     c, r = near
+    half = half or {}
     for fid, spec, line, lon in roads:
         xy = line[:, :2]
         if (xy.max(0) < c - r).any() or (xy.min(0) > c + r).any():
             continue
-        if (_seg_dist(pts, xy) < spec.width / 2 - margin).any():
+        if (_seg_dist(pts, xy) < half.get(fid, spec.width / 2) - margin).any():
             return True
     return False
 
@@ -117,7 +120,7 @@ def _crosses(a, b, line):
     return bool(((d1 * d2 < 0) & (d3 * d4 < 0)).any())
 
 
-def find(roads, has_walk, walk_w):
+def find(roads, has_walk, walk_w, parking_m=0.0, has_parking=lambda spec: False):
     """Corners, cuts and crosswalks of the junctions among `roads` [(fid, spec, pts (k, 3), lon)].
     has_walk(spec) -> bool; walk_w: sidewalk width. Returns
         corners: [dict(arc (n, 3) curb points, inward (n, 2) unit vectors toward the sidewalk,
@@ -162,55 +165,87 @@ def find(roads, has_walk, walk_w):
                 continue
             ni, nj = _left(ui), _left(uj)
             wi, wj = spi.width / 2, spj.width / 2
+            # curb extensions: on a two-way street with parking the corner's curb is the driving
+            # lanes' edge, BULB_M along the street, then back to the parking curb over TAPER_M
+            # (Fells Point aerials, 2026-10-11: bulb-outs at most corners)
+            pi_ = parking_m if has_parking(spi) else 0.0
+            pj_ = parking_m if has_parking(spj) else 0.0
+            di, dj = wi - pi_, wj - pj_
+            bi, bj = (BULB_M if pi_ else 0.0), (BULB_M if pj_ else 0.0)
             radius = max(RADII.get(spi.cls, RADIUS), RADII.get(spj.cls, RADIUS))
-            Z = _line_x(X + ni * (wi + radius), ui, X - nj * (wj + radius), uj)
+            Z = _line_x(X + ni * (di + radius), ui, X - nj * (dj + radius), uj)
             if Z is None:
                 continue
             Ti, Tj = Z - ni * radius, Z + nj * radius
             ti, tj = float((Ti - X) @ ui), float((Tj - X) @ uj)
             if ti <= 0 or tj <= 0 or ti > 40 or tj > 40:
                 continue
-            # the branches must go on past their tangent points (a short connector between two close
+            ci = ti + (bi + TAPER_M if pi_ else 0.0)            # where the sidewalk runs resume
+            cj = tj + (bj + TAPER_M if pj_ else 0.0)
+            # the branches must go on past the corner (a short connector between two close
             # junctions cannot carry a curb return: 2026-10-11 survey, slabs on carriageways)
-            if _branch_len(roads[ri][2], vi, si) < ti + 1.0 or _branch_len(roads[rj][2], vj, sj) < tj + 1.0:
+            if _branch_len(roads[ri][2], vi, si) < ci + 1.0 or _branch_len(roads[rj][2], vj, sj) < cj + 1.0:
                 continue
             O = _line_x(X + ni * (wi + walk_w), ui, X - nj * (wj + walk_w), uj)
             if O is None:
                 continue
-            zi = _z_along(roads[ri][2], vi, si, ti)
-            zj = _z_along(roads[rj][2], vj, sj, tj)
             a0 = math.atan2(*(Ti - Z)[::-1])
             a1 = math.atan2(*(Tj - Z)[::-1])
             da = (a1 - a0 + math.pi) % (2 * math.pi) - math.pi      # the short way round
             k = max(3, int(abs(da) * radius / 0.75) + 1)
             ang = a0 + da * np.linspace(0.0, 1.0, k)
-            arc = np.c_[Z[0] + radius * np.cos(ang), Z[1] + radius * np.sin(ang), np.linspace(zi, zj, k)]
-            inward = (Z[None] - arc[:, :2]) / radius
-            zo = 0.5 * (zi + zj)
-            outer = [(*(Tj - nj * walk_w), zj), (*O, zo), (*(Ti + ni * walk_w), zi)]
-            Cc = _line_x(X + ni * wi, ui, X - nj * wj, uj)
-            fill = np.vstack([[*Cc, zo]] + [arc[m] for m in range(k)]) if Cc is not None else None
+            arc2 = np.c_[Z[0] + radius * np.cos(ang), Z[1] + radius * np.sin(ang)]
+            pre = ([X + ui * ci + ni * wi, X + ui * (ti + bi) + ni * di] if pi_ else [])
+            post = ([X + uj * (tj + bj) - nj * dj, X + uj * cj - nj * wj] if pj_ else [])
+            curb2 = np.vstack(pre + [arc2] + post)
+            # heights: the branch's road height at each point's distance along it
+            tpar = np.r_[[ci, ti + bi][:len(pre)], np.full(k, np.nan), [tj + bj, cj][:len(post)]]
+            zi0 = _z_along(roads[ri][2], vi, si, ti)
+            zj0 = _z_along(roads[rj][2], vj, sj, tj)
+            z = np.r_[[_z_along(roads[ri][2], vi, si, t) for t in tpar[:len(pre)]], np.linspace(zi0, zj0, k),
+                      [_z_along(roads[rj][2], vj, sj, t) for t in tpar[len(pre) + k:]]]
+            curb = np.c_[curb2, z]
+            # inward (toward the sidewalk): the polyline's normals, oriented by the arc's centre
+            d = np.gradient(curb2, axis=0)
+            nrm = np.stack([-d[:, 1], d[:, 0]], axis=1)
+            nrm /= np.maximum(np.hypot(*nrm.T), 1e-9)[:, None]
+            mid = len(pre) + k // 2
+            if (nrm[mid] @ (Z - curb2[mid])) < 0:
+                nrm = -nrm
+            zo = 0.5 * (zi0 + zj0)
+            zci = _z_along(roads[ri][2], vi, si, ci)
+            zcj = _z_along(roads[rj][2], vj, sj, cj)
+            outer = [(*(X + uj * cj - nj * (wj + walk_w)), zcj), (*O, zo), (*(X + ui * ci + ni * (wi + walk_w)), zci)]
+            Cc = _line_x(X + ni * di, ui, X - nj * dj, uj)
+            fill = np.vstack([[*Cc, zo]] + [np.r_[arc2[m], z[len(pre) + m]] for m in range(k)]) if Cc is not None else None
             if fill is not None and math.hypot(*(Cc - X)) > 20.0:
                 continue                        # a needle of asphalt at a very sharp corner
-            # nothing of the corner on any road (its own two included)
-            probe = np.vstack([arc[:, :2] + inward * 0.8, arc[:, :2] + inward * 2.0,
+            # nothing of the corner on any road: other roads at their width, its own two at their
+            # driving width (a bulb-out covers the parking lane)
+            probe = np.vstack([curb2 + nrm * 0.8, curb2 + nrm * 2.0,
                                [(np.array(o[:2]) + O) / 2 for o in (outer[0], outer[2])], [O]])
-            if _on_carriageway(probe, roads, (X, 60.0)):
+            own = {ri: di, rj: dj}
+            if _on_carriageway(probe, roads, (X, 60.0), half={roads[r][0]: h for r, h in own.items()}):
                 continue
-            corners.append({"arc": arc, "inward": inward, "outer": outer, "fill": fill})
-            cuts.setdefault((roads[ri][0], li), []).append((X.copy(), ui, ti))
-            cuts.setdefault((roads[rj][0], -lj), []).append((X.copy(), uj, tj))
-            side_t[(i, "L")] = ti
-            side_t[(j, "R")] = tj
+            corner = {"arc": curb, "inward": nrm, "outer": outer, "fill": fill, "ramps": []}
+            corners.append(corner)
+            cuts.setdefault((roads[ri][0], li), []).append((X.copy(), ui, ci))
+            cuts.setdefault((roads[rj][0], -lj), []).append((X.copy(), uj, cj))
+            seg = np.r_[0.0, np.cumsum(np.hypot(*np.diff(curb2, axis=0).T))]
+            # arc length along the curb of a point t m along each branch (for the crosswalk's ramp)
+            side_t[(i, "L")] = (ti, corner, ("dec", seg[len(pre) - 1] if pi_ else None, ti + bi), bi)
+            side_t[(j, "R")] = (tj, corner, ("inc", seg[len(pre) + k - 1] if pj_ else None, tj), bj)
         for i in range(n):                      # crosswalk + ramps on a branch with both corners
             if (i, "L") in side_t and (i, "R") in side_t:
                 ai, ri, vi, si, ui, li = branches[i]
-                w = roads[ri][1].width / 2
-                t = max(side_t[(i, "L")], side_t[(i, "R")]) + CW_GAP + CROSSWALK["w"] / 2
+                spec = roads[ri][1]
+                w = spec.width / 2
+                dw = w - (parking_m if has_parking(spec) else 0.0)     # curb to curb at the bulbs
+                t = max(side_t[(i, "L")][0], side_t[(i, "R")][0]) + CW_GAP + CROSSWALK["w"] / 2
                 c = X + ui * t
                 z = _z_along(roads[ri][2], vi, si, t)
                 nl = _left(ui)
-                a, b = c + nl * w, c - nl * w
+                a, b = c + nl * dw, c - nl * dw
                 if _branch_len(roads[ri][2], vi, si) < t + CROSSWALK["w"]:
                     continue
                 others = [rd for k2, rd in enumerate(roads) if k2 != ri]
@@ -224,16 +259,21 @@ def find(roads, has_walk, walk_w):
                     continue                    # one crosswalk where two would touch
                 crosswalks.append({"a": np.r_[a, z], "b": np.r_[b, z], "w": CROSSWALK["w"]})
                 # the stop line: across the half of the road whose traffic comes into the junction
-                # (right-hand traffic heading along -u drives on u's left), 1 m before the crosswalk;
-                # not on one-way classes (motorway links have no sidewalks anyway)
+                # (right-hand traffic heading along -u drives on u's left), 1 m before the crosswalk
                 ts = t + CROSSWALK["w"] / 2 + STOP_GAP + STOP_LINE["w"] / 2
                 if _branch_len(roads[ri][2], vi, si) > ts + 2.0:
                     cs = X + ui * ts
                     zs = _z_along(roads[ri][2], vi, si, ts)
-                    stops.append({"a": np.r_[cs + nl * 0.2, zs], "b": np.r_[cs + nl * (w - 0.3), zs], "w": STOP_LINE["w"]})
+                    stops.append({"a": np.r_[cs + nl * 0.2, zs], "b": np.r_[cs + nl * (dw - 0.3), zs], "w": STOP_LINE["w"]})
                 t0, t1 = t - CROSSWALK["w"] / 2, t + CROSSWALK["w"] / 2
-                ramps.setdefault((roads[ri][0], li), []).append((X.copy(), ui, t0, t1))
-                ramps.setdefault((roads[ri][0], -li), []).append((X.copy(), ui, t0, t1))
+                for key, side in (((i, "L"), li), ((i, "R"), -li)):
+                    tt, corner, (how, s0, tref), bulb = side_t[key]
+                    if bulb > 0 and s0 is not None and t1 <= tt + bulb:
+                        # on the bulb: the corner piece carries the ramp
+                        lo, hi = (s0 + (tref - t1), s0 + (tref - t0)) if how == "dec" else (s0 + (t0 - tref), s0 + (t1 - tref))
+                        corner["ramps"].append((lo, hi))
+                    else:
+                        ramps.setdefault((roads[ri][0], side), []).append((X.copy(), ui, t0, t1))
                 line_cuts.setdefault(roads[ri][0], []).append((X.copy(), ui, t1))
     return corners, cuts, crosswalks + [dict(q, stop=True) for q in stops], ramps, line_cuts
 

@@ -240,7 +240,19 @@ class BuildTileTest(unittest.TestCase):
         self.assertEqual(len(corners), 4, "a curb return in each quadrant")
         cw = [c for c in chunks if c["m"] == junctions.CROSSWALK["m"]]
         self.assertEqual(len(cw), 4, "a crosswalk on each arm")
-        self.assertTrue(sum(len(w["ramps"]) for w in runs) >= 8, "two curb ramps per crosswalk")
+        self.assertTrue(sum(len(w["ramps"]) for w in runs) + sum(len(c["ramps"]) for c in corners) >= 8,
+                        "two curb ramps per crosswalk")
+        # residential streets with parking: curb extensions (bulb-outs) at the corners
+        wd = roads.carriageway("residential", "paved", True) / 2 - roads.PARKING_M
+        cls_ = [np.array(c["n"])[:, :2] for c in chunks if c["m"] == roads.LOOK["paved"]["m"] and c["n"]]
+        for c in corners:
+            d = np.min([junctions._seg_dist(c["arc"][:, :2], ln) for ln in cls_], axis=0)
+            self.assertGreater(float(d.min()), wd - 0.1, "the curb never on the driving lanes")
+            self.assertLess(float(d.min()), wd + 0.3, "the bulb reaches the driving lanes")
+            self.assertEqual(len(c["ramps"]), 2, "the crosswalks land on the bulbs")
+        for c in chunks:
+            if c["m"] == junctions.CROSSWALK["m"]:
+                self.assertAlmostEqual(np.hypot(*np.subtract(c["n"][0][:2], c["n"][-1][:2])), 2 * wd, delta=0.3)
         w = roads.carriageway("residential", "paved", True) / 2
         for c in chunks:                        # no markings through the junction or its crosswalks
             if c["m"].startswith("line_") and c["w"] != junctions.STOP_LINE["w"]:

@@ -1174,7 +1174,8 @@ def build_tile(frame, tx, ty, cells, elev, urban_fn=None, walks=None, bridges=No
     chunks.extend(_bridge_chunks(frame, bseen, elev, (x0, y0, x1, y1), bridges, cells))
     exact = (x0, y0, x1, y1)
     corners, jcuts, crosswalks, jramps, jlines = ({}, {}, [], {}, {}) if walks is None else \
-        junctions.find(roads, has_sidewalks, SIDEWALK["w"])
+        junctions.find(roads, has_sidewalks, SIDEWALK["w"], PARKING_M,
+                       lambda sp: sp.urban and sp.cls in PARKING_CLASSES and sp.kind in BUILT and not sp.oneway)
     cornered = set()                            # road pairs whose sidewalks meet at a curb return
     if walks is not None:
         for (fid, side), cl in jcuts.items():
@@ -1300,7 +1301,7 @@ def write_tile(out_dir, vfs_dir, aid, tx, ty, chunks, walks=None, road_mesh=None
         for wk in walks:
             if "corner" in wk:
                 c = wk["corner"]
-                b.add_corner(c["arc"], c["inward"], c["outer"])
+                b.add_corner(c["arc"], c["inward"], c["outer"], ramps=c.get("ramps", ()))
                 continue
             curb, out = sidewalks.run_geometry(wk["pts"], wk["side"], SIDEWALK["w"])
             b.add_run(curb, out, SIDEWALK["w"], caps=wk["caps"], ramps=wk.get("ramps", ()))

@@ -1077,6 +1077,12 @@ three days of testing: dem 741 MB / 7.5k files, imagery 1.4 GB / 35k, deshadow 7
     - one-way streets (Overture `access_restrictions` by heading -> the `oneway` rule, roads cache
       layer version 2) at their own driving width with parking on one side and no centre line.
       Before, divided Broadway's one-way carriageways were drawn 14-15 m wide for 8-9 m.
+    - Curb extensions (bulb-outs) where a two-way street has parking, as at most Fells Point
+      corners. The corner's curb follows the driving lanes' edge for 6 m past the curb return, then
+      tapers back to the parking curb over 3 m; the sidewalks resume beyond the tapers. Crosswalks
+      span the driving lanes only, and their curb ramps are on the corner piece
+      (`Builder.add_corner(ramps=...)`). The junction checks treat the corner's own roads at their
+      driving width.
 - Grading keeps the sidewalk band flat: on the classes that get sidewalks in towns, the flat
   shoulder is the sidewalk + 0.5 m instead of 1 m (everywhere, so it never depends on the land
   cover).

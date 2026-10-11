@@ -200,15 +200,24 @@ class Builder:
             self.T.append(base + _orient(fan - base, P, t))
             self.M.append(np.full(len(fan), 0))
 
-    def add_corner(self, arc, inward, outer, h=CURB_H):
-        """A corner piece: the curb along the arc (k, 3) (inward: unit vectors toward the sidewalk),
-        the slab from the curb top to the outer corner points [(x, y, z) ...] (from the second
-        sidewalk's end round to the first's), and the back faces along the outer edges."""
+    def add_corner(self, arc, inward, outer, h=CURB_H, ramps=()):
+        """A corner piece: the curb along the polyline arc (k, 3) (a curb return, with the straight
+        runs and tapers of curb extensions; inward: unit vectors toward the sidewalk), the slab from
+        the curb top to the outer corner points [(x, y, z) ...] (from the second sidewalk's end round
+        to the first's), and the back faces along the outer edges. ramps: [(s0, s1)] arc lengths
+        where the curb is lowered (the slab then slopes up from it toward the outer corner)."""
         arc = np.asarray(arc, np.float64)
         inward = np.asarray(inward, np.float64)
-        k = len(arc)
         s = np.r_[0.0, np.cumsum(np.hypot(*np.diff(arc[:, :2], axis=0).T))]
-        ring, prof = self._sections(arc, inward, 2.5, h, np.full(k, h))
+        if ramps:
+            s2 = refine(s, ramps)
+            arc = np.stack([np.interp(s2, s, arc[:, c]) for c in range(3)], axis=1)
+            inward = np.stack([np.interp(s2, s, inward[:, c]) for c in range(2)], axis=1)
+            inward /= np.maximum(np.hypot(*inward.T), 1e-9)[:, None]
+            s = s2
+        k = len(arc)
+        hr = curb_heights(s, ramps, h)
+        ring, prof = self._sections(arc, inward, 2.5, h, hr)
         self._strips(ring, prof, inward, s, CURB_STRIPS)
         inner = ring[:, 3]                                  # the curb top's inner edge, at h
         out = np.asarray(outer, np.float64) - self.origin
