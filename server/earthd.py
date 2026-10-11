@@ -226,11 +226,13 @@ NET_TICK_S = 60.0           # the network summary line in the log and the netsta
 # ready, the tile's texture is rendered again under its next revision's name and the mod is told
 # (far_retex) to point the tile's material at it. At most RETEX_INFLIGHT such renders on the tile pool
 # at once (the other workers keep building), started at most RETEX_RATE per second, nearest the player
-# first; a tile is re-rendered live at most RETEX_MAX times (a guard: past that it waits to be re-sent).
+# first. A tile is re-rendered once per region of it that turns ready (a coarse L5 / L6 texture spans up
+# to 3 x 3 / 4 x 4 z12 regions, as many de-shadow ones); the guard against a loop is RETEX_REPEAT re-renders
+# in a row that came back still waiting for a region already ready: past that it waits to be re-sent.
 # --retex-rate 0: no live swap (a stale tile is re-rendered when it is sent again, as before).
 RETEX_RATE = 5.0
 RETEX_INFLIGHT = 1
-RETEX_MAX = 8
+RETEX_REPEAT = 3
 # Shown in the mod's UI (V1_3_SPEC §C), after the imagery credits.
 ELEVATION_CREDIT = "Elevation: Mapterhorn (see mapterhorn.com/attribution), AWS Terrain Tiles / Mapzen"
 
@@ -271,6 +273,9 @@ class TileInfo:
     cm_pending: frozenset = frozenset()
     stale: bool = False
     rev: int = 0
+    # live retexture: re-renders in a row that came back stale at once (still waiting for a region
+    # whose status is ready: the loop guard, RETEX_REPEAT)
+    retex_repeat: int = 0
     credits: frozenset = frozenset()    # data-credit source ids (credits.tile_sources; --credits on only)
 
 
@@ -842,7 +847,11 @@ class Server:
             if st is None:
                 self.cm_waiting.setdefault(rk, set()).add(ck)
             else:                           # ready meanwhile (while the texture was being rendered)
-                self._cm_settle(ck, rk, st)
+                self._cm_settle(ck, rk, st, pump=False)
+        if before is not None and info is not before:     # a re-render: stale at once again, or not
+            info.retex_repeat = before.retex_repeat + 1 if info.stale else 0
+        if info.stale:
+            self._retex_pump()
         if len(self.tiles) > self.tile_cache:
             used = self.in_use()
             for old in [k for k in self.tiles if k not in used][:len(self.tiles) - self.tile_cache]:
@@ -912,12 +921,13 @@ class Server:
     def _retex_pick(self):
         """The stale tile to re-render next: shown (or held) by a connection, nearest its player
         first. Drops the ones nobody shows (re-rendered when sent again), already re-rendering, or
-        past RETEX_MAX."""
+        past RETEX_REPEAT re-renders in a row that came back stale at once."""
         best, bd = None, math.inf
         for ck in list(self.retex_todo):
             info = self.tiles.get(ck)
             viewers = self._retex_viewers(ck) if info is not None and info.stale else []
-            if not viewers or ck in self.tile_inflight or ck[0] not in self.anchors or info.rev >= RETEX_MAX:
+            if not viewers or ck in self.tile_inflight or ck[0] not in self.anchors \
+                    or info.retex_repeat >= RETEX_REPEAT:
                 self.retex_todo.discard(ck)
                 if info is not None and info.stale and ck not in self.tile_inflight:
                     self.retex_stats["dropped"] += 1
@@ -955,6 +965,10 @@ class Server:
 
     def _retex_done(self, fut):
         self.retex_busy -= 1
+        if not fut.cancelled() and fut.exception() is not None:    # not the network (still stale): a bug, the disk
+            self.retex_stats["failed"] = self.retex_stats.get("failed", 0) + 1
+            if self.retex_stats["failed"] <= 3:
+                log.warning("live retexture failed: %r", fut.exception())
         self._retex_pump()
 
     def _send_retex(self, ck, info):
@@ -996,6 +1010,10 @@ class Server:
             for ck in [k for k in self.tex_rev if k[0] == aid]:
                 del self.tex_rev[ck]
             self.retex_todo = {ck for ck in self.retex_todo if ck[0] != aid}
+            for rk in list(self.cm_waiting):    # (a teleport: regions far from the new anchor never finish)
+                self.cm_waiting[rk] = {ck for ck in self.cm_waiting[rk] if ck[0] != aid}
+                if not self.cm_waiting[rk]:
+                    del self.cm_waiting[rk]
             for fut in [f for k, f in self.tile_inflight.items() if k[0] == aid]:
                 fut.cancel()
             for key in [k for k in self.hm if k[0] == aid]:

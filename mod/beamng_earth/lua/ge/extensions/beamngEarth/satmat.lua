@@ -209,6 +209,9 @@ function M.retexNext()
   retexWant[name] = nil
   local e = mats[name]
   if not e or not want or want == e.texture then return false end
+  -- the material took a later revision meanwhile (re-sent while unused: ref points it at the file at
+  -- once): the queued switch is stale, never back to an older file
+  if M.isNewer(want, e.texture) then return false end
   if not FS:fileExists(want) then
     warnOnce('retexfile:' .. name, 'retextured imagery missing: ' .. want .. '; keeping ' .. tostring(e.texture))
     return false

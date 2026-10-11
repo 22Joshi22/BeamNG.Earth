@@ -867,12 +867,15 @@ class Deshadow:
 
     def status(self, rk):
         """None (not ready), False (ready, leaves the imagery as it is) or True (ready, relights).
-        On earthd's event loop: memory, else the region file's existence (a stat call)."""
+        On earthd's event loop: memory, else the region file's existence (a stat call). A region that
+        failed (tried again later) is not ready: a file it has is one renders cannot use (another
+        VERSION), else it would not have been computed; calling it ready made earthd re-render a
+        shown tile in a loop (the render reports it pending again)."""
         with self._lock:
             P = self._params.get(rk)
             if P is not None:
                 return bool(P.get("ok"))
-            if rk in self._events:
+            if rk in self._events or rk in self._failed:
                 return None
         return True if os.path.exists(self._paths(rk)[0]) else None
 

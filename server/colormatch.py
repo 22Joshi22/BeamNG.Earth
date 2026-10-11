@@ -1116,12 +1116,15 @@ class ColorMatch:
 
     def status(self, rk):
         """None (not ready), False (ready, nothing to correct) or True (ready with a correction).
-        On the event loop: from memory, else the files on disk (stat calls only)."""
+        On the event loop: from memory, else the files on disk (stat calls only). A region that failed
+        (tried again later) is not ready: a file it has is one the renders could not use (another mode
+        or reference chain), else it would not have been computed (earthd re-rendered a shown tile in a
+        loop, or dropped it from the region's waiting list)."""
         with self._lock:
             v = self._fields.get(rk)
             if v is not None:
                 return v is not EMPTY
-            if rk in self._events:
+            if rk in self._events or rk in self._failed:
                 return None
         return self._on_disk(rk)
 

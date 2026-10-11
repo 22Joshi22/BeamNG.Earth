@@ -238,14 +238,105 @@ class SchedulerTest(unittest.TestCase):
             self.assertEqual((self.conn.msgs, self.starts, s.retex_stats["started"]), ([], [], 0))
             s.retex_rate, s.imagery = earthd.RETEX_RATE, types.SimpleNamespace()
 
-    def test_retex_max_guard(self):
-        ck = self.add("0_1_0", rev=earthd.RETEX_MAX)
+    def test_retex_repeat_guard(self):
+        ck = self.add("0_1_0")
+        self.s.tiles[ck].retex_repeat = earthd.RETEX_REPEAT
 
         async def body():
             self.s._cm_ready(R, True)
         self.run_loop(body)
         self.assertEqual(self.conn.msgs, [])
         self.assertTrue(self.s.tiles[ck].stale)
+
+    def test_tile_waiting_for_many_regions_gets_every_one(self):
+        """A coarse tile spans many regions (an L5 texture up to 3 x 3 z12 regions, an L6 one 4 x 4, as
+        many de-shadow ones): it is re-rendered live each time one of them turns ready, however many,
+        so none is left raw on screen (review: a cap of 8 revisions left L5/L6 tiles partly raw)."""
+        s = self.s
+        s.retex_rate = 200.0
+        regions = [(700 + i, 1600) for i in range(12)]
+        ready = set()
+        s.colormatch = types.SimpleNamespace(status=lambda r: True if r in ready else None)
+        renders = []
+
+        def make_tile(anchor, tile, prev=None):
+            renders.append(tile.key)
+            return replace(prev, texture=s.texture_name(anchor.id, tile.key, prev.rev + 1), rev=prev.rev + 1,
+                           stale=False, cm_pending=frozenset(r for r in regions if r not in ready))
+        s.make_tile = make_tile
+        ck = self.add("0_1_0", regions=regions)
+
+        async def body():
+            for rk in regions:                  # one at a time, each after the previous re-render landed
+                n = len(self.conn.msgs)
+                ready.add(rk)
+                s._cm_ready(rk, True)
+                end = time.monotonic() + 2.0
+                while len(self.conn.msgs) == n and time.monotonic() < end:
+                    await asyncio.sleep(0.005)
+        self.run_loop(body)
+        self.assertEqual(len(renders), len(regions))
+        self.assertEqual([m["texture"].rsplit("_", 1)[1] for m in self.conn.msgs],
+                         [f"r{i}.dds" for i in range(1, len(regions) + 1)])
+        self.assertEqual((s.tiles[ck].stale, s.tiles[ck].cm_pending, s.tiles[ck].rev), (False, frozenset(), 12))
+
+    def test_render_still_pending_on_a_ready_region_does_not_loop(self):
+        """A render that reports a region pending although the region's status says ready (a status
+        that cannot be trusted, e.g. a failed region over an unusable cache file) is not re-rendered
+        over and over: at most RETEX_REPEAT re-renders that come back still waiting, then the tile
+        waits to be sent again (stale)."""
+        s = self.s
+        s.retex_rate = 200.0
+        s.colormatch = types.SimpleNamespace(status=lambda r: True)
+        renders = []
+
+        def make_tile(anchor, tile, prev=None):
+            renders.append(tile.key)
+            return replace(prev, texture=s.texture_name(anchor.id, tile.key, prev.rev + 1), rev=prev.rev + 1,
+                           stale=False, cm_pending=frozenset({R}))
+        s.make_tile = make_tile
+        ck = self.add("0_1_0")
+
+        async def body():
+            s._cm_ready(R, True)
+        self.run_loop(body)
+        self.assertGreaterEqual(len(renders), 1)
+        self.assertLessEqual(len(renders), earthd.RETEX_REPEAT, renders)
+        self.assertTrue(s.tiles[ck].stale)
+        self.assertEqual(s.retex_todo, set())
+
+    def test_failing_render_is_logged(self):
+        """A live re-render that raises (a bug, a full disk: not the network, which retexture() turns
+        into 'still stale') is logged once, the tile stays stale and the scheduler goes on; before,
+        _tile_done read the exception and nobody ever saw it."""
+        s = self.s
+
+        def make_tile(anchor, tile, prev=None):
+            raise OSError(28, "No space left on device")
+        s.make_tile = make_tile
+        ck = self.add("0_1_0")
+
+        async def body():
+            s._cm_ready(R, True)
+        with self.assertLogs("earthd", "WARNING") as cm:
+            self.run_loop(body)
+        self.assertTrue(any("live retexture" in line and "No space left" in line for line in cm.output), cm.output)
+        self.assertTrue(s.tiles[ck].stale)
+        self.assertEqual((s.retex_busy, self.conn.msgs), (0, []))
+
+    def test_prune_forgets_the_anchors_waiting_tiles(self):
+        """A pruned anchor's tiles leave the regions' waiting lists too: after a teleport the regions
+        beyond REQUEST_M of the new anchor are never computed, and their lists only grew."""
+        s = self.s
+        a, b = self.add("0_1_0", regions=(R, R2)), self.add("0_2_0")
+        s.anchors[2] = earthd.Anchor(2, test_server.LAT, test_server.LON, self.a.frame)
+        keep = (2, "0_1_0")
+        s.cm_waiting.setdefault(R2, set()).add(keep)
+        s.retex_todo.add(b)
+        s.prune(2)
+        self.assertNotIn(a, s.tiles)
+        self.assertEqual(s.cm_waiting, {R2: {keep}})
+        self.assertEqual(s.retex_todo, set())
 
     def test_previous_anchor_tiles_get_nothing(self):
         """A previous anchor's tiles still on screen after a rebase are on their way out."""
@@ -269,6 +360,50 @@ class SchedulerTest(unittest.TestCase):
         s._evict_tile(ck)                   # no running loop: deleted at once
         self.assertEqual([n for n in names if os.path.exists(os.path.join(s.out_dir, n))], [])
         self.assertEqual(s.tex_rev[ck], 3)
+
+
+class RegionStatusTest(unittest.TestCase):
+    """status() of a region a render reported pending (earthd's _tile_done asks it on the event loop).
+    A region that failed (network; tried again later) is not ready, whatever its cache folder holds:
+    a file there is one the render could not use (another version, mode or reference chain), else the
+    region would not have been computed. Calling it ready made a shown tile re-render in a loop
+    (the render reports it pending again) and dropped it from the region's waiting list."""
+
+    def test_deshadow_failed_region_over_an_old_cache_file(self):
+        import deshadow as ds
+        with tempfile.TemporaryDirectory() as tmp:
+            d = ds.Deshadow(tmp, None, "full", wait_s=0)
+            try:
+                rk = (701, 1612)
+                jp, _ = d._paths(rk)
+                os.makedirs(os.path.dirname(jp), exist_ok=True)
+                with open(jp, "w") as f:
+                    f.write('{"version": %d, "ok": true}' % (ds.VERSION - 1))
+                self.assertIsNone(d._load_params(rk))           # unusable for a render
+                d._failed[rk] = time.monotonic()
+                self.assertIsNone(d.status(rk))
+                d._params[rk] = {"version": ds.VERSION, "ok": False}
+                self.assertIs(d.status(rk), False)              # ready (memory) wins
+            finally:
+                d.close()
+
+    def test_colormatch_failed_region_over_a_stale_cache_file(self):
+        import colormatch as cmmod
+        with tempfile.TemporaryDirectory() as tmp:
+            c = cmmod.ColorMatch(tmp, "s2")
+            try:
+                rk = (701, 1612)
+                npz, none = c._paths(rk, "field")
+                os.makedirs(os.path.dirname(npz), exist_ok=True)
+                np.savez(npz, meta=np.array('{"version": -1}'))
+                self.assertIsNone(c._load(rk, "field"))          # unusable for a render
+                c._failed[rk] = time.monotonic()
+                self.assertIsNone(c.status(rk))
+                os.remove(npz)
+                open(none, "wb").close()                        # a stale no-seam marker the same
+                self.assertIsNone(c.status(rk))
+            finally:
+                c.close()
 
 
 class WiringTest(unittest.TestCase):

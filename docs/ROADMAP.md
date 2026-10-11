@@ -167,6 +167,10 @@ Target: 300 mph sustained with the near ground always detailed, and a rebase tha
   under a new file name and sends `far_retex`; the mod switches the material's colour map, at most
   2 a frame through the governor. To check in-game: the seam fading out on screen without a
   teleport, no hitch per switch (governor `retex` cost; prior 1 ms guessed), no orange textures.
+  Review (2026-10-11): coarse L5/L6 tiles span up to 9/16 regions each and are now re-rendered for
+  every one (the first cut stopped at 8 revisions); a failed region over an unusable cache file no
+  longer reads as ready (that re-rendered shown tiles in a loop); the mod never switches a material
+  back to an older revision.
 - Sky: CloudLayer + wind, haze, per-biome cubemap, black night colours.
 - GroundCover grass if probes show it renders on a hidden terrain.
 

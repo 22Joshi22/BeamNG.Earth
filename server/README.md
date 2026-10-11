@@ -537,7 +537,10 @@ retexture (`far_retex`): a region turning ready re-renders exactly the shown / h
 it (also a de-shadow region, and one ready while the tile rendered), under new file names, nearest
 first, one render at a time on the tile pool, starts at most `--retex-rate` per second, nothing for
 tiles no longer shown or of a previous anchor (stale: re-rendered when sent again, which the session
-test checks too), the per-tile guard, eviction deleting every revision, nothing at all with
+test checks too), a coarse tile waiting for 12 regions re-rendered for each, the loop guard (a render
+still waiting for a region whose status is ready: at most `RETEX_REPEAT` in a row), a failed region
+over an unusable cache file reporting not ready (de-shadow and colour match), a failing re-render
+logged, `prune` emptying the anchor's waiting lists, eviction deleting every revision, nothing at all with
 `--colormatch off` / `--retex-rate 0`; a 64-cell mesh session with a fake colour match checks the
 files and messages end to end. `test_imagery.py`: a landmark lat/lon lands on its texel (within 0.2 m, two frames), orientation,
 zoom choice, the source chain (404, blank, last-source blank, unreachable, undecodable, coverage

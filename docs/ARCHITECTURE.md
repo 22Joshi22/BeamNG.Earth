@@ -520,8 +520,17 @@ their chunk arrived.
   tile a connection shows, or holds sent but not swapped in, under its active anchor, nearest that
   connection's player first; at most `RETEX_INFLIGHT` = 1 at once (the other two workers keep
   building) and `--retex-rate` (`RETEX_RATE` = 5) starts per second; tiles nobody shows are dropped
-  from the queue (re-rendered when sent again); at most `RETEX_MAX` = 8 live re-renders per tile (a
-  loop guard). When a re-rendered texture lands (`_tile_done`, also for the send path), every
+  from the queue (re-rendered when sent again). A tile is re-rendered once per region of it that
+  turns ready, however many (an L5 texture spans up to 3 x 3 z12 regions, an L6 one 4 x 4, as many
+  de-shadow ones; review 2026-10-11: the first cut capped live re-renders at 8 revisions, which left
+  coarse tiles partly raw); the loop guard is `RETEX_REPEAT` = 3 re-renders in a row that come back
+  still waiting for a region whose status is ready (`TileInfo.retex_repeat`), then the tile waits to
+  be sent again. A region that failed (network; retried later) reports not ready (`status`), whatever
+  its cache folder holds (a file there is one renders cannot use: another version / mode / reference
+  chain): calling it ready re-rendered a shown tile in that loop, or dropped it from the region's
+  waiting list. A live re-render that raises (not the network: a bug, a full disk) is logged
+  (`live retexture failed`, the first 3) and leaves the tile stale; `prune` also drops the anchor's
+  tiles from the regions' waiting lists (after a teleport the far regions never finish). When a re-rendered texture lands (`_tile_done`, also for the send path), every
   connection showing / holding the tile gets `far_retex {anchorId, key, texture}`; a far_tile sent from
   a build that finished before a live re-render carries the newest record's texture, and a stale one
   being sent is queued at once. All regions of one ready event are queued before the first start, so
@@ -531,7 +540,10 @@ their chunk arrived.
   `retex` (prior 1.0 ms, not measured yet; never in a heavy or quiet frame): `colorMap` + `flush` +
   `reload` (as dev.lua's tint), the fallback tint cleared if the material was created without its
   file, pcall'd and counted (`retexFailed`) so a bad switch never throws every frame. Stale messages
-  (another anchor, a key neither shown nor loading, an older revision, a missing file) change nothing.
+  (another anchor, a key neither shown nor loading, an older revision, a missing file) change nothing;
+  a queued switch older than the texture the material took meanwhile (its tile went before the switch
+  ran, the key was re-sent with a later revision and `ref` pointed the unused material at it) is
+  dropped, never going back (review 2026-10-11).
   `satmat.ref` follows the same rule for a re-sent key: a later revision of the same tile's texture
   (same folder, same stem) is switched in for the in-use material (time-sliced) instead of kept;
   another session's file under the same name keeps the old rule. Offline (`test_retex.py`, synthetic

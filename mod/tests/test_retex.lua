@@ -261,4 +261,25 @@ do
   T.check(farfield.stats().retexStale > 0 and not satmat.hasRetex(), 'previous anchor ignored')
 end
 
+------------------------------------------------------------------------------------------
+-- review: a switch queued while the material was in use must not undo a newer texture the material
+-- took meanwhile. Its tile went before the switch ran (a frame budget that fits a delete, 0.3 ms, but
+-- not a switch, 1.0 ms), and the key was re-sent with a later revision: ref() points the unused
+-- material at the re-sent file at once; the stale queued switch then went back to the older file.
+do
+  local name = 'bngEarthSat_9_0_0_0'
+  local t0, t1, t2 = SID .. 'far_9_0_0_0.dds', SID .. 'far_9_0_0_0_r1.dds', SID .. 'far_9_0_0_0_r2.dds'
+  T.check(satmat.create(name, t0, false) and satmat.ref(name, t0), 'material in use on r0')
+  T.check(satmat.requestRetex(name, t1) and satmat.hasRetex(), 'switch to r1 queued')
+  satmat.unref(name) -- its tile is gone before the switch ran: refs 0, waiting for deletion
+  T.check(satmat.ref(name, t2), 'the key re-sent with r2')
+  T.check(mat(name).fields.colorMap == t2, 'the unused material takes r2 at once')
+  local guard = 0
+  while satmat.hasRetex() and guard < 10 do
+    satmat.retexNext()
+    guard = guard + 1
+  end
+  T.check(mat(name).fields.colorMap == t2 and satmat.texture(name) == t2, 'the queued r1 switch does not go back to r1')
+end
+
 T.done('test_retex')
