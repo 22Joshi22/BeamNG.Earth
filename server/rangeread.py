@@ -95,15 +95,16 @@ def clear_memory():
 
 class RemoteFile:
     """See the module docstring. size: the file's length in bytes (from an index, e.g. the STAC
-    item's file:size), or None to learn it from the first answer's Content-Range. cache_dir is the
-    file's own directory (it also keys its blocks in the shared memory LRU)."""
+    item's file:size), or None to learn it from the first answer's Content-Range (then kept in
+    <cache_dir>/size, so a later session can check the length of every cached block too). cache_dir
+    is the file's own directory (it also keys its blocks in the shared memory LRU)."""
 
     def __init__(self, urls, size, cache_dir, fetcher):
         self.urls = (urls,) if isinstance(urls, str) else tuple(urls)
-        self.size = None if size is None else int(size)
         self.cache_dir = cache_dir
         self.fetcher = fetcher
         self._key = os.path.abspath(cache_dir)
+        self.size = self._saved_size() if size is None else int(size)
         self._inflight = {}                 # block index -> threading.Event
         self._lock = threading.Lock()
         self.stats = {"requests": 0, "net_bytes": 0, "disk_blocks": 0, "mem_blocks": 0}
@@ -111,6 +112,25 @@ class RemoteFile:
     # --- blocks ----------------------------------------------------------------------------------
     def _path(self, i):
         return os.path.join(self.cache_dir, f"{i}.blk")
+
+    def _saved_size(self):
+        try:
+            with open(os.path.join(self.cache_dir, "size"), "rb") as f:
+                n = int(f.read().strip())
+            return n if n > 0 else None
+        except (OSError, ValueError):
+            return None
+
+    def _learn_size(self, total):
+        self.size = total
+        self._write(os.path.join(self.cache_dir, "size"), str(total).encode())
+
+    def _write(self, path, b):
+        os.makedirs(self.cache_dir, exist_ok=True)
+        tmp = f"{path}.{os.getpid()}.{threading.get_ident()}.tmp"
+        with open(tmp, "wb") as f:
+            f.write(b)
+        os.replace(tmp, path)
 
     def _block_from_cache(self, i):
         b = _mem_get((self._key, i))
@@ -123,8 +143,10 @@ class RemoteFile:
                 b = f.read()
         except OSError:
             return None
-        if self.size is not None and len(b) != self._block_len(i):
-            return None                     # a truncated file (should not happen: written atomically)
+        # a damaged block (a crash after os.replace but before the data reached the disk leaves it
+        # short or empty): refetched. Without the file's size only a full block can be checked.
+        if len(b) != (self._block_len(i) if self.size is not None else BLOCK):
+            return None
         with self._lock:
             self.stats["disk_blocks"] += 1
         self._remember(i, b)
@@ -137,12 +159,7 @@ class RemoteFile:
         return max(0, min(BLOCK, self.size - i * BLOCK))
 
     def _store(self, i, b):
-        os.makedirs(self.cache_dir, exist_ok=True)
-        path = self._path(i)
-        tmp = f"{path}.{os.getpid()}.{threading.get_ident()}.tmp"
-        with open(tmp, "wb") as f:
-            f.write(b)
-        os.replace(tmp, path)
+        self._write(self._path(i), b)
         self._remember(i, b)
 
     def _fetch_run(self, i0, i1, kind):
@@ -171,7 +188,7 @@ class RemoteFile:
                 if m.group(3) != "*":
                     total = int(m.group(3))
                     if self.size is None:
-                        self.size = total
+                        self._learn_size(total)
                         end = min(end, total)
                     elif total != self.size:
                         raise RangeError(f"{url}: size {total} differs from the index's {self.size}")

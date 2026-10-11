@@ -302,6 +302,25 @@ class RangeTest(SmallBlocks, unittest.TestCase):
         self.assertEqual(r.read(0, 10), self.data[:10])
         self.assertEqual(r.size, len(self.data))
 
+    def test_damaged_block_of_unsized_file(self):
+        """A block file a crash left short (os.replace without fsync can leave it empty) is refetched,
+        also for a file whose size no index gives (the COGs): the size learned from the first
+        Content-Range is kept next to the blocks, so later sessions can check every block."""
+        r = self.remote(size=None)
+        self.assertEqual(r.read(0, 10), self.data[:10])
+        p = os.path.join(self.tmp, "f", "0.blk")
+        for damaged in (Path(p).read_bytes()[:100], b""):
+            Path(p).write_bytes(damaged)
+            rangeread.clear_memory()
+            r2 = self.remote(size=None)
+            self.assertEqual(r2.read(0, rangeread.BLOCK), self.data[:rangeread.BLOCK])
+            self.assertEqual(r2.size, len(self.data))
+        rangeread.clear_memory()
+        n = self.t.count()
+        r3 = self.remote(size=None)                                      # a new session, all on disk
+        self.assertEqual(r3.read(48000, 50000), self.data[48000:])
+        self.assertEqual(r3.size, len(self.data))
+
     def test_mirror_failover(self):
         self.t.fail[netfetch.host_of(self.URL)] = 503
         r = self.remote()
@@ -409,6 +428,18 @@ class StacTest(Sources, SmallBlocks, unittest.TestCase):
         idx = overture.StacIndex("1999-01-01.0", md.raw_dir, md.fetcher)
         with self.assertRaises(overture.ReleaseGone):
             idx.files("buildings", "building", mf.CELL.bounds())
+
+    def test_release_files_gone_with_stac_cached(self):
+        """Overture deleted the pinned release after its STAC index was cached (the usual case): the
+        parquet files answer 404, and that is ReleaseGone too, as documented, not a bare RangeError."""
+        cache = os.path.join(self.tmp, "cache")
+        md, t = self.mapdata(cache=cache)
+        self.assertTrue(md.overture.index.files("buildings", "building", mf.CELL.bounds()))
+        files = {u: d for u, d in self.files.items() if "/release/" not in u}
+        md2, t2 = self.mapdata(files, cache=cache)
+        with self.assertRaises(overture.ReleaseGone):
+            md2.cell(mf.CELL, ("buildings",))
+        self.assertFalse(os.path.exists(md2.path(mf.CELL, "buildings")))
 
     def test_intersects_inclusive(self):
         self.assertTrue(overture.intersects([0, 0, 1, 1], (1, 1, 2, 2)))

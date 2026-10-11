@@ -294,7 +294,13 @@ class Reader:
             return out
         except Exception as e:
             real = next((x for x in errors if isinstance(x, (netfetch.FetchError, rangeread.RangeError))), None)
-            if real is not None and not isinstance(e, (netfetch.FetchError, rangeread.RangeError)):
+            if real is None or isinstance(e, (netfetch.FetchError, rangeread.RangeError)):
+                real = e
+            if isinstance(real, rangeread.Missing):
+                # a file the (cached) STAC index lists answers 404: Overture removed the release
+                raise ReleaseGone(f"Overture release {self.release}: {real}; bump overture.RELEASE "
+                                  "(mapdata.py --latest)") from real
+            if real is not e:
                 raise real from e
             raise
         finally:
