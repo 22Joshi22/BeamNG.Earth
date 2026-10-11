@@ -1136,11 +1136,25 @@ class ColorMatch:
         return self.field(rk, enqueue=False)
 
     # --- worker --------------------------------------------------------------------------------
+    def _requeue_failed(self):
+        """Queue again the regions that failed more than RETRY_S ago and are still wanted. Caller holds
+        the lock. Without this a region dropped while the player stood still (the rate limiter keeps
+        a cold start's tokens for demand) was never asked for again (in-game 2026-10-11: no region
+        ready 7 min after a start at the AZ/UT line)."""
+        now = time.monotonic()
+        for rk, t in list(self._failed.items()):
+            if now - t >= RETRY_S and self._wanted(rk):
+                self._enqueue(rk)
+
     def _worker(self):
         while True:
             with self._lock:
                 while not self._queue and not self._closed:
-                    self._cv.wait()
+                    if self._failed:
+                        self._cv.wait(timeout=RETRY_S / 4)
+                        self._requeue_failed()
+                    else:
+                        self._cv.wait()
                 if self._closed:
                     return
                 _, _, rk = heapq.heappop(self._queue)

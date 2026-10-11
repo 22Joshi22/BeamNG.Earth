@@ -638,6 +638,27 @@ class NetfetchKindTest(unittest.TestCase):
             c._failed[rk] -= cm.RETRY_S             # the retry time has passed
             self.assertIs(c.wait(rk, 600), cm.EMPTY)
 
+    def test_dropped_region_is_retried_without_a_new_request(self):
+        """A parked player asks for nothing new: a region dropped at the cold start must still be
+        computed once RETRY_S has passed (in-game 2026-10-11 it never was)."""
+        import time as _time
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(cm, "RETRY_S", 0.4):
+            w = World(seam=False)
+            c = cm.ColorMatch(os.path.join(tmp, "c"), "s2", region_z=RZ)
+            im = KindImagery(os.path.join(tmp, "c", "imagery"), w, colormatch=c, tone=0.0)
+            self.addCleanup(im.close)
+            im.defer = True
+            rk = regions(w)[0]
+            self.assertIsNone(c.wait(rk, 600))
+            self.assertIn(rk, c._failed)
+            im.defer = False
+            deadline = _time.monotonic() + 60
+            while _time.monotonic() < deadline and not c._peek(rk):
+                _time.sleep(0.05)
+            self.assertTrue(c._peek(rk), "the worker retried the region by itself")
+            self.assertNotIn(rk, c._failed)
+
 
 class LoopSideTest(unittest.TestCase):
     def test_no_field_decoded_on_the_event_loop(self):
