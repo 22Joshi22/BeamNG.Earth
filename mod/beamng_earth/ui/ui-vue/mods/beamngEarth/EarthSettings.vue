@@ -24,7 +24,7 @@
         :open="catIndex === 0"
       >
         <!-- Collapsible Category Header -->
-        <summary class="category-title">{{ category.name }}</summary>
+        <summary class="category-title"><span class="category-arrow"></span>{{ category.name }}</summary>
 
         <div class="category-items">
 
@@ -114,7 +114,7 @@
               <div class="custom-dropdown-container" :class="{ 'is-open': openDropdown === item.id }">
                 <div class="dropdown-selected" @click="toggleDropdown(item.id)">
                   <span>{{ getOptionLabel(item, config[item.id]) }}</span>
-                  <span class="dropdown-arrow">▼</span>
+                  <span class="dropdown-arrow"></span>
                 </div>
 
                 <div class="dropdown-list" v-if="openDropdown === item.id">
@@ -481,12 +481,17 @@ summary.category-title {
   &::-webkit-details-marker { display: none; }
   &:hover { background: rgba(255, 255, 255, 0.08); }
 
-  &::before {
-    content: '▶';
+  // the arrow is its own element: the game draws its orange focus frame with ::before on the
+  // selected item (ours was rotated with it, then replaced by it); a CSS triangle, not a glyph
+  .category-arrow {
     display: inline-block;
-    margin-right: 0.5em;
-    font-size: 0.7rem;
-    color: var(--bng-orange-550, #f60);
+    flex: none;
+    width: 0;
+    height: 0;
+    margin-right: 0.6em;
+    border-top: 0.3em solid transparent;
+    border-bottom: 0.3em solid transparent;
+    border-left: 0.45em solid var(--bng-orange-550, #f60);
     transition: transform 0.2s ease;
   }
 }
@@ -495,7 +500,7 @@ details[open] > summary.category-title {
   border-bottom-left-radius: 0;
   border-bottom-right-radius: 0;
   border-bottom: 1px solid rgba(255, 255, 255, 0.05);
-  &::before { transform: rotate(90deg); }
+  .category-arrow { transform: rotate(90deg); }
 }
 
 .category-items {
@@ -602,10 +607,15 @@ details[open] > summary.category-title {
     border-color: rgba(255, 255, 255, 0.4);
   }
 
-  .dropdown-arrow {
-    font-size: 0.7em;
-    color: rgba(255, 255, 255, 0.5);
+  .dropdown-arrow {             // a CSS triangle in the text colour (no '▼' glyph in the UI font)
+    flex: none;
+    width: 0;
+    height: 0;
     margin-left: 0.5em;
+    color: rgba(255, 255, 255, 0.5);
+    border-left: 0.3em solid transparent;
+    border-right: 0.3em solid transparent;
+    border-top: 0.4em solid currentColor;
   }
 }
 
