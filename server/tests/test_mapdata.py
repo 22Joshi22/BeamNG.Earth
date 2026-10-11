@@ -111,6 +111,48 @@ class CellKeyTest(unittest.TestCase):
         for i in range(0, 500, 50):
             self.assertEqual((ox[i], oy[i]), mapcells.cell_of(lat[i], lon[i])[1:])
 
+    def test_cells_for_bbox_limits(self):
+        """Only valid keys: none beyond the Web-Mercator limit, none twice."""
+        n = 1 << mapcells.ZOOM
+        top = mapcells.cells_for_bbox(85.0, 0.0, 85.06, 0.001)
+        self.assertTrue(top and all(0 <= c.y < n for c in top), top)
+        self.assertEqual(min(c.y for c in top), 0)
+        bottom = mapcells.cells_for_bbox(-85.06, 0.0, -85.0, 0.001)
+        self.assertTrue(bottom and all(0 <= c.y < n for c in bottom), bottom)
+        self.assertEqual(max(c.y for c in bottom), n - 1)
+        self.assertEqual(mapcells.cells_for_bbox(86.0, 0.0, 89.0, 0.001), [])          # all north of it
+        self.assertEqual(mapcells.cells_for_bbox(-89.0, 0.0, -86.0, 0.001), [])        # all south of it
+        # west edge a hair east of the east edge: the box wraps the whole world, each column once
+        ring = mapcells.cells_for_bbox(0.5, -170.0, 0.5 + 1e-9, -170.0000001, max_cells=10 ** 5)
+        self.assertEqual(len(ring), n)
+        self.assertEqual(len(set(ring)), n)
+
+    def test_edges_belong_east_and_south(self):
+        """cell_of / owner agree with bounds() exactly: a point on an edge belongs to the cell east
+        / south of it (the floating-point tile math alone puts ~1 in 7 north edges in the wrong cell)."""
+        rng = np.random.default_rng(5)
+        n = 1 << mapcells.ZOOM
+        for _ in range(3000):
+            k = mapcells.CellKey(mapcells.ZOOM, int(rng.integers(0, n)), int(rng.integers(1, n - 1)))
+            lon0, lat0, lon1, lat1 = k.bounds()
+            lat_c, lon_c = k.center()
+            self.assertEqual(mapcells.cell_of(lat1, lon_c), k)                         # its north edge
+            self.assertEqual(mapcells.cell_of(lat0, lon_c), k._replace(y=k.y + 1))    # south edge: below
+            self.assertEqual(mapcells.cell_of(lat_c, lon0), k)                         # its west edge
+            self.assertEqual(mapcells.cell_of(lat_c, lon1), k._replace(x=(k.x + 1) % n))
+            ox, oy = mapcells.owner(np.array([lon_c, lon_c, lon0, lon1]), np.array([lat1, lat0, lat_c, lat_c]))
+            self.assertEqual(list(zip(ox.tolist(), oy.tolist())),
+                             [(k.x, k.y), (k.x, k.y + 1), (k.x, k.y), ((k.x + 1) % n, k.y)])
+
+    def test_owner_at_the_antimeridian(self):
+        """A feature at exactly 180 E is listed only by the last column (its box ends at 180): that
+        cell owns it, so it is not lost between the two ends of the world."""
+        n = 1 << mapcells.ZOOM
+        ox, oy = mapcells.owner(np.array([180.0, -180.0]), np.array([-16.8, -16.8]))
+        self.assertEqual(ox.tolist(), [n - 1, 0])
+        last = mapcells.CellKey(mapcells.ZOOM, n - 1, int(oy[0]))
+        self.assertTrue(overture.intersects([180.0, -16.8, 180.0, -16.8], last.bounds()))
+
 
 # --- geometry -------------------------------------------------------------------------------------
 def wkb_polygon(rings, bo="<"):
@@ -305,6 +347,24 @@ class RangeTest(SmallBlocks, unittest.TestCase):
             r.read(0, 10, "prefetch")
         self.assertEqual(r.read(0, 10, "demand"), self.data[:10])
 
+    def test_memory_bounded_across_files(self):
+        """The in-memory block cache has one budget for all files: a long drive through many
+        Overture / WorldCover / canopy files does not keep MEM_BLOCKS blocks of each (16 COGs x
+        32 MiB + 32 parquet files x 8 MiB before)."""
+        saved = rangeread.MEM_BYTES
+        rangeread.MEM_BYTES = 10 * rangeread.BLOCK
+        self.addCleanup(setattr, rangeread, "MEM_BYTES", saved)
+        rangeread.clear_memory()
+        remotes = [rangeread.RemoteFile([self.URL], len(self.data), os.path.join(self.tmp, f"m{i}"), self.f)
+                   for i in range(5)]
+        for r in remotes:
+            self.assertEqual(r.read(0, 8 * rangeread.BLOCK), self.data[:8 * rangeread.BLOCK])
+        self.assertLessEqual(rangeread.mem_bytes(), 10 * rangeread.BLOCK)
+        n = self.t.count()
+        self.assertEqual(remotes[-1].read(0, 100), self.data[:100])     # the newest blocks: memory
+        self.assertEqual(remotes[0].read(0, 100), self.data[:100])      # evicted ones: disk
+        self.assertEqual(self.t.count(), n)
+
 
 # --- the pipeline over synthetic sources ---------------------------------------------------------
 class Sources:
@@ -416,6 +476,33 @@ class OvertureTest(Sources, SmallBlocks, unittest.TestCase):
         self.assertEqual(list(inf.attrs["class"]), ["power_line", "power_pole"])
         self.assertEqual(inf.kind.tolist(), [mg.LINE, mg.POINT])
         self.assertEqual(list(cd.layers["connectors"].ids), ["con-a", "con-b"])
+
+    def test_build_owned_covers_every_feature_once(self):
+        """'Build the owned features of every cell' builds each whole feature once and every piece
+        of a clipped polygon once: the park (3 x 3 cells) and the harbour (2 x 2) come out whole,
+        not only the piece in the cell that holds their bbox centre."""
+        def area(ring):
+            x, y = ring[:, 0], ring[:, 1]
+            return 0.5 * abs(np.dot(x, np.roll(y, -1)) - np.dot(y, np.roll(x, -1)))
+        md, t = self.mapdata()
+        owned = {}
+        for dy in (-1, 0, 1):
+            for dx in (-1, 0, 1):
+                k = mf.CELL._replace(x=mf.CELL.x + dx, y=mf.CELL.y + dy)
+                cd = md.cell(k, ("water", "land_use", "infrastructure"))
+                for name in ("water", "land_use", "infrastructure"):
+                    f = cd.layers[name]
+                    for i in np.flatnonzero(f.own):
+                        a = sum(area(p[0]) - sum(area(h) for h in p[1:]) for p in f.parts(i))
+                        fid = str(f.ids[i])
+                        owned.setdefault(fid, []).append(a)
+        for fid, box in (("lu-park", (-0.5, -0.5, 1.5, 1.5)), ("wat-harbour", (0.5, 0.7, 1.5, 1.5))):
+            ring = np.array(mf._box(*box))
+            self.assertAlmostEqual(sum(owned[fid]) / area(ring), 1.0, places=6, msg=fid)
+        self.assertEqual(len(owned["lu-park"]), 9)
+        self.assertEqual(len(owned["wat-harbour"]), 4)
+        for fid in ("wat-canal", "inf-line", "inf-pole"):                   # whole features: one owner
+            self.assertEqual(len(owned[fid]), 1, fid)
 
     def test_empty_layer_keeps_schema(self):
         md, t = self.mapdata()
@@ -552,6 +639,43 @@ class CacheTest(Sources, SmallBlocks, unittest.TestCase):
         with self.assertRaises(netfetch.Offline):
             md3.cell(mapcells.cell_of(10.0, 10.0), ("landcover",))
 
+    def test_corrupt_layer_files_are_rebuilt(self):
+        """A damaged layer file (truncated, a flipped byte in the deflate stream, an old layout without
+        provenance) is a miss: rebuilt from the raw blocks, same digest, not a permanent error."""
+        cache = os.path.join(self.tmp, "cache")
+        md, t = self.mapdata(cache=cache)
+        digest = md.cell(mf.CELL).digest()
+        p = md.path(mf.CELL, "roads")
+        data = Path(p).read_bytes()
+        Path(p).write_bytes(data[:len(data) // 2])                            # zipfile.BadZipFile
+        p = md.path(mf.CELL, "buildings")
+        data = bytearray(Path(p).read_bytes())
+        data[len(data) // 3] ^= 0xFF                                          # zlib.error / bad CRC
+        Path(p).write_bytes(bytes(data))
+        p = md.path(mf.CELL, "water")
+        with np.load(p, allow_pickle=False) as z:
+            arrays = {k: z[k] for k in z.files if k != "provenance"}
+        np.savez_compressed(p, **arrays)                                      # KeyError later
+        md2, t2 = self.mapdata(cache=cache)
+        cd = md2.cell(mf.CELL)
+        self.assertEqual(cd.digest(), digest)
+        self.assertEqual(t2.count(), 0)                                       # all from the raw blocks
+        self.assertFalse(cd.stats["roads"]["hit"])
+        self.assertTrue(md2.cell(mf.CELL).stats["roads"]["hit"])              # and written again
+
+    def test_key_locks_do_not_pile_up(self):
+        md, t = self.mapdata()
+        for dx in range(3):
+            md.cell(mf.CELL._replace(x=mf.CELL.x + dx), ("roads", "landcover"))
+        self.assertEqual(len(md._locks), 0)
+
+    def test_invalid_key_refused(self):
+        md, t = self.mapdata()
+        for k in (mapcells.CellKey(14, 0, -1), mapcells.CellKey(14, 0, 1 << 14), mapcells.CellKey(14, -1, 0)):
+            with self.assertRaises(ValueError):
+                md.cell(k, ("roads",))
+        self.assertEqual(t.count(), 0)
+
     def test_neighbour_reuses_blocks(self):
         md, t = self.mapdata()
         md.cell(mf.CELL, ("roads",))
@@ -580,6 +704,12 @@ class KindsTest(Sources, SmallBlocks, unittest.TestCase):
         md2, _ = self.mapdata(cache=os.path.join(self.tmp, "bg"))
         cd = md2.cell(mf.CELL, ("buildings",), kind="background")
         self.assertEqual(len(cd.layers["buildings"]), 7)
+
+    def test_predownload(self):
+        """netfetch's fourth kind (pre-download for offline play; the map-data hosts are offline_ok)."""
+        md, t = self.mapdata()
+        cd = md.cell(mf.CELL, ("roads", "landcover"), kind="predownload")
+        self.assertEqual(len(cd.layers["roads"]), 6)
 
     def test_policies(self):
         for h in ("overturemaps-us-west-2.s3.us-west-2.amazonaws.com", "overturemapswestus2.blob.core.windows.net",
@@ -616,6 +746,17 @@ class ProvenanceTest(Sources, SmallBlocks, unittest.TestCase):
         for line in list(mapdata.CREDIT_LINES.values()) + [mapdata.WORLDCOVER["attribution"],
                                                             mapdata.CANOPY["attribution"]]:
             self.assertIn(line, text)
+
+    def test_theme_licences_are_whole(self):
+        """Overture's per-theme licence texts word for word (docs.overturemaps.org/attribution/, read
+        2026-10-11), not cut off with '...': the CC BY sources at the end need their credit too."""
+        text = " ".join((REPO / "CREDITS.md").read_text().split())
+        for theme, lic in overture.THEME_LICENCES.items():
+            self.assertNotIn("...", lic, theme)
+            self.assertIn(lic, text, theme)
+        self.assertIn("Data from GLOBathy. Available under CC0 1.0 (assumed).", overture.THEME_LICENCES["base"])
+        self.assertIn("Work derived from BTN 2024 ign.es. Available under CC BY 4.0",
+                      overture.THEME_LICENCES["buildings"])
 
 
 @needs_duckdb

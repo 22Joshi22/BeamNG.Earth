@@ -102,32 +102,73 @@ class CellKey(NamedTuple):
         return out
 
 
+def check(key):
+    """The key, if it is a valid cell (0 <= x, y < 2**z); ValueError otherwise."""
+    z, x, y = key
+    if not (0 <= z <= 24 and 0 <= x < (1 << z) and 0 <= y < (1 << z)):
+        raise ValueError(f"cell key out of range: {tuple(key)!r}")
+    return key
+
+
 def parse(text):
     """'z/x/y' (or 'z_x_y') -> CellKey, checked."""
     parts = str(text).replace("_", "/").split("/")
     if len(parts) != 3:
         raise ValueError(f"not a cell key: {text!r}")
     z, x, y = (int(p) for p in parts)
-    if not (0 <= z <= 24 and 0 <= x < (1 << z) and 0 <= y < (1 << z)):
-        raise ValueError(f"cell key out of range: {text!r}")
-    return CellKey(z, x, y)
+    return check(CellKey(z, x, y))
+
+
+# Edges are exact: column x holds lon0 <= lon < lon1 and row y holds lat0 < lat <= lat1, with the
+# edges as CellKey.bounds() computes them (a point on an edge belongs to the cell east / south of it).
+# The tile formula alone is off by one for ~1 in 7 points that lie exactly on a north edge (its
+# atan / asinh round trip is not exact), so a floor within EDGE_EPS of an integer is checked against
+# the edges themselves.
+EDGE_EPS = 1e-6                     # tile units (~2 mm at z14)
+
+
+def _lon_of(x, n):
+    return x / n * 360.0 - 180.0
+
+
+def _exact_col(xf, lon, n):
+    x = int(math.floor(xf))
+    if xf - x < EDGE_EPS and lon < _lon_of(x, n):
+        x -= 1
+    elif x + 1 - xf < EDGE_EPS and lon >= _lon_of(x + 1, n):
+        x += 1
+    return x
+
+
+def _exact_row(yf, lat, n):
+    y = min(n - 1, max(0, int(math.floor(yf))))
+    if yf - y < EDGE_EPS and y > 0 and lat > _lat_of(y, n):
+        y -= 1
+    elif y + 1 - yf < EDGE_EPS and y < n - 1 and lat <= _lat_of(y + 1, n):
+        y += 1
+    return y
 
 
 def cell_of(lat, lon, z=ZOOM):
-    """The cell containing lat/lon (a point on an edge belongs to the cell east / south of it)."""
+    """The cell containing lat/lon (a point on an edge belongs to the cell east / south of it, exactly
+    as CellKey.bounds() puts the edge; 180 E wraps to x = 0)."""
     if not (-MAX_LAT <= lat <= MAX_LAT):
         raise ValueError(f"latitude {lat} is beyond the Web-Mercator limit {MAX_LAT}")
     n = 1 << z
     x, y = tile_xy(lat, lon, z)
-    return CellKey(z, int(math.floor(float(x))) % n, min(n - 1, max(0, int(math.floor(float(y))))))
+    return CellKey(z, _exact_col(float(x), float(lon), n) % n, _exact_row(float(y), float(lat), n))
 
 
 def cells_for_bbox(lat0, lon0, lat1, lon1, z=ZOOM, max_cells=4096):
     """Every cell that intersects the lat/lon box (west lon0 to east lon1; lon1 < lon0 crosses the
-    antimeridian), in row-major order (north to south, west to east). Latitudes are clamped to
-    MAX_LAT. Raises ValueError for more than max_cells cells."""
+    antimeridian), in row-major order (north to south, west to east), each once. Latitudes are
+    clamped to MAX_LAT; a box entirely beyond it has no cells. Raises ValueError for more than
+    max_cells cells."""
     n = 1 << z
-    la0, la1 = sorted((max(-MAX_LAT, lat0), min(MAX_LAT, lat1)))
+    la0, la1 = sorted((lat0, lat1))
+    if la0 > MAX_LAT or la1 < -MAX_LAT:
+        return []
+    la0, la1 = max(-MAX_LAT, la0), min(MAX_LAT, la1)
     _, y0 = tile_xy(la1, 0.0, z)
     _, y1 = tile_xy(la0, 0.0, z)
     x0 = (lon0 / 360.0 + 0.5) * n
@@ -135,8 +176,9 @@ def cells_for_bbox(lat0, lon0, lat1, lon1, z=ZOOM, max_cells=4096):
     if x1 < x0:
         x1 += n
     ix0, ix1 = int(math.floor(x0)), int(math.ceil(x1)) - 1
-    iy0, iy1 = int(math.floor(float(y0))), min(n - 1, int(math.ceil(float(y1))) - 1)
-    ix1, iy1 = max(ix1, ix0), max(iy1, iy0)
+    ix1 = min(max(ix1, ix0), ix0 + n - 1)                   # a box wrapping the world: each column once
+    iy0 = min(n - 1, max(0, int(math.floor(float(y0)))))   # y0 can be -1e-12 at MAX_LAT
+    iy1 = max(iy0, min(n - 1, int(math.ceil(float(y1))) - 1))
     count = (ix1 - ix0 + 1) * (iy1 - iy0 + 1)
     if count > max_cells:
         raise ValueError(f"{count} cells in the box (max {max_cells})")
@@ -146,7 +188,18 @@ def cells_for_bbox(lat0, lon0, lat1, lon1, z=ZOOM, max_cells=4096):
 def owner(lon_c, lat_c, z=ZOOM):
     """Cell x, y arrays of the cells that own points (lon_c, lat_c): a feature that spans several
     cells is listed in each of them, and owned by the one containing its bbox centre (so a
-    generator that builds only the owned features of each cell builds every feature once)."""
+    generator that builds only the owned features of each cell builds every feature once). Edges
+    as cell_of(), except that a centre at exactly 180 E belongs to the last column: only that cell
+    lists such a feature (its box ends at 180; the first column's starts at -180)."""
     n = 1 << z
-    x, y = tile_xy(lat_c, lon_c, z)
-    return np.floor(x).astype(np.int64) % n, np.clip(np.floor(y).astype(np.int64), 0, n - 1)
+    lon = np.asarray(lon_c, np.float64)
+    lat = np.asarray(lat_c, np.float64)
+    x, y = tile_xy(lat, lon, z)
+    ox = np.floor(x).astype(np.int64)
+    oy = np.clip(np.floor(y).astype(np.int64), 0, n - 1)
+    near = np.flatnonzero((np.abs(x - np.round(x)) < EDGE_EPS) | (np.abs(y - np.round(y)) < EDGE_EPS))
+    for i in near:                  # on an edge (rare): the exact rule
+        ox.flat[i] = _exact_col(float(x.flat[i]), float(lon.flat[i]), n)
+        oy.flat[i] = _exact_row(float(y.flat[i]), float(np.clip(lat.flat[i], -MAX_LAT, MAX_LAT)), n)
+    ox = np.where(ox == n, n - 1, ox)                       # 180 E: the last column
+    return ox % n, oy

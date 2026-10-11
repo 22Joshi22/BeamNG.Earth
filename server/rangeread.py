@@ -13,8 +13,9 @@ parquet through the fsspec filesystem below, whose reads land here.
     read fetches the blocks it lacks, consecutive ones in one Range request (at most MAX_RUN
     blocks), and keeps each block as its own file <cache_dir>/<block index>.blk (written atomically,
     so a crash or the cache cap's LRU eviction only costs a re-fetch). Two threads that need the
-    same block fetch it once. A small in-memory LRU (MEM_BLOCKS) serves re-reads of hot blocks (a
-    parquet footer is read once per query).
+    same block fetch it once. One in-memory LRU for all RemoteFiles of the process (MEM_BYTES)
+    serves re-reads of hot blocks (a parquet footer is read once per query); everything else
+    comes from the disk (and the OS page cache): a long drive passes dozens of source files.
   * NetfetchFS: an fsspec filesystem over RemoteFiles for DuckDB (duckdb.register_filesystem). The
     request kind is the protocol (nfdemand://, nfprefetch://, nfbackground://), because DuckDB
     reads from its own threads; paths are resolved to RemoteFiles by a callable.
@@ -37,7 +38,7 @@ log = logging.getLogger("earthd.mapdata")
 
 BLOCK = 256 * 1024          # bytes per cached block
 MAX_RUN = 64                # blocks per Range request (16 MiB)
-MEM_BLOCKS = 128            # blocks kept in memory per RemoteFile (32 MiB at most)
+MEM_BYTES = 64 * 1024 * 1024    # in-memory block LRU shared by every RemoteFile of the process
 CONTENT_RANGE = re.compile(r"bytes\s+(\d+)-(\d+)/(\d+|\*)")
 # Errors after which the next mirror is asked (the same bytes from another host); NotFound is not
 # one of them: a release file that is missing on one mirror is missing.
@@ -53,17 +54,56 @@ class Missing(RangeError):
     miss_ttl, as dem.py and imagery.py remember missing tiles)."""
 
 
+# --- the process-wide in-memory block LRU -------------------------------------------------------
+_mem = OrderedDict()            # (cache_dir, block index) -> bytes
+_mem_lock = threading.Lock()
+_mem_used = 0
+
+
+def _mem_get(k):
+    with _mem_lock:
+        b = _mem.get(k)
+        if b is not None:
+            _mem.move_to_end(k)
+        return b
+
+
+def _mem_put(k, b):
+    global _mem_used
+    with _mem_lock:
+        old = _mem.pop(k, None)
+        if old is not None:
+            _mem_used -= len(old)
+        _mem[k] = b
+        _mem_used += len(b)
+        while _mem_used > MEM_BYTES and _mem:
+            _mem_used -= len(_mem.popitem(last=False)[1])
+
+
+def mem_bytes():
+    """Bytes of blocks held in memory (at most MEM_BYTES)."""
+    with _mem_lock:
+        return _mem_used
+
+
+def clear_memory():
+    global _mem_used
+    with _mem_lock:
+        _mem.clear()
+        _mem_used = 0
+
+
 class RemoteFile:
     """See the module docstring. size: the file's length in bytes (from an index, e.g. the STAC
-    item's file:size), or None to learn it from the first answer's Content-Range."""
+    item's file:size), or None to learn it from the first answer's Content-Range. cache_dir is the
+    file's own directory (it also keys its blocks in the shared memory LRU)."""
 
-    def __init__(self, urls, size, cache_dir, fetcher, mem_blocks=MEM_BLOCKS):
+    def __init__(self, urls, size, cache_dir, fetcher):
         self.urls = (urls,) if isinstance(urls, str) else tuple(urls)
         self.size = None if size is None else int(size)
         self.cache_dir = cache_dir
         self.fetcher = fetcher
-        self.mem_blocks = mem_blocks
-        self._mem = OrderedDict()           # block index -> bytes
+        self._key = os.path.abspath(cache_dir)
         self._inflight = {}                 # block index -> threading.Event
         self._lock = threading.Lock()
         self.stats = {"requests": 0, "net_bytes": 0, "disk_blocks": 0, "mem_blocks": 0}
@@ -73,12 +113,11 @@ class RemoteFile:
         return os.path.join(self.cache_dir, f"{i}.blk")
 
     def _block_from_cache(self, i):
-        with self._lock:
-            b = self._mem.get(i)
-            if b is not None:
-                self._mem.move_to_end(i)
+        b = _mem_get((self._key, i))
+        if b is not None:
+            with self._lock:
                 self.stats["mem_blocks"] += 1
-                return b
+            return b
         try:
             with open(self._path(i), "rb") as f:
                 b = f.read()
@@ -92,11 +131,7 @@ class RemoteFile:
         return b
 
     def _remember(self, i, b):
-        with self._lock:
-            self._mem[i] = b
-            self._mem.move_to_end(i)
-            while len(self._mem) > self.mem_blocks:
-                self._mem.popitem(last=False)
+        _mem_put((self._key, i), b)
 
     def _block_len(self, i):
         return max(0, min(BLOCK, self.size - i * BLOCK))
@@ -104,7 +139,7 @@ class RemoteFile:
     def _store(self, i, b):
         os.makedirs(self.cache_dir, exist_ok=True)
         path = self._path(i)
-        tmp = f"{path}.{threading.get_ident()}.tmp"
+        tmp = f"{path}.{os.getpid()}.{threading.get_ident()}.tmp"
         with open(tmp, "wb") as f:
             f.write(b)
         os.replace(tmp, path)
@@ -217,7 +252,8 @@ class RemoteFile:
 
 
 # --- fsspec filesystem for DuckDB ----------------------------------------------------------------
-PROTOCOLS = {"demand": "nfdemand", "prefetch": "nfprefetch", "background": "nfbackground"}
+PROTOCOLS = {"demand": "nfdemand", "prefetch": "nfprefetch", "background": "nfbackground",
+             "predownload": "nfpredownload"}
 
 try:
     import fsspec

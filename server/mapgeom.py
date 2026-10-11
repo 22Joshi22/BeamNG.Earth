@@ -49,7 +49,8 @@ class Features:
     coord_off: np.ndarray               # int64, len rings + 1
     lonlat: np.ndarray                  # float64 (N, 2)
     en: np.ndarray | None = None        # float64 (N, 2), set by localize()
-    own: np.ndarray | None = None       # bool: the feature's bbox centre lies in this cell
+    own: np.ndarray | None = None       # bool: build it in this cell (its bbox centre lies here, or
+                                        # it is this cell's clipped piece of a polygon)
     clipped: np.ndarray | None = None   # bool: the geometry was clipped to the cell
     attrs: dict = field(default_factory=dict)
     rules: dict = field(default_factory=dict)

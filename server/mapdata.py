@@ -20,9 +20,11 @@ Layers (LAYERS):
   landcover                                                       ESA WorldCover 10 m (maprasters.py)
   canopy                                                          Meta/WRI CHMv2 1.2 m (maprasters.py)
 Vector features carry lon/lat (float64) and `en`, metres in the cell's local ENU frame (the
-tangent plane at the cell's centre, geodesy.EnuFrame(lat_c, lon_c, 0)), plus `own` (the cell
-contains the feature's bbox centre: build each feature only in its own cell) and `clipped` (water
-and land-use polygons are cut to the cell).
+tangent plane at the cell's centre, geodesy.EnuFrame(lat_c, lon_c, 0)), plus `clipped` (water
+and land-use polygons are cut to the cell) and `own`: build it in this cell. A whole feature is
+owned by the one cell that contains its bbox centre; a clipped polygon is this cell's piece of it,
+owned here (every cell it touches owns its piece). So a generator that builds the owned features
+of every cell builds each feature exactly once and every polygon whole.
 
 Network: every request goes through the netfetch.Fetcher (host policies for stac.overturemaps.org,
 the Overture S3 bucket and its Azure mirror, WorldCover and the canopy bucket), with the request
@@ -52,6 +54,7 @@ import sys
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -67,7 +70,8 @@ import rangeread
 log = logging.getLogger("earthd.mapdata")
 
 LAYER_THREADS = 4               # layers of a cell built at once (each fetches through the shared limits)
-VERSION = 1                     # pipeline version: bump when what a cell's layers contain changes
+VERSION = 2                     # pipeline version: bump when what a cell's layers contain changes
+                                # (2: clipped polygon pieces are `own`ed by their cell; exact cell edges)
 VECTOR_LAYERS = ("roads", "connectors", "buildings", "water", "land_use", "infrastructure")
 RASTER_LAYERS = ("landcover", "canopy")
 LAYERS = VECTOR_LAYERS + RASTER_LAYERS
@@ -106,6 +110,12 @@ def _source(layer, release):
     if layer == "landcover":
         return "worldcover", maprasters.WORLDCOVER_RELEASE
     return "chm", maprasters.CHM_RELEASE
+
+
+def _key(key):
+    """A checked CellKey from a CellKey, a (z, x, y) tuple or 'z/x/y' (no cell outside the grid gets
+    built or cached: cells_for_bbox() and the CLI only make valid ones, a caller's arithmetic might not)."""
+    return mapcells.parse(key) if isinstance(key, str) else mapcells.check(mapcells.CellKey(*key))
 
 
 def digest_arrays(arrays):
@@ -199,21 +209,45 @@ class MapData:
         return os.path.join(self.cache_dir, "mapdata", f"v{VERSION}", source, release, layer,
                             str(key.z), str(key.x), f"{key.y}.npz")
 
+    @contextmanager
     def _key_lock(self, key, layer):
+        """One builder per (cell, layer) at a time; the entry goes once nobody holds or waits for it
+        (a long drive would otherwise keep a lock for every layer of every cell it passed)."""
+        k = (key, layer)
         with self._lock:
-            return self._locks.setdefault((key, layer), threading.Lock())
+            entry = self._locks.get(k)
+            if entry is None:
+                entry = self._locks[k] = [threading.Lock(), 0]
+            entry[1] += 1
+        try:
+            with entry[0]:
+                yield
+        finally:
+            with self._lock:
+                entry[1] -= 1
+                if entry[1] == 0:
+                    del self._locks[k]
 
     # --- one layer -------------------------------------------------------------------------------
     def _load(self, path):
+        """A layer file's arrays, or None when it is missing or unreadable (truncated, a damaged
+        deflate stream, another layout): a miss, rebuilt and written again."""
         try:
             with np.load(path, allow_pickle=False) as z:
-                return {k: z[k] for k in z.files}
-        except (OSError, ValueError, EOFError):
+                arrays = {k: z[k] for k in z.files}
+        except FileNotFoundError:
             return None
+        except Exception as e:      # zipfile.BadZipFile, zlib.error, ValueError, EOFError, OSError...
+            log.warning("mapdata: unreadable %s (%s: %s): rebuilding it", path, type(e).__name__, e)
+            return None
+        if "provenance" not in arrays:
+            log.warning("mapdata: %s has no provenance record: rebuilding it", path)
+            return None
+        return arrays
 
     def _store(self, path, arrays):
         os.makedirs(os.path.dirname(path), exist_ok=True)
-        tmp = f"{path}.{threading.get_ident()}.tmp.npz"
+        tmp = f"{path}.{os.getpid()}.{threading.get_ident()}.tmp.npz"
         np.savez_compressed(tmp, **arrays)
         os.replace(tmp, path)
 
@@ -223,6 +257,10 @@ class MapData:
             feats, sources = self.overture.query(layer, key, kind)
             ox, oy = mapcells.owner(feats.attrs.get("cx", np.zeros(0)), feats.attrs.get("cy", np.zeros(0)), key.z)
             feats.own = (ox == key.x) & (oy == key.y)
+            if feats.clipped is not None:
+                # a polygon cut to the cell is this cell's piece of it: each piece is built where it
+                # lies (the pieces of all cells make the whole polygon), not only in the bbox-centre cell
+                feats.own |= feats.clipped
             arrays = _layer_arrays(feats)
             prov = overture.sources_provenance(THEME_OF[layer], self.release, sources) if len(feats) else None
         elif layer == "landcover":
@@ -240,6 +278,7 @@ class MapData:
         """(arrays, hit) of one cell's layer: from the cache, or built and cached."""
         if layer not in LAYERS:
             raise ValueError(f"unknown map layer {layer!r}; choose from {', '.join(LAYERS)}")
+        key = _key(key)
         path = self.path(key, layer)
         arrays = self._load(path)
         if arrays is not None:
@@ -255,8 +294,7 @@ class MapData:
     # --- cells -----------------------------------------------------------------------------------
     def cell(self, key, layers=LAYERS, kind="demand"):
         """CellData of one cell with the given layers (fetched / built / cached as needed)."""
-        if isinstance(key, str):
-            key = mapcells.parse(key)
+        key = _key(key)
         lat_c, lon_c = key.center()
         frame = geodesy.EnuFrame(lat_c, lon_c, 0.0)
         cd = CellData(key, key.bounds(), (lat_c, lon_c), frame, self.versions())

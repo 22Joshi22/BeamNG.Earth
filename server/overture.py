@@ -46,8 +46,7 @@ log = logging.getLogger("earthd.mapdata")
 RELEASE = "2026-09-23.1"
 STAC_ROOT = "https://stac.overturemaps.org"
 DUCKDB_THREADS = 2              # DuckDB worker threads per query (the server is niced; the game comes first)
-REMOTE_FILES = 32               # open RemoteFiles kept (each holds a small block LRU)
-REMOTE_MEM_BLOCKS = 32          # ... of this many 256 KiB blocks
+REMOTE_FILES = 32               # open RemoteFiles kept (their blocks share rangeread's memory LRU)
 # DuckDB's own prefetching reads whole row groups one after the other; Reader._plan fetches what the
 # query needs in parallel first, so DuckDB reads lazily from the block cache
 PARQUET_CONFIG = {"disable_parquet_prefetching": True}
@@ -57,7 +56,8 @@ MERGE_GAP = 64 * 1024           # column chunks closer than this are fetched in 
 BASE_COLUMNS = {"id", "geometry", "bbox", "sources", "version"}
 
 # Overture's attribution (https://docs.overturemaps.org/attribution/, read 2026-10-11): the line its
-# own viewer shows, and each theme's licence with the sources that ask for credit.
+# own viewer shows, and each theme's licence with the sources that ask for credit, whole (the CC BY
+# sources at the end need their credit as much as the first ones; re-read it when RELEASE changes).
 ATTRIBUTION = "© OpenStreetMap contributors, Overture Maps Foundation"
 THEME_LICENCES = {
     "transportation": "ODbL. © OpenStreetMap contributors. Available under the Open Database License. "
@@ -65,11 +65,15 @@ THEME_LICENCES = {
     "buildings": "ODbL. © OpenStreetMap contributors. Available under the Open Database License. Esri "
                  "Community Maps contributors. Available under CC BY 4.0. Global ML Building Footprints. "
                  "Licensed by Microsoft under the Open Database License. Google Open Buildings. Available "
-                 "under CC BY 4.0. USGS 3D Elevation Program Digital Elevation Program. ...",
+                 "under CC BY 4.0. USGS 3D Elevation Program Digital Elevation Program. Qian Shi, et al. A "
+                 "First High-quality Vector Data of Buildings in East Asian Countries Based on a Comprehensive "
+                 "Large-scale Mapping Framework. Zenodo, 22 July 2023, doi:10.5281/zenodo.8174931. Available "
+                 "under CC BY 4.0. Work derived from BTN 2024 ign.es. Available under CC BY 4.0",
     "base": "ODbL. © OpenStreetMap contributors. Available under the Open Database License. Data from the "
             "Daylight Map Distribution. ESA WorldCover. © ESA WorldCover project 2020 / Contains modified "
             "Copernicus Sentinel data (2020) processed by ESA WorldCover consortium. Available under CC BY "
-            "4.0 DEED. ...",
+            "4.0 DEED. Data products from ETOPO1. Available under Open Data Commons Public Domain Dedication "
+            "and License. Data from GLOBathy. Available under CC0 1.0 (assumed).",
 }
 
 _SRC = "sources[1].dataset AS src_dataset, sources[1].record_id AS src_record"
@@ -167,7 +171,7 @@ class StacIndex:
                               "bump overture.RELEASE (mapdata.py --latest)") from e
         data = json.loads(body)
         os.makedirs(os.path.dirname(path), exist_ok=True)
-        tmp = f"{path}.{threading.get_ident()}.tmp"
+        tmp = f"{path}.{os.getpid()}.{threading.get_ident()}.tmp"
         with open(tmp, "wb") as f:
             f.write(body)
         os.replace(tmp, path)
@@ -227,7 +231,7 @@ class Reader:
             r = self._remotes.get(key)
             if r is None:
                 r = rangeread.RemoteFile(urls, size, os.path.join(self.raw_dir, "overture", self.release, theme,
-                                                                  typ, name), self.fetcher, REMOTE_MEM_BLOCKS)
+                                                                  typ, name), self.fetcher)
                 self._remotes[key] = r
                 while len(self._remotes) > REMOTE_FILES:
                     self._remotes.popitem(last=False)
