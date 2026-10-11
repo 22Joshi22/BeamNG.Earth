@@ -21,10 +21,14 @@ a screenshot. Numbers: load time (to the anchor commit, far_done, exact ground, 
 docs/research/benchmarks/<date>-<label>/ (git-ignored): the images, run.json (written after every
 place) and state.json (what restore needs, written before anything changes).
 
-Safe for the user: refuses while the player vehicle moves faster than 1 m/s (--force overrides),
-zeroes the inputs and sets the parking brake, and always (finally, also on Ctrl-C / SIGTERM) puts
-back the weather and sky modes and values, teleports the player back to where it started and gives
-the camera back (the game camera, or the user's free camera at the same place relative to the car).
+Safe for the user: refuses while the player vehicle moves faster than 1 m/s (--force overrides) and
+stops before the next teleport when it does mid-run (the user took the car: it is then left alone),
+zeroes the inputs and sets the parking brake (again after each teleport), and always (finally, also
+on Ctrl-C / SIGTERM, each step even after a second interrupt) puts back the weather and sky modes and
+values, teleports the player back to where it started and gives the camera back (the game camera, or
+the user's free camera at the same place relative to the car; the free camera's own zoom as it was).
+A teleport that fails or never commits takes no shots (they would show the previous place); a
+timed-out MCP request is sent once more.
 GE side: tools/benchmark.lua (sent through MCP run_lua, like tools/m4_probes.py's chunk).
 
 compare: pairs the shots of two runs by place and view, writes <out>/index.html (A | B | difference
@@ -44,9 +48,11 @@ import os
 import re
 import shutil
 import signal
+import socket
 import subprocess
 import sys
 import time
+import urllib.error
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -63,6 +69,7 @@ HOME_TIMEOUT_S = 120.0      # the teleport back: until the anchor is committed
 SETTLE_S = 3.0              # after the time / weather and after each camera move (motion blur, TAA, fog)
 FPS_S = 5.0                 # perfmon window per view
 STABLE_POLLS = 2            # ready on this many polls in a row
+MCP_RETRIES = 1             # a timed-out MCP call is sent again this often (every BNGE_BENCH call is idempotent)
 REGION_QUIET_S = 20.0       # --server-log: no region line for this long
 REGION_RE = re.compile(r"(colormatch|deshadow) region")
 CLEAR = {"coverage": 0.0, "cirrus": 0.0, "visM": 60000}
@@ -84,6 +91,7 @@ TOLERANCE = {
 }
 PLACE_NUMBERS = ("load.ready_s", "load.anchor_s", "load.farDone_s", "tiles.live", "tiles.imports",
                  "tiles.failed", "tiles.textured", "exact.missLoad", "exact.missAfter")
+PLACE_FLAGS = (("ok", False), ("load.timedOut", True))     # (key, the bad value)
 VIEW_NUMBERS = ("perf.fps", "perf.p50", "perf.p95", "perf.p99", "perf.maxMs", "perf.over50")
 SSIM_FLAG = 0.98            # compare: an image below this SSIM is "changed"
 CHANGED_FLAG = 0.01          # ... or with more than this share of its pixels changed (|dY| > CHANGED_DY)
@@ -97,6 +105,15 @@ class BenchError(RuntimeError):
 
 class SetError(ValueError):
     """docs/benchmarks.json is invalid."""
+
+
+class McpError(RuntimeError):
+    """The MCP request itself failed (not the Lua in it). timeout: the game did not answer in time
+    (a stall: worth one more try); otherwise it is unreachable (refused, reset)."""
+
+    def __init__(self, msg, timeout=False):
+        super().__init__(msg)
+        self.timeout = timeout
 
 
 # --- the benchmark set (pure) ------------------------------------------------------------------
@@ -268,6 +285,13 @@ def committed(p, anchor_before):
     return p.get("anchorId") is not None and p.get("anchorId") != anchor_before and not p.get("pending")
 
 
+def teleport_failed(p, anchor_before):
+    """The teleport's request is gone without a new anchor: the server answered anchor_error (core.lua
+    drops the pending request and keeps the anchor; a teleport is not retried). beamngEarth_core.teleport
+    sets the pending request synchronously, so this cannot be a poll that came too early."""
+    return bool(p.get("mod")) and not p.get("pending") and not committed(p, anchor_before)
+
+
 def exact_ok(far):
     """The tile under the car is the exact (physics) level of the current anchor. Only mesh mode has
     near tiles; in terrain mode the TerrainBlock is the near ground, always exact."""
@@ -349,21 +373,33 @@ class Game:
         import mcp      # tools/mcp.py
         self.mcp = mcp
 
-    def lua(self, code, timeout=60):
+    @staticmethod
+    def _transport(fn, what):
+        """fn() with mcp.py's failures as RuntimeError (an RPC / tool error) or McpError (the request
+        itself: timed out, refused, reset)."""
         try:
-            res = self.mcp.rpc("tools/call", {"name": "run_lua", "arguments": {"code": code}}, timeout=timeout)
+            return fn()
         except SystemExit as e:         # mcp.py reports RPC errors that way
             raise RuntimeError(str(e)) from None
+        except urllib.error.URLError as e:          # before OSError: it is one
+            timeout = isinstance(e.reason, (TimeoutError, socket.timeout))
+            raise McpError(f"MCP {what}: {e.reason}", timeout=timeout) from None
+        except (TimeoutError, socket.timeout):
+            raise McpError(f"MCP {what}: timed out", timeout=True) from None
+        except OSError as e:            # refused, reset, broken pipe, http.client's RemoteDisconnected
+            raise McpError(f"MCP {what}: {e!r}") from None
+
+    def lua(self, code, timeout=60):
+        res = self._transport(lambda: self.mcp.rpc("tools/call", {"name": "run_lua", "arguments": {"code": code}},
+                                                    timeout=timeout), "run_lua")
         text = "\n".join(c.get("text", "") for c in res.get("content", []) if c.get("type") == "text")
         if res.get("isError"):
             raise RuntimeError("lua: " + text[:400])
         return text
 
     def screenshot(self, jpg=True):
-        try:
-            return self.mcp.call("screenshot", {"jpg": bool(jpg)}).splitlines()[-1].strip()
-        except SystemExit as e:
-            raise RuntimeError(str(e)) from None
+        return self._transport(lambda: self.mcp.call("screenshot", {"jpg": bool(jpg)}),
+                               "screenshot").splitlines()[-1].strip()
 
 
 class LogWatcher:
@@ -403,10 +439,25 @@ class Bench:
         if self.game.lua(LUA.read_text()) != "ok":
             raise BenchError("could not load tools/benchmark.lua")
 
+    def mcp(self, what, fn):
+        """fn() again after a timed-out MCP request, up to MCP_RETRIES times (a game stall, e.g. shader
+        compiles at a new place; every BNGE_BENCH call and a screenshot are safe to repeat). An
+        unreachable game (refused, reset) is not retried."""
+        for attempt in range(MCP_RETRIES + 1):
+            try:
+                return fn()
+            except McpError as e:
+                if not e.timeout or attempt == MCP_RETRIES:
+                    raise
+                self.log(f"  {what}: {e}; sending it again")
+                self.clock.sleep(self.opts.poll)
+
     def call(self, fn, *args, _retry=True):
         code = f"return BNGE_BENCH.{fn}({', '.join(lua_long(json.dumps(a)) for a in args)})"
         try:
-            text = self.game.lua(code)
+            text = self.mcp(fn, lambda: self.game.lua(code))
+        except McpError:
+            raise
         except RuntimeError as e:
             if _retry and "BNGE_BENCH" in str(e):     # GE Lua was reloaded: send the chunk again, once
                 self.load_chunk()
@@ -437,6 +488,9 @@ class Bench:
             res["polls"] += 1
             self.drain_regions(self.clock.monotonic())
             far = p.get("far") or {}
+            if need_anchor and teleport_failed(p, anchor_before):
+                res["failed"], res["progress"], res["reasons"] = True, p, [f"teleport failed: {p.get('status')}"]
+                break
             if need_anchor and committed(p, anchor_before):
                 if "anchor_s" not in res:
                     res["anchor_s"], res["atCommit"] = now, far
@@ -473,7 +527,7 @@ class Bench:
             self.clock.sleep(self.opts.poll)
 
     def screenshot(self, dest_stem):
-        src = self.game.screenshot(jpg=not self.opts.png)
+        src = self.mcp("screenshot", lambda: self.game.screenshot(jpg=not self.opts.png))
         last = -1
         for _ in range(100):                    # written asynchronously within a few frames
             size = os.path.getsize(src) if os.path.exists(src) else 0
@@ -507,8 +561,16 @@ class Bench:
         commit = w.get("atCommit") or far0
         rec["load"] = {k: (round(w[k], 2) if k in w else None) for k in ("anchor_s", "farDone_s", "exact_s", "ready_s")}
         rec["load"].update({"timedOut": w["timedOut"], "reasons": w["reasons"], "polls": w["polls"]})
-        rec["load"]["regionsWait_s"] = self.wait_regions(self.clock.monotonic() + o.timeout)
         rec["status"] = w["progress"].get("status")
+        # without the new anchor the camera would show the previous place under this one's id
+        if w.get("failed"):
+            rec["error"] = w["reasons"][0]
+            return rec
+        if "anchor_s" not in w:
+            rec["error"] = f"teleport not committed after {o.timeout:.0f} s"
+            return rec
+        self.call("zeroInputs")                 # the teleport reset the vehicle (spawn.safeTeleport): park it again
+        rec["load"]["regionsWait_s"] = self.wait_regions(self.clock.monotonic() + o.timeout)
         rec["tiles"] = {"live": far_ready.get("live"), "covered": far_ready.get("covered"),
                         "materials": far_ready.get("materials"),
                         "imports": counter_delta(far0, far_ready, "imports"),
@@ -528,7 +590,10 @@ class Bench:
         if weather == "clear":
             rec["weatherSet"] = self.call("setWeather", CLEAR)
         for v in pl["views"]:
-            rec["views"].append(self.view(pl, v, out_dir))
+            try:
+                rec["views"].append(self.view(pl, v, out_dir))
+            except BenchError as e:             # this view only (e.g. a screenshot never written)
+                rec["views"].append({"name": v["name"], "error": str(e), "camera": v})
         end = self.call("progress")
         far_end = end.get("far") or {}
         rec["exact"]["missAfter"] = counter_delta(far_ready, far_end, "exactMiss")
@@ -566,37 +631,54 @@ class Bench:
             p = self.call("progress")
             if committed(p, before.get("anchorId")):
                 return round(self.clock.monotonic() - t0, 2)
+            if teleport_failed(p, before.get("anchorId")):
+                raise BenchError(f"teleport home failed: {p.get('status')}")
             if self.clock.monotonic() - t0 >= self.opts.home_timeout:
                 raise BenchError(f"teleport home not committed after {self.opts.home_timeout:.0f} s")
             self.clock.sleep(self.opts.poll)
 
-    def restore(self, saved, home):
-        """Weather, sky and perfmon, then the player back home, then the camera, whatever fails
-        on the way (each step in its own try; the camera in a finally)."""
+    def driving(self):
+        """The player vehicle's speed when it moves faster than MAX_SPEED on two polls in a row (the
+        user is driving), else None."""
+        speed = None
+        for i in range(2):
+            if i:
+                self.clock.sleep(self.opts.poll)
+            speed = (self.call("progress").get("player") or {}).get("speed")
+            if not (_num(speed) and speed > MAX_SPEED):
+                return None
+        return speed
+
+    def restore(self, saved, home, leave_car=None):
+        """Weather, sky and perfmon, then the player back home and its inputs zeroed, then the camera,
+        whatever fails on the way: each step in its own try, which also catches Ctrl-C / SIGTERM (a
+        second interrupt while restoring skips that step only). leave_car: why the car is not
+        touched (the user is driving it): no teleport home, no inputs."""
         res = {"errors": []}
-        try:
+
+        def step(name, fn):
             try:
-                r = self.call("restore", saved, {"weather": True, "sky": True, "perfmon": True})
-                res["errors"] += r.get("errors") or []
-                res["weather"], res["sky"] = r.get("weather"), r.get("sky")
+                return fn()
+            except KeyboardInterrupt:
+                res["errors"].append(f"{name}: interrupted")
             except Exception as e:      # noqa: BLE001 (every step is tried; the errors are reported)
-                res["errors"].append(f"weather/sky: {e}")
+                res["errors"].append(f"{name}: {e}")
+            return None
+
+        r = step("weather/sky", lambda: self.call("restore", saved, {"weather": True, "sky": True, "perfmon": True}))
+        if r is not None:
+            res["errors"] += r.get("errors") or []
+            res["weather"], res["sky"] = r.get("weather"), r.get("sky")
+        if leave_car:
+            res["home"] = f"skipped: {leave_car}"
+        else:
             if home:
-                try:
-                    res["home_s"] = self.go_home(home)
-                except Exception as e:  # noqa: BLE001
-                    res["errors"].append(f"home: {e}")
-            try:
-                self.call("zeroInputs")
-            except Exception as e:      # noqa: BLE001
-                res["errors"].append(f"inputs: {e}")
-        finally:
-            try:
-                r = self.call("restore", saved, {"cam": True})
-                res["errors"] += r.get("errors") or []
-                res["camera"] = r.get("cam")
-            except Exception as e:      # noqa: BLE001
-                res["errors"].append(f"camera: {e}")
+                res["home_s"] = step("home", lambda: self.go_home(home))
+            step("inputs", lambda: self.call("zeroInputs"))
+        r = step("camera", lambda: self.call("restore", saved, {"cam": True}))
+        if r is not None:
+            res["errors"] += r.get("errors") or []
+            res["camera"] = r.get("cam")
         res["ok"] = not res["errors"]
         return res
 
@@ -645,9 +727,18 @@ def run(game, places, out_dir, opts, clock=time, log=print, meta=None):
            "options": {k: v for k, v in vars(opts).items()}, "home": home,
            "game": {k: info.get(k) for k in ("level", "nearVisual", "session", "status")}, "places": []}
     _write_json(out_dir / "run.json", rec)
+    leave_car = None
     try:
         b.call("zeroInputs")
-        for pl in places:
+        for i, pl in enumerate(places):
+            # the user may take the car back during a run: no teleport from under them (--force: the
+            # car may move)
+            speed = b.driving() if i and not opts.force else None
+            if speed is not None:
+                leave_car = f"the user is driving ({speed:.1f} m/s)"
+                rec["aborted"] = f"stopped before {pl['id']}: {leave_car}"
+                log(rec["aborted"])
+                break
             log(f"{pl['id']} ({pl['lat']}, {pl['lon']}) ...")
             t0 = clock.monotonic()
             try:
@@ -659,7 +750,13 @@ def run(game, places, out_dir, opts, clock=time, log=print, meta=None):
             _write_json(out_dir / "run.json", rec)
             log("  " + summary_line(pr))
     finally:
-        rec["restore"] = b.restore(saved, home)
+        if leave_car is None and not opts.force:    # driving off during the last place: no teleport home either
+            try:
+                speed = b.driving()
+                leave_car = f"the user is driving ({speed:.1f} m/s)" if speed is not None else None
+            except (Exception, KeyboardInterrupt):  # noqa: BLE001 (the game may be gone: the restore reports it)
+                pass
+        rec["restore"] = b.restore(saved, home, leave_car)
         rec["finished"] = datetime.datetime.now().isoformat(timespec="seconds")
         _write_json(out_dir / "run.json", rec)
         if b.watcher:
@@ -775,6 +872,26 @@ def number_delta(key, a, b):
     return out
 
 
+def flag_delta(a, b, bad):
+    """{a, b, delta, pct, verdict} of a yes/no outcome (PLACE_FLAGS): 'worse' when only B has the bad
+    value, 'better' when only A has it (a place that never got ready has no ready_s to compare)."""
+    out = {"a": a, "b": b, "delta": None, "pct": None, "verdict": None}
+    if isinstance(a, bool) and isinstance(b, bool):
+        out["verdict"] = "same" if a == b else ("worse" if b == bad else "better")
+    return out
+
+
+def place_numbers(A, B):
+    nums = {k: flag_delta(get_path(A, k), get_path(B, k), bad) for k, bad in PLACE_FLAGS}
+    nums.update({k: number_delta(k, get_path(A, k), get_path(B, k)) for k in PLACE_NUMBERS})
+    return nums
+
+
+def camera_differs(x, y):
+    """Both shots carry their camera (run.json) and they differ: the set moved it between the runs."""
+    return x.get("camera") is not None and y.get("camera") is not None and x["camera"] != y["camera"]
+
+
 def shot_changed(m, ssim_flag=SSIM_FLAG, changed_flag=CHANGED_FLAG):
     """A shot pair differs beyond the noise: a low mean SSIM (a change all over), or many changed
     pixels (a local change the mean hides)."""
@@ -811,7 +928,7 @@ def compare(run_a, run_b, out_dir, width=METRIC_WIDTH, log=print, ssim_flag=SSIM
         row = {"id": pid, "name": (A or B).get("name", pid), "inA": A is not None, "inB": B is not None,
                "numbers": {}, "views": []}
         if A and B:
-            row["numbers"] = {k: number_delta(k, get_path(A, k), get_path(B, k)) for k in PLACE_NUMBERS}
+            row["numbers"] = place_numbers(A, B)
         va = {v["name"]: v for v in (A or {}).get("views", [])}
         vb = {v["name"]: v for v in (B or {}).get("views", [])}
         for name in [n for n in va] + [n for n in vb if n not in va]:
@@ -830,16 +947,25 @@ def compare(run_a, run_b, out_dir, width=METRIC_WIDTH, log=print, ssim_flag=SSIM
                 vr["changed"] = shot_changed(vr["metrics"], ssim_flag, changed_flag)
             if x and y:
                 vr["numbers"] = {k: number_delta(k, get_path(x, k), get_path(y, k)) for k in VIEW_NUMBERS}
+                notes = []
+                if camera_differs(x, y):
+                    notes.append("the camera differs between the runs (the set moved it): not comparable")
                 if get_path(x, "perf.focused") is False or get_path(y, "perf.focused") is False:
-                    vr["note"] = "the game window was not focused in a run: frame times not comparable"
+                    notes.append("the game window was not focused in a run: frame times not comparable")
                     for n in vr["numbers"].values():
                         n["verdict"] = None
+                if notes:
+                    vr["note"] = "; ".join(notes)
             row["views"].append(vr)
             m = vr["metrics"]
             log(f"{pid:22s} {name:12s} " + (f"mad {m['mad']:6.2f}  ssim {m['ssim']:.4f}  changed {m['changed'] * 100:5.1f} %"
                                              if m else "missing in " + ("A" if not vr["fileA"] else "B")))
         rep["places"].append(row)
     rep["summary"] = summarize_compare(rep)
+    if ra.get("setDigest") and rb.get("setDigest") and ra["setDigest"] != rb["setDigest"]:
+        rep["summary"]["note"] = (f"the benchmark set differs between the runs (setDigest {ra['setDigest']} vs "
+                                  f"{rb['setDigest']}): check the shots marked 'camera differs'")
+        log(rep["summary"]["note"])
     _write_json(out_dir / "compare.json", rep)
     (out_dir / "index.html").write_text(compare_html(rep))
     s = rep["summary"]
@@ -913,6 +1039,8 @@ tr.worse td {{ color: var(--worse); }} tr.better td {{ color: var(--better); }}
 {s['changedShots']} changed (SSIM &lt; {rep['ssimFlag']} or more than {rep['changedFlag'] * 100:g} % of the pixels
 changed by more than {CHANGED_DY} in luminance); numbers: {s['worse']} worse, {s['better']} better; {s['missing']} shot(s) missing.
 Metrics at {rep['metricWidth']} px wide; heat map = |&Delta; luminance| x4.</p>"""]
+    if s.get("note"):
+        parts.append(f"<p class='changed'>{e(s['note'])}</p>")
     for p in rep["places"]:
         miss = "" if p["inA"] and p["inB"] else f" <span class='changed'>(only in {'A' if p['inA'] else 'B'})</span>"
         parts.append(f"<h2>{e(p['name'])} <span class='muted'>{e(p['id'])}</span>{miss}</h2>")
@@ -1026,8 +1154,9 @@ def main(argv=None):
     print(f"run -> {out} ({len(pl)} places)")
     rec = run(Game(), pl, out, opts, meta=meta)
     bad = [p["id"] for p in rec["places"] if not p.get("ok")]
-    print(f"done: {len(rec['places']) - len(bad)}/{len(rec['places'])} places ok" + (f" (not ok: {', '.join(bad)})" if bad else ""))
-    return 0 if not bad and rec["restore"]["ok"] else 1
+    print(f"done: {len(rec['places']) - len(bad)}/{len(rec['places'])} places ok"
+          + (f" (not ok: {', '.join(bad)})" if bad else "") + (f"; {rec['aborted']}" if rec.get("aborted") else ""))
+    return 0 if not bad and not rec.get("aborted") and rec["restore"]["ok"] else 1
 
 
 if __name__ == "__main__":

@@ -50,17 +50,21 @@ class FakeGame:
     polls, the far field is done `load_polls` polls after that; the camera, sky and weather modes and
     the user's position are tracked so the tests can see what the run left behind."""
 
-    def __init__(self, tmp, speed=0.2, commit_polls=2, load_polls=3, never_ready=(), refuse=(), fail=None):
+    def __init__(self, tmp, speed=0.2, commit_polls=2, load_polls=3, never_ready=(), refuse=(), fail=None,
+                 anchor_error=(), never_commit=(), lost_shots=()):
         self.tmp = Path(tmp) / "game_shots"
         self.tmp.mkdir(parents=True, exist_ok=True)
         self.speed, self.commit_polls, self.load_polls = speed, commit_polls, load_polls
         self.never_ready, self.refuse = set(never_ready), set(refuse)
+        self.anchor_error, self.never_commit = set(anchor_error), set(never_commit)   # the server's answer
+        self.lost_shots = set(lost_shots)   # screenshot numbers whose file never appears
         self.fail = fail or {}              # fn -> exception to raise on its n-th call: (n, exc)
         self.anchor, self.pending, self.target, self.countdown = 7, None, None, 0
         self.player = {"lat": 39.2834, "lon": -76.5934, "z": 3.0, "speed": speed}
         self.camera, self.sky, self.weather = "game", "real", "real"
         self.far = self.ready_far()
         self.calls, self.n, self.shots, self.chunk_loads = [], {}, 0, 0
+        self.parked = False                 # zeroInputs sets the parking brake; a teleport resets the vehicle
         self.lua_reload_at = None           # raise "BNGE_BENCH is nil" once at this call number
 
     def ready_far(self, imports=1000):
@@ -89,6 +93,8 @@ class FakeGame:
     def screenshot(self, jpg=True):
         self.shots += 1
         p = self.tmp / f"shot_{self.shots}.{'jpg' if jpg else 'png'}"
+        if self.shots in self.lost_shots:
+            return str(p)
         # the image depends on what is in view only, so two runs give identical files
         key = sum(map(ord, json.dumps(self.view_cfg, sort_keys=True))) % 200
         img = np.full((48, 64, 3), key, np.uint8)
@@ -104,6 +110,7 @@ class FakeGame:
                           "weather": {"mode": "real"}, "perfmonLoaded": False}}
 
     def do_zeroInputs(self):
+        self.parked = True
         return {"ok": True}
 
     def do_teleport(self, cfg):
@@ -113,10 +120,15 @@ class FakeGame:
         return {"ok": True, "anchorBefore": self.anchor}
 
     def do_progress(self):
-        if self.pending:
+        tgt = self.target and (self.target["lat"], self.target["lon"])
+        if self.pending and tgt in self.anchor_error:
+            self.pending = None                 # anchor_error: the request is dropped, the anchor stays
+        elif self.pending and tgt in self.never_commit:
+            pass
+        elif self.pending:
             self.countdown -= 1
             if self.countdown <= 0:
-                self.pending, self.anchor = None, self.anchor + 1
+                self.pending, self.anchor, self.parked = None, self.anchor + 1, False
                 self.player.update(lat=self.target["lat"], lon=self.target["lon"])
                 self.far = dict(self.ready_far(self.far["imports"]), done=False, queued=40, underLevel=1)
                 self.countdown = self.load_polls
@@ -219,6 +231,11 @@ class BenchmarkSetTest(unittest.TestCase):
                                                                               "antarctica"}), 4)
         coords = [(p["lat"], p["lon"]) for p in g]
         self.assertEqual(len(coords), len(set(coords)))
+        # the tuning set alone covers farmland (most of the inhabited land), South Asia and a data-poor city
+        tuning = [p for p in g if not p["heldout"]]
+        self.assertTrue(any("farmland" in p["tags"] for p in tuning))
+        self.assertTrue(any({"city", "data-poor"} <= set(p["tags"]) for p in tuning))
+        self.assertTrue(any("south-asia" in p["tags"] for p in tuning))
 
     def test_every_place_plans(self):
         pl = bm.plan(self.s, "all")
@@ -543,6 +560,184 @@ class RunTest(unittest.TestCase):
         self.assertLessEqual(rec["places"][0]["load"]["regionsWait_s"], 5.0)
 
 
+    def test_failed_teleport_takes_no_shots(self):
+        """The server answers the teleport with anchor_error (the anchor stays where it was): the place
+        fails at once, with no shots of the previous place filed under its id, and the run goes on."""
+        game = FakeGame(self.tmp, anchor_error={(10.0, 20.0)})
+        rec, out = self.run_bench(game, timeout=300)
+        a, b = rec["places"]
+        self.assertFalse(a["ok"])
+        self.assertIn("teleport failed", a["error"])
+        self.assertEqual(a.get("views", []), [])
+        self.assertLess(a["wall_s"], 10)                       # not the whole timeout
+        self.assertFalse(any(f.name.startswith("a__") for f in out.iterdir()))
+        self.assertTrue(b["ok"])
+        self.assert_restored(game)
+
+    def test_uncommitted_teleport_takes_no_shots(self):
+        """The anchor never commits (server stuck): after the timeout no shots, since the camera would
+        show the previous place."""
+        game = FakeGame(self.tmp, never_commit={(10.0, 20.0)})
+        rec, out = self.run_bench(game, timeout=20)
+        a, b = rec["places"]
+        self.assertFalse(a["ok"])
+        self.assertIn("not committed", a["error"])
+        self.assertEqual(a.get("views", []), [])
+        self.assertTrue(a["load"]["timedOut"])
+        self.assertFalse(any(f.name.startswith("a__") for f in out.iterdir()))
+        self.assertTrue(b["ok"])
+
+    def test_failed_home_teleport_fails_fast(self):
+        game = FakeGame(self.tmp, anchor_error={(39.2834, -76.5934)})
+        t0 = self.clock.t
+        rec, _ = self.run_bench(game, small_plan()[:1], home_timeout=120)
+        self.assertIn("home", " ".join(rec["restore"]["errors"]))
+        self.assertLess(self.clock.t - t0, 100)
+        self.assertEqual(game.camera, "game")
+
+    def test_user_drives_mid_run(self):
+        """The user takes the car back during a run: the run stops before the next teleport, puts
+        back the camera, sky and weather, and neither teleports the car home nor touches its inputs."""
+        game = FakeGame(self.tmp)
+        orig = game.do_perfRead
+
+        def drive_off():
+            if game.n["perfRead"] == 2:                    # the last view of the first place
+                game.player["speed"] = 8.0
+            return orig()
+        game.do_perfRead = drive_off
+        rec, _ = self.run_bench(game)
+        self.assertEqual([p["id"] for p in rec["places"]], ["a"])
+        self.assertIn("driv", rec["aborted"])
+        tps = [c[1][0] for c in game.calls if c[0] == "teleport"]
+        self.assertEqual(tps, [{"lat": 10.0, "lon": 20.0}])   # no second place, no home
+        last_zero = max(i for i, c in enumerate(game.calls) if c[0] == "zeroInputs")
+        first_restore = min(i for i, c in enumerate(game.calls) if c[0] == "restore")
+        self.assertLess(last_zero, first_restore)
+        self.assertEqual((game.camera, game.sky, game.weather), ("game", "real", "real"))
+        self.assertTrue(rec["restore"]["ok"], rec["restore"])
+        self.assertIn("driving", rec["restore"]["home"])
+        # ... also when they drive off during the last place: no teleport home
+        game = FakeGame(self.tmp)
+        orig2 = game.do_perfRead
+        game.do_perfRead = lambda: (game.player.update(speed=8.0) if game.n["perfRead"] == 3 else None) or orig2()
+        rec = bm.run(game, small_plan(), Path(self.tmp) / "last", bm.options(), clock=self.clock, log=self.logs.append)
+        self.assertEqual(len(rec["places"]), 2)
+        self.assertEqual(len([c for c in game.calls if c[0] == "teleport"]), 2)
+        self.assertIn("driving", rec["restore"]["home"])
+        self.assertEqual(game.camera, "game")
+        # --force: the user said the car may move; the run goes on
+        game = FakeGame(self.tmp)
+        game.player["speed"] = 8.0
+        rec = bm.run(game, small_plan(), Path(self.tmp) / "forced", bm.options(force=True), clock=self.clock,
+                     log=self.logs.append)
+        self.assertEqual(len(rec["places"]), 2)
+        self.assertNotIn("aborted", rec)
+
+    def test_reparked_after_each_teleport(self):
+        """A teleport resets the vehicle (spawn.safeTeleport): the inputs are zeroed and the parking
+        brake set again before the shots."""
+        game = FakeGame(self.tmp)
+        parked_at_shot = []
+        orig = game.screenshot
+
+        def shot(jpg=True):
+            parked_at_shot.append(game.parked)
+            return orig(jpg)
+        game.screenshot = shot
+        self.run_bench(game)
+        self.assertEqual(parked_at_shot, [True, True, True])
+
+    def test_mcp_timeout_is_retried(self):
+        """One MCP call timing out (the game stalls, e.g. compiling shaders) does not end the run:
+        every BNGE_BENCH call is idempotent and is sent again."""
+        game = FakeGame(self.tmp, fail={"progress": (5, bm.McpError("timed out", timeout=True)),
+                                        "view": (2, bm.McpError("timed out", timeout=True))})
+        rec, _ = self.run_bench(game)
+        self.assertTrue(all(p["ok"] for p in rec["places"]), rec["places"])
+        self.assertTrue(rec["restore"]["ok"])
+
+    def test_mcp_timeouts_in_a_row_end_the_run(self):
+        game = FakeGame(self.tmp)
+        orig = game.lua
+
+        def dead(code, timeout=60):
+            if game.n.get("view", 0) >= 1 and "BNGE_BENCH.restore" not in code:
+                game.n["dead"] = game.n.get("dead", 0) + 1
+                raise bm.McpError("timed out", timeout=True)
+            return orig(code, timeout)
+        game.lua = dead
+        with self.assertRaises(bm.McpError):
+            self.run_bench(game)
+        self.assertEqual(game.camera, "game")              # restore's own calls got through
+
+    def test_game_maps_transport_errors(self):
+        """Game turns urllib / socket failures into McpError (timeout or not) and RPC errors into
+        RuntimeError."""
+        import socket
+        import urllib.error
+
+        class FakeMcp:
+            def __init__(self, exc):
+                self.exc = exc
+
+            def rpc(self, *a, **k):
+                raise self.exc
+
+            def call(self, *a, **k):
+                raise self.exc
+        g = bm.Game.__new__(bm.Game)
+        for exc, timeout in ((socket.timeout("timed out"), True), (TimeoutError(), True),
+                             (urllib.error.URLError(socket.timeout("timed out")), True),
+                             (urllib.error.URLError(ConnectionRefusedError()), False),
+                             (ConnectionResetError(), False)):
+            g.mcp = FakeMcp(exc)
+            for fn in (lambda: g.lua("return 1"), lambda: g.screenshot()):
+                with self.assertRaises(bm.McpError) as e:
+                    fn()
+                self.assertEqual(e.exception.timeout, timeout, exc)
+        g.mcp = FakeMcp(SystemExit("RPC error: x"))
+        with self.assertRaises(RuntimeError):
+            g.lua("return 1")
+
+    def test_lost_screenshot_keeps_the_place(self):
+        """One screenshot never written: that view has an error, the place keeps its numbers and its
+        other views."""
+        game = FakeGame(self.tmp, lost_shots={1})
+        rec, out = self.run_bench(game)
+        a = rec["places"][0]
+        self.assertIn("load", a)
+        self.assertIn("not written", a["views"][0]["error"])
+        self.assertTrue(a["views"][1]["file"])
+        self.assertFalse(a["ok"])
+        self.assertTrue(rec["places"][1]["ok"])
+
+    def test_interrupt_during_restore(self):
+        """Ctrl-C while the car is on its way home: the inputs are still zeroed, the camera still comes
+        back and run.json is finished."""
+        game = FakeGame(self.tmp, commit_polls=5)
+        state = {"restoring": False}
+        orig = game.do_restore
+
+        def restore(saved, parts=None):
+            state["restoring"] = True
+            return orig(saved, parts)
+        game.do_restore = restore
+
+        def interrupt(t):
+            if state["restoring"] and game.n.get("teleport", 0) == 2:
+                self.clock.on_sleep = None
+                raise KeyboardInterrupt
+        self.clock.on_sleep = interrupt
+        rec, out = self.run_bench(game, small_plan()[:1])
+        fns = game.fns()
+        self.assertEqual(fns[-1], "restore")
+        self.assertIn("zeroInputs", fns[fns.index("restore"):])
+        self.assertEqual(game.camera, "game")
+        self.assertIn("interrupted", " ".join(rec["restore"]["errors"]))
+        self.assertIn("finished", json.loads((out / "run.json").read_text()))
+
+
 # --- compare --------------------------------------------------------------------------------------
 def brute_ssim(a, b, k=7, peak=255.0):
     c1, c2 = (0.01 * peak) ** 2, (0.03 * peak) ** 2
@@ -678,6 +873,42 @@ class CompareTest(unittest.TestCase):
             self.assertIn("prefers-color-scheme: dark", page)
             self.assertEqual(json.loads((out / "compare.json").read_text())["summary"], s)
             self.assertTrue(any("missing in B" in ln for ln in logs))
+
+    def test_timed_out_or_failed_place_is_worse(self):
+        """B never got ready (no ready_s) or failed where A was fine: flagged worse, not left blank."""
+        img = np.zeros((20, 30, 3), np.uint8)
+        with tempfile.TemporaryDirectory() as tmp:
+            a = self.make_run(tmp, "A", [("x", [("ground", img, 60.0)], {"ok": True, "load": {"ready_s": 30.0, "timedOut": False}}),
+                                         ("y", [("ground", img, 60.0)], {"ok": True, "load": {"ready_s": 20.0, "timedOut": False}})])
+            b = self.make_run(tmp, "B", [("x", [("ground", img, 60.0)], {"ok": False, "load": {"ready_s": None, "timedOut": True}}),
+                                         ("y", [], {"ok": False, "error": "teleport failed: Anchor request failed"})])
+            rep = bm.compare(a, b, Path(tmp) / "cmp", log=lambda *_: None)
+            x, y = rep["places"]
+            self.assertEqual(x["numbers"]["load.timedOut"]["verdict"], "worse")
+            self.assertEqual(x["numbers"]["ok"]["verdict"], "worse")
+            self.assertEqual(y["numbers"]["ok"]["verdict"], "worse")
+            self.assertGreaterEqual(rep["summary"]["worse"], 3)
+            rep = bm.compare(b, a, Path(tmp) / "cmp2", log=lambda *_: None)
+            self.assertEqual(rep["places"][0]["numbers"]["load.timedOut"]["verdict"], "better")
+
+    def test_camera_mismatch_is_noted(self):
+        """The set moved a camera between the runs: the pair is not comparable, and the page says so."""
+        img = np.zeros((20, 30, 3), np.uint8)
+        with tempfile.TemporaryDirectory() as tmp:
+            a = self.make_run(tmp, "A", [("x", [("ground", img, 60.0), ("aerial", img, 60.0)], {})])
+            b = self.make_run(tmp, "B", [("x", [("ground", img, 60.0), ("aerial", img, 60.0)], {})])
+            for d, n in ((a, 0.0), (b, -12.0)):
+                rec = json.loads((d / "run.json").read_text())
+                rec["setDigest"] = "d" + str(n)
+                for v in rec["places"][0]["views"]:
+                    v["camera"] = {"e": 0.0, "n": n if v["name"] == "aerial" else 0.0, "agl": 1.7}
+                (d / "run.json").write_text(json.dumps(rec))
+            rep = bm.compare(a, b, Path(tmp) / "cmp", log=lambda *_: None)
+            g, air = rep["places"][0]["views"]
+            self.assertNotIn("note", g)
+            self.assertIn("camera", air["note"])
+            self.assertIn("set", rep["summary"]["note"])
+            self.assertIn("camera differs", (Path(tmp) / "cmp" / "index.html").read_text())
 
     def test_unfocused_window(self):
         """A run with the window in the background (30 fps cap): no frame-time verdicts, a note."""

@@ -12,7 +12,8 @@
 --   setWeather(cfg)   the weather to manual and a fixed sky: cloud coverage, cirrus, fog for cfg.visM
 --   view(cfg)         the free camera at cfg {e, n | lat, lon; alt | agl; dir {x, y, z}; fov}
 --   perfStart()       a fresh beamngEarth_perfmon window (loaded if needed); perfRead() reads it
---   restore(saved)    camera, sky, weather and perfmon as info() found them (saved = info().saved,
+--   restore(saved)    camera (and the free camera's own zoom: the views set its FOV, which outlives a
+--                     switch back to the game camera), sky, weather and perfmon as info() found them (saved = info().saved,
 --                     passed back by the tool, so a Lua reload in between loses nothing); every part
 --                     in its own pcall, the errors listed
 -- Nothing here changes the world: the sky and weather objects' fields, the camera, the player's
@@ -98,6 +99,16 @@ end
 
 local function vehicle() return getPlayerVehicle(0) end
 
+-- The free camera's own zoom (core/cameraModes/free.lua: manualzoom {fov, fovDefault}, which
+-- core_camera.setFOV changes while it is active and which outlives a switch back to the game camera).
+local function freeZoom()
+  local cam = ext('core_camera')
+  if not cam or not cam.getGlobalCameras then return nil end
+  local ok, cams = pcall(cam.getGlobalCameras)
+  local z = ok and type(cams) == 'table' and cams.free and cams.free.manualzoom
+  return type(z) == 'table' and z or nil
+end
+
 ------------------------------------------------------------------------------------------
 -- info: preconditions and the state to restore (no change to the game)
 
@@ -131,6 +142,8 @@ function B.info()
   local cam = camera()
   if cam then
     saved.cam = { free = cam.free, rot = cam.rot, fov = cam.fov }
+    local z = freeZoom()
+    if z then saved.cam.freeFov, saved.cam.freeFovDefault = tonumber(z.fov), tonumber(z.fovDefault) end
     if veh then
       local p = veh:getPosition()
       saved.cam.rel = { x = cam.x - p.x, y = cam.y - p.y, z = cam.z - p.z } -- the frame changes on teleports
@@ -307,9 +320,17 @@ end
 ------------------------------------------------------------------------------------------
 -- restore
 
+local function restoreFreeZoom(c)
+  local z = freeZoom()
+  if not z or not c then return end
+  if c.freeFov then z.fov = c.freeFov end
+  if c.freeFovDefault then z.fovDefault = c.freeFovDefault end
+end
+
 local function restoreCamera(c)
   if not c or not c.free then
     commands.setGameCamera()
+    restoreFreeZoom(c) -- the views zoomed the free camera; the user meets it again on its next toggle
     return 'game'
   end
   -- the user had the free camera: put it back at the same place relative to the player
@@ -321,6 +342,7 @@ local function restoreCamera(c)
   end
   if c.rot then core_camera.setRotation(0, quat(c.rot.x, c.rot.y, c.rot.z, c.rot.w)) end
   if c.fov and core_camera.setFOV then core_camera.setFOV(0, c.fov) end
+  restoreFreeZoom(c) -- setFOV also made the FOV the zoom's default
   return 'free'
 end
 

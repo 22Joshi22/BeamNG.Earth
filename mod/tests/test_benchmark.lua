@@ -47,8 +47,13 @@ core_camera = {
   getActiveCamName = function() return cam.name end,
   setPosition = function(_, p) if cam.name == 'free' then cam.pos = vec3(p.x, p.y, p.z); cam.sets = cam.sets + 1 end end,
   setRotation = function(_, q) if cam.name == 'free' then cam.rot = quat(q.x, q.y, q.z, q.w) end end,
-  setFOV = function(_, f) if cam.name == 'free' then cam.fov = f end end,
+  setFOV = function(_, f) if cam.name == 'free' then cam.fov = f; core_camera._free:setFOV(f) end end,
 }
+-- the free camera keeps its own FOV while another camera is active (cameraModes/free.lua: manualzoom,
+-- set by C:setFOV -> manualzoom:init(fov), which also makes it the default)
+core_camera._free = { manualzoom = { fov = 60, fovDefault = 60 } }
+function core_camera._free:setFOV(f) self.manualzoom.fov, self.manualzoom.fovDefault = f, f end
+core_camera.getGlobalCameras = function() return { free = core_camera._free } end
 commands = {
   setFreeCamera = function() cam.name = 'free' end,
   setGameCamera = function() cam.name = 'chase'; cam.fov = 75 end,
@@ -161,8 +166,11 @@ T.check(cloud.coverage == 0.8 and cloud.cirrusCoverage == 0.3 and level.fogDensi
   and level.fogAtmosphereHeight == 400, 'restore: clouds and fog back')
 T.check(not loaded.beamngEarth_perfmon and beamngEarth_perfmon == nil, 'restore: perfmon unloaded')
 T.check(cam.name == 'free', 'restore without cam leaves the camera')
+T.check(core_camera._free.manualzoom.fov == 65, 'the views left their FOV on the free camera')
 r = B.restore(sv, { cam = true })
 T.check(r.ok and r.cam == 'game' and cam.name == 'chase', 'restore cam: the game camera')
+T.check(sv.cam.freeFov == 60 and core_camera._free.manualzoom.fov == 60 and core_camera._free.manualzoom.fovDefault == 60,
+  'restore cam: the free camera has its own FOV back (the user had the game camera)')
 
 -- the user had the free camera: back at the same place relative to the car, after the car moved
 commands.setFreeCamera(); core_camera.setPosition(0, vec3(13, 4, 1520)); core_camera.setRotation(0, quat(0, 0, 0.6, 0.8))

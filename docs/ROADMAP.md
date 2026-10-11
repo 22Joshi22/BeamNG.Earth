@@ -484,9 +484,13 @@ Infrastructure
 - **Automated visual checks**: screenshots at fixed places compared after every change.
   *Built offline 2026-10-11 (branch feature/benchmark; first in-game run pending):*
   `tools/benchmark.py run / compare` over `docs/benchmarks.json` (docs/PLACES.md's places, the
-  Whitney photo view, 20 global places on every continent, 5 of them held out); fixed sun and clear
+  Whitney photo view, 22 global places on every continent, 5 of them held out); fixed sun and clear
   sky, load time / tiles / exactMiss / frame times per place and view, an HTML side by side with
-  MAD and SSIM per shot; everything the run changes is restored. docs/DEVTOOLS.md "Visual benchmark".
+  MAD and SSIM per shot; everything the run changes is restored. Reviewed 2026-10-11 (branch
+  review-bench): no shots after a failed teleport, stops when the user drives, re-parks after each
+  teleport, MCP timeouts retried, a second Ctrl-C cannot skip a restore step, the free camera's zoom
+  restored, compare flags places that failed or never got ready, farmland and a data-poor city added.
+  docs/DEVTOOLS.md "Visual benchmark".
 World
 - **Real weather**: live clouds, rain, fog, wind, temperature from a free forecast API (Open-Meteo),
   via the game's weather/cloud system (or the BWM_Weather mod the user has).
