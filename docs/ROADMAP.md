@@ -286,9 +286,6 @@ User goals (2026-10-10):
 - Trees: Meta/WRI 1 m canopy height (tree tops at real positions) + land cover for species, Forest
   items with stock imposter trees out to ~3 km.
 
-- **Cloud shader patch in a packed mod**: shaderpatch.lua writes into the unpacked mod folder; a
-  release zip needs another place (the user folder, with cleanup when the mod is disabled).
-
 ## Robustness: no server, lost server, lost internet (user, 2026-10-10; before any public release)
 Today: without a server the player spawns on the level's placeholder ground with no explanation; if
 the server dies mid-drive the shown tiles stay but the physics block stops following, so the car can

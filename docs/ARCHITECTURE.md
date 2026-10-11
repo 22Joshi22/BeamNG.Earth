@@ -419,17 +419,6 @@ their chunk arrived.
   10 km: fps / p50 / p95 and perfmon with the distant tiles shown, objects, the L8-L10 import costs;
   screenshots of the horizon (the silhouette meets the sky's horizon band, no sky gap); read back
   atmoPlanetRadius and visibleDistance; no depth / shadow artefacts at 500-650 km; tune the haze.
-- **Clouds over far terrain** (in-game 2026-10-11): the game's volumetric cloud shaders take a pixel
-  for sky when its reversed-Z depth is <= 1e-6, i.e. anything beyond 0.1 m / 1e-6 = 100 km, and march
-  clouds there up to their 200 km sky fallback, so clouds were drawn over the far field (cloud
-  patches on the terrain near the horizon from a plane; not changed by the view distance or the
-  cloud altitude; gone with the CloudLayer hidden). `beamngEarth/shaderpatch.lua` (run by the
-  modScript before any level) lowers that threshold to 1e-9 in `clouds/include/cloudCommon.h.hlsl`
-  and `clouds/cloudVrtReconstruct.cs.hlsl`: at every start it deletes its old copies, reads the
-  game's current files, replaces the exact line only where it is found, and writes the result into
-  the unpacked mod folder at the same path (the mod's mount overlays the game's file; disabling the
-  mod removes it). A packed mod skips the patch (ROADMAP follow-up).
-
 ## De-shadowing of the USGS imagery (`--deshadow`; built offline 2026-10-10, behind a flag, default off)
 - Integration of docs/research/2026-10-10-deshadow-prototype.md, method A (method B dropped):
   `server/deshadow.py`, hooked into `imagery.Imagery(..., deshadow=obj)` (`_mosaic` swaps each USGS
