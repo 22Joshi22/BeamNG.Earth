@@ -706,3 +706,23 @@ over to AWS, a 400 wrote a permanent `.404` marker, and the User-Agent lived in 
   first message. No allocation per frame; the text is measured only when it changes.
 - Tests: `server/tests/test_credits.py`, `test_protocol_agreement.py`, `mod/tests/test_credits.lua`,
   `test_core_stubbed.lua`. Still to check in-game: readability, the pause-menu / big-map hiding.
+
+## Visual benchmark (docs/DEVTOOLS.md "Visual benchmark"; built offline 2026-10-11, in-game run pending)
+- `tools/benchmark.py` + `tools/benchmark.lua` (a GE chunk sent through MCP `run_lua`, global
+  `BNGE_BENCH`; no mod file, no mod change) and the set `docs/benchmarks.json` (docs/PLACES.md's
+  places, its photo benchmark, 20 global places of which 5 are held out). Per place: teleport, wait
+  until the core status says the far field is complete and the near ground exact, a fixed sun
+  (TimeOfDay at local mean solar time, clock stopped) and clear weather, free-camera views, perfmon
+  frame times, MCP screenshots; numbers and images in `docs/research/benchmarks/<date>-<label>/`
+  (ignored by git). `compare` writes an HTML side by side with per-shot MAD / SSIM / changed-pixel
+  share and number deltas against tolerances.
+- Integration surface (read only, besides the documented console API): `beamngEarth_core.teleport`,
+  `beamngEarth_core._state()` (anchor, pending, player, serverBacklog), `farfield.stats()` (done,
+  queued, groups, transitions, live, underLevel / exactLevel / underOld, the import and exactMiss
+  counters), `beamngEarth_sky` / `beamngEarth_weather` `setMode` / `getMode`, `weather.fogSigma` /
+  `fogDensityFor`, `beamngEarth_perfmon.snapshot()`. Renaming any of these breaks the tool;
+  `test_benchmark_tool.py` and `mod/tests/test_benchmark.lua` run against the real sky, weather and
+  geodesy modules and a fake core / far field with these names.
+- Safety: refuses to start above 1 m/s; zero inputs, parking brake; state.json before any change;
+  weather, sky, perfmon, the player's position and the camera restored in a finally (each step
+  independent, the camera last); `restore <run>` after a hard kill.

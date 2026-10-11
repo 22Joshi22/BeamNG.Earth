@@ -200,3 +200,103 @@ player right now, e.g.:
 - HUD: once the page exists (index.js says so, or the pause menu lists the button) the imgui
   window is a compact status HUD, hidden at level start unless "Status HUD" is on; "Full window"
   brings the old window back for the session. Without the page nothing changes.
+
+## Visual benchmark (tools/benchmark.py; built offline 2026-10-11, in-game run pending)
+ROADMAP "Automated visual checks" and "Principle: improvements must generalise": every tuning
+change is checked on a fixed, diverse set of places with before/after screenshots and numbers, plus
+a held-out set that is not looked at while tuning.
+
+**The set** is `docs/benchmarks.json`: docs/PLACES.md's table (group `places`, 6), its photo
+benchmark (group `photo`: the Whitney summit view south with the photo's camera, 10:00 PDT on the
+render's date) and a global group of 20 (15 for tuning: Lauterbrunnen, Amsterdam, Erg Chebbi, Serengeti, Everest Base Camp, Shibuya, the Gobi, Uluru, Milford Sound,
+Salar de Uyuni, Rio, the Amazon, Moraine Lake, Kilauea, the Greenland ice edge; held out: Geiranger,
+Cape Town, the Dead Sea, Mexico City, McMurdo), tagged by continent, biome, data-rich / data-poor,
+flat / steep, city / wilderness. Each place has a heading and one or more views (default: `ground`,
+1.7 m above the ground looking along the heading, and `aerial`, 250 m up and 600 m back, pitched
+-18 degrees), a fixed date and hour (default 2026-09-22, the equinox, at 10:00 local mean solar
+time: UTC offset = lon / 15, so the sun stands the same everywhere; a place may give its own
+`utcOffset`, `date`, `hour`) and a weather (`clear`: no clouds, 60 km visibility; or `keep`). Once
+runs exist, places and cameras stay put (shots are paired by place id and view name); add new ones.
+A new place in docs/PLACES.md goes into the set too (`test_benchmark_tool` checks the table).
+
+**Use** (the game in our level with the server running, the car parked; ~1-2 min per place):
+
+    python3 tools/benchmark.py plan [--set tuning|heldout|all] [--places a,b]   # the shots, no game
+    python3 tools/benchmark.py check                                           # preconditions, read only
+    python3 tools/benchmark.py run --label before-feather                      # tuning set (default)
+    ... make the change, deploy, restart what it needs ...
+    python3 tools/benchmark.py run --label after-feather
+    python3 tools/benchmark.py compare docs/research/benchmarks/2026-10-12-before-feather \
+                                       docs/research/benchmarks/2026-10-12-after-feather
+    python3 tools/benchmark.py run --label after-feather-heldout --set heldout # only to accept it
+
+A run teleports to each place (`beamngEarth_core.teleport`) and polls the core status once a second
+until it is ready on two polls in a row: the new anchor is committed, `far_done` came, nothing is
+queued, no swap group waits, no transition runs and (mesh mode) the tile under the car is the exact
+level of the current anchor (`--no-exact` skips that; `--wait-backlog` also waits for the server's
+backlog, which is only fresh with `earthd --status-interval 1`; `--server-log <earthd log>` also
+waits until no colour-match / de-shadow region line appeared for `--region-quiet` s). A place that
+is not ready after `--timeout` (300 s) is shot anyway and marked. Then the sky goes to manual with
+the place's fixed time (clock stopped) and the weather to manual with the clear preset; per view the
+free camera goes there, waits `--settle` (3 s) and until nothing loads, measures the frame times for
+`--fps-seconds` (5 s, `beamngEarth_perfmon`, loaded for the run if it was not) and takes a
+screenshot (JPG; `--png` for lossless, ~15 MB each at 4K).
+
+Recorded per place (run.json): load time to the anchor commit, far_done, the exact ground and ready;
+tiles (live, covered, materials, and imports / failed / textured / pops during the load); exactMiss
+frames while loading and after; the status line; per view the camera as placed (`groundFrom`: the
+static-collision ray, or the player's ground beyond the physics block), fps, avg / p50 / p95 / p99 /
+max ms, frames over 33 / 50 / 100 ms, and whether the game window had the focus (in the background
+the game caps itself at 30 fps: keep it focused; compare gives no frame-time verdicts for a shot
+taken without focus). Also the git commit and dirty flag of this checkout, the
+set's digest and the options. The run folder is `docs/research/benchmarks/<date>-<label>/`
+(git-ignored like every docs/research subfolder; `-2`, `-3` if it exists): the images, `run.json`
+(rewritten after every place, so a crashed run keeps what it had) and `state.json`.
+
+**Safety.** It refuses to start while the player vehicle moves faster than 1 m/s (`--force`
+overrides), zeroes throttle / brake / steering / clutch and sets the parking brake (the car is
+teleported onto slopes). `state.json` (what the run found: camera, sky mode and TimeOfDay fields,
+weather mode, cloud coverage and fog, perfmon, the player's lat/lon) is written before anything
+changes. At the end, and on any error, Ctrl-C or SIGTERM (finally), it restores the weather and sky
+(values, then their modes; 'real' re-syncs itself), unloads perfmon if it loaded it, teleports the
+player back to where it started (waits for the anchor commit, `--home-timeout`), zeroes the inputs
+and gives the camera back last (the game camera; a user's free camera at the same place relative
+to the car). Each restore step runs even if an earlier one failed; the errors are printed and kept
+in run.json. After a hard kill: `python3 tools/benchmark.py restore <run folder>`. Sky and weather
+go to manual through their own `setMode` (not saved to the settings file) and the fields are written
+directly, so no `onEnvironmentChanged` hook fires (nothing switches the user's setting to Manual).
+Screenshots stay in the game's `screenshots/mcp/` too (copied, like the other tools).
+
+**Compare** pairs the shots by place and view and writes `<out>/index.html` (A | B | heat map of
+|delta luminance| x4 per shot, thumbnails 960 px) and `compare.json` (default out:
+`docs/research/benchmarks/compare-<A>-vs-<B>/`). Per image, at `--metric-width` px wide (1280;
+both resized the same way, B to A's size if they differ): MAD (mean |A - B| over RGB, 0-255), SSIM
+(mean over 7 x 7 box windows on luminance, Wang et al. 2004 constants; 1 = identical) and the share
+of pixels whose luminance moved by more than 16. A shot below `--ssim-flag` (0.98) is "changed".
+Numbers: per place load / tiles / exactMiss, per view fps / p50 / p95 / p99 / max / over50, as A,
+B, delta and %; "worse" / "better" when they moved beyond the tolerance (load +-20 % and 2 s, fps
+5 % and 1 fps, p95 10 % and 1 ms, max 25 % and 10 ms, any new failed tile or exactMiss frame after
+ready). Cost: ~0.5 s per 4K pair at 1280 px (3 s at full size). **Noise floor:** two runs of the
+same build differ (TAA, animated water and grass, streaming order, JPG): run the same build twice
+first and set `--ssim-flag` just under the lowest SSIM that comparison shows.
+
+GE side: `tools/benchmark.lua` (sent through MCP `run_lua`, global `BNGE_BENCH`: info, zeroInputs,
+teleport, progress, setTime, setWeather, view, perfStart / perfRead, restore). No mod file and no
+mod change: it uses `beamngEarth_core.teleport` / `_state()`, `farfield.stats()`, the sky and weather
+modules' `setMode` / `getMode`, `weather.fogSigma` / `fogDensityFor`, `beamngEarth_perfmon`, the
+stock `commands.setFreeCamera` / `setGameCamera`, `core_camera.setPosition` / `setRotation` /
+`setFOV` and the MCP `screenshot` tool. A Lua reload during a run is survived (the chunk is sent
+again once).
+
+Tests: `server/tests/test_benchmark_tool.py` (the set against docs/PLACES.md, its coverage and
+validation, the plan, readiness and safety rules, whole runs against a fake game: numbers, files,
+the restore order and that it runs after an MCP error, Ctrl-C, a refused home teleport, a timed-out
+place, a Lua reload; SSIM against a brute-force implementation, the compare report) and luajit
+`mod/tests/test_benchmark.lua` (the chunk with stubs and the real sky / weather / geodesy modules:
+every saved value and mode comes back, the free camera relative to the moved car, a failing part).
+
+Not done yet: the first in-game run (the readiness rules, the screenshot path, the free camera at
+`agl` beyond the physics block, the time it takes, the noise floor are all unmeasured), hiding the
+credits overlay and HUD for the shots (they are in every image, the same in both runs), a per-view
+sun / weather override, matching the real photo itself (the photo benchmark is compared run to run;
+the photo stays on Commons).

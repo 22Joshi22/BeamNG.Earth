@@ -80,6 +80,13 @@ only, nothing redistributed. Licence notes marked *(verify)* must be re-checked 
   Added Seasons To BeamNG": visual reference for winter roads, snow, plowing and road surface quality
   by road use. Its assets are not used (the author does not allow reuse).
 - The project owner's own knowledge of Fells Point, Baltimore, and their in-game reports.
+- Photo benchmark (docs/PLACES.md, docs/benchmarks.json `whitney_photo_south`): "A346, from summit
+  of Mount Whitney, California, USA, 2011" by Brian W. Schaller, Wikimedia Commons, CC BY-NC-SA 4.0
+  / Free Art License 1.3. Linked, never copied into the repository; only our own renders of the same
+  view are kept.
+- Z. Wang, A. C. Bovik, H. R. Sheikh, E. P. Simoncelli, "Image quality assessment: from error
+  visibility to structural similarity", IEEE Trans. Image Processing 13(4), 2004: the SSIM measure
+  `tools/benchmark.py compare` uses (own NumPy implementation).
 
 ## User mods mentioned in the docs (not part of BeamNG.Earth)
 

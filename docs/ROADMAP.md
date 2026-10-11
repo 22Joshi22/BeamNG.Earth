@@ -19,7 +19,8 @@ Monument Valley, the Kern River ravine or a famous trail are test cases, never s
   how the world is built from them.
 - Every tuning change is checked on a fixed, diverse benchmark set of places (all continents and
   biomes, data-rich and data-poor, flat and steep, cities and wilderness; the list so far is
-  docs/PLACES.md), with before/after screenshots and numbers, plus a held-out set that is not used for tuning. A change that improves
+  docs/PLACES.md; the full set with its cameras is docs/benchmarks.json, run by tools/benchmark.py,
+  docs/DEVTOOLS.md "Visual benchmark"), with before/after screenshots and numbers, plus a held-out set that is not used for tuning. A change that improves
   the test place but makes the benchmark worse elsewhere is rejected or reworked.
 - Fixes like de-shadowing and colour matching are global methods with automatic gates (they switch
   themselves off where they do not apply), validated on places with and without the problem.
@@ -481,6 +482,11 @@ Infrastructure
 - **Multiplayer (BeamMP)**: the floating origin and per-player streaming conflict with multiplayer
   position sync; needs a shared-origin or per-client-transform design. Big; only if wanted.
 - **Automated visual checks**: screenshots at fixed places compared after every change.
+  *Built offline 2026-10-11 (branch feature/benchmark; first in-game run pending):*
+  `tools/benchmark.py run / compare` over `docs/benchmarks.json` (docs/PLACES.md's places, the
+  Whitney photo view, 20 global places on every continent, 5 of them held out); fixed sun and clear
+  sky, load time / tiles / exactMiss / frame times per place and view, an HTML side by side with
+  MAD and SSIM per shot; everything the run changes is restored. docs/DEVTOOLS.md "Visual benchmark".
 World
 - **Real weather**: live clouds, rain, fog, wind, temperature from a free forecast API (Open-Meteo),
   via the game's weather/cloud system (or the BWM_Weather mod the user has).
