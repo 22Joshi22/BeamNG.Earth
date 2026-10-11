@@ -153,7 +153,13 @@ Target: 300 mph sustained with the near ground always detailed, and a rebase tha
   Before default-on: a geometric prior for moderate seams in farmland and cities (state boundaries
   from a generic boundary dataset, the NAIP quarter-quad graticule), the far rings (z10-z11),
   faster detection, and an in-game check of known state-line seams (UT/AZ, NM/CO, KS/NE) and snowy
-  mountains. The far-ring switch from USGS to EOX needs a regional palette mapping (separate item).
+  mountains. In-game 2026-10-11 at the UT/AZ line (36.998218, -110.102293): the seam is gone in the
+  low and the high view (steps of 35-95 % per channel found, 4-6 seams per region), mesas and washes
+  unchanged; regions took 25-140 s each (first ~9 done in 10 min) after two fixes found there (a
+  dropped region was never retried while the player stood still; the region thread now waits out
+  dropped background fetches). Seen meanwhile: a restarted server deleted the running game's
+  textures (orange "no texture" until a teleport; satmat now re-points; the robustness branch keeps
+  the files). The far-ring switch from USGS to EOX needs a regional palette mapping (separate item).
 - Sky: CloudLayer + wind, haze, per-biome cubemap, black night colours.
 - GroundCover grass if probes show it renders on a hidden terrain.
 
