@@ -382,6 +382,24 @@ class RangeTest(SmallBlocks, unittest.TestCase):
         self.assertEqual(out, [self.data[:4096]] * 4)
         self.assertEqual(self.t.count(), 1)
 
+    def test_no_second_fetch_after_a_lost_race(self):
+        """A reader whose cache look missed while another thread fetched, stored and released the block
+        (in-flight entry gone) finds it on its second look instead of fetching it again (seen once in
+        300 runs of the test above on a loaded machine: 2 requests)."""
+        r = self.remote()
+        orig = r._block_from_cache
+        first = [True]
+
+        def stale_once(i):
+            if first[0]:
+                first[0] = False
+                self.assertEqual(r.read(0, 4096), self.data[:4096])     # the other reader, start to end
+                return None                                             # what this reader saw before
+            return orig(i)
+        r._block_from_cache = stale_once
+        self.assertEqual(r.read(0, 4096), self.data[:4096])
+        self.assertEqual(self.t.count(), 1)
+
     def test_request_kind(self):
         """The kind reaches netfetch: a host without prefetch refuses a prefetch range."""
         pol = netfetch.with_policy(mf.FAST, netfetch.host_of(self.URL), allow_prefetch=False)

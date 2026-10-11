@@ -236,8 +236,17 @@ class RemoteFile:
                 else:
                     theirs.append((i, ev))
         try:
+            # a thread that fetched one of them between our cache look and the lock has stored it and
+            # left _inflight (it stores before it lets go): look again, never fetch a block twice
+            need = []
+            for i in mine:
+                b = self._block_from_cache(i)
+                if b is not None:
+                    out[i] = b
+                else:
+                    need.append(i)
             run = []
-            for i in mine + [None]:
+            for i in need + [None]:
                 if run and (i is None or i != run[-1] + 1 or len(run) >= MAX_RUN):
                     out.update(self._fetch_run(run[0], run[-1] + 1, kind))
                     run = []
