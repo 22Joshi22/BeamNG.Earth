@@ -66,12 +66,27 @@ class RulesTest(unittest.TestCase):
         f = features([[(0, 0), (10, 0)]] * 6, ["residential", "footway", "primary", "tertiary", "track", "secondary"],
                      surfaces=[(4, "gravel")], widths=[(2, 14.0)], levels=[(3, 1.0)], flags=[(5, "is_bridge")])
         s = roads.road_specs(f)
-        self.assertEqual(s[0], (roads.STYLE["residential"][0], "paved"))
+        self.assertEqual(s[0], (roads.STYLE["residential"][0] + 2 * roads.EDGE_STRIP_M, "paved"), "rural: edge strips")
         self.assertIsNone(s[1], "footways left out")
         self.assertEqual(s[2], (14.0, "paved"), "width rule")
         self.assertIsNone(s[3], "off ground level (bridge / tunnel) left out")
         self.assertEqual(s[4], (roads.STYLE["track"][0], "gravel"))
         self.assertIsNone(s[5], "bridge flag left out")
+
+    def test_carriageway_parking_and_strips(self):
+        res = roads.STYLE["residential"][0]
+        self.assertEqual(roads.carriageway("residential", "paved", True), res + 2 * roads.PARKING_M, "city street: parking")
+        self.assertEqual(roads.carriageway("residential", "paved", False), res + 2 * roads.EDGE_STRIP_M, "rural: strips")
+        self.assertEqual(roads.carriageway("motorway", "paved", True), roads.STYLE["motorway"][0], "no parking on motorways")
+        self.assertEqual(roads.carriageway("service", "paved", False), roads.STYLE["service"][0], "service: as is")
+        self.assertEqual(roads.carriageway("track", "dirt", True), roads.STYLE["track"][0], "dirt: as is")
+        self.assertEqual(roads.carriageway("residential", "paved", True, 7.5), 7.5, "a width rule is the carriageway")
+
+    def test_urban_from_land_cover(self):
+        f = features([[(0, 0), (10, 0)], [(0, 100), (10, 100)]], ["residential", "residential"], widths=[(1, 9.0)])
+        s = roads.road_specs(f, lambda lat, lon: np.ones(np.shape(lat), bool))
+        self.assertEqual(s[0][0], roads.STYLE["residential"][0] + 2 * roads.PARKING_M)
+        self.assertEqual(s[1][0], 9.0, "width rule wins over the parking guess")
 
 
 class GeometryTest(unittest.TestCase):
@@ -108,7 +123,7 @@ class BuildTileTest(unittest.TestCase):
         f = features([[(-300, 50), (300, 50)], [(100, 10), (100, 200)]], ["primary", "track"])
         chunks = roads.build_tile(FRAME, 0, 0, [f], flat)
         self.assertEqual(len(chunks), 2)
-        prim = next(c for c in chunks if c["w"] == roads.STYLE["primary"][0])
+        prim = next(c for c in chunks if c["w"] == roads.STYLE["primary"][0] + 2 * roads.EDGE_STRIP_M)
         xs = [n[0] for n in prim["n"]]
         self.assertAlmostEqual(min(xs), -roads.OVERLAP, delta=0.05)
         self.assertAlmostEqual(max(xs), roads.TILE + roads.OVERLAP, delta=0.05)
@@ -196,7 +211,7 @@ class PaintRoadsTest(unittest.TestCase):
         idx = np.full(lat.shape, sf.GRASS, np.uint8)
         out = sf.paint_roads(idx, lat, lon, [f], 2.0)
         self.assertEqual(int(out[64, 10]), sf.ASPHALT, "on the east-west street")
-        self.assertEqual(int(out[64 - 6, 10]), sf.GRASS, "12 m north of it: off the 6 m street")
+        self.assertEqual(int(out[64 - 6, 10]), sf.GRASS, "12 m north of it: off the 8 m street (6 m + strips)")
         self.assertEqual(int(out[30, 74]), sf.DIRT, "on the track (20 m east)")
         self.assertEqual(int(out[64, 74]), sf.ASPHALT, "paved wins at the crossing")
         self.assertEqual(int(idx[64, 10]), sf.GRASS, "input untouched")

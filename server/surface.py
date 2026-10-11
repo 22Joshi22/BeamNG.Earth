@@ -151,10 +151,11 @@ def grid_affine(lat, lon):
     return f
 
 
-def paint_roads(idx, lat, lon, feats_list, square):
+def paint_roads(idx, lat, lon, feats_list, square, urban_fn=None):
     """idx (material per sample, [row, col], as classify gives it) with the roads of feats_list (the
     "roads" Features of the cells around) drawn in at their width: ROAD_MATERIAL by surface kind.
-    lat / lon: the samples' positions; square: m between samples. Pure (a new array)."""
+    lat / lon: the samples' positions; square: m between samples; urban_fn: as roads.road_specs (the
+    same widths as the drawn roads). Pure (a new array)."""
     h, w = idx.shape
     to_px = grid_affine(lat, lon)
     layers = {k: Image.new("L", (w, h), 0) for k in ROAD_ORDER}
@@ -163,7 +164,7 @@ def paint_roads(idx, lat, lon, feats_list, square):
     for feats in feats_list:
         if feats is None or len(feats) == 0:
             continue
-        specs = roadsmod.road_specs(feats)
+        specs = roadsmod.road_specs(feats, urban_fn)
         for i in range(len(feats)):
             fid = str(feats.ids[i])
             if specs[i] is None or fid in seen:
@@ -298,6 +299,11 @@ class Surface:
                 log.debug("surface: roads of %s: %s: %s", key, type(e).__name__, e)
                 complete = False
         return out, complete
+
+    def urban(self, lat, lon):
+        """Built-up land cover (WorldCover 50) at the points: roads.road_specs's urban_fn. Uncached cells
+        read as not built-up."""
+        return self.classes(lat, lon)[0] == roadsmod.URBAN_CLASS
 
     def classes(self, lat, lon):
         """(WorldCover class per point, complete): 0 (no data) where the cell is not cached yet. The

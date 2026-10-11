@@ -55,6 +55,15 @@ LOOK = {
     "dirt": {"m": "m_dirt_road", "tl": 88.0, "p": 21},
 }
 SKIP_FLAGS = {"is_bridge", "is_tunnel"}
+# Carriageway = driving width + parking lanes on city streets or paved edge strips on rural roads
+# (docs/research/2026-10-11-official-road-study.md §2: rural paved surface = AI width + 2-2.5 m;
+# West Coast USA's plain streets 12.5 m for 8 m of driving: ~2.3 m of parking each side). A width
+# rule, where Overture has one, is the carriageway already.
+PARKING_M = 2.3
+PARKING_CLASSES = {"residential", "tertiary", "secondary", "unclassified", "living_street"}
+EDGE_STRIP_M = 1.0
+URBAN_CLASS = 50                # ESA WorldCover "built-up"
+URBAN_SHARE = 0.5               # a road is urban when this share of its vertices is built-up
 
 
 def _rule_value(table, i):
@@ -80,8 +89,24 @@ def surface_kind(cls, surface):
     return "paved" if STYLE.get(cls, STYLE["unknown"])[1] else "dirt"
 
 
-def road_specs(feats):
-    """Per feature: None (left out) or (width m, surface kind). Pure."""
+def carriageway(cls, kind, urban, rule_width=None):
+    """Paved / dirt width (m) of a road: the width rule if any, else the class's driving width plus
+    parking lanes (urban paved streets) or edge strips (rural paved roads). Pure."""
+    if rule_width is not None:
+        return rule_width
+    w = STYLE.get(cls, STYLE["unknown"])[0]
+    if kind != "paved":
+        return w
+    if urban and cls in PARKING_CLASSES:
+        return w + 2 * PARKING_M
+    if not urban and cls != "service":
+        return w + 2 * EDGE_STRIP_M
+    return w
+
+
+def road_specs(feats, urban_fn=None):
+    """Per feature: None (left out) or (width m, surface kind). urban_fn(lat, lon) -> bool array (built-up
+    land cover), None = rural everywhere. Pure given urban_fn."""
     out = []
     rules = feats.rules
     for i in range(len(feats)):
@@ -95,8 +120,15 @@ def road_specs(feats):
             out.append(None)
             continue
         width = _rule_value(rules.get("width"), i)
-        w = float(width) if width is not None and 1.0 <= float(width) <= 40.0 else STYLE[cls][0]
-        out.append((w, surface_kind(cls, _rule_value(rules.get("surface"), i))))
+        rule_w = float(width) if width is not None and 1.0 <= float(width) <= 40.0 else None
+        kind = surface_kind(cls, _rule_value(rules.get("surface"), i))
+        urban = False
+        if urban_fn is not None and rule_w is None and kind == "paved":
+            ll = feats.lonlat[feats.coord_off[feats.ring_off[feats.part_off[i]]]:
+                              feats.coord_off[feats.ring_off[feats.part_off[i + 1]]]]
+            if len(ll):
+                urban = float(np.mean(np.asarray(urban_fn(ll[:, 1], ll[:, 0]), bool))) >= URBAN_SHARE
+        out.append((carriageway(cls, kind, urban, rule_w), kind))
     return out
 
 
@@ -212,9 +244,9 @@ def cells_of_tile(frame, tx, ty):
     return mapcells.cells_for_bbox(float(np.min(lat)), float(np.min(lon)), float(np.max(lat)), float(np.max(lon)))
 
 
-def build_tile(frame, tx, ty, cells, elev):
+def build_tile(frame, tx, ty, cells, elev, urban_fn=None):
     """The chunks of one tile. cells: the mapgeom.Features of the "roads" layer of every cell touching
-    the tile; elev(lat, lon) -> metres (the DEM). Features in several cells are taken once (by id).
+    the tile; elev(lat, lon) -> metres (the DEM); urban_fn: as road_specs. Features in several cells are taken once (by id).
     Pure given its inputs (sorted by feature id, so the output does not depend on cell order)."""
     x0, y0, x1, y1 = tile_bbox(tx, ty)
     box = (x0 - OVERLAP, y0 - OVERLAP, x1 + OVERLAP, y1 + OVERLAP)
@@ -222,7 +254,7 @@ def build_tile(frame, tx, ty, cells, elev):
     for feats in cells:
         if feats is None or len(feats) == 0:
             continue
-        specs = road_specs(feats)
+        specs = road_specs(feats, urban_fn)
         for i in range(len(feats)):
             if specs[i] is None or str(feats.ids[i]) in seen:
                 continue

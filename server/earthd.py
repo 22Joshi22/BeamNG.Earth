@@ -702,7 +702,8 @@ class Server:
         cells = [self.mapdata.cell(k, layers=("roads",), kind="demand").layers.get("roads")
                  for k in roadsmod.cells_of_tile(anchor.frame, tx, ty)]
         zoom = anchor.zooms[0]
-        chunks = roadsmod.build_tile(anchor.frame, tx, ty, cells, lambda la, lo: self.dem.sample(la, lo, zoom))
+        urban = self.surface.urban if self.surface is not None and hasattr(self.surface, "urban") else None
+        chunks = roadsmod.build_tile(anchor.frame, tx, ty, cells, lambda la, lo: self.dem.sample(la, lo, zoom), urban)
         return roadsmod.write_tile(self.out_dir, self.vfs_dir, aid, tx, ty, chunks)
 
     def make_heightmap(self, anchor, cx, cy, progress):
@@ -721,7 +722,8 @@ class Server:
             idx = surfacemod.classify(classes, keep["u"], heightmap.SQUARE)
             road_feats, roads_complete = self.surface.roads(keep["lat"], keep["lon"])
             if road_feats:
-                idx = surfacemod.paint_roads(idx, keep["lat"], keep["lon"], road_feats, heightmap.SQUARE)
+                idx = surfacemod.paint_roads(idx, keep["lat"], keep["lon"], road_feats, heightmap.SQUARE,
+                                             self.surface.urban)
             complete = complete and roads_complete
             info["layers"] = surfacemod.write_masks(idx[::-1], self.out_dir, self.hm_name((anchor.id, cx, cy))[:-4])
             info["surfaceComplete"] = complete
