@@ -63,7 +63,8 @@ terrain.load('/temp/beamngEarth/s1/hm_1_512_0.png', 2, 4096, 0, -512, 1000)
 T.check(#tb.lastImport.mats == 1 and tb.lastImport.mats[1] == 'beamngEarthDirt', 'no layers: the single dirt layer')
 
 -- GroundCover layer refresh (terrain.layerRefresh): in mesh mode a layered import is followed by one
--- frame with the block drawn REFRESH_DROP lower, then back in place, hidden, and the cells flushed
+-- frame with the block drawn REFRESH_DROP lower, then back in place and hidden (no flush: the
+-- restore's setPosition already makes GroundCover rebuild its cells)
 do
   local flushes = 0
   _G.flushGroundCoverGrids = function() flushes = flushes + 1 end
@@ -78,16 +79,16 @@ do
   T.check(terrain.refreshPending() and tb.renderEnabled == false and tb.pos.z == 1000, 'armed; the import itself leaves the block hidden in place')
   T.check(terrain.tick() == false, 'frame 1: not done yet')
   T.check(tb.renderEnabled == true and tb.pos.z == 1000 - terrain.REFRESH_DROP and tb.pos.x == -512, 'frame 1: drawn, sunk')
-  T.check(terrain.tick() == true and flushes == 1, 'frame 2: done, cells flushed')
+  T.check(terrain.tick() == true and flushes == 0, 'frame 2: done, no flush')
   T.check(tb.renderEnabled == false and tb.pos.z == 1000 and not terrain.refreshPending(), 'frame 2: hidden, back in place')
-  T.check(terrain.tick() == false and flushes == 1, 'then nothing')
+  T.check(terrain.tick() == false and flushes == 0, 'then nothing')
   -- a new import between the two frames: the new position wins, the refresh starts over
   terrain.load('/temp/beamngEarth/s1/hm_1_0_0.png', 2, 4096, -512, -512, 1000, { masks = masks, materials = MATS })
   terrain.tick()
   terrain.load('/temp/beamngEarth/s1/hm_1_128_0.png', 2, 4096, -384, -512, 1010, { masks = masks, materials = MATS })
   T.check(tb.renderEnabled == false and tb.pos.z == 1010 and tb.pos.x == -384, 'a re-import mid-refresh: hidden, at its own place')
   terrain.tick(); terrain.tick()
-  T.check(tb.pos.z == 1010 and tb.renderEnabled == false and flushes == 2, '... and refreshed there')
+  T.check(tb.pos.z == 1010 and tb.renderEnabled == false and not terrain.refreshPending(), '... and refreshed there')
   -- terrain mode meanwhile (the block drawn anyway): no sinking, the block put back
   terrain.load('/temp/beamngEarth/s1/hm_1_0_0.png', 2, 4096, -512, -512, 1000, { masks = masks, materials = MATS })
   terrain.tick()

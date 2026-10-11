@@ -913,9 +913,13 @@ three days of testing: dem 741 MB / 7.5k files, imagery 1.4 GB / 35k, deshadow 7
   a copy the block refreshes only in a frame where it is drawn and in view. updateGridMaterials,
   updateAllTextures and toggling the render flag within one call do not refresh it; a block never
   drawn reads as layer 0 everywhere. So while ground cover exists, every layered import in mesh mode
-  is followed by `terrain.tick()` (core onUpdate) drawing the block for one frame 100 m lower (in view,
-  hidden under the mesh ground by depth; collision not rebuilt, the vehicles do not notice), then
-  putting it back hidden and calling `flushGroundCoverGrids()`. A camera that cannot see the block's
+  is followed by `terrain.tick()` (end of core onUpdate, after the frame's commits and their
+  reloadCollision) drawing the block for that frame 100 m lower (in view, hidden under the mesh ground
+  by depth; collision not rebuilt, the vehicles do not notice), then putting it back hidden.
+  Every import and every setPosition of the block (even to the same place) makes GroundCover drop all
+  its cells and regrow them over ~10 frames: the engine's own blink at each block move (every 128 m
+  while driving). The refresh adds one more clear (the restore); the first cut (refresh one frame
+  later plus a flush) blanked the grass for 4 frames per move, this one 2 (in-game per-frame counts). A camera that cannot see the block's
   box in that frame (high above it) leaves the previous layers until the next import.
   Cost: +1.1 ms per frame at Serengeti grassland (A/B, 6 rounds, 6.15 -> 7.25 ms).
 

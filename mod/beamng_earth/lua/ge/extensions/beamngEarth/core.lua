@@ -892,7 +892,6 @@ local function onUpdate(dtReal, dtSim)
   end
   if not scenetree.MissionGroup then return end -- no level loaded
   tickMotionBlur()
-  terrain.tick() -- GroundCover's layer refresh after a layered import (terrain.lua)
 
   st.paused = (dtSim or dtReal) <= 0
   local rb = st.rebasing
@@ -915,6 +914,9 @@ local function onUpdate(dtReal, dtSim)
     farfield.update(gov, (gov.w1 or dtReal * 1000) / 1000, st.cam, st.player)
     updateSky(dtReal)
     updateGuard()
+    -- GroundCover's layer refresh (terrain.lua), after this frame's block commits and their
+    -- reloadCollision: a sunk block must never be what collision is rebuilt from
+    terrain.tick()
   end
   drawUi(dtReal)
 end

@@ -43,6 +43,12 @@ local LAYER_MAP, FLAT_HEIGHTMAP = LAYER_MAPS[1024], FLAT_HEIGHTMAPS[1024]
 -- metres lower (under the mesh ground: in view but hidden by depth), then it goes back; collision
 -- is not rebuilt for it (the vehicles never notice a render-only move, in-game). Only while
 -- something asks for it (M.layerRefresh).
+-- Every setPosition of the block (even to the same place) and every import makes GroundCover drop
+-- all its cells and regrow them over ~10 frames (in-game 2026-10-11), so the refresh runs at the
+-- end of the import's own frame (core calls tick after the commits and their reloadCollision): the
+-- import and the sink share one clear, the restore costs one more, and no flush is needed (the
+-- restore's clear already rebuilds the cells at the right height). The engine's own clear at each
+-- block move (every 128 m while driving) remains.
 M.REFRESH_DROP = 100.0
 M.layerRefresh = false
 local refresh = nil       -- { x, y, z, drawn } of the block awaiting its refresh frame
@@ -209,9 +215,9 @@ function M.load(path, squareSize, maxHeight, x, y, z, layers)
   return true
 end
 
--- Once per frame (core onUpdate): the layer refresh after a layered import, over two frames - the
--- block drawn sunk in the first, back in place and hidden in the next, then the GroundCover cells
--- rebuilt. Returns true when a refresh finished this call.
+-- Once per frame (core onUpdate, after the frame's commits): the layer refresh after a layered
+-- import, over two frames - the block drawn sunk in the import's frame, back in place and hidden in
+-- the next. Returns true when a refresh finished this call.
 function M.tick()
   local r = refresh
   if not r then return false end
@@ -230,7 +236,6 @@ function M.tick()
   tb:setRenderEnabled(false)
   tb:setPosition(vec3(r.x, r.y, r.z))
   refresh = nil
-  if flushGroundCoverGrids then flushGroundCoverGrids() end
   return true
 end
 
