@@ -80,6 +80,7 @@ local FULL_ATTRIBUTION = IMAGERY_ATTRIBUTION .. '\n' .. ATTRIBUTION
 
 local st -- all runtime state, see resetState()
 local rebaseLag = 0 -- frames between a vehicle move request and its visibility (measured, see commitRebase)
+local roadsSession = nil -- the server session whose road tiles are shown (roads.lua)
 local gov = governor.new() -- outlives levels (keeps its target and cost estimates)
 local warned = {}          -- one-time warnings
 local nearVisual = 'terrain' -- from the server's hello; outlives levels like the connection
@@ -497,6 +498,13 @@ local function onMessage(msg)
     setStatus('Disconnected from companion server: ' .. tostring(msg.error))
   elseif t == 'hello' then
     st.sessionId = msg.sessionId
+    -- road tiles belong to the session that sent them: a restarted server (anchor ids start again
+    -- at 1) never drops the old session's tiles, so they stayed forever (2026-10-11: meshes of four
+    -- sessions in the scene, some built by older code)
+    if roadsSession ~= msg.sessionId then
+      roads.clear()
+      roadsSession = msg.sessionId
+    end
     st.serverNote, st.serverNoteDetail = nil, nil
     -- a new server session: its own gravity message follows the first pose (none with --gravity off)
     local w = rawget(_G, 'beamngEarth_weather')

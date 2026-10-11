@@ -501,9 +501,14 @@ frames(2)
 local movesBefore, setOrig = calls.setClusterPosRelRot, calls.setOriginalTransform
 T.check(tb.renderEnabled == nil and (calls.setRenderEnabled or 0) == 0, 'terrain mode: the block is drawn, render flag never touched')
 T.check(farfield.nearVisual() == 'terrain', 'terrain near visual')
+local roadsMod = require('beamngEarth/roads')
+local roadClears, realClear = 0, roadsMod.clear
+roadsMod.clear = function(...) roadClears = roadClears + 1; return realClear(...) end
 serverSend({ type = 'hello', protocol = 4, format = 3, serverVersion = '0.4.0', sessionId = 's2', farFormat = 'cdae',
   material = 'bngEarthFar_v9', nearVisual = 'mesh' })
 T.check(pumpUntil(function() return #received('prepare_anchor') == nAnchor + 1 end, 10), 'resync requested on hello')
+T.check(roadClears == 1, 'a new server session: the old session\'s road tiles cleared')
+roadsMod.clear = realClear
 T.check(tb.renderEnabled == false and farfield.nearVisual() == 'mesh', 'hello nearVisual = mesh: block render disabled, far field in mesh mode')
 T.check(warned('material mismatch: server bngEarthFar_v9, mod bngEarthFar_v3'), 'hello: a different far-tile material is reported')
 log = stubLog
