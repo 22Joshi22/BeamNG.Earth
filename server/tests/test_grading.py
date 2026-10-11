@@ -37,7 +37,7 @@ def plan_line(x0, x1, y, kind="paved", cls="residential", w=6.0):
     keep = np.r_[np.arange(0, 199, 8), 199]
     spec = roads.Spec(w, kind, False, cls)
     width = roads.carriageway(cls, kind, True) if kind in roads.BUILT else w
-    return grading.Plan(xy[keep], z[keep], width / 2 + grading.SHOULDER_M), spec
+    return grading.Plan(xy[keep], z[keep], width / 2 + grading.shoulder(spec)), spec
 
 
 class GradePointsTest(unittest.TestCase):
@@ -70,6 +70,14 @@ class GradePointsTest(unittest.TestCase):
         self.assertTrue(np.isfinite(out1[j]).all())
 
 
+class ShoulderTest(unittest.TestCase):
+    def test_sidewalk_classes_keep_the_sidewalk_flat(self):
+        res = roads.Spec(6.0, "paved", True, "residential")
+        self.assertGreaterEqual(grading.shoulder(res), roads.SIDEWALK["w"], "the raised slab sits on flat ground")
+        self.assertEqual(grading.shoulder(roads.Spec(6.0, "paved", False, "motorway")), grading.SHOULDER_M)
+        self.assertEqual(grading.shoulder(roads.Spec(4.0, "dirt", False, "track")), 0.0)
+
+
 class FakeMD:
     def __init__(self, feats):
         self.feats, self.calls = feats, 0
@@ -84,7 +92,26 @@ class FakeMD:
         return c
 
 
+class FailingMD:
+    def __init__(self):
+        self.calls = 0
+
+    def cell(self, key, layers=None, kind=None):
+        self.calls += 1
+        raise OSError("offline")
+
+
 class GraderTest(unittest.TestCase):
+    def test_failed_fetch_not_retried_at_once(self):
+        md = FailingMD()
+        g = grading.Grader(FRAME, md, lambda la, lo: np.zeros(np.shape(la)))
+        lat, lon = np.full((2, 2), LAT), np.full((2, 2), LON)
+        base = np.ones((2, 2))
+        self.assertTrue(np.array_equal(g.apply(lat, lon, base), base), "ungraded without road data")
+        n = md.calls
+        g.apply(lat, lon, base)
+        self.assertEqual(md.calls, n, "a failed cell waits RETRY_S before it is fetched again")
+
     def test_plans_once_per_cell_and_dem_dropin(self):
         f = features([[(-300, 20), (300, 20)]], ["residential"])
         md = FakeMD(f)

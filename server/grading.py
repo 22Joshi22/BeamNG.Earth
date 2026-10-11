@@ -7,7 +7,8 @@ Per road (roads.road_specs; bridges, tunnels and off-ground segments are left ou
   SIGMA_M m; dirt roads DIRT_SIGMA_M), so grades stay real and small bumps go (the official maps:
   |2nd difference| per 10 m 0.02-0.1 m);
 - across: flat over the core (the carriageway as a city street would have it, parking included, plus
-  SHOULDER_M), then back to the natural ground over a transition of 2x the height difference (a
+  SHOULDER_M, or the sidewalk plus SIDEWALK_MARGIN_M on the classes that get sidewalks in towns, so a
+  raised sidewalk slab sits on flat ground), then back to the natural ground over a transition of 2x the height difference (a
   1:2 cut or fill slope), clamped to [T_MIN, T_MAX] m;
 - several roads at one point (junctions) blend their targets by weight.
 The core width never depends on the land cover (it is taken as urban for every built road), and
@@ -20,6 +21,7 @@ and the levels <= 0 tiles only (coarser tiles sink under the block and cover far
 import logging
 import math
 import threading
+import time
 
 import numpy as np
 
@@ -33,11 +35,13 @@ PROFILE_STEP = 2.0          # m between profile samples
 SIGMA_M = 12.0              # m, profile smoothing of built roads
 DIRT_SIGMA_M = 5.0          # m, profile smoothing of gravel / dirt roads
 SHOULDER_M = 1.0            # m of flat shoulder beyond the carriageway, each side
+SIDEWALK_MARGIN_M = 0.5     # m of flat ground beyond a sidewalk (roads.SIDEWALK_CLASSES)
 T_MIN, T_MAX = 2.0, 12.0    # m, transition back to the natural ground
 SLOPE_RUN = 2.0             # transition = SLOPE_RUN x the height difference (1:2 slope)
 VERTEX_STEP = 16.0          # m between the plan's vertices (segments for the grading pass)
 BUCKET = 32.0               # m, query-point buckets
 PROFILE_ZOOM = 15           # DEM zoom of the profiles (one zoom for every caller)
+RETRY_S = 60.0              # s before a cell whose road data failed is asked for again
 
 
 def smooth_profile(z, step, sigma):
@@ -87,7 +91,17 @@ def plan_road(frame, lonlat, spec, elev):
     every = max(1, int(round(VERTEX_STEP / PROFILE_STEP)))
     keep = np.r_[np.arange(0, len(xy) - 1, every), len(xy) - 1]
     width = roadsmod.carriageway(spec.cls, spec.kind, True) if built else spec.width
-    return Plan(xy[keep], zs[keep], width / 2 + (SHOULDER_M if built else 0.0))
+    return Plan(xy[keep], zs[keep], width / 2 + shoulder(spec))
+
+
+def shoulder(spec):
+    """m of flat ground beyond the carriageway edge, each side. Like the core width, never from the land
+    cover: a road class that gets sidewalks in towns keeps a sidewalk-wide verge everywhere."""
+    if spec.kind not in roadsmod.BUILT:
+        return 0.0
+    if spec.cls in roadsmod.SIDEWALK_CLASSES:
+        return roadsmod.SIDEWALK["w"] + SIDEWALK_MARGIN_M
+    return SHOULDER_M
 
 
 class Grader:
@@ -97,17 +111,23 @@ class Grader:
     def __init__(self, frame, mapdata, elev):
         self.frame, self.md, self.elev = frame, mapdata, elev
         self.cells = {}
+        self.failed = {}        # cell key -> monotonic time of the last failed fetch
         self.lock = threading.Lock()
 
     def _cell_plans(self, key):
         with self.lock:
             got = self.cells.get(key)
+            failed = self.failed.get(key)
         if got is not None:
             return got
+        if failed is not None and time.monotonic() - failed < RETRY_S:
+            return []               # offline: no block waits on the same failing fetch again
         try:
             feats = self.md.cell(key, layers=("roads",), kind="demand").layers.get("roads")
-        except Exception as e:      # no road data: ungraded (and not cached: asked again next time)
+        except Exception as e:      # no road data: ungraded (asked again after RETRY_S)
             log.debug("grading: roads of %s: %s: %s", key, type(e).__name__, e)
+            with self.lock:
+                self.failed[key] = time.monotonic()
             return []
         plans = []
         if feats is not None and len(feats):

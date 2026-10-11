@@ -712,8 +712,9 @@ class Server:
         def elev(la, lo):
             z = self.dem.sample(la, lo, zoom)
             return g.apply(la, lo, z) if g is not None else z
-        chunks = roadsmod.build_tile(anchor.frame, tx, ty, cells, elev, urban)
-        return roadsmod.write_tile(self.out_dir, self.vfs_dir, aid, tx, ty, chunks)
+        walks = []
+        chunks = roadsmod.build_tile(anchor.frame, tx, ty, cells, elev, urban, walks=walks)
+        return roadsmod.write_tile(self.out_dir, self.vfs_dir, aid, tx, ty, chunks, walks)
 
     def grader_for(self, anchor):
         """The anchor's grading.Grader (--grading on), else None."""

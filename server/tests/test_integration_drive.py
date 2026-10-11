@@ -426,7 +426,9 @@ class DriveBase(unittest.TestCase):
         script = SERVER_DIR / self.launcher if self.launcher == "earthd.py" else Path(__file__).parent / self.launcher
         self.proc = subprocess.Popen(
             [sys.executable, str(script), "--port", "0", "--user-dir", self.user, "--cache-dir", CACHE,
-             "--weather", "off", "--gravity", "off", *self.server_args],  # no network: own tests
+             "--weather", "off", "--gravity", "off",  # no network: own tests
+             # roads (and the grading under them) wait on Overture road data per block: own tests
+             "--roads", "off", *self.server_args],
             stdout=subprocess.PIPE, stderr=self.errlog, text=True)
         line = self.proc.stdout.readline()
         self.assertIn("listening on 127.0.0.1:", line)

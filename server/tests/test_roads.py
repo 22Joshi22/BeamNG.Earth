@@ -153,10 +153,74 @@ class BuildTileTest(unittest.TestCase):
                 on_sec = abs(y - 100) < sec_w / 2
                 on_res = abs(x - 120) < res_w / 2
                 self.assertFalse(on_sec and on_res, (x, y))
+        sw = roads.SIDEWALK["w"]               # the corner: the secondary's sidewalk runs on to the
+        sec_walk = [c for c in by[roads.SIDEWALK["m"]] if abs(c["n"][0][1] - 100) > 1 and   # residential's curb
+                    all(abs(n[1] - c["n"][0][1]) < 0.01 for n in c["n"])]
+        res_walk = [c for c in by[roads.SIDEWALK["m"]] if c not in sec_walk]
+        xs = sorted(x for c in sec_walk for x, _, _ in (c["n"][0], c["n"][-1]))
+        self.assertTrue(any(abs(x - (120 - res_w / 2)) < 0.6 for x in xs), ("to the curb", xs))
+        for c in res_walk:                       # ... and the residential's stops at its outer edge
+            for x, y, _ in c["n"]:
+                self.assertGreater(abs(y - 100), sec_w / 2 + sw - 0.6, (x, y))
         yc = next(c["n"][0][1] for c in by[roads.LOOK["paved"]["m"]] if abs(c["n"][0][1] - 100) < 1)
         ys = sorted({round(c["n"][0][1], 3) for c in by["line_yellow"]})
         self.assertTrue(any(abs(y - (yc + roads.CENTRE["gap"])) < 0.01 for y in ys) and
                         any(abs(y - (yc - roads.CENTRE["gap"])) < 0.01 for y in ys), (yc, ys))
+
+    def test_sidewalk_mesh_runs_and_drains(self):
+        import tempfile
+        import cdae
+        import sidewalks
+        f = features([[(-300, 100), (300, 100)], [(120, -100), (120, 300)]], ["secondary", "residential"])
+        walks = []
+        chunks = roads.build_tile(FRAME, 0, 0, [f], flat, lambda la, lo: np.ones(np.shape(la), bool), walks=walks)
+        self.assertFalse(any(c["m"] == roads.SIDEWALK["m"] for c in chunks), "sidewalks are the mesh, not decals")
+        self.assertTrue(walks and {w["side"] for w in walks} == {1, -1})
+        x0, y0, x1, y1 = roads.tile_bbox(0, 0)
+        for w in walks:                              # clipped exactly to the tile; caps only at real ends
+            self.assertTrue((w["pts"][:, 0] >= x0 - 1e-6).all() and (w["pts"][:, 0] <= x1 + 1e-6).all())
+            for end, cap in ((w["pts"][0], w["caps"][0]), (w["pts"][-1], w["caps"][1])):
+                self.assertEqual(cap, not roads._on_box(end, (x0, y0, x1, y1)))
+        dr = [c for c in chunks if c["m"] == roads.DRAIN["m"]]
+        self.assertTrue(dr, "storm drains at the corners")
+        sec_w = roads.carriageway("secondary", "paved", True)
+        curbs = [sidewalks.run_geometry(w["pts"], w["side"], roads.SIDEWALK["w"]) for w in walks]
+        for c in dr:              # in the gutter: GUTTER w / 2 from a curb, on the road's side of it
+            p = np.mean(np.array(c["n"])[:, :2], axis=0)
+            best = min(((roads._seg_dist(p[None], cu[:-1, :2], cu[1:, :2]).min(), cu, o) for cu, o in curbs),
+                       key=lambda t: t[0])
+            d, cu, o = best
+            k = int(np.argmin(np.hypot(*(cu[:, :2] - p).T)))
+            self.assertAlmostEqual(d, roads.GUTTER["w"] / 2, delta=0.05)
+            self.assertLess(float((p - cu[k, :2]) @ o[k]), 0, "on the road side of the curb")
+        with tempfile.TemporaryDirectory() as d:
+            path, n = roads.write_tile(d, "/vfs", 1, 0, 0, chunks, walks)
+            import json
+            data = json.load(open(os.path.join(d, os.path.basename(path))))
+            self.assertEqual(data["walk"]["pos"], [x0, y0, 0.0])
+            shape = cdae.read(os.path.join(d, os.path.basename(data["walk"]["shape"])))
+            self.assertEqual([m["name"] for m in shape["materials"]], list(sidewalks.MATERIALS))
+
+    def test_sidewalk_profile_faces_out(self):
+        import sidewalks
+        run = np.array([[0.0, 5.0, 10.0], [20.0, 5.0, 10.0], [40.0, 8.0, 10.0]])
+        for side in (1, -1):
+            curb, out = sidewalks.run_geometry(run, side, 2.5)
+            b = sidewalks.Builder((0.0, 0.0, 0.0))
+            b.add_run(curb, out, 2.5)
+            P, T, UV, M = b.arrays()
+            n = np.cross(P[T[:, 1]] - P[T[:, 0]], P[T[:, 2]] - P[T[:, 0]])
+            n /= np.linalg.norm(n, axis=1)[:, None]
+            top = n[:, 2] > 0.9
+            self.assertTrue(top.any())
+            self.assertAlmostEqual(P[:, 2].max(), 10.0 + sidewalks.CURB_H + 2.5 * sidewalks.CROSS_SLOPE, places=6)
+            # the curb face looks at the road (away from the sidewalk)
+            face = (np.abs(n[:, 2]) < 0.3) & (M == 0)
+            c = P[T[face]].mean(1)
+            near_curb = np.abs(np.hypot(*(c[:, :2] - curb[1, :2]).T)) < 15
+            o3 = np.r_[out[1], 0.0]
+            looks = n[face][near_curb] @ o3
+            self.assertTrue((looks < 0).any() and (looks > 0).any(), "a face toward the road and a back face")
 
     def test_cobblestone_strips_no_paint(self):
         self.assertEqual(roads.surface_kind("residential", "paving_stones"), "cobble")

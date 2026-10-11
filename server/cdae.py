@@ -390,18 +390,31 @@ def _empty(elem):
 
 
 def encode(positions, tris, normals=None, uvs=None, material="bngEarthDae", uvs2=None,
-           tangent_uvs=None, object_name="tile"):
+           tangent_uvs=None, object_name="tile", tri_materials=None):
     """Shape bytes for one static mesh, laid out exactly as the engine writes a compiled
     Collada file with the same geometry.
 
     positions (n,3), tris (m,3) vertex indices counter-clockwise seen from outside (the
     Collada / dae.py convention), normals (n,3) (None: computed like the engine does),
     uvs (n,2) and optional uvs2 (n,2) in Collada convention (v up), tangent_uvs (n,2) the
-    parametrisation the tangents follow (default: uvs)."""
+    parametrisation the tangents follow (default: uvs).
+    Several materials: material a list of names and tri_materials (m,) each triangle's index in
+    it; the triangles are grouped into one primitive per material (in list order)."""
     P = np.asarray(positions, np.float64).reshape(-1, 3)
     T = np.asarray(tris, np.int64).reshape(-1, 3)
     if len(T) == 0:
         raise CdaeError("no triangles")
+    materials = [material] if isinstance(material, str) else list(material)
+    if tri_materials is None:
+        if len(materials) != 1:
+            raise CdaeError("several materials need tri_materials")
+        TM = np.zeros(len(T), np.int64)
+    else:
+        TM = np.asarray(tri_materials, np.int64).reshape(-1)
+        if len(TM) != len(T) or TM.min() < 0 or TM.max() >= len(materials):
+            raise CdaeError("tri_materials: one index into material per triangle")
+        T = T[np.argsort(TM, kind="stable")]
+        TM = np.sort(TM, kind="stable")
     N = face_normal_sum(P, T) if normals is None else np.asarray(normals, np.float64).reshape(-1, 3)
     UV = np.zeros((len(P), 2)) if uvs is None else np.asarray(uvs, np.float64).reshape(-1, 2)
     TUV = UV if tangent_uvs is None else np.asarray(tangent_uvs, np.float64).reshape(-1, 2)
@@ -471,7 +484,7 @@ def encode(positions, tris, normals=None, uvs=None, material="bngEarthDae", uvs2
             np.stack([UV2[order, 0].astype(np.float32),
                       np.float32(1.0) - UV2[order, 1].astype(np.float32)], 1).astype("<f4").tobytes(), nv, 8),
         "norms": _vec(NN.astype("<f4").tobytes(), nv, 12),
-        "primitives": _vec(struct.pack("<3i", 0, ntri * 3, PRIM_TRIANGLES | PRIM_INDEXED), 1, 12),
+        "primitives": _primitives(TM, len(materials)),
         "indices": _vec(idx.astype("<u4").tobytes(), ntri * 3, 4),
         "tangents": _vec(TG.astype("<f4").tobytes(), nv, 16),
     }
@@ -481,12 +494,24 @@ def encode(positions, tris, normals=None, uvs=None, material="bngEarthDae", uvs2
     _pack(out, nv)                                         # vertsPerFrame
     _pack(out, 0)                                          # mesh flags
     _pack(out, 0)                                          # sequences
-    _pack(out, 1)                                          # materials
-    for v in (material, MAT_S_WRAP | MAT_T_WRAP, 0, 0xFFFFFFFF, 0xFFFFFFFF, 1.0, 1.0):
-        _pack(out, v)
+    _pack(out, len(materials))                             # materials
+    for name in materials:
+        for v in (name, MAT_S_WRAP | MAT_T_WRAP, 0, 0xFFFFFFFF, 0xFFFFFFFF, 1.0, 1.0):
+            _pack(out, v)
 
     header = packb({"info": INFO, "compression": False, "bodysize": len(out), "objectNames": [object_name]})
     return struct.pack("<II", VERSION_WORD, len(header)) + header + bytes(out)
+
+
+def _primitives(TM, nmat):
+    """One indexed-triangle primitive per material present (start, count in indices, matIndex)."""
+    out, n = b"", 0
+    for k in range(nmat):
+        idx = np.nonzero(TM == k)[0]
+        if len(idx):
+            out += struct.pack("<3i", int(idx[0]) * 3, len(idx) * 3, PRIM_TRIANGLES | PRIM_INDEXED | k)
+            n += 1
+    return _vec(out, n, 12)
 
 
 def write(path, positions, tris, **kw):

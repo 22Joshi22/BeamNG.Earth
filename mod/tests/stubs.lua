@@ -39,6 +39,17 @@ function S.newObject(class)
   function o:delete() S.objects[self.id] = nil; S.count('delete_' .. class) end
   function o:setHidden(h) self.hidden = h end
   function o:setRenderEnabled(v) S.count('setRenderEnabled'); self.renderEnabled = v end
+  -- SimGroup
+  function o:addObject(c) S.objects[c.id] = c; self.children = self.children or {}; self.children[#self.children + 1] = c end
+  function o:getCount()
+    local n = 0
+    for _, c in ipairs(self.children or {}) do if S.objects[c.id] then n = n + 1 end end
+    return n
+  end
+  function o:deleteAllObjects()
+    for _, c in ipairs(self.children or {}) do if S.objects[c.id] then c:delete() end end
+    self.children = {}
+  end
   return o
 end
 function TerrainBlock()

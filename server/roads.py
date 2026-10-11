@@ -9,7 +9,8 @@ those beyond DROP_M (`roads_drop`). An anchor change re-sends everything in the 
 drops the old anchor's roads then.
 
 A tile's file is a list of chunks, each one DecalRoad:
-    {"m": material, "w": width m, "tl": texture length m, "p": render priority, "n": [[x, y, z], ...]}
+    {"m": material, "w": width m, "tl": texture length m, "p": render priority, "n": [[x, y, z], ...],
+     "h": curb height m (sidewalks only: the mod raises a slab this far above the road near the player)}
 with x, y, z in the anchor frame (z on the DEM, the DecalRoad snaps its nodes to the ground anyway)
 and at most MAX_NODES nodes. Roads are clipped to the tile (OVERLAP m past its edge), simplified
 (RDP, SIMPLIFY_M) and split. Deterministic: a pure function of the cells' road data, the frame and
@@ -69,6 +70,11 @@ Spec = namedtuple("Spec", "width kind urban cls")   # road_specs' result per fea
 # real streets have concrete sidewalks behind a curb and a double yellow centre line). Stock West
 # Coast USA materials. renderPriority: lower draws on top (WCUSA: lines 2-6, the asphalt strip 20).
 SIDEWALK = {"m": "sidewalk_concrete", "tl": 6.0, "p": 16, "w": 2.5}      # beyond the carriageway, city streets
+# Storm drain inlets: a metal grate in the gutter (Driver Training's m_metal_grid_drain), DRAIN_IN m
+# before the real end of each sidewalk run (one per corner, where real inlets sit) and every
+# DRAIN_EVERY m along long runs (each is a DecalRoad: kept to ~40 per city tile)
+DRAIN = {"m": "m_metal_grid_drain", "tl": 2.0, "p": 12, "w": 0.45, "len": 1.0}
+DRAIN_IN, DRAIN_EVERY = 2.5, 90.0
 GUTTER = {"m": "gutter1", "tl": 8.0, "p": 14, "w": 0.5}                  # at the curb line
 CENTRE = {"tl": 12.0, "p": 6, "w": 0.12, "gap": 0.12}                    # a double line: two lines this far from the centre
 EDGE_LINE = {"m": "line_white", "tl": 6.4, "p": 2, "w": 0.15, "inset": 0.3}
@@ -226,6 +232,20 @@ def cut_outside(pts, blockers, spacing=2.0):
     return out
 
 
+def has_sidewalks(spec):
+    return spec.kind in BUILT and spec.urban and spec.cls in SIDEWALK_CLASSES
+
+
+def sidewalk_stop(spec, fid, other, ofid):
+    """How far from the centreline of a crossing road (other) the sidewalks of road spec stop. The corner
+    square is one sidewalk's: when both roads have sidewalks the wider road's (then the smaller id) runs on
+    to the other's curb and the other's stops against its outer edge; with none on the other road, they
+    run on to its curb. No gap and no overlap (two slabs at one height would z-fight). Pure."""
+    if has_sidewalks(other) and (-other.width, ofid) < (-spec.width, fid):
+        return other.width / 2 + SIDEWALK["w"]
+    return other.width / 2
+
+
 def extras(spec, pts, lon):
     """The sidewalk / gutter / marking polylines of one road: [(look dict with m / tl / p, width, pts)].
     pts: its centreline (k, 3) in the anchor frame; lon: its longitude (centre line colour). Pure."""
@@ -233,9 +253,10 @@ def extras(spec, pts, lon):
     w, kind, urban, cls = spec
     if kind not in BUILT:
         return out
-    if urban and cls in SIDEWALK_CLASSES:
+    if has_sidewalks(spec):
         for side in (1, -1):
-            out.append((SIDEWALK, SIDEWALK["w"], offset_polyline(pts, side * (w / 2 + SIDEWALK["w"] / 2))))
+            out.append(({**SIDEWALK, "side": side}, SIDEWALK["w"],
+                        offset_polyline(pts, side * (w / 2 + SIDEWALK["w"] / 2))))
             out.append((GUTTER, GUTTER["w"], offset_polyline(pts, side * (w / 2 - GUTTER["w"] / 2))))
     if kind == "paved" and cls in CENTRE_CLASSES and w >= 6.0:      # no paint on cobbles
         look = {"m": centre_colour(lon), "tl": CENTRE["tl"], "p": CENTRE["p"]}
@@ -364,11 +385,47 @@ def _chunk(look, w, c):
             "n": [[round(float(v), 3) for v in p] for p in c]}
 
 
-def build_tile(frame, tx, ty, cells, elev, urban_fn=None):
+def _on_box(p, box, eps=1e-6):
+    x0, y0, x1, y1 = box
+    return abs(p[0] - x0) < eps or abs(p[0] - x1) < eps or abs(p[1] - y0) < eps or abs(p[1] - y1) < eps
+
+
+def drains(run, side, caps):
+    """The storm drain chunks along a sidewalk run (k, 3) on `side` of its road: DRAIN_IN m before its
+    end if that is a real end (caps: (start, end) real) and every DRAIN_EVERY m along it. Pure."""
+    import sidewalks
+    curb, out = sidewalks.run_geometry(run, side, SIDEWALK["w"])
+    s = np.r_[0.0, np.cumsum(np.hypot(*np.diff(curb[:, :2], axis=0).T))]
+    L = s[-1]
+    if L < 2 * DRAIN_IN:
+        return []
+    at = []
+    if caps[1]:
+        at.append(L - DRAIN_IN)
+    if L > DRAIN_EVERY * 1.5:
+        at += list(np.arange(DRAIN_EVERY, L - DRAIN_EVERY / 2, DRAIN_EVERY))
+    res = []
+    for a in sorted(at):
+        pts = []
+        for d in (a - DRAIN["len"] / 2, a + DRAIN["len"] / 2):
+            x = np.interp(d, s, curb[:, 0])
+            y = np.interp(d, s, curb[:, 1])
+            z = np.interp(d, s, curb[:, 2])
+            k = min(int(np.searchsorted(s, d)), len(s) - 1)
+            o = out[k] / max(np.hypot(*out[k]), 1e-9)
+            pts.append([x - o[0] * (GUTTER["w"] / 2), y - o[1] * (GUTTER["w"] / 2), z])
+        res.append(_chunk(DRAIN, DRAIN["w"], np.array(pts)))
+    return res
+
+
+def build_tile(frame, tx, ty, cells, elev, urban_fn=None, walks=None):
     """The chunks of one tile. cells: the mapgeom.Features of the "roads" layer of every cell touching
     the tile; elev(lat, lon) -> metres (the DEM); urban_fn: as road_specs. Features in several cells are
     taken once (by id). The carriageways, then each road's sidewalks / gutters / markings (extras), cut
-    where another road's carriageway crosses them. Pure given its inputs (sorted by feature id)."""
+    where another road's carriageway crosses them. walks: a list that gets the sidewalk runs (dicts
+    pts / side / caps, clipped exactly to the tile, caps: whether each end is a real end) for the
+    sidewalk mesh (sidewalks.py) and storm drains among the chunks; None: sidewalks as decals. Pure
+    given its inputs (sorted by feature id)."""
     x0, y0, x1, y1 = tile_bbox(tx, ty)
     box = (x0 - OVERLAP, y0 - OVERLAP, x1 + OVERLAP, y1 + OVERLAP)
     near = (x0 - NEAR_M, y0 - NEAR_M, x1 + NEAR_M, y1 + NEAR_M)
@@ -415,9 +472,22 @@ def build_tile(frame, tx, ty, cells, elev, urban_fn=None):
         if not ex:
             continue
         blockers = [(p2[:, :2], s2.width / 2 + CUT_MARGIN) for f2, s2, p2, _ in roads if f2 != fid]
+        walk_blockers = [(p2[:, :2], sidewalk_stop(spec, fid, s2, f2)) for f2, s2, p2, _ in roads if f2 != fid]
         for look, w, line in ex:
+            walk = look["m"] == SIDEWALK["m"]
+            if walk and walks is not None:
+                exact = (x0, y0, x1, y1)
+                for piece in clip_polyline(line, *exact):
+                    for run in cut_outside(piece, walk_blockers, 0.5):
+                        run = densify(simplify(run))
+                        if len(run) < 2:
+                            continue
+                        caps = (not _on_box(run[0], exact), not _on_box(run[-1], exact))
+                        walks.append({"pts": run, "side": look["side"], "caps": caps})
+                        chunks.extend(drains(run, look["side"], caps))
+                continue
             for piece in clip_polyline(line, *box):
-                for run in cut_outside(piece, blockers):
+                for run in cut_outside(piece, walk_blockers if walk else blockers, 0.5 if walk else 2.0):
                     for c in split(densify(simplify(run))):
                         if len(c) >= 2:
                             chunks.append(_chunk(look, w, c))
@@ -464,12 +534,26 @@ class Tracker:
         conn.send({"type": "roads_tile", "anchorId": aid, "key": f"{key[0]}_{key[1]}", "path": path, "n": n})
 
 
-def write_tile(out_dir, vfs_dir, aid, tx, ty, chunks):
-    """Write a tile's chunks (atomically); returns (vfs path, number of chunks)."""
+def write_tile(out_dir, vfs_dir, aid, tx, ty, chunks, walks=None):
+    """Write a tile's chunks (atomically) and its sidewalk mesh (walks: build_tile's runs, if any:
+    `walks_<a>_<tx>_<ty>.cdae`, announced in the tile as "walk": {shape, pos}); returns (vfs path,
+    number of chunks)."""
+    import sidewalks
     name = f"roads_{aid}_{tx}_{ty}.json"
     path = os.path.join(out_dir, name)
+    data = {"v": VERSION, "chunks": chunks}
+    if walks:
+        x0, y0, _, _ = tile_bbox(tx, ty)
+        b = sidewalks.Builder((x0, y0, 0.0))
+        for wk in walks:
+            curb, out = sidewalks.run_geometry(wk["pts"], wk["side"], SIDEWALK["w"])
+            b.add_run(curb, out, SIDEWALK["w"], caps=wk["caps"])
+        if not b.empty():
+            shape = f"walks_{aid}_{tx}_{ty}.cdae"
+            b.write(os.path.join(out_dir, shape))
+            data["walk"] = {"shape": f"{vfs_dir}/{shape}", "pos": [x0, y0, 0.0]}
     tmp = path + ".tmp"
     with open(tmp, "w") as f:
-        json.dump({"v": VERSION, "chunks": chunks}, f, separators=(",", ":"))
+        json.dump(data, f, separators=(",", ":"))
     os.replace(tmp, path)
     return f"{vfs_dir}/{name}", len(chunks)

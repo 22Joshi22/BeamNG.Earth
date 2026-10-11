@@ -972,6 +972,44 @@ three days of testing: dem 741 MB / 7.5k files, imagery 1.4 GB / 35k, deshadow 7
 - Measured at Fells Point: 809 DecalRoads, +0.08 ms per frame (A/B, 5 rounds); every sampled road
   node within 250 m is asphalt under the tyres.
 
+### Raised sidewalks, curbs and storm drains (`server/sidewalks.py`; 2026-10-11)
+- Asked by the user ("will that include making the curbs and sidewalks 3d?"). A curb is a sharp
+  15 cm step, which neither the height field (1 m+ samples) nor a decal can draw.
+- First cut, replaced: a MeshRoad slab per sidewalk piece. The user found the curbs "there but
+  invisible": `sidewalk_concrete` is a translucent decal material that draws nothing on a MeshRoad,
+  so the car stood on an invisible top. Each slab was also three draw calls with no curb profile.
+- How West Coast USA does it (its level files): no MeshRoads at all. Each district's sidewalks are
+  one modelled mesh (64 `sidewalk_<district>.dae`, 231k triangles), with:
+  - a curb profile textured from the `curbs` trim sheet (`/assets/materials/trim/concrete/curbs`:
+    8 bands of plain / red / yellow / white / green curb, each a light top over a darker face);
+  - slab tops from `sidewalk1` (a 4096 x 1024 sheet of 5 sidewalk strips with panel joints);
+  - the gutter, tactile paving at ramps, a collision mesh, and LODs.
+  That is one draw call per material per district. Storm drains are decals in the official maps
+  (Driver Training's `m_metal_grid_drain` / `m_concrete_drain` decal-road materials).
+- Ours, the same way per road tile:
+  - `roads.build_tile(..., walks=[])` returns the sidewalk runs, cut at crossings, clipped exactly
+    to the tile, with end caps only at real ends. `sidewalks.Builder` sweeps a fixed profile along
+    each run: a 15 cm face with a 2 cm batter, a bevelled nose and a 15 cm curb top band (`curbs`,
+    plain band), then the slab (`sidewalk1`, rising 1.5 % away from the road) and a back face.
+  - Heights follow the road's graded centreline z, and grading keeps the sidewalk band flat.
+  - It is written as one two-material `.cdae` (`cdae.encode` now takes several materials, one
+    primitive each) and announced in the tile JSON as `"walk": {shape, pos}`.
+  - The mod shows it as one TSStatic with `collisionType "Visible Mesh"` (governor kind `roadWalk`).
+    Collision needs `be:reloadCollision()` (asynchronous, ~1.8 ms), which runs at most every 0.5 s
+    while meshes come and go.
+  - No sidewalk decals any more.
+- Storm drain inlets: a metal grate DecalRoad (1 x 0.45 m) in the gutter, 2.5 m in from each real
+  end of a sidewalk run (the corners) and every 60 m along it.
+- Corners: where two streets with sidewalks cross, the wider road's sidewalk (then the smaller id)
+  runs on to the other's curb, and the other's stops against its outer edge. There is no gap and
+  no overlap. Sidewalks are cut at 0.5 m resolution.
+- Grading keeps the sidewalk band flat: on the classes that get sidewalks in towns, the flat
+  shoulder is the sidewalk + 0.5 m instead of 1 m (everywhere, so it never depends on the land
+  cover).
+- All road objects live in one SimGroup (`bngEarthRoads`), emptied when roads.lua loads. A Lua
+  reload rebuilds the VM without unloading extensions, and after a few reloads 3,558 DecalRoads were
+  in the scene for 1,011 tracked (the user saw fps drop).
+
 ## Ground graded under roads (`server/grading.py`, `earthd --grading on`, 2026-10-11)
 - From the official-map study (docs/research/2026-10-11-official-road-study.md §3):
   - Along each road, the centreline height is the DEM every 2 m, Gaussian-smoothed (σ 12 m;

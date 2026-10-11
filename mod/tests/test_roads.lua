@@ -89,6 +89,38 @@ T.check(roads.onTile({ anchorId = 2, key = '1_1', path = '/t/a.json', n = 2 }, 2
 T.check(roads.setEnabled(true) == true, 'on again: reported (core then asks the server for the tiles)')
 T.check(roads.setEnabled(true) == false, 'already on: nothing to ask')
 
+-- raised sidewalks: the tile's sidewalk mesh is one TSStatic that collides; it goes with its tile
+files['/t/w.json'] = '{ chunks = { ' .. chunk(0) .. ' }, walk = { shape = "/t/walks_2_5_5.cdae", pos = { 256, 512, 0 } } }'
+local function statics()
+  local r = {}
+  for _, o in pairs(S.objects) do if o.class == 'TSStatic' then r[#r + 1] = o end end
+  return r
+end
+S.calls.reloadCollision = 0
+roads.RELOAD_EVERY_S = 0
+roads.onTile({ anchorId = 2, key = '5_5', path = '/t/w.json', n = 1 }, 2)
+roads.update(gov, 2)
+local w = statics()[1]
+T.check(#statics() == 1 and roads.status().walks == 1, 'sidewalk mesh made')
+T.check(w.fields.shapeName == '/t/walks_2_5_5.cdae' and w.fields.collisionType == 'Visible Mesh' and w.canSave == false,
+  'shape, collides with its visible mesh, not saved')
+T.check(w.pos.x == 256 and w.pos.y == 512, 'at the tile corner')
+T.check(S.calls.reloadCollision == 1, 'collision reloaded for it')
+roads.update(gov, 2)
+T.check(S.calls.reloadCollision == 1, 'nothing more while nothing changes')
+roads.onDrop({ anchorId = 2, key = '5_5' })
+roads.update(gov, 2)
+T.check(#statics() == 0 and decalRoads() == 0 and S.calls.reloadCollision == 2, 'dropped tile: mesh deleted, collision reloaded')
+
+-- a Lua reload: the new module state deletes the objects the old one left
+roads.onTile({ anchorId = 2, key = '0_0', path = '/t/a.json', n = 2 }, 2)
+roads.update(gov, 2)
+T.check(decalRoads() == 2, 'made')
+package.loaded['beamngEarth/roads'] = nil
+local fresh = require('beamngEarth/roads')
+T.check(decalRoads() == 0 and fresh.status().roads == 0, 'a reloaded module sweeps the old roads')
+roads = fresh
+
 -- level end
 roads.onTile({ anchorId = 2, key = '0_0', path = '/t/a.json', n = 2 }, 2)
 roads.reset()

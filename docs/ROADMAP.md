@@ -279,8 +279,10 @@ Popular trails are where players will test the terrain hardest, and they are wel
   Valley's dirt tracks, width by class or the width rule. The same roads are painted into the
   surface masks (asphalt / loose gravel / dirt under the tyres). Bridges, tunnels and segments off
   ground level are left out. 809 roads around Fells Point cost +0.08 ms per frame. Settings page:
-  "Roads" on / off. Next: grading the ground under roads, lane / edge markings, junction shapes,
-  bridges, the navgraph.
+  "Roads" on / off. Since then: sidewalks, gutters and lines, cobblestone streets, the ground graded
+  under roads, raised sidewalks with curbs as one mesh per road tile (West Coast USA's way and
+  materials) and storm drain grates (ARCHITECTURE "Raised sidewalks"). Next: curb ramps / driveways,
+  corner radii, painted curbs (red / yellow bands) by rule, bridges, the navgraph.
 - Overture transportation (GeoParquet via the STAC per-file index; 2.6-3.7 s per 30 km box cold).
 - Near roads: meshes on the 2 m lattice, ground graded under them on the server so physics and
   visuals agree; markings; bridges as collidable decks. Far roads painted into the imagery.
