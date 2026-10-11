@@ -713,9 +713,12 @@ over to AWS, a 400 wrote a permanent `.404` marker, and the User-Agent lived in 
   file; jsonReadFile / jsonWriteFile, lat/lon rounded to 1e-6). No file yet: the list starts with
   `places.SEED` (docs/PLACES.md's first table, then El Capitan Meadow, Pikes Peak, the Fuji Subaru
   Line 5th station, Everest North Base Camp, Stelvio Pass, the Blue Mountains) and is written at
-  once, so an emptied list stays empty. A file that cannot be read (or is not a places file): one
-  warning (log and page), its text copied to `beamngEarth_places.json.bak` (readFile / writeFile),
-  an empty list; broken entries are skipped with one warning, duplicate ids renumbered.
+  once, so an emptied list stays empty. A file that cannot be read (or is not a places file, i.e.
+  has no `places` list): one warning (log and page), its text copied to
+  `beamngEarth_places.json.bak` (readFile / writeFile), an empty list; broken entries are skipped
+  with one warning after the same copy, duplicate ids (and ids / nextId at or above 2^31)
+  renumbered. The file is never overwritten with less than it held without that copy: when the copy
+  cannot be made, nothing is saved for the session (the warning says so; the lists still work).
 - Recent places: `beamngEarth_core.teleport(lat, lon[, name])` records every teleport it sends
   (`kind = 'teleport'`, the place's name when it came from the list) and the level start's own
   (`kind = 'start'`, from `onLevelStart` or the first hello); newest first, an older one within 200 m
@@ -730,8 +733,11 @@ over to AWS, a 400 wrote a permanent `.404` marker, and the User-Agent lived in 
   "-36 N", minutes/seconds >= 60, out-of-range values.
 - Settings page bridge (settings.lua): `uiPlaces`, `uiPlaceAddHere(name)`, `uiPlaceAdd(name, text)`,
   `uiPlaceRename(id, name)`, `uiPlaceDelete(id)`, `uiPlaceGo(id)`, `uiPlaceGoText(text)`,
-  `uiPlaceGoRecent(i)`, each answering `{ ok, error, places, recent, cannotGo, here, warning }` (in a
+  `uiPlaceGoRecent(i, lat, lon)` (the row's lat/lon decide: a Go moves its place to the front, so
+  a double click's index is stale), each answering `{ ok, error, places, recent, cannotGo, here, warning }` (in a
   pcall: an error inside answers `ok = false` with it, never nothing).
 - Tests: `mod/tests/test_places.lua` (seed on the first run only, round trip, corrupt files, recent
-  dedup / order / cap, parsing, go and its checks, the bridge), `test_core_stubbed.lua` (the level
-  start and console teleports recorded). The Vue section is checked in-game only.
+  dedup / order / cap, parsing, go and its checks, the bridge; the review's stale recent index,
+  unreadable file without a copy, non-places JSON, skipped entries, huge ids),
+  `test_core_stubbed.lua` (the level start and console teleports recorded). The Vue section is
+  checked in-game only.

@@ -205,7 +205,8 @@ player right now, e.g.:
   shown; Save off until there is one), a "Latitude, longitude" field (Google Maps' "lat, lon" paste,
   N/S/E/W, degrees-minutes-seconds) with Go and Save (under the name above), the saved places with
   Go / Rename (inline field, OK / Cancel) / Delete (the button reads "Confirm" for 4 s), and the
-  recent places (name or lat/lon, "level start" tag) with Go / Save. Go is disabled with a note
+  recent places (name or lat/lon, "level start" tag) with Go / Save (Go sends the row's lat/lon
+  with its index, so a double click cannot land on the row that moved up). Go is disabled with a note
   ("Companion server not connected", "No player vehicle") when it cannot teleport; errors and
   "Going to ..." show in a line at the top. BngInput fields (`v-bng-text-input`, so typing does not
   drive the car), BngButton text buttons, no glyphs, no ::before / ::after. The 2 s poll also

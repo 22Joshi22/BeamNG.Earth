@@ -9,7 +9,7 @@
 --   beamngEarth_settings.setPageExists(true)   (index.js, once the button is registered)
 --   beamngEarth_settings.uiPlaces() / uiPlaceAddHere(name) / uiPlaceAdd(name, "lat, lon") /
 --     uiPlaceRename(id, name) / uiPlaceDelete(id) / uiPlaceGo(id) / uiPlaceGoText("lat, lon") /
---     uiPlaceGoRecent(i)  -> { ok, error, places, recent, cannotGo, here, warning }  (places.lua;
+--     uiPlaceGoRecent(i, lat, lon)  -> { ok, error, places, recent, cannotGo, here, warning }  (places.lua;
 --     saved in places.FILE, apart from the settings)
 -- Values persist in FILE (jsonReadFile / jsonWriteFile, as taa_standalone). Every default is
 -- today's behaviour, so a missing or broken file changes nothing. The dev overlays themselves are
@@ -340,7 +340,7 @@ function M.uiPlaceRename(id, name) return placesCall(places.uiRename, id, name) 
 function M.uiPlaceDelete(id) return placesCall(places.uiDelete, id) end
 function M.uiPlaceGo(id) return placesCall(places.uiGo, id) end
 function M.uiPlaceGoText(text) return placesCall(places.uiGoText, text) end
-function M.uiPlaceGoRecent(i) return placesCall(places.uiGoRecent, i) end
+function M.uiPlaceGoRecent(i, lat, lon) return placesCall(places.uiGoRecent, i, lat, lon) end
 
 ------------------------------------------------------------------------------------------
 -- extension hooks

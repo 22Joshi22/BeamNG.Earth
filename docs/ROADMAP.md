@@ -358,7 +358,8 @@ Plan (with the netfetch / rate-limit work):
    Built offline (2026-10-11, branch feature/places; ARCHITECTURE.md "Saved places"): `places.lua`
    (own file, seeded with docs/PLACES.md and a few well-known drives), recent places recorded by
    `beamngEarth_core.teleport`, a "Places" section on the settings page (save here, lat/lon or a
-   Google Maps paste, Go / Rename / Delete, recent places); waiting for its in-game check.
+   Google Maps paste, Go / Rename / Delete, recent places); reviewed offline (stale recent-row
+   index, file never overwritten without a .bak copy); waiting for its in-game check.
 2. **Easy install and start**: server auto-start with the game / launcher, one settings file,
    Windows support.
 3. **Real weather** (Open-Meteo, keyless): clouds, rain, fog, wind; integrates with the game's

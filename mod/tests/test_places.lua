@@ -300,4 +300,81 @@ res = settings.uiPlaceGoRecent(1)
 T.check(res and res.ok == false and res.error:match('boom'), 'bridge: an error inside answers ok = false (never nothing)')
 places.uiGoRecent = realGoRecent
 
+-- review (2026-10-11): the page's row index goes stale once a Go moves its place to the front (a
+-- double click, or a level start between the poll and the click): the row's own lat/lon decide
+places._reset()
+files[F] = { version = 1, places = {} }
+places.load()
+places.noteTeleport(10, 10, 'C', 'teleport'); places.noteTeleport(20, 20, 'B', 'teleport'); places.noteTeleport(30, 30, 'A', 'teleport')
+res = settings.uiPlaceGoRecent(3, 10, 10) -- the row "C" (third)
+T.check(res.ok and tele[#tele][1] == 10 and res.recent[1].name == 'C', 'go recent: the row the page showed')
+res = settings.uiPlaceGoRecent(3, 10, 10) -- the same click again, before the page re-rendered
+T.check(res.ok and tele[#tele][1] == 10 and tele[#tele][3] == 'C', 'go recent: a stale index still goes to the row\'s place (got '
+  .. tostring(tele[#tele][1]) .. ')')
+res = settings.uiPlaceGoRecent(9, 20, 20)
+T.check(res.ok and tele[#tele][1] == 20 and tele[#tele][3] == 'B', 'go recent: an index past the end, found by its lat/lon')
+res = settings.uiPlaceGoRecent(1, 'nan', 0)
+T.check(res.ok and tele[#tele][1] == 20, 'go recent: no usable lat/lon from the page, the index alone (as before)')
+
+-- review: never overwrite a file that could not be read when no copy of it could be kept (a
+-- transient read failure would otherwise lose the whole list at the next level start)
+places._reset()
+warnings, raw, files[F] = {}, {}, 'NIL' -- exists, jsonReadFile fails, readFile fails too: no .bak
+places.load()
+T.check(#warnings == 1 and warnings[1]:match('not saved'), 'unreadable, no copy: the warning says changes are not saved')
+places.noteTeleport(1, 1, nil, 'start'); places.add('X', 2, 2)
+T.check(files[F] == 'NIL' and raw[F .. '.bak'] == nil, 'unreadable, no copy: the file is never overwritten')
+T.check(#places.list() == 1 and #places.recentList() == 1, 'unreadable, no copy: the session still works in memory')
+T.check(places.uiState().warning:match('not saved'), 'unreadable, no copy: the page says so')
+places.load() -- next session: the file reads again
+T.check(files[F] == 'NIL', 'unreadable, no copy: a reload does not write either')
+places._reset(); files[F] = { version = 1, places = {} }; places.load(); places.add('Y', 3, 3)
+T.check(type(files[F]) == 'table' and #files[F].places == 1, 'a readable file is written again after a reset')
+
+-- review: JSON that is not a places file (no places list: an array, another file's content) is
+-- kept as a corrupt one, never silently overwritten by an empty list
+for _, other in ipairs({ { { id = 1, name = 'A', lat = 1, lon = 2 } }, { version = 1, nextId = 4 }, { places = {}, recent = 'x' } }) do
+  places._reset()
+  warnings, raw = {}, { [F] = 'the text' }
+  files[F] = other
+  places.load()
+  local isPlaces = other.places ~= nil
+  if isPlaces then
+    T.check(#warnings == 0, 'a places file with a broken recent list: no warning')
+  else
+    T.check(#warnings == 1 and raw[F .. '.bak'] == 'the text', 'not a places file: one warning and a .bak copy')
+  end
+end
+
+-- review: places skipped on load are gone at the next save, so the file as it was is copied first
+places._reset()
+warnings, raw = {}, { [F] = 'with a typo' }
+files[F] = { version = 1, places = { { id = 1, name = 'Good', lat = 1, lon = 1 }, { id = 2, name = 'Typo', lat = 95, lon = 1 } } }
+places.load()
+T.check(raw[F .. '.bak'] == 'with a typo' and #warnings == 1 and warnings[1]:match('%.bak'), 'skipped places: the file as it was is kept in .bak')
+places.add('New', 1, 2)
+T.check(#files[F].places == 2, 'skipped places: saved after the copy')
+places._reset()
+warnings, raw = {}, {} -- the copy fails: the file is left alone
+files[F] = { version = 1, places = { { id = 1, name = 'Good', lat = 1, lon = 1 }, { id = 2, name = 'Typo', lat = 95, lon = 1 } } }
+places.load()
+places.add('New', 1, 2)
+T.check(#files[F].places == 2 and files[F].places[2].name == 'Typo', 'skipped places, no copy: the file is not overwritten')
+
+-- review: ids and nextId from a hand-edited file stay distinct integers (a huge nextId made
+-- nextId + 1 == nextId, two places shared an id and Delete removed the wrong one)
+places._reset()
+warnings = {}
+files[F] = { version = 1, nextId = 1e300, places = { { id = 1e300, name = 'Big', lat = 1, lon = 1 }, { id = 2.5, name = 'Half', lat = 2, lon = 2 } } }
+places.load()
+local x1, x2 = places.add('X1', 3, 3), places.add('X2', 4, 4)
+local seen, distinct = {}, true
+for _, pp in ipairs(places.list()) do
+  if seen[pp.id] or pp.id ~= math.floor(pp.id) or pp.id >= 2 ^ 31 then distinct = false end
+  seen[pp.id] = true
+end
+T.check(distinct and #places.list() == 4, 'huge / fractional ids: renumbered, all distinct small integers')
+places.remove(x1.id)
+T.check(places.find(x2.id).name == 'X2' and #places.list() == 3 and places.list()[1].name == 'Big', 'huge ids: Delete removes the right place')
+
 T.done('test_places')

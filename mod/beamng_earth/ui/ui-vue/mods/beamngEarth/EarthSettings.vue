@@ -555,7 +555,7 @@ function saveText() {
 }
 
 function goPlace(p) {
-  placesCall(`uiPlaceGo(${Number(p.id)})`, `Going to ${p.name}`)
+  placesCall(`uiPlaceGo(${luaNum(p.id)})`, `Going to ${p.name}`)
 }
 
 function startRename(p) {
@@ -565,7 +565,7 @@ function startRename(p) {
 }
 
 function commitRename(p) {
-  placesCall(`uiPlaceRename(${Number(p.id)}, ${luaStr(renameText.value)})`, "Renamed", () => { renamingId.value = null })
+  placesCall(`uiPlaceRename(${luaNum(p.id)}, ${luaStr(renameText.value)})`, "Renamed", () => { renamingId.value = null })
 }
 
 // Delete asks once more: the button reads "Confirm" for 4 s
@@ -578,15 +578,24 @@ function deletePlace(p) {
     return
   }
   confirmDeleteId.value = null
-  placesCall(`uiPlaceDelete(${Number(p.id)})`, `Deleted ${p.name}`)
+  placesCall(`uiPlaceDelete(${luaNum(p.id)})`, `Deleted ${p.name}`)
 }
 
+// a number for the Lua side ("nil" when it is not one; never JS's NaN / Infinity)
+function luaNum(v) {
+  const n = Number(v)
+  return Number.isFinite(n) ? String(n) : "nil"
+}
+
+// the row's lat/lon go along: a Go moves its place to the front, so the index alone can be stale
 function goRecent(r) {
-  placesCall(`uiPlaceGoRecent(${Number(r.index)})`, `Going to ${r.name || r.text}`)
+  placesCall(`uiPlaceGoRecent(${luaNum(r.index)}, ${luaNum(r.lat)}, ${luaNum(r.lon)})`, `Going to ${r.name || r.text}`)
 }
 
+// toFixed: String(1e-7) is "1e-7", which the lat/lon parser does not read
 function saveRecent(r) {
-  placesCall(`uiPlaceAdd(${luaStr(r.name || "")}, ${luaStr(`${r.lat}, ${r.lon}`)})`, "Saved")
+  const ll = `${Number(r.lat).toFixed(6)}, ${Number(r.lon).toFixed(6)}`
+  placesCall(`uiPlaceAdd(${luaStr(r.name || "")}, ${luaStr(ll)})`, "Saved")
 }
 
 onMounted(() => {

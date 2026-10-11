@@ -7,8 +7,10 @@
 --            place of each level start ('start'), at most RECENT_MAX, one per DEDUP_M
 -- Persisted in FILE (apart from the settings file). No file yet: the list starts with SEED (the
 -- docs/PLACES.md benchmarks and a few well-known drives; data only, the player can edit or delete
--- every one) and is written at once. A file that cannot be read: one warning, a copy of its text
--- in FILE .. '.bak' (when the engine can copy it), and an empty list.
+-- every one) and is written at once. A file that cannot be read (or is not a places file): one
+-- warning, a copy of its text in FILE .. '.bak', and an empty list. Places skipped on load (no
+-- name, no valid lat/lon) are copied the same way first. The file is never overwritten with less
+-- than it held unless that copy exists: when it cannot be made, nothing is saved this session.
 
 local M = {}
 
@@ -19,6 +21,7 @@ M.VERSION = 1
 M.RECENT_MAX = 10
 M.DEDUP_M = 200   -- a recent place this close to a newer one is the same place
 M.NAME_MAX = 60
+M.ID_MAX = 2 ^ 31 -- ids (and nextId) from the file at or above this are renumbered
 
 -- The first run's list (docs/PLACES.md first table, then well-known drives; approximate points).
 M.SEED = {
@@ -39,6 +42,7 @@ M.SEED = {
 local places, recent, nextId = {}, {}, 1
 local loaded = false
 local warning = nil -- the last load's problem, shown on the page
+local noSave = false -- the file lost something on load and could not be copied: never overwrite it
 
 -- great-circle distance in m (mean Earth radius; the dedup needs no ellipsoid)
 local function distance(lat1, lon1, lat2, lon2)
@@ -177,7 +181,7 @@ end
 
 local function save(path)
   local write = rawget(_G, 'jsonWriteFile')
-  if not write then return false end
+  if not write or noSave then return false end
   local out = { version = M.VERSION, nextId = nextId, places = {}, recent = {} }
   for i, p in ipairs(places) do out.places[i] = { id = p.id, name = p.name, lat = p.lat, lon = p.lon } end
   for i, r in ipairs(recent) do out.recent[i] = { lat = r.lat, lon = r.lon, name = r.name, kind = r.kind } end
@@ -208,7 +212,7 @@ end
 -- Read the file (path: FILE). Returns the places, the recent places and a list of warnings.
 function M.load(path)
   path = path or M.FILE
-  loaded, warning = true, nil
+  loaded, warning, noSave = true, nil, false
   places, recent, nextId = {}, {}, 1
   local read = rawget(_G, 'jsonReadFile')
   local exists = FS and FS.fileExists and FS:fileExists(path)
@@ -221,10 +225,13 @@ function M.load(path)
     save(path)
     return places, recent, warnings
   end
-  if not ok or type(data) ~= 'table' or (data.places ~= nil and type(data.places) ~= 'table') then
+  -- every places file this module writes has a places list (empty: {})
+  if not ok or type(data) ~= 'table' or type(data.places) ~= 'table' then
     local why = not ok and ('unreadable: ' .. tostring(data)) or 'not a places file'
     local copied = backup(path)
-    warning = 'Places file ' .. why .. (copied and ' (a copy is in ' .. path .. '.bak)' or '') .. '; starting empty'
+    noSave = not copied
+    warning = 'Places file ' .. why .. (copied and ' (a copy is in ' .. path .. '.bak)'
+      or ' (no copy could be kept, so changes are not saved this session)') .. '; starting empty'
     log('W', 'beamngEarth', 'places: ' .. warning)
     return places, recent, { warning }
   end
@@ -234,14 +241,15 @@ function M.load(path)
     local name = type(p) == 'table' and cleanName(p.name)
     if lat and name then
       local id = tonumber(type(p) == 'table' and p.id)
-      if not id or used[id] or id ~= math.floor(id) or id < 1 then id = nil end
+      if not id or used[id] or id ~= math.floor(id) or id < 1 or id >= M.ID_MAX then id = nil end
       places[#places + 1] = { id = id, name = name, lat = lat, lon = lon }
       if id then used[id] = true; nextId = math.max(nextId, id + 1) end
     else
       warnings[#warnings + 1] = 'a place without a name or a valid lat/lon was skipped'
     end
   end
-  nextId = math.max(nextId, tonumber(data.nextId) or 1)
+  local n = tonumber(data.nextId)
+  if n and n >= 1 and n < M.ID_MAX then nextId = math.max(nextId, math.floor(n)) end
   for _, p in ipairs(places) do
     if not p.id then p.id = nextId; nextId = nextId + 1 end
   end
@@ -253,7 +261,12 @@ function M.load(path)
     end
   end
   if #warnings > 0 then
+    -- the next save drops them: keep the file as it was first
+    local copied = backup(path)
+    noSave = not copied
     warning = warnings[1] .. (#warnings > 1 and (' (' .. #warnings .. ' entries)') or '')
+      .. (copied and '; the file as it was is in ' .. path .. '.bak'
+        or '; no copy could be kept, so changes are not saved this session')
     log('W', 'beamngEarth', 'places: ' .. warning)
   end
   return places, recent, warnings
@@ -416,13 +429,25 @@ function M.uiGoText(text)
   return result(M.goTo(lat, lon))
 end
 
-function M.uiGoRecent(index)
+-- lat, lon: the row the page showed. Its index is only a hint: a Go moves its place to the front
+-- (a double click, or a level start between the poll and the click, would go elsewhere).
+function M.uiGoRecent(index, lat, lon)
   ensure()
   local r = recent[tonumber(index) or 0]
+  lat, lon = validLatLon(lat, lon)
+  if lat then
+    if not (r and distance(r.lat, r.lon, lat, lon) < 1) then
+      r = nil
+      for _, x in ipairs(recent) do
+        if distance(x.lat, x.lon, lat, lon) < 1 then r = x; break end
+      end
+    end
+    if not r then return result(M.goTo(lat, lon)) end -- gone from the list since: still the row's place
+  end
   if not r then return result(false, 'no such recent place') end
   return result(M.goTo(r.lat, r.lon, r.name))
 end
 
-function M._reset() places, recent, nextId, loaded, warning = {}, {}, 1, false, nil end -- tests
+function M._reset() places, recent, nextId, loaded, warning, noSave = {}, {}, 1, false, nil, false end -- tests
 
 return M
