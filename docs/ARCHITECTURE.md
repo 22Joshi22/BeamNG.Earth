@@ -519,7 +519,13 @@ their chunk arrived.
   geometric prior along candidate lines; a state-boundary prior only from a generic boundary dataset,
   never hard-coded lines); z10–z11 source tiles (far rings) stay raw; detection speed (30 m grid, candidate
   prefilter); de-shadow could fit its sun per flight using these seams (§6); in-game check of a
-  handful of known state-line seams before default-on.
+  handful of known state-line seams before default-on. Found in review, not fixed: a field reaches
+  6 km into its neighbours, so where a corrected region meets a raw one (a region beyond 24 km from
+  the anchor, which is never queued; L5 tiles at that distance still use z12 sources; likewise the
+  z12/z11 switch between L5 and L6) a seam's half-step stops at the z12 tile edge: a straight step
+  of up to half the seam's step, ±6 km along that edge. While a region is pending the same step is
+  temporary. A fix needs the fields out to the reach of the z12 sources, or the z12 fields applied
+  to the z10/z11 tiles.
 ## Real weather, level parity, gravity (quick wins 1, 2, 4; built offline 2026-10-10, feature/weather)
 docs/research/2026-10-10-real-weather.md, 2026-10-10-game-feature-quick-wins.md §5.1-5.4, probe facts
 in 2026-10-10-weather-probe-results.md.
