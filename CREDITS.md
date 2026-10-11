@@ -2,8 +2,9 @@
 
 BeamNG.Earth is built on open data, open-source software and the work of many people. This file
 lists every data source, service, library, tool and reference the project uses or has used, with
-its licence and the attribution it asks for. The in-game attribution line (BeamNG.Earth window /
-settings page) shows the credits for the data currently on screen.
+its licence and the attribution it asks for. In game, the data credits overlay (a small text in a
+screen corner, on by default; docs/DEVTOOLS.md) names the sources of what is around the player right
+now, and the settings page shows it together with the full attribution line of the session.
 
 Status: **in use** = used by the current main branch; **branch** = on a feature branch, not merged
 yet; **planned** = in the roadmap, not used yet; **reference** = consulted for research or tuning

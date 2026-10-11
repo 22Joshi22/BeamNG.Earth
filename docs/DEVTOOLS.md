@@ -41,6 +41,55 @@ player right now, e.g.:
 - The full credit list stays in CREDITS.md and on the settings page.
 - Built after the dev tools branch is merged (shares ui.lua / settings.lua).
 
+### Built (2026-10-10, branch feature/credits; offline-tested, in-game check pending)
+- **Server** `server/credits.py` + small hooks: `dem.Dem.served` records which provider served each
+  DEM tile (Mapterhorn / AWS fallback / none); `Server.make_tile` stores every tile's source ids in
+  `TileInfo.credits` (`img:<source>` for each imagery source with texels in its texture, from
+  `Imagery.render`'s counts - imagery.py is unchanged; `dem:<provider>` for each DEM tile under the
+  footprint at the tile's DEM zoom); `Connection` has a `credits.Tracker`. The near set = sources of
+  the shown tiles (previous anchors' included) whose footprint is within 2 km of the player, plus
+  Open-Meteo once weather went to the mod; the far set = the other shown tiles' sources not already
+  near. Message `{"type":"credits","v":1,"near","far","ids","farIds"}`, e.g. near "Imagery: USGS
+  The National Map | Elevation: Mapterhorn (mapterhorn.com/attribution) | Weather data by
+  Open-Meteo.com", far "Far imagery: EOxCloudless https://cloudless.eox.at by EOX IT Services GmbH
+  (Contains modified Copernicus Sentinel data 2023)". Checked after poses and swaps at most once a
+  second, sent only on change, re-sent on hello. `earthd --credits on|off` (default on);
+  `Server()` has none, so the golden message streams (test_cli_default, test_v131_default) are
+  unchanged. Agreement table, server/README.md protocol table.
+- **Mod** `beamngEarth/credits.lua` (driven by core.lua): one background-draw-list rectangle
+  (black, 30 %) and one `ImDrawList_AddText2` per frame (white, 80 %), no window; the text is
+  measured with `CalcTextSize` only when it, the size or the screen width changes, and wraps at 60 %
+  of the screen width. Shown while our world is active (`st.active`), hidden in the pause menu (UI
+  state `menu*`, via core's `onUiChangedState`), on loading screens and while the big map is open
+  (`freeroam_bigMapMode.bigMapActive()`). Until the first credits message (an older server, or the
+  first seconds of a session) it shows the session's attribution line (`hello.attribution`, or the
+  built-in one). A new hello clears the previous session's credits.
+- **Settings** (settings.lua + EarthSettings.vue, "Interface"): `creditsVisible` (on),
+  `creditsCorner` (bottom-left / bottom-right / top-left / top-right; bottom-left), `creditsSize`
+  (small 11 px / normal 14 px; small), persisted in `/settings/beamngEarth.json`; the
+  "Attribution" section shows the credits on screen now.
+- Tests: `server/tests/test_credits.py` (wording against the sources' own credits, DEM keys vs what
+  `Dem.sample` reads, `Dem.served`, per-tile sources in `make_tile`, the near / far split, change-only
+  and throttled sending, re-send on hello, an in-process session, the default server sending none),
+  `test_protocol_agreement.py` (the table, both sides), luajit `mod/tests/test_credits.lua`,
+  `test_core_stubbed.lua`.
+- Measured offline: a tile's sources cost ~0.12 ms in `make_tile` (a 3 x 3 point DEM-key lookup;
+  tile builds take tens of ms); a credits check over 2000 shown tiles ~0.9 ms (at most one a second);
+  a message is ~0.3-0.6 KB. Mod: `credits.draw` allocates nothing per frame (0 bytes over 10000
+  frames, counted in the interpreter, test_credits.lua; the attribution fallback is a constant string
+  from farfield's counters, not a `farfield.stats()` table), ~0.3 us of Lua per frame in the
+  interpreter with a stub imgui, plus the two draw-list calls.
+- Deviations: the far part uses the same wording as the near one (EOX asks for its exact wording,
+  so "far: Sentinel-2 cloudless" became "Far imagery: EOxCloudless ... (Contains modified Copernicus
+  Sentinel data 2023)"). No capture year for USGS (ImageryOnly tiles carry no date) and no
+  underlying dataset for Mapterhorn (its tiles do not say which survey they come from): the credit
+  names Mapterhorn with its attribution page. OSM / Overture are not used yet, so not credited.
+  Shown whenever our world is active, also in another level after a teleport (our tiles are on
+  screen there too).
+- Still to check in-game: the text size and readability on bright and dark ground, that the
+  background draw list sits above the 3D view and below the game's own HTML UI as expected, the
+  UI state names of the 0.39 pause menu (`menu*` assumed from the stock Lua) and the big map.
+
 ## Entry point
 - A **"Dev"** collapsible section / tab in the existing BeamNG.Earth window (ui.lua), plus a console
   API `beamngEarth_dev.set('<overlay>', true|false)` and `beamngEarth_dev.preset('lod'|'loading'|'off')`.

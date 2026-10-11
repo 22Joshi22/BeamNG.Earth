@@ -521,3 +521,13 @@ in 2026-10-10-weather-probe-results.md.
   compact HUD hidden at level start (setting "Status HUD").
 - Tests: `mod/tests/test_dev.lua`, `mod/tests/test_settings.lua`. The Vue files are checked
   in-game only.
+## Data credits overlay (docs/DEVTOOLS.md; built offline 2026-10-10, feature/credits)
+- Server `credits.py`: each built tile records its imagery sources (from `Imagery.render`'s texel
+  counts) and DEM providers (`dem.Dem.served`); per connection a `credits` message (sources within
+  2 km of the player + the far field's other sources + Open-Meteo) on change, at most once a second,
+  re-sent on hello (`--credits on`, the command line's default; `Server()` sends none).
+- Mod `credits.lua`: one background-draw-list text per frame in a screen corner (settings: on,
+  corner, size), hidden in the pause menu and big map; the session's attribution line before the
+  first message. No allocation per frame; the text is measured only when it changes.
+- Tests: `server/tests/test_credits.py`, `test_protocol_agreement.py`, `mod/tests/test_credits.lua`,
+  `test_core_stubbed.lua`. Still to check in-game: readability, the pause-menu / big-map hiding.
