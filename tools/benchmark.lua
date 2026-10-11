@@ -261,10 +261,33 @@ end
 
 -- Ground height under (x, y): the static collision (the TerrainBlock; the far tiles do not
 -- collide), else nil.
+-- The ground under (x, y): the drawn tiles first (castRay with render geometry: the mesh tiles have
+-- no collision, and the physics block only covers ~1 km around the player - outside it the static
+-- ray found nothing and an aerial camera 600 m back went inside a valley wall, in-game 2026-10-11),
+-- then the static collision.
 local function groundAt(x, y, zRef)
   local top = zRef + B.RAY_UP
+  local okR, hit = pcall(castRay, vec3(x, y, top), vec3(x, y, top - B.RAY_LEN), true, true)
+  if okR and type(hit) == 'table' and hit.pt and hit.pt.z then return hit.pt.z end
   local ok, d = pcall(castRayStatic, vec3(x, y, top), vec3(0, 0, -1), B.RAY_LEN)
   if ok and d and d < B.RAY_LEN then return top - d end
+end
+
+-- The player's vehicle is hidden while a view is shot (the 'ground' view stands where it is) and
+-- shown again by the restore.
+local hiddenVeh = nil
+local function hidePlayer()
+  local v = vehicle()
+  if v and not hiddenVeh then
+    local ok, id = pcall(function() return v:getID() end)
+    if ok and id and pcall(function() v:setMeshAlpha(0, '', false) end) then hiddenVeh = id end
+  end
+end
+local function showPlayer()
+  if not hiddenVeh then return end
+  local v = getObjectByID and getObjectByID(hiddenVeh)
+  if v then pcall(function() v:setMeshAlpha(1, '', false) end) end
+  hiddenVeh = nil
 end
 
 -- cfg: { e, n } (m east / north of the anchor = the place) or { lat, lon }; { alt } (m: world z with
@@ -287,6 +310,7 @@ function B.view(cfg)
     z = (ground or pz) + (cfg.agl or 2)
   end
   local d = cfg.dir or { x = 0, y = 1, z = 0 }
+  hidePlayer()
   commands.setFreeCamera()
   core_camera.setPosition(0, vec3(x, y, z))
   core_camera.setRotation(0, quatFromDir(vec3(d.x, d.y, d.z):normalized(), vec3(0, 0, 1)))
@@ -328,6 +352,7 @@ local function restoreFreeZoom(c)
 end
 
 local function restoreCamera(c)
+  showPlayer()
   if not c or not c.free then
     commands.setGameCamera()
     restoreFreeZoom(c) -- the views zoomed the free camera; the user meets it again on its next toggle

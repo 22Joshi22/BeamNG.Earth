@@ -37,6 +37,10 @@ function veh:getPosition() return vec3(self.pos.x, self.pos.y, self.pos.z) end
 function veh:getVelocity() return vec3(self.vel.x, self.vel.y, self.vel.z) end
 function veh:queueLuaCommand(c) self.cmds[#self.cmds + 1] = c end
 function getPlayerVehicle() return veh end
+function veh:getID() return 42 end
+veh.alpha = 1
+function veh:setMeshAlpha(a) self.alpha = a end
+function getObjectByID(id) return id == 42 and veh or nil end
 
 -- camera (core_camera / commands, as camera.lua and server/commands.lua)
 local cam = { name = 'chase', pos = vec3(3, -2, 1503), rot = quat(0.1, 0.2, 0.3, 0.9), fov = 75, sets = 0 }
@@ -138,6 +142,7 @@ r = B.view({ e = 10, n = -12, agl = 2, dir = { x = 0, y = 1, z = 0 }, fov = 65 }
 T.check(r.ok and cam.name == 'free' and r.groundFrom == 'ray', 'view: free camera, ground from the ray')
 T.near(cam.pos.z, 1490 + 0.1 + 2, 1e-9, 'view agl: 2 m above the ray ground')
 T.check(cam.pos.x == 10 and cam.pos.y == -12 and cam.fov == 65 and cam.rot.y == 1, 'view: position, fov, direction')
+T.check(veh.alpha == 0, 'view: the player\'s vehicle is hidden while shooting')
 r = B.view({ e = 5000, n = 0, agl = 30, dir = { x = 1, y = 0, z = 0 } })
 T.check(r.groundFrom == 'player' and cam.pos.z == 1530, 'view: beyond the block, above the player ground')
 r = B.view({ e = 0, n = -12, alt = 4416.5, dir = { x = 0, y = 1, z = -0.3 }, fov = 65 })
@@ -168,6 +173,7 @@ T.check(not loaded.beamngEarth_perfmon and beamngEarth_perfmon == nil, 'restore:
 T.check(cam.name == 'free', 'restore without cam leaves the camera')
 T.check(core_camera._free.manualzoom.fov == 65, 'the views left their FOV on the free camera')
 r = B.restore(sv, { cam = true })
+T.check(veh.alpha == 1, 'restore cam: the player\'s vehicle is shown again')
 T.check(r.ok and r.cam == 'game' and cam.name == 'chase', 'restore cam: the game camera')
 T.check(sv.cam.freeFov == 60 and core_camera._free.manualzoom.fov == 60 and core_camera._free.manualzoom.fovDefault == 60,
   'restore cam: the free camera has its own FOV back (the user had the game camera)')
