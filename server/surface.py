@@ -45,9 +45,10 @@ MATERIALS = (
     ("bngEarthGroundRock", "ROCK"),
     ("bngEarthGroundSnow", "SNOW"),
     ("bngEarthGroundMud", "MUD"),
+    ("bngEarthGroundCobble", "COBBLESTONE"),      # roads with paving stones / setts (roads.py "cobble")
     ("beamngEarthDirt", "DIRT"),
 )
-ASPHALT, GRASS, DUSTY, LOOSE, ROCK, SNOW, MUD, DIRT = range(len(MATERIALS))
+ASPHALT, GRASS, DUSTY, LOOSE, ROCK, SNOW, MUD, COBBLE, DIRT = range(len(MATERIALS))
 # WorldCover class -> material (§5.4 of the world-data research; built-up is asphalt until the OSM
 # land-use overrides tell lawns from streets)
 CLASS_MATERIAL = {0: DIRT, 10: GRASS, 20: DUSTY, 30: GRASS, 40: DIRT, 50: ASPHALT, 60: LOOSE, 70: SNOW,
@@ -126,8 +127,8 @@ def warp(lat, lon):
 
 
 # road surface kind (roads.py) -> material; drawn in this order (paved last: it wins at junctions)
-ROAD_MATERIAL = {"dirt": DIRT, "gravel": LOOSE, "paved": ASPHALT}
-ROAD_ORDER = ("dirt", "gravel", "paved")
+ROAD_MATERIAL = {"dirt": DIRT, "gravel": LOOSE, "cobble": COBBLE, "paved": ASPHALT}
+ROAD_ORDER = ("dirt", "gravel", "cobble", "paved")
 
 
 def grid_affine(lat, lon):

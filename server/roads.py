@@ -47,11 +47,18 @@ STYLE = {
     "tertiary": (6.5, True), "residential": (6.0, True), "living_street": (5.0, True),
     "unclassified": (5.5, True), "service": (4.0, True), "track": (3.5, False), "unknown": (5.0, True),
 }
-PAVED = {"paved", "asphalt", "concrete", "paving_stones", "sett", "cobblestone", "metal", "wood"}
+PAVED = {"paved", "asphalt", "concrete", "metal", "wood"}
+COBBLE = {"paving_stones", "sett", "cobblestone", "unhewn_cobblestone", "bricks"}   # Overture: "paving_stones"
 GRAVEL = {"gravel", "fine_gravel", "compacted", "pebblestone"}
+# kinds with a hard, built surface: carriageway extras (parking, strips, sidewalks) apply
+BUILT = {"paved", "cobble"}
 # surface kind -> DecalRoad look (stock materials, loaded by the mod from the official levels)
 LOOK = {
     "paved": {"m": "road_asphalt_2lane", "tl": 11.0, "p": 20},
+    # Italy's cobblestone (a mesh material with groundType COBBLESTONE): a DecalRoad stretches its
+    # texture across the whole width, so cobbled roads are drawn as parallel strips of about
+    # "strip" m with a square texture repeat, which keeps the stones their size
+    "cobble": {"m": "italy_cobblestone", "tl": 2.5, "p": 20, "strip": 2.5},
     "gravel": {"m": "m_dirt_road", "tl": 88.0, "p": 21},
     "dirt": {"m": "m_dirt_road", "tl": 88.0, "p": 21},
 }
@@ -94,11 +101,13 @@ def _rule_value(table, i):
 
 
 def surface_kind(cls, surface):
-    """'paved', 'gravel' or 'dirt' from the class and the surface rule value (None if unknown)."""
+    """'paved', 'cobble', 'gravel' or 'dirt' from the class and the surface rule value (None if unknown)."""
     if surface is not None:
         s = str(surface).lower()
         if s in PAVED:
             return "paved"
+        if s in COBBLE:
+            return "cobble"
         if s in GRAVEL:
             return "gravel"
         return "dirt"
@@ -111,7 +120,7 @@ def carriageway(cls, kind, urban, rule_width=None):
     if rule_width is not None:
         return rule_width
     w = STYLE.get(cls, STYLE["unknown"])[0]
-    if kind != "paved":
+    if kind not in BUILT:
         return w
     if urban and cls in PARKING_CLASSES:
         return w + 2 * PARKING_M
@@ -139,7 +148,7 @@ def road_specs(feats, urban_fn=None):
         rule_w = float(width) if width is not None and 1.0 <= float(width) <= 40.0 else None
         kind = surface_kind(cls, _rule_value(rules.get("surface"), i))
         urban = False
-        if urban_fn is not None and rule_w is None and kind == "paved":
+        if urban_fn is not None and rule_w is None and kind in BUILT:
             ll = feats.lonlat[feats.coord_off[feats.ring_off[feats.part_off[i]]]:
                               feats.coord_off[feats.ring_off[feats.part_off[i + 1]]]]
             if len(ll):
@@ -222,17 +231,17 @@ def extras(spec, pts, lon):
     pts: its centreline (k, 3) in the anchor frame; lon: its longitude (centre line colour). Pure."""
     out = []
     w, kind, urban, cls = spec
-    if kind != "paved":
+    if kind not in BUILT:
         return out
     if urban and cls in SIDEWALK_CLASSES:
         for side in (1, -1):
             out.append((SIDEWALK, SIDEWALK["w"], offset_polyline(pts, side * (w / 2 + SIDEWALK["w"] / 2))))
             out.append((GUTTER, GUTTER["w"], offset_polyline(pts, side * (w / 2 - GUTTER["w"] / 2))))
-    if cls in CENTRE_CLASSES and w >= 6.0:
+    if kind == "paved" and cls in CENTRE_CLASSES and w >= 6.0:      # no paint on cobbles
         look = {"m": centre_colour(lon), "tl": CENTRE["tl"], "p": CENTRE["p"]}
         for side in (1, -1):
             out.append((look, CENTRE["w"], offset_polyline(pts, side * CENTRE["gap"])))
-    if not urban and cls in EDGE_LINE_CLASSES:
+    if kind == "paved" and not urban and cls in EDGE_LINE_CLASSES:
         for side in (1, -1):
             out.append((EDGE_LINE, EDGE_LINE["w"], offset_polyline(pts, side * (w / 2 - EDGE_LINE["inset"]))))
     return out
@@ -389,10 +398,18 @@ def build_tile(frame, tx, ty, cells, elev, urban_fn=None):
                 roads.append((fid, spec, pts, float(np.mean(lon))))
     chunks = []
     for fid, spec, pts, _ in roads:
-        for piece in clip_polyline(pts, *box):
-            for c in split(densify(simplify(piece))):
-                if len(c) >= 2:
-                    chunks.append(_chunk(LOOK[spec.kind], spec.width, c))
+        look = LOOK[spec.kind]
+        lanes = [(0.0, spec.width)]
+        if look.get("strip"):                   # parallel strips across the width (see LOOK)
+            n = max(1, int(round(spec.width / look["strip"])))
+            sw = spec.width / n
+            lanes = [((k + 0.5) * sw - spec.width / 2, sw) for k in range(n)]
+        for off, lw in lanes:
+            line = pts if off == 0.0 else offset_polyline(pts, off)
+            for piece in clip_polyline(line, *box):
+                for c in split(densify(simplify(piece))):
+                    if len(c) >= 2:
+                        chunks.append(_chunk(look, lw, c))
     for fid, spec, pts, lon in roads:
         ex = extras(spec, pts, lon)
         if not ex:

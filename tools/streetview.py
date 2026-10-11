@@ -47,6 +47,8 @@ CAMERA_AGL = 2.0            # m: most street photos are taken from a car roof or
 MIN_SPACING_M = 25.0        # chosen photos are at least this far apart, or look another way
 MIN_TURN_DEG = 45.0
 PER_SEQUENCE = 3            # photos from one capture run at most (variety across the place)
+MIN_SEQUENCE = 3            # a capture run with fewer photos here is skipped: street captures come in
+                            # runs; single uploads are often indoor or mislocated (a wedding at Thames St)
 M_PER_DEG = 111320.0
 
 
@@ -98,6 +100,10 @@ def pick(images, lat, lon, n):
         if not im.get("thumb_2048_url"):
             continue
         ok.append((im, g[1], g[0], float(hd) % 360.0))
+    runs = {}
+    for im in images:
+        runs[im.get("sequence")] = runs.get(im.get("sequence"), 0) + 1
+    ok = [t for t in ok if runs.get(t[0].get("sequence"), 0) >= MIN_SEQUENCE]
     ok.sort(key=lambda t: -(t[0].get("captured_at") or 0))
     chosen = []
     m_lon = M_PER_DEG * math.cos(math.radians(lat))

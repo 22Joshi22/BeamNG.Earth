@@ -158,6 +158,18 @@ class BuildTileTest(unittest.TestCase):
         self.assertTrue(any(abs(y - (yc + roads.CENTRE["gap"])) < 0.01 for y in ys) and
                         any(abs(y - (yc - roads.CENTRE["gap"])) < 0.01 for y in ys), (yc, ys))
 
+    def test_cobblestone_strips_no_paint(self):
+        self.assertEqual(roads.surface_kind("residential", "paving_stones"), "cobble")
+        f = features([[(-300, 50), (300, 50)]], ["tertiary"], surfaces=[(0, "paving_stones")])
+        chunks = roads.build_tile(FRAME, 0, 0, [f], flat, lambda la, lo: np.ones(np.shape(la), bool))
+        cob = [c for c in chunks if c["m"] == roads.LOOK["cobble"]["m"]]
+        w = roads.carriageway("tertiary", "cobble", True)
+        n = max(1, int(round(w / roads.LOOK["cobble"]["strip"])))
+        self.assertEqual(len(cob), n, "parallel strips across the width")
+        self.assertTrue(all(abs(c["w"] - w / n) < 0.01 for c in cob))
+        self.assertTrue(any(c["m"] == roads.SIDEWALK["m"] for c in chunks), "cobbled city streets keep sidewalks")
+        self.assertFalse(any(c["m"].startswith("line_") for c in chunks), "no lines painted on cobbles")
+
     def test_offset_and_colour(self):
         pts = np.array([[0.0, 0, 5], [10, 0, 5], [10, 10, 5]])
         o = roads.offset_polyline(pts, 1.0)
@@ -248,6 +260,14 @@ class PaintRoadsTest(unittest.TestCase):
         self.assertEqual(int(out[30, 74]), sf.DIRT, "on the track (20 m east)")
         self.assertEqual(int(out[64, 74]), sf.ASPHALT, "paved wins at the crossing")
         self.assertEqual(int(idx[64, 10]), sf.GRASS, "input untouched")
+
+    def test_cobbles_under_the_tyres(self):
+        lat, lon = self.grid()
+        f = features([[(-200, 0), (200, 0)]], ["residential"], surfaces=[(0, "paving_stones")])
+        out = sf.paint_roads(np.full(lat.shape, sf.GRASS, np.uint8), lat, lon, [f], 2.0)
+        self.assertEqual(int(out[64, 10]), sf.COBBLE)
+        self.assertEqual(sf.MATERIALS[sf.COBBLE][1], "COBBLESTONE")
+        self.assertEqual(sf.DIRT, len(sf.MATERIALS) - 1, "dirt still last")
 
 
 if __name__ == "__main__":

@@ -7,7 +7,8 @@
 -- (the server sends the new frame's tiles again).
 --
 -- Materials are stock ones from official levels, loaded at runtime from the player's own install
--- (nothing copied): West Coast USA's asphalt strip, Johnson Valley's dirt road tracks.
+-- (nothing copied): West Coast USA's asphalt strip, sidewalks and lines, Johnson Valley's dirt road
+-- tracks, Italy's cobblestone.
 -- Console: beamngEarth_roads.status(), .setEnabled(bool)
 
 local stopwatch = require('beamngEarth/stopwatch')
@@ -15,7 +16,8 @@ local stopwatch = require('beamngEarth/stopwatch')
 local M = {}
 
 M.MATERIAL_FILES = { '/levels/west_coast_usa/art/road/main.materials.json',
-  '/levels/johnson_valley/art/decalroad/main.materials.json' }
+  '/levels/johnson_valley/art/decalroad/main.materials.json',
+  '/levels/italy/art/shapes/buildings/main.materials.json' }   -- italy_cobblestone (paving stones)
 M.FADE = '450 150'          -- distanceFade: start, range (m)
 M.enabled = true
 
