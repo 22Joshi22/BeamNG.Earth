@@ -128,3 +128,21 @@ class BridgeProfilesTest(unittest.TestCase):
         zl = lo_z[int(np.argmin(np.abs(lo_xy[:, 0])))]
         zh = hi_z[int(np.argmin(np.abs(hi_xy[:, 1])))]
         self.assertGreaterEqual(zh - zl, roads.DECK_ROAD_CLEAR - 0.6, (zl, zh))
+
+    def test_short_bridge_no_wall_and_splits_merge(self):
+        import roads
+        flat = lambda xy: np.full(len(xy), 10.0)
+        # a 60 m bridge over a road at its middle: capped at 6 % from each abutment, not 6.5 m high
+        ln = np.c_[np.arange(0.0, 61.0, 4.0), np.zeros(16)]
+        (z,) = roads.deck_profile([ln], flat, [(0, 30.0, 10.0)])
+        s = ln[:, 0]
+        self.assertLessEqual(np.abs(np.diff(z) / np.diff(s)).max(), roads.DECK_MAX_GRADE + 0.02)
+        self.assertLess(z.max(), 10.0 + 0.06 * 30 + 0.1)
+        # a mainline at 18 m with a ramp leaving it at a shallow angle: heights match where they overlap
+        main = np.c_[np.arange(0.0, 201.0, 4.0), np.zeros(51)]
+        ramp = np.c_[np.arange(100.0, 301.0, 4.0), (np.arange(100.0, 301.0, 4.0) - 100.0) * 0.12]
+        zs = [np.full(len(main), 18.0), np.linspace(18.0, 10.0, len(ramp))]
+        out = roads._merge_overlaps([main, ramp], zs, [12.0, 6.0], [1.0, 1.0])
+        k = 5                                   # ramp point 20 m from the split, 2.4 m off the mainline
+        j = int(np.argmin(np.abs(main[:, 0] - ramp[k, 0])))
+        self.assertLess(abs(out[1][k] - out[0][j]), abs(zs[1][k] - zs[0][j]) / 2 + 1e-9)

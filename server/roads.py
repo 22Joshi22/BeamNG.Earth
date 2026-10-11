@@ -342,7 +342,74 @@ def _dijkstra(adj, seeds):
     return d
 
 
-def deck_profile(lines, ground_fn, crossings=(), clear=None, grade=None, lift=None, levels=None):
+def _merge_overlaps(lines, zs, widths, levels, rounds=3):
+    """Heights of decks lying over each other (a ramp leaving the mainline, parallel carriageways of
+    one level) pulled to their mean where their surfaces overlap, so a split is one surface until the
+    decks part (2026-10-11 the user: exits and splits not clean). Parts are related when they share an
+    end node or a level and run within ~30 degrees of each other. Abutment ends stay. Pure."""
+    nodes, edges, _ = _chain_graph(lines)
+    deg = np.zeros(len(nodes), int)
+    for a, b, _ in edges:
+        deg[a] += 1
+        deg[b] += 1
+    n = len(lines)
+    pairs = []
+    for i in range(n):
+        for j in range(n):
+            if i == j:
+                continue
+            share = {edges[i][0], edges[i][1]} & {edges[j][0], edges[j][1]}
+            if not share and (levels is None or levels[i] != levels[j]):
+                continue
+            A, B = lines[i][:, :2], lines[j][:, :2]
+            if (A.max(0) < B.min(0) - 30).any() or (B.max(0) < A.min(0) - 30).any():
+                continue
+            pairs.append((i, j))
+    if not pairs:
+        return zs
+    zs = [np.array(z, np.float64) for z in zs]
+    for _ in range(rounds):
+        new = [z.copy() for z in zs]
+        acc = [np.zeros(len(z)) for z in zs]
+        cnt = [np.zeros(len(z)) for z in zs]
+        for i, j in pairs:
+            A, B = lines[i][:, :2], lines[j][:, :2]
+            P, Q = B[:-1], B[1:]
+            ab = Q - P
+            L2 = np.maximum((ab ** 2).sum(1), 1e-12)
+            t = np.clip(((A[:, None, :] - P[None]) * ab[None]).sum(2) / L2[None], 0, 1)
+            near = P[None] + t[..., None] * ab[None]
+            d = np.hypot(*(A[:, None, :] - near).transpose(2, 0, 1))
+            m = np.argmin(d, axis=1)
+            dmin = d[np.arange(len(A)), m]
+            tj = t[np.arange(len(A)), m]
+            zj = zs[j][m] + tj * (zs[j][np.minimum(m + 1, len(zs[j]) - 1)] - zs[j][m])
+            ta = np.gradient(A, axis=0)
+            tb = ab[m]
+            cos = np.abs((ta * tb).sum(1)) / (np.hypot(*ta.T) * np.hypot(*tb.T) + 1e-12)
+            # soft: full weight 2 m into the overlap and when parallel, none at its edge (a hard mask
+            # made 4 m steps mid-viaduct where a neighbour's footprint started)
+            depth = np.clip(((widths[i] + widths[j]) / 2 - dmin) / 2.0, 0.0, 1.0)
+            w = depth * np.clip((cos - 0.85) / 0.1, 0.0, 1.0) * np.isfinite(zj)
+            acc[i] += w * np.nan_to_num(zj)
+            cnt[i] += w
+        for i in range(n):
+            m = cnt[i] > 0
+            new[i][m] = (zs[i][m] + acc[i][m]) / (1 + cnt[i][m])
+            a, b, _ = edges[i]
+            if deg[a] == 1:
+                new[i][0] = zs[i][0]
+            if deg[b] == 1:
+                new[i][-1] = zs[i][-1]
+        zs = new
+    out = []
+    for i, z in enumerate(zs):                  # re-smoothed, ends kept
+        s = np.r_[0.0, np.cumsum(np.hypot(*np.diff(lines[i][:, :2], axis=0).T))]
+        out.append(_smooth_pinned(z, s[-1] / max(len(s) - 1, 1), DECK_SIGMA) if len(z) > 3 else z)
+    return out
+
+
+def deck_profile(lines, ground_fn, crossings=(), clear=None, grade=None, lift=None, levels=None, widths=None):
     """deck_profile_once, then repeated with the deck-over-deck requirements: where two parts of
     different levels cross, the higher one clears the lower one's deck by `clear` (2026-10-11: crossing
     decks clipped into each other). Pure given ground_fn."""
@@ -351,7 +418,7 @@ def deck_profile(lines, ground_fn, crossings=(), clear=None, grade=None, lift=No
         return zs
     over = _deck_crossings(lines)
     if not over:
-        return zs
+        return _merge_overlaps(lines, zs, widths, levels) if widths is not None else zs
     arcs = [np.r_[0.0, np.cumsum(np.hypot(*np.diff(ln[:, :2], axis=0).T))] for ln in lines]
     for _ in range(4):
         extra = []
@@ -367,7 +434,7 @@ def deck_profile(lines, ground_fn, crossings=(), clear=None, grade=None, lift=No
             zs = new
             break
         zs = new
-    return zs
+    return _merge_overlaps(lines, zs, widths, levels) if widths is not None else zs
 
 
 def deck_profile_once(lines, ground_fn, crossings=(), clear=None, grade=None, lift=None):
@@ -398,25 +465,69 @@ def deck_profile_once(lines, ground_fn, crossings=(), clear=None, grade=None, li
     for a, b, _ in edges:
         deg[a] += 1
         deg[b] += 1
+    # no steeper than DECK_MAX_GRADE from an abutment: a short bridge over a road cannot reach full
+    # headroom (2026-10-11: such decks became steep wedges, "walls" in the user's screenshot)
+    cap = [np.full(len(ln), np.inf) for ln in lines]
+    for k, (a, b, s) in enumerate(edges):
+        for node, zend in ((a, zs[k][0]), (b, zs[k][-1])):
+            if deg[node] != 1 or not np.isfinite(zend):
+                continue
+            d = _dijkstra(adj, {node: 0.0})
+            for k2, (ea, eb, es) in enumerate(edges):
+                dk = np.minimum(d[ea] + es, d[eb] + (es[-1] - es))
+                cap[k2] = np.minimum(cap[k2], zend + DECK_MAX_GRADE * dk)
     for k, (z, (a, b, s)) in enumerate(zip(zs, edges)):
         g = gz[k0:k0 + len(z)] + lift
         k0 += len(z)
         if not np.isfinite(z).all():
             out.append(z)
             continue
-        zz = np.maximum(np.maximum(z, g), req[k])
+        zz = np.maximum(np.minimum(np.maximum(z, req[k]), cap[k]), g)
         if deg[a] == 1:                         # an abutment keeps the ground's height
             zz[0] = z[0]
         if deg[b] == 1:
             zz[-1] = z[-1]
         if len(zz) > 3:
-            import grading
             step = s[-1] / (len(s) - 1)
-            sm = grading.smooth_profile(zz, step, grading.SIGMA_M)
-            sm[0], sm[-1] = zz[0], zz[-1]
+            sm = _smooth_pinned(zz, step, DECK_SIGMA)
             zz = np.maximum(sm, g)
             zz[0], zz[-1] = sm[0], sm[-1]
         out.append(zz)
+    return out
+
+
+DECK_SIGMA = 12.0       # m, deck profile smoothing
+
+
+def _dedupe(xy, tol=0.5):
+    """A polyline without points closer than tol m to the previous one (ends kept). Pure."""
+    if len(xy) < 3:
+        return xy
+    keep = [0]
+    for k in range(1, len(xy) - 1):
+        if np.hypot(*(xy[k] - xy[keep[-1]])) >= tol:
+            keep.append(k)
+    if np.hypot(*(xy[-1] - xy[keep[-1]])) < tol and len(keep) > 1:
+        keep[-1] = len(xy) - 1
+    else:
+        keep.append(len(xy) - 1)
+    return xy[keep]
+
+
+def _smooth_pinned(z, step, sigma):
+    """Gaussian smoothing that keeps both end values and the trend at the ends (the profile is
+    point-reflected about each end: plain mirroring pulled a hump's height into its pinned ends and
+    made 15 % steps there). Pure."""
+    z = np.asarray(z, np.float64)
+    r = int(math.ceil(3 * sigma / step))
+    r = min(r, len(z) - 1)
+    if r < 1:
+        return z.copy()
+    k = np.exp(-0.5 * (np.arange(-r, r + 1) * step / sigma) ** 2)
+    k /= k.sum()
+    pad = np.r_[2 * z[0] - z[r:0:-1], z, 2 * z[-1] - z[-2:-r - 2:-1]]
+    out = np.convolve(pad, k, mode="valid")
+    out[0], out[-1] = z[0], z[-1]
     return out
 
 
@@ -711,6 +822,7 @@ DECK_STEP = 4.0         # m between deck profile points
 DECK_CLEAR = 0.05       # m a deck stays above the ground under it (no z-fighting where it rests on it)
 DECK_ROAD_CLEAR = 6.5   # m a deck's top stays over a road crossing under it (5 m headroom + the slab)
 DECK_GRADE = 0.05       # that requirement falls 5 % along the deck from the crossing
+DECK_MAX_GRADE = 0.06   # a deck climbs no steeper than this from an abutment
 CHAIN_CELLS = 12        # map cells read at most to close one bridge chain
 
 
@@ -792,7 +904,7 @@ class BridgeProfiles:
                 for j, ring in enumerate(bridge_parts(feats, i)):
                     if (fid, j) not in pool:
                         e, n, _ = self.frame.geodetic_to_enu(ring[:, 1], ring[:, 0], 0.0)
-                        pool[(fid, j)] = (bs[i], densify(np.stack([e, n], axis=1), DECK_STEP),
+                        pool[(fid, j)] = (bs[i], densify(_dedupe(np.stack([e, n], axis=1)), DECK_STEP),
                                           float(np.mean(ring[:, 0])), lvls[j] if j < len(lvls) else 1.0)
             if rs[i] is not None and (fid, "g") not in ground:
                 ground[(fid, "g")] = []
@@ -880,7 +992,7 @@ class BridgeProfiles:
                 cr = _crossings(lines, gl)
                 road_z = self._ground(np.array([c[2] for c in cr])) if cr else []
                 zs = deck_profile(lines, self._ground, [(c[0], c[1], z) for c, z in zip(cr, road_z)],
-                                  levels=[pool[k][3] for k in comp])
+                                  levels=[pool[k][3] for k in comp], widths=[pool[k][0].width for k in comp])
                 with self.lock:
                     for k, z in zip(comp, zs):
                         spec, xy, lon, _ = pool[k]
