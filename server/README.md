@@ -623,12 +623,36 @@ Midtown Manhattan 14/4824/6157): 4.8 s cold, 90 MB / 64 requests, 2.5 MB of cell
 381 MB (DuckDB, 4 layers at once), ~40 MB in memory per loaded cell (16 MB of it the
 infrastructure `tags` JSON column).
 
+## Airports and runways (`server/airports.py`, `runwaygeom.py`, `runwaymarks.py`; docs/research/2026-10-11-airports.md)
+
+Not used by earthd yet. OurAirports' `airports.csv` / `runways.csv` (public domain) are downloaded through
+netfetch (`POLICIES["davidmegginson.github.io"]`, gzip) into `<cache-dir>/airports/ourairports/<gen>/` with a
+`current.json` pointer, refreshed weekly and kept as the last good copy offline (`cache.py` never evicts it).
+`AirportDB` gives runways (both ends, length, width, surface and BeamNG ground model, elevations, headings,
+displaced thresholds, quality surveyed / derived / arp), helipads and spatial queries (`near`, `in_cell` per
+z14 cell, `group`). `runwaygeom.plan_group(runways, elev_fn)` fits each runway's profile and
+`graded_elev_fn(elev_fn, plans)` is the graded drop-in for `heightmap.surface`; `runwaymarks.markings(rw)`
+gives the painted markings as strokes (2-node DecalRoads).
+
+```sh
+python3 server/airports.py --near 39.1754,-76.6683 --radius 5      # runways around a point
+python3 server/airports.py --airport KBWI --json                     # one airport's runways
+python3 server/airports.py --preview KBWI kbwi.png                   # graded field + markings + profiles (DEM via netfetch)
+python3 server/airports.py --stats                                   # data-quality counts of the whole file
+```
+(`--cache-dir`, `--offline`, `--refresh`, `--all` for closed and estimated runways, `--px` m per preview pixel.)
+
 ## Tests
 
 ```sh
 python3 -m unittest discover -s server/tests -v        # BNGE_SKIP_DRIVE=1 skips the drive test
 ```
 
+`test_airports.py`, `test_runwaygeom.py`, `test_runwaymarks.py`: the airport data (parsing, qualities, surfaces,
+determinism, queries, the download / weekly refresh / last-good-copy store behind a fake transport and clock,
+the CLI), the grading on synthetic DEMs (limits, data ends, steep / relaxed / coarse, crossings, no steps,
+footprint, determinism, `heightmap.grid_u` with the graded sampler) and the markings (classes, stripe counts,
+designators, on the pavement, no overlaps, mirrored ends, displaced thresholds, closed runways).
 `test_cdae.py` holds the golden `.cdae` tests. `test_heightmap.py` the lattice/quantum identity
 tests. `test_farfield.py` selection, hysteresis, swap groups, err/sink/skirt and the shipped mod
 assets. `test_mesh.py` mesh mode: selection down to L-2 with the min-level radii (no gaps/overlaps on

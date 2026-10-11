@@ -477,6 +477,15 @@ built-tile cache (2) and pre-download within the cap (4).
    level-file parity objects, the real time zone and gravity by latitude/height
    (ARCHITECTURE.md "Real weather"); waiting for its in-game checks and the cloud calibration.
 4. **Airports and runways** for plane mods (pairs with v1.4 M5 flight).
+   Groundwork built offline (2026-10-11, branch feature/airports; ARCHITECTURE.md "Airports and runways",
+   docs/research/2026-10-11-airports.md): OurAirports runways (public domain; weekly refresh, last good copy
+   offline; 16,563 placeable runways, 94 % of large-airport runways, 29 % of small ones; the rest have no
+   end coordinates), surfaces -> BeamNG ground models, a graded runway / shoulder / strip / blend height field
+   under ICAO / FAA limits as a drop-in `elev_fn` for the heightmap and tiles (steep altiports and bush strips
+   keep their shape: Courchevel 19 %, Lukla 15 %), FAA / ICAO marking geometry for DecalRoads, a CLI with
+   previews. Next: in-game check at KBWI (grade the live block, a plane mod on 10/28, markings as
+   DecalRoads), then the earthd wiring after v1.4 M6, water masks, OSM / Overture runways where OurAirports
+   has no ends, runway ground models in the v1.5 layers, spawn places at runway ends.
 5. **Data credits overlay** (user, 2026-10-10; docs/DEVTOOLS.md): small text in a screen corner naming
    the imagery / elevation / weather sources around the player. Built offline (2026-10-10, merged
    to main with netfetch and colour seams): server `credits` message (on change, at most 1/s), mod
@@ -616,7 +625,7 @@ World
   brightest direction). Clouds over a city glow orange and hide the stars; the moon washes out
   faint stars too. Generic: one rule from the brightness value, no per-city tuning.
 - **Airports and runways** (for plane mods): flattened, paved runways with markings from OSM,
-  taxiways, the airport as a spawn point.
+  taxiways, the airport as a spawn point. (Groundwork from OurAirports: quick win 4 above.)
 - **Railways, power lines, fences, guardrails** from OSM as cheap repeated props.
 - **Energy infrastructure** (user found the Kayenta PV Solar Plant, 2026-10-10; docs/PLACES.md):
   solar farms from OSM `power=plant` + `plant:source=solar` and `generator:source=solar` areas as
