@@ -71,6 +71,47 @@ def _z_along(pts, vi, step, t):
     return float(pts[k, 2])
 
 
+def _seg_dist(p, line):
+    """Distance from points p (m, 2) to a polyline (k, 2)."""
+    a, b = line[:-1], line[1:]
+    ab = b - a
+    L2 = np.maximum((ab ** 2).sum(1), 1e-12)
+    t = np.clip(((p[:, None, :] - a[None]) * ab[None]).sum(2) / L2[None], 0, 1)
+    q = a[None] + t[..., None] * ab[None]
+    return np.hypot(*(p[:, None, :] - q).transpose(2, 0, 1)).min(axis=1)
+
+
+def _on_carriageway(pts, roads, near, margin=0.3):
+    """Whether any point (m, 2) lies on a carriageway (centreline distance < width / 2 - margin) of
+    the roads within `near` (centre (2,), radius)."""
+    c, r = near
+    for fid, spec, line, lon in roads:
+        xy = line[:, :2]
+        if (xy.max(0) < c - r).any() or (xy.min(0) > c + r).any():
+            continue
+        if (_seg_dist(pts, xy) < spec.width / 2 - margin).any():
+            return True
+    return False
+
+
+def _branch_len(pts, vi, step):
+    k, acc = vi, 0.0
+    while 0 <= k + step < len(pts):
+        acc += math.hypot(*(pts[k + step, :2] - pts[k, :2]))
+        k += step
+    return acc
+
+
+def _crosses(a, b, line):
+    """Whether segment a-b crosses the polyline (k, 2)."""
+    P, Q = line[:-1], line[1:]
+    def side(p, q, x):
+        return (q[..., 0] - p[..., 0]) * (x[..., 1] - p[..., 1]) - (q[..., 1] - p[..., 1]) * (x[..., 0] - p[..., 0])
+    d1, d2 = side(P, Q, a), side(P, Q, b)
+    d3, d4 = side(a, b, P), side(a, b, Q)
+    return bool(((d1 * d2 < 0) & (d3 * d4 < 0)).any())
+
+
 def find(roads, has_walk, walk_w):
     """Corners, cuts and crosswalks of the junctions among `roads` [(fid, spec, pts (k, 3), lon)].
     has_walk(spec) -> bool; walk_w: sidewalk width. Returns
@@ -123,6 +164,10 @@ def find(roads, has_walk, walk_w):
             ti, tj = float((Ti - X) @ ui), float((Tj - X) @ uj)
             if ti <= 0 or tj <= 0 or ti > 40 or tj > 40:
                 continue
+            # the branches must go on past their tangent points (a short connector between two close
+            # junctions cannot carry a curb return: 2026-10-11 survey, slabs on carriageways)
+            if _branch_len(roads[ri][2], vi, si) < ti + 1.0 or _branch_len(roads[rj][2], vj, sj) < tj + 1.0:
+                continue
             O = _line_x(X + ni * (wi + walk_w), ui, X - nj * (wj + walk_w), uj)
             if O is None:
                 continue
@@ -139,6 +184,13 @@ def find(roads, has_walk, walk_w):
             outer = [(*(Tj - nj * walk_w), zj), (*O, zo), (*(Ti + ni * walk_w), zi)]
             Cc = _line_x(X + ni * wi, ui, X - nj * wj, uj)
             fill = np.vstack([[*Cc, zo]] + [arc[m] for m in range(k)]) if Cc is not None else None
+            if fill is not None and math.hypot(*(Cc - X)) > 20.0:
+                continue                        # a needle of asphalt at a very sharp corner
+            # nothing of the corner on any road (its own two included)
+            probe = np.vstack([arc[:, :2] + inward * 0.8, arc[:, :2] + inward * 2.0,
+                               [(np.array(o[:2]) + O) / 2 for o in (outer[0], outer[2])], [O]])
+            if _on_carriageway(probe, roads, (X, 60.0)):
+                continue
             corners.append({"arc": arc, "inward": inward, "outer": outer, "fill": fill})
             cuts.setdefault((roads[ri][0], li), []).append((X.copy(), ui, ti))
             cuts.setdefault((roads[rj][0], -lj), []).append((X.copy(), uj, tj))
@@ -152,7 +204,19 @@ def find(roads, has_walk, walk_w):
                 c = X + ui * t
                 z = _z_along(roads[ri][2], vi, si, t)
                 nl = _left(ui)
-                crosswalks.append({"a": np.r_[c + nl * w, z], "b": np.r_[c - nl * w, z], "w": CROSSWALK["w"]})
+                a, b = c + nl * w, c - nl * w
+                if _branch_len(roads[ri][2], vi, si) < t + CROSSWALK["w"]:
+                    continue
+                others = [rd for k2, rd in enumerate(roads) if k2 != ri]
+                ends = np.array([a + nl * 0.5, b - nl * 0.5])
+                if _on_carriageway(ends, others, (X, 60.0)) or any(
+                        _crosses(a, b, rd[2][:, :2]) for rd in others
+                        if np.hypot(*(rd[2][:, :2] - c).T).min() < 60.0):
+                    continue                    # it would cross or end on another road
+                if any(min(_seg_dist(np.array([a, b, c]), np.array([q["a"][:2], q["b"][:2]]))) < 2.0
+                       for q in crosswalks):
+                    continue                    # one crosswalk where two would touch
+                crosswalks.append({"a": np.r_[a, z], "b": np.r_[b, z], "w": CROSSWALK["w"]})
                 t0, t1 = t - CROSSWALK["w"] / 2, t + CROSSWALK["w"] / 2
                 ramps.setdefault((roads[ri][0], li), []).append((X.copy(), ui, t0, t1))
                 ramps.setdefault((roads[ri][0], -li), []).append((X.copy(), ui, t0, t1))

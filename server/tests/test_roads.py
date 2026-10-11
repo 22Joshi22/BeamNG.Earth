@@ -264,6 +264,28 @@ class BuildTileTest(unittest.TestCase):
             shape = cdae.read(os.path.join(d, "walks_1_0_0.cdae"))
             self.assertEqual([m["name"] for m in shape["materials"]], list(sidewalks.MATERIALS))
 
+    def test_junction_short_connector_no_corner_on_roads(self):
+        import junctions
+        # two parallel streets joined by an 8 m connector (two junctions 8 m apart): no curb return
+        # may put slab on a carriageway; crosswalks never cross another road
+        arms = [[(-200, 100), (0, 100)], [(0, 100), (200, 100)], [(-200, 108), (0, 108)], [(0, 108), (200, 108)],
+                [(0, 100), (0, 108)]]
+        f = features(arms, ["residential"] * 5)
+        walks = []
+        chunks = roads.build_tile(FRAME, -1, 0, [f], flat, lambda la, lo: np.ones(np.shape(la), bool), walks=walks)
+        w = roads.carriageway("residential", "paved", True) / 2
+        lines = [np.array([(-200, 100), (200, 100)]), np.array([(-200, 108), (200, 108)]), np.array([(0, 100), (0, 108)])]
+        for c in [wk["corner"] for wk in walks if "corner" in wk]:
+            probe = c["arc"][:, :2] + c["inward"] * 1.0
+            for ln in lines:
+                self.assertGreater(junctions._seg_dist(probe, ln).min(), w - 0.5)
+        for c in chunks:
+            if c["m"] == junctions.CROSSWALK["m"]:
+                a, b = np.array(c["n"][0][:2]), np.array(c["n"][-1][:2])
+                for ln in lines:
+                    if junctions._seg_dist(np.array([(a + b) / 2]), ln)[0] > 1.0:
+                        self.assertFalse(junctions._crosses(a, b, ln))
+
     def test_cobblestone_strips_no_paint(self):
         self.assertEqual(roads.surface_kind("residential", "paving_stones"), "cobble")
         f = features([[(-300, 50), (300, 50)]], ["tertiary"], surfaces=[(0, "paving_stones")])
