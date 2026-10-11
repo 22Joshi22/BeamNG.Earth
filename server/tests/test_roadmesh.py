@@ -84,3 +84,47 @@ class BridgeTest(unittest.TestCase):
         Pr, Tr, _, mr, _ = roadmesh.build(FRAME, [deck], lambda la, lo: la, (0, 0, 0))
         self.assertEqual(mr, ["road_asphalt_2lane"], "the asphalt is in the road mesh ...")
         self.assertAlmostEqual(Pr[:, 2].max(), 22.0 + roadmesh.DECK_SKIN, msg="... just over the slab")
+
+
+class BridgeProfilesTest(unittest.TestCase):
+    def test_chain_across_cells_and_clearance(self):
+        import mapcells
+        import roads
+        from test_roads import features
+        # a bridge in two parts (two features) over a street at x = 0; the ground is flat at 10 m
+        f = features([[(-300, 0), (0, 0)], [(0, 0), (300, 0)], [(0, -200), (0, 200)]],
+                     ["primary", "primary", "residential"],
+                     levels=[(0, 1.0, 0.5, 1.0), (1, 1.0, 0.0, 0.5)], ids=["a", "b", "street"])
+        calls = []
+
+        def cell_fn(key):
+            calls.append(str(key))
+            return f
+        flat = lambda la, lo: np.full(np.shape(la), 10.0)
+        bp = roads.BridgeProfiles(FRAME, cell_fn, flat)
+        got1 = {fid: (xy, z) for fid, spec, xy, z, lon in bp.parts([f], (-256, -128, 0, 128))}
+        self.assertEqual(set(got1), {"a", "b"}, "both halves of the chain")
+        za = got1["a"][1]
+        self.assertAlmostEqual(za[0], 10.0, delta=0.2, msg="an abutment on the ground")
+        k = int(np.argmin(np.abs(got1["a"][0][:, 0] - 0.0)))
+        self.assertGreaterEqual(za[k], 10.0 + roads.DECK_ROAD_CLEAR - 0.6, "headroom over the street")
+        bp2 = roads.BridgeProfiles(FRAME, cell_fn, flat)        # another tile asking first: same deck
+        got2 = {fid: (xy, z) for fid, spec, xy, z, lon in bp2.parts([f], (0, -128, 256, 128))}
+        self.assertTrue(np.allclose(got2["a"][1], got1["a"][1]) and np.allclose(got2["b"][1], got1["b"][1]))
+        ea, eb = got1["a"], got1["b"]
+        self.assertAlmostEqual(float(ea[1][-1]), float(eb[1][0]), places=6, msg="the halves meet")
+
+    def test_crossing_decks_stack_by_level(self):
+        import roads
+        from test_roads import features
+        # two bridges crossing at (0, 0): level 1 east-west, level 2 north-south; ground flat at 10 m
+        f = features([[(-300, 0), (300, 0)], [(0, -300), (0, 300)]], ["primary", "motorway"],
+                     levels=[(0, 1.0, 0.2, 0.8), (1, 2.0, 0.2, 0.8)], ids=["low", "high"])
+        flat = lambda la, lo: np.full(np.shape(la), 10.0)
+        bp = roads.BridgeProfiles(FRAME, lambda key: f, flat)
+        got = {fid: (xy, z) for fid, spec, xy, z, lon in bp.parts([f], (-128, -128, 128, 128))}
+        lo_xy, lo_z = got["low"]
+        hi_xy, hi_z = got["high"]
+        zl = lo_z[int(np.argmin(np.abs(lo_xy[:, 0])))]
+        zh = hi_z[int(np.argmin(np.abs(hi_xy[:, 1])))]
+        self.assertGreaterEqual(zh - zl, roads.DECK_ROAD_CLEAR - 0.6, (zl, zh))

@@ -997,7 +997,16 @@ three days of testing: dem 741 MB / 7.5k files, imagery 1.4 GB / 35k, deshadow 7
   - Bridge parts are chained by shared end points. Deck heights are the abutments' ground heights
     weighted by 1 / distance along the chain (between two abutments, a straight line), never below
     the ground under the deck + 5 cm, and smoothed like a road profile.
-  - Cells within `BRIDGE_REACH` (600 m) of a tile are read, so chains are whole.
+  - `BridgeProfiles` (one per anchor) resolves each chain once: it loads the map cell at every
+    loose end until all ends are abutments (at most 12 cells) and caches every part's heights, so
+    tiles agree at seams. Reading 600 m of cells around every tile instead slowed tiles to 1-2 s and
+    starved the block builds (edge warning).
+  - Over a ground road crossing under it, a deck's top stays 6.5 m above the road, the requirement
+    falling at 5 % along the chain. Measured on I-95: 2.2-4.5 m before, ~6 m after.
+  - Decks crossing each other are solved together, the higher Overture level clearing the lower
+    deck by 6.5 m (iterated). On the I-95 interchange, 40 of 41 crossings are 5 m or more apart.
+  - Not real heights: the DEM is bare earth and Overture has only level order. Real deck heights
+    need lidar (USGS 3DEP point clouds class 17 "bridge deck") - next.
   - `roadmesh.deck` builds one colliding TSStatic per tile: an opaque concrete slab (`sidewalk1`,
     1.2 m deep) whose top is the road surface. The asphalt and lines are the road mesh's, 1 cm above
     it. A deck topped with the translucent decal asphalt was see-through.

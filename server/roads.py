@@ -23,6 +23,7 @@ import json
 import logging
 import math
 import os
+import threading
 from collections import namedtuple
 
 import numpy as np
@@ -181,6 +182,27 @@ def _parts_by_level(feats, i, want):
     return out
 
 
+def bridge_levels(feats, i):
+    """The level of each of bridge_parts(feats, i) (same order): the highest level rule overlapping its
+    range, 1 for a bridge flagged without one. Overture's levels order stacked roads. Pure."""
+    t = feats.rules.get("level")
+    lv = []
+    for a, b, k in level_ranges(feats, i):
+        if k != "bridge" or b - a <= MIN_PART:
+            continue
+        best = 1.0
+        if t is not None and len(t.feature):
+            for j in np.nonzero(t.feature == i)[0]:
+                if t.end[j] > a and t.start[j] < b:
+                    try:
+                        best = max(best, float(t.value[j]))
+                    except (TypeError, ValueError):
+                        pass
+        lv.append(best)
+    rings = sum(1 for part in feats.parts(i) for ring in part if len(ring) >= 2)
+    return lv * rings
+
+
 def ground_parts(feats, i):
     """The on-ground pieces of feature i (lon/lat polylines): its rings minus the bridge / tunnel ranges."""
     return _parts_by_level(feats, i, "ground")
@@ -275,6 +297,126 @@ def bridge_specs(feats):
         rule_w = float(width) if width is not None and 1.0 <= float(width) <= 40.0 else None
         kind = surface_kind(cls, _rule_value(rules.get("surface"), i))
         out.append(Spec(carriageway(cls, kind, False, rule_w), kind, False, cls))
+    return out
+
+
+def _chain_graph(lines):
+    """Nodes (end points within 0.5 m joined) and edges (start node, end node, arc lengths) of parts."""
+    keys, nodes = {}, []
+
+    def node(p):
+        k = (round(float(p[0]) * 2), round(float(p[1]) * 2))
+        if k not in keys:
+            keys[k] = len(nodes)
+            nodes.append(np.asarray(p[:2], np.float64))
+        return keys[k]
+    edges = []
+    for ln in lines:
+        s = np.r_[0.0, np.cumsum(np.hypot(*np.diff(ln[:, :2], axis=0).T))]
+        edges.append((node(ln[0]), node(ln[-1]), s))
+    adj = [[] for _ in nodes]
+    for a, b, s in edges:
+        adj[a].append((b, s[-1]))
+        adj[b].append((a, s[-1]))
+    return nodes, edges, adj
+
+
+def _dijkstra(adj, seeds):
+    """Shortest distances along the chain from seeds {node: start distance}."""
+    import heapq
+    d = np.full(len(adj), np.inf)
+    q = []
+    for n, d0 in seeds.items():
+        if d0 < d[n]:
+            d[n] = d0
+            q.append((d0, n))
+    heapq.heapify(q)
+    while q:
+        dd, u = heapq.heappop(q)
+        if dd > d[u]:
+            continue
+        for v, w in adj[u]:
+            if dd + w < d[v]:
+                d[v] = dd + w
+                heapq.heappush(q, (dd + w, v))
+    return d
+
+
+def deck_profile(lines, ground_fn, crossings=(), clear=None, grade=None, lift=None, levels=None):
+    """deck_profile_once, then repeated with the deck-over-deck requirements: where two parts of
+    different levels cross, the higher one clears the lower one's deck by `clear` (2026-10-11: crossing
+    decks clipped into each other). Pure given ground_fn."""
+    zs = deck_profile_once(lines, ground_fn, crossings, clear, grade, lift)
+    if levels is None or len(lines) < 2:
+        return zs
+    over = _deck_crossings(lines)
+    if not over:
+        return zs
+    arcs = [np.r_[0.0, np.cumsum(np.hypot(*np.diff(ln[:, :2], axis=0).T))] for ln in lines]
+    for _ in range(4):
+        extra = []
+        for i, j, si, sj in over:
+            if levels[i] == levels[j]:
+                continue
+            hi, lo, sh, sl = (i, j, si, sj) if levels[i] > levels[j] else (j, i, sj, si)
+            extra.append((hi, sh, float(np.interp(sl, arcs[lo], zs[lo]))))
+        if not extra:
+            break
+        new = deck_profile_once(lines, ground_fn, list(crossings) + extra, clear, grade, lift)
+        if all(np.allclose(a, b, atol=0.02, equal_nan=True) for a, b in zip(new, zs)):
+            zs = new
+            break
+        zs = new
+    return zs
+
+
+def deck_profile_once(lines, ground_fn, crossings=(), clear=None, grade=None, lift=None):
+    """Deck heights (one array per part) of a bridge chain: deck_heights between the abutments, at
+    least `lift` over the ground under it, and at least `clear` over each crossing road below
+    ((part index, arc m, road height)), the requirement falling at `grade` along the chain; then
+    smoothed per part with its end heights kept. Pure given ground_fn(xy (m, 2)) -> heights."""
+    clear = DECK_ROAD_CLEAR if clear is None else clear
+    grade = DECK_GRADE if grade is None else grade
+    lift = DECK_CLEAR if lift is None else lift
+    zs = deck_heights(lines, ground_fn)
+    if not zs:
+        return zs
+    nodes, edges, adj = _chain_graph(lines)
+    allxy = np.concatenate([ln[:, :2] for ln in lines])
+    gz = np.asarray(ground_fn(allxy), np.float64)
+    req = [np.full(len(ln), -np.inf) for ln in lines]
+    for pi, sc, zc in crossings:
+        a, b, s = edges[pi]
+        d = _dijkstra(adj, {a: sc, b: s[-1] - sc})
+        for k, (ea, eb, es) in enumerate(edges):
+            dk = np.minimum(d[ea] + es, d[eb] + (es[-1] - es))
+            if k == pi:
+                dk = np.minimum(dk, np.abs(es - sc))
+            req[k] = np.maximum(req[k], zc + clear - grade * dk)
+    out, k0 = [], 0
+    deg = np.zeros(len(nodes), int)
+    for a, b, _ in edges:
+        deg[a] += 1
+        deg[b] += 1
+    for k, (z, (a, b, s)) in enumerate(zip(zs, edges)):
+        g = gz[k0:k0 + len(z)] + lift
+        k0 += len(z)
+        if not np.isfinite(z).all():
+            out.append(z)
+            continue
+        zz = np.maximum(np.maximum(z, g), req[k])
+        if deg[a] == 1:                         # an abutment keeps the ground's height
+            zz[0] = z[0]
+        if deg[b] == 1:
+            zz[-1] = z[-1]
+        if len(zz) > 3:
+            import grading
+            step = s[-1] / (len(s) - 1)
+            sm = grading.smooth_profile(zz, step, grading.SIGMA_M)
+            sm[0], sm[-1] = zz[0], zz[-1]
+            zz = np.maximum(sm, g)
+            zz[0], zz[-1] = sm[0], sm[-1]
+        out.append(zz)
     return out
 
 
@@ -550,7 +692,6 @@ def tile_distance(tx, ty, x, y):
     return max(x0 - x, x - x1, y0 - y, y - y1, 0.0)
 
 
-BRIDGE_REACH = 600.0    # m around a tile whose cells are read, so a bridge's whole chain is known
 
 
 def cells_of_tile(frame, tx, ty, margin=OVERLAP):
@@ -568,12 +709,197 @@ def _chunk(look, w, c):
 DECK = {"m": "road_asphalt_2lane", "tl": 11.0, "p": 20}      # bridge decks (roadmesh.deck)
 DECK_STEP = 4.0         # m between deck profile points
 DECK_CLEAR = 0.05       # m a deck stays above the ground under it (no z-fighting where it rests on it)
+DECK_ROAD_CLEAR = 6.5   # m a deck's top stays over a road crossing under it (5 m headroom + the slab)
+DECK_GRADE = 0.05       # that requirement falls 5 % along the deck from the crossing
+CHAIN_CELLS = 12        # map cells read at most to close one bridge chain
 
 
-def _bridge_chunks(frame, bseen, elev, exact):
+def _crossings(lines, ground_lines):
+    """(part index, arc m, point xy) where a ground road (polylines in metres) crosses under a deck
+    part. Pure."""
+    out = []
+    for pi, ln in enumerate(lines):
+        lo, hi = ln.min(axis=0), ln.max(axis=0)
+        s = np.r_[0.0, np.cumsum(np.hypot(*np.diff(ln, axis=0).T))]
+        P, Q = ln[:-1], ln[1:]
+        for gl in ground_lines:
+            if gl[:, 0].max() < lo[0] or gl[:, 0].min() > hi[0] or gl[:, 1].max() < lo[1] or gl[:, 1].min() > hi[1]:
+                continue
+            for a, b in zip(gl[:-1], gl[1:]):
+                r, d = Q - P, b - a
+                den = r[:, 0] * d[1] - r[:, 1] * d[0]
+                ok = np.abs(den) > 1e-12
+                ap = a - P
+                t = np.where(ok, (ap[:, 0] * d[1] - ap[:, 1] * d[0]) / np.where(ok, den, 1), -1)
+                u = np.where(ok, (ap[:, 0] * r[:, 1] - ap[:, 1] * r[:, 0]) / np.where(ok, den, 1), -1)
+                for j in np.nonzero(ok & (t >= 0) & (t <= 1) & (u >= 0) & (u <= 1))[0]:
+                    out.append((pi, s[j] + t[j] * (s[j + 1] - s[j]), P[j] + t[j] * r[j]))
+    return out
+
+
+def _deck_crossings(lines):
+    """(i, j, arc on i, arc on j) where deck parts i < j cross (not at their end points). Pure."""
+    out = []
+    boxes = [(ln.min(axis=0), ln.max(axis=0)) for ln in lines]
+    arcs = [np.r_[0.0, np.cumsum(np.hypot(*np.diff(ln, axis=0).T))] for ln in lines]
+    for i in range(len(lines)):
+        for j in range(i + 1, len(lines)):
+            (alo, ahi), (blo, bhi) = boxes[i], boxes[j]
+            if ahi[0] < blo[0] or bhi[0] < alo[0] or ahi[1] < blo[1] or bhi[1] < alo[1]:
+                continue
+            A, B = lines[i], lines[j]
+            for q in range(len(B) - 1):
+                a, d = B[q], B[q + 1] - B[q]
+                P, r = A[:-1], A[1:] - A[:-1]
+                den = r[:, 0] * d[1] - r[:, 1] * d[0]
+                ok = np.abs(den) > 1e-12
+                ap = a - P
+                t = np.where(ok, (ap[:, 0] * d[1] - ap[:, 1] * d[0]) / np.where(ok, den, 1), -1)
+                u = np.where(ok, (ap[:, 0] * r[:, 1] - ap[:, 1] * r[:, 0]) / np.where(ok, den, 1), -1)
+                for k in np.nonzero(ok & (t > 1e-6) & (t < 1 - 1e-6) & (u > 1e-6) & (u < 1 - 1e-6))[0]:
+                    si = arcs[i][k] + t[k] * (arcs[i][k + 1] - arcs[i][k])
+                    sj = arcs[j][q] + u[k] * (arcs[j][q + 1] - arcs[j][q])
+                    if min(si, arcs[i][-1] - si, sj, arcs[j][-1] - sj) > 1.0:
+                        out.append((i, j, si, sj))
+    return out
+
+
+class BridgeProfiles:
+    """Deck heights per bridge part for one anchor frame, each chain resolved once from all of it, so
+    every tile gets the same deck (2026-10-11: computed per tile from the tile's cells, a chain's
+    two halves disagreed at a tile seam). cell_fn(key) -> the roads Features of a map cell; elev:
+    the physics elevation. Worker threads."""
+
+    def __init__(self, frame, cell_fn, elev):
+        self.frame, self.cell_fn, self.elev = frame, cell_fn, elev
+        self.done = {}                          # (fid, j) -> (spec, xy (k, 2), z (k,), lon)
+        self.lock = threading.Lock()
+
+    def _ground(self, xy):
+        la, lo, _ = self.frame.enu_to_geodetic(xy[:, 0], xy[:, 1], 0.0)
+        return self.frame.geodetic_to_enu(la, lo, np.asarray(self.elev(la, lo), np.float64))[2]
+
+    def _load(self, key, pool, ground):
+        feats = self.cell_fn(key)
+        if feats is None or len(feats) == 0:
+            return
+        bs = bridge_specs(feats)
+        rs = road_specs(feats)
+        for i in range(len(feats)):
+            fid = str(feats.ids[i])
+            if bs[i] is not None:
+                lvls = bridge_levels(feats, i)
+                for j, ring in enumerate(bridge_parts(feats, i)):
+                    if (fid, j) not in pool:
+                        e, n, _ = self.frame.geodetic_to_enu(ring[:, 1], ring[:, 0], 0.0)
+                        pool[(fid, j)] = (bs[i], densify(np.stack([e, n], axis=1), DECK_STEP),
+                                          float(np.mean(ring[:, 0])), lvls[j] if j < len(lvls) else 1.0)
+            if rs[i] is not None and (fid, "g") not in ground:
+                ground[(fid, "g")] = []
+                for ring in ground_parts(feats, i):
+                    e, n, _ = self.frame.geodetic_to_enu(ring[:, 1], ring[:, 0], 0.0)
+                    ground[(fid, "g")].append(np.stack([e, n], axis=1))
+
+    def _resolve(self, start, pool, ground, loaded):
+        """The chain of part `start` (keys), loading the cell at each loose end until closed."""
+        def nk(p):
+            return (round(float(p[0]) * 2), round(float(p[1]) * 2))
+        while True:
+            by_node = {}
+            for k, (_, xy, _, _) in pool.items():
+                by_node.setdefault(nk(xy[0]), []).append(k)
+                by_node.setdefault(nk(xy[-1]), []).append(k)
+            keys = sorted(pool)
+            over = _deck_crossings([pool[k][1] for k in keys])
+            crossing = {}
+            for a, b, _, _ in over:
+                crossing.setdefault(keys[a], set()).add(keys[b])
+                crossing.setdefault(keys[b], set()).add(keys[a])
+            comp, stack = {start}, [start]
+            while stack:                        # joined at nodes, or crossing (solved together)
+                k = stack.pop()
+                xy = pool[k][1]
+                nxt = [k2 for p in (xy[0], xy[-1]) for k2 in by_node.get(nk(p), ())]
+                for k2 in nxt + sorted(crossing.get(k, ())):
+                    if k2 not in comp:
+                        comp.add(k2)
+                        stack.append(k2)
+            deg = {}
+            for k in comp:
+                xy = pool[k][1]
+                for p in (xy[0], xy[-1]):
+                    deg[nk(p)] = deg.get(nk(p), 0) + 1
+            grew = False
+            for k in comp:
+                xy = pool[k][1]
+                for p in (xy[0], xy[-1]):
+                    if deg[nk(p)] != 1:
+                        continue
+                    la, lo, _ = self.frame.enu_to_geodetic(np.array([p[0]]), np.array([p[1]]), 0.0)
+                    key = mapcells.cell_of(float(la[0]), float(lo[0]))
+                    if str(key) not in loaded and len(loaded) < CHAIN_CELLS:
+                        loaded.add(str(key))
+                        self._load(key, pool, ground)
+                        grew = True
+            if not grew:
+                return sorted(comp)
+
+    def parts(self, cells_feats, box):
+        """[(fid, spec, xy, z, lon)] of the bridge parts in these cells that come near box."""
+        x0, y0, x1, y1 = box
+        out, todo = [], []
+        for feats in cells_feats:
+            if feats is None or len(feats) == 0:
+                continue
+            bs = bridge_specs(feats)
+            for i in range(len(feats)):
+                if bs[i] is None:
+                    continue
+                fid = str(feats.ids[i])
+                for j, ring in enumerate(bridge_parts(feats, i)):
+                    e, n, _ = self.frame.geodetic_to_enu(ring[:, 1], ring[:, 0], 0.0)
+                    if e.max() < x0 - NEAR_M or e.min() > x1 + NEAR_M or n.max() < y0 - NEAR_M or n.min() > y1 + NEAR_M:
+                        continue
+                    todo.append(((fid, j), feats, i))
+        for key, feats, i in todo:
+            with self.lock:
+                got = self.done.get(key)
+            if got is None:
+                pool, ground, loaded = {}, {}, set()
+                ring = bridge_parts(feats, i)[key[1]]
+                for p in (ring[0], ring[-1]):
+                    ck = mapcells.cell_of(float(p[1]), float(p[0]))
+                    if str(ck) not in loaded:
+                        loaded.add(str(ck))
+                        self._load(ck, pool, ground)
+                if key not in pool:
+                    continue
+                comp = self._resolve(key, pool, ground, loaded)
+                lines = [pool[k][1] for k in comp]
+                gl = [g for v in ground.values() for g in v]
+                cr = _crossings(lines, gl)
+                road_z = self._ground(np.array([c[2] for c in cr])) if cr else []
+                zs = deck_profile(lines, self._ground, [(c[0], c[1], z) for c, z in zip(cr, road_z)],
+                                  levels=[pool[k][3] for k in comp])
+                with self.lock:
+                    for k, z in zip(comp, zs):
+                        spec, xy, lon, _ = pool[k]
+                        self.done.setdefault(k, (spec, xy, z, lon))
+                    got = self.done.get(key)
+            if got is not None:
+                spec, xy, z, lon = got
+                out.append((key[0], spec, xy, z, lon))
+        return out
+
+
+def _bridge_chunks(frame, bseen, elev, exact, bridges=None, cells=None):
     """The chunks of the bridges crossing the tile box `exact` (deck surfaces flagged "deck", their
     centre / edge lines; every bridge chunk "fixed": its z is the deck's, not the ground's). Deck
-    heights come from whole chains of bridge parts (deck_heights) over every bridge in the cells."""
+    heights: from `bridges` (BridgeProfiles: whole chains, shared by every tile), else from the
+    chains found among the given cells (deck_heights; tests)."""
+    if bridges is not None:
+        return _deck_chunks([(fid, spec, np.c_[xy, z], lon) for fid, spec, xy, z, lon in bridges.parts(cells, exact)
+                             if np.isfinite(z).all()], exact)
     if not bseen:
         return []
     parts = []                                  # (fid, spec, xy (k, 2), lon)
@@ -592,7 +918,7 @@ def _bridge_chunks(frame, bseen, elev, exact):
     zs = deck_heights([p[2] for p in parts], ground)
     allxy = np.concatenate([p[2] for p in parts])
     gz = ground(allxy)                          # one call: the ground under every deck point
-    out, k = [], 0
+    decks, k = [], 0
     for (fid, spec, xy, lon), z in zip(parts, zs):
         g = gz[k:k + len(xy)]
         k += len(xy)
@@ -607,7 +933,14 @@ def _bridge_chunks(frame, bseen, elev, exact):
             zz = grading.smooth_profile(z, DECK_STEP, grading.SIGMA_M)
             zz[0], zz[-1] = z[0], z[-1]
             z = np.maximum(zz, g)
-        pts = np.c_[xy, z]
+        decks.append((fid, spec, np.c_[xy, z], lon))
+    return _deck_chunks(decks, exact)
+
+
+def _deck_chunks(decks, exact):
+    """Deck + line chunks of bridge parts [(fid, spec, pts (k, 3), lon)] clipped to the box `exact`."""
+    out = []
+    for fid, spec, pts, lon in decks:
         lines = [({**DECK, "deck": True}, spec.width, pts)]
         for look, w, line in extras(spec, pts, lon):
             if look["m"] != SIDEWALK["m"] and look["m"] != GUTTER["m"]:
@@ -657,14 +990,15 @@ def drains(run, side, caps):
     return res
 
 
-def build_tile(frame, tx, ty, cells, elev, urban_fn=None, walks=None):
+def build_tile(frame, tx, ty, cells, elev, urban_fn=None, walks=None, bridges=None):
     """The chunks of one tile. cells: the mapgeom.Features of the "roads" layer of every cell touching
     the tile; elev(lat, lon) -> metres (the DEM); urban_fn: as road_specs. Features in several cells are
     taken once (by id). The carriageways, then each road's sidewalks / gutters / markings (extras), cut
     where another road's carriageway crosses them. walks: a list that gets the sidewalk runs (dicts
     pts / side / caps, clipped exactly to the tile, caps: whether each end is a real end) for the
-    sidewalk mesh (sidewalks.py) and storm drains among the chunks; None: sidewalks as decals. Pure
-    given its inputs (sorted by feature id)."""
+    sidewalk mesh (sidewalks.py) and storm drains among the chunks; None: sidewalks as decals.
+    bridges: a BridgeProfiles (deck heights of whole chains, shared by every tile); None: from the
+    chains among these cells. Pure given its inputs (sorted by feature id)."""
     x0, y0, x1, y1 = tile_bbox(tx, ty)
     box = (x0 - OVERLAP, y0 - OVERLAP, x1 + OVERLAP, y1 + OVERLAP)
     near = (x0 - NEAR_M, y0 - NEAR_M, x1 + NEAR_M, y1 + NEAR_M)
@@ -714,7 +1048,7 @@ def build_tile(frame, tx, ty, cells, elev, urban_fn=None, walks=None):
                 for c in split(densify(simplify(piece))):
                     if len(c) >= 2:
                         chunks.append(_chunk(look, lw, c))
-    chunks.extend(_bridge_chunks(frame, bseen, elev, (x0, y0, x1, y1)))
+    chunks.extend(_bridge_chunks(frame, bseen, elev, (x0, y0, x1, y1), bridges, cells))
     for fid, spec, pts, lon in roads:
         ex = extras(spec, pts, lon)
         if not ex:

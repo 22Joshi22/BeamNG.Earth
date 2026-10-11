@@ -289,6 +289,7 @@ class Anchor:
     q: float = None                                # height quantum, from the relief survey
     q_lock: threading.Lock = field(default_factory=threading.Lock)
     grader: object = None                          # grading.Grader (--grading on), made on first use
+    bridges: object = None                         # roads.BridgeProfiles: deck heights per chain
 
 
 @dataclass
@@ -705,7 +706,7 @@ class Server:
         if anchor is None or self.mapdata is None:
             return None
         cells = [self.mapdata.cell(k, layers=("roads",), kind="demand").layers.get("roads")
-                 for k in roadsmod.cells_of_tile(anchor.frame, tx, ty, roadsmod.BRIDGE_REACH)]
+                 for k in roadsmod.cells_of_tile(anchor.frame, tx, ty)]
         zoom = anchor.zooms[0]
         urban = self.surface.urban if self.surface is not None and hasattr(self.surface, "urban") else None
         g = self.grader_for(anchor)
@@ -714,7 +715,12 @@ class Server:
             z = self.dem.sample(la, lo, zoom)
             return g.apply(la, lo, z, gradingmod.ROAD_LIFT) if g is not None else z
         walks = []
-        chunks = roadsmod.build_tile(anchor.frame, tx, ty, cells, elev, urban, walks=walks)
+        with self.grader_lock:
+            if anchor.bridges is None:
+                anchor.bridges = roadsmod.BridgeProfiles(
+                    anchor.frame, lambda key: self.mapdata.cell(key, layers=("roads",), kind="demand").layers.get("roads"),
+                    elev)
+        chunks = roadsmod.build_tile(anchor.frame, tx, ty, cells, elev, urban, walks=walks, bridges=anchor.bridges)
         x0, y0, _, _ = roadsmod.tile_bbox(tx, ty)
         mesh = roadmeshmod.build(anchor.frame, chunks, elev, (x0, y0, 0.0))
         dmesh = roadmeshmod.deck(chunks, (x0, y0, 0.0))
