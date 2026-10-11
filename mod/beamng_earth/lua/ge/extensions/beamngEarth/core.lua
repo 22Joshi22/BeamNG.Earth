@@ -72,6 +72,8 @@ local serverAttribution = nil -- hello.attribution (protocol 4): the credits for
 local blockSize = 1024        -- the session's terrain block size (hello.blockSize); outlives levels
 local horizonOn = false       -- hello.horizon (M1h); outlives levels like the connection
 local farRadius = nil         -- status.radius: the server's far-field radius (m), horizon mode only
+local cacheInfo = nil         -- the server's last 'cache' message (download cache usage); outlives levels
+local cacheClears = 0         -- answers to a clear so far (the settings page waits for the next one)
 
 local function resetState()
   st = {
@@ -436,6 +438,7 @@ local function onMessage(msg)
     setStatus('Connected to companion server')
   elseif t == '_disconnected' then
     st.pending, st.sessionId, st.terrainPending = nil, nil, nil
+    cacheInfo = nil
     -- an auto-teleport lost with the connection is retried on the next hello
     if not st.anchor then st.autoTeleportDone = false end
     setStatus('Disconnected from companion server: ' .. tostring(msg.error))
@@ -446,6 +449,11 @@ local function onMessage(msg)
     if w and w.clearGravity then w.clearGravity() end
     st.deshadow = msg.deshadow -- server-side imagery de-shadowing ('lambert' / 'full'; nil = off), shown on the settings page
     st.colormatch = msg.colormatch -- server-side imagery colour-seam removal ('s2'; nil = off), likewise
+    -- the download cache: the new server's usage follows its hello; it gets the page's size cap (the
+    -- server keeps it for its next start too)
+    cacheInfo = nil
+    local settings = rawget(_G, 'beamngEarth_settings')
+    if settings and settings.cacheCapGb then net.send({ type = 'cache', capGb = settings.cacheCapGb() }) end
     -- the on-screen credits: this session's own follow (the attribution line until then)
     credits.clear()
     -- M4: the terrain block size first (everything below may use the lattice / follow table); a
@@ -541,6 +549,16 @@ local function onMessage(msg)
   elseif t == 'credits' then
     -- the sources around the player (server credits.py): msg.near, msg.far, drawn by credits.lua
     credits.onMessage(msg)
+  elseif t == 'cache' then
+    -- the download cache (server cache.py): its usage for the settings page; clearedBytes answers a clear
+    local prev = cacheInfo
+    cacheInfo = { usedBytes = tonumber(msg.usedBytes) or 0, capBytes = tonumber(msg.capBytes) or 0,
+      files = tonumber(msg.files) or 0, ready = msg.ready == true, managed = msg.managed ~= false,
+      clearedBytes = prev and prev.clearedBytes, clears = cacheClears }
+    if msg.clearedBytes ~= nil then
+      cacheClears = cacheClears + 1
+      cacheInfo.clearedBytes, cacheInfo.clears = tonumber(msg.clearedBytes) or 0, cacheClears
+    end
   end
 end
 
@@ -943,6 +961,28 @@ function M.attribution() return attributionText(farfield.stats()) end
 
 -- The on-screen data credits in use: the server's (near + far), else the attribution line.
 function M.credits() return credits.text(creditsFallback) end
+
+-- The download cache (server cache.py), for the settings page: the last usage the server sent (nil
+-- before any: no server, or one without a cache), and the page's requests to the server: the size cap
+-- in GB (0 = unlimited), a clear (answered with clearedBytes), fresh usage numbers. Each returns
+-- whether it went out (false without a server session).
+function M.cacheState() return cacheInfo end
+local function cacheReady() return net.isConnected() and st.sessionId ~= nil end
+function M.cacheSetCap(gb)
+  if not cacheReady() then return false end
+  net.send({ type = 'cache', capGb = gb })
+  return true
+end
+function M.cacheClear()
+  if not cacheReady() then return false end
+  net.send({ type = 'cache', clear = true })
+  return true
+end
+function M.cacheQuery()
+  if not cacheReady() then return false end
+  net.send({ type = 'cache' })
+  return true
+end
 
 function M._state() return st end -- read-only: the dev tools and the settings page
 function M._rebaseLag() return rebaseLag end -- for tests

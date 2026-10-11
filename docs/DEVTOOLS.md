@@ -200,3 +200,15 @@ player right now, e.g.:
 - HUD: once the page exists (index.js says so, or the pause menu lists the button) the imgui
   window is a compact status HUD, hidden at level start unless "Status HUD" is on; "Full window"
   brings the old window back for the session. Without the page nothing changes.
+- Download cache (2026-10-11, branch feature/cache-cap; server `cache.py`, docs/ROADMAP.md "Caching"):
+  a "Download cache" section on the page with the usage line ("1.2 GB of 20 GB, 34877 files"; "counting
+  files..." while the server's start-up walk runs, "no information from the server" without a
+  server or with one that has no cache), the size cap (select: 5, 10, 20, 50 GB, Unlimited; setting
+  `cacheCapGb`, default 20 = the server's default) and a "Clear cache" button that asks in the page
+  first (a text with Clear / Cancel buttons, no browser dialog), then shows "Clearing..." and "Freed
+  1.1 GB" (or "No answer from the server" after 2 min). The cap goes to the server after every `hello`
+  and on change (`core.cacheSetCap`; the server keeps it for its next start); the page's 2 s poll asks
+  the server for fresh numbers every 5th poll (`core.cacheQuery`, `settings.CACHE_POLL`); the server's
+  `cache` message is kept in core.lua (`core.cacheState()`, outliving levels, forgotten on a disconnect
+  or a new hello). Bridge: `beamngEarth_settings.uiCacheClear()` -> `{ ok, error }`;
+  `uiState().status.cache` = `{ line, clears, clearedBytes, clearedText }`.

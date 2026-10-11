@@ -353,6 +353,22 @@ Plan (with the netfetch / rate-limit work):
 4. **Pre-download** a region or a planned route (Cannonball) for offline play, within the cap.
 5. Cache layout versioned so a generator update invalidates only what changed.
 
+Status (2026-10-11, built offline on branch feature/cache-cap; docs/ARCHITECTURE.md "Download cache"):
+1 is in place: `server/cache.py` tracks the last use of every file under `dem/`, `imagery/`,
+`colormatch/`, `deshadow/` (the server's own record of each disk hit and write, persisted in
+`<cache>/index.tsv`; a cache from before takes the files' mtimes), a cap (`--cache-cap GB`, default the
+page's last choice, else 20; 0 = unlimited) and evicts the least recently used down to 90 % in a
+background thread at most every 3 min, never what this server used within the hour, the gravity
+model or `netstats/`. The settings page shows "1.2 GB of 20 GB, 34877 files", sets the cap (5 / 10 /
+20 / 50 GB / unlimited) and clears the cache after asking (`cache` messages both ways; a `Server()`
+without a `Cache` sends none, so the golden streams are unchanged). From 3: per-source lifetimes
+(`cache.LIFETIMES`, enforced at start-up; empty, since no current source limits caching time; the
+404 markers already expire through netfetch). From 5: a `VERSION` file at the root (a newer layout's
+cache is left alone: counted, never evicted or cleared); per-producer versions stay in the paths
+(`colormatch/v1/`, `imagery/usgs-ds1-<mode>/`) and an outdated directory ages out through the LRU.
+Waiting for its in-game check. Follow-ups: refreshing stale tiles in the background (3), the
+built-tile cache (2) and pre-download within the cap (4).
+
 ## Scheduled quick wins (user picked 2026-10-10; between the big versions)
 1. **Saved places** (smallest): bookmarks, recent places, spawn at a place; in the settings page.
 2. **Easy install and start**: server auto-start with the game / launcher, one settings file,

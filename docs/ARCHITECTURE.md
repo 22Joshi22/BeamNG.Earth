@@ -706,3 +706,48 @@ over to AWS, a 400 wrote a permanent `.404` marker, and the User-Agent lived in 
   first message. No allocation per frame; the text is measured only when it changes.
 - Tests: `server/tests/test_credits.py`, `test_protocol_agreement.py`, `mod/tests/test_credits.lua`,
   `test_core_stubbed.lua`. Still to check in-game: readability, the pause-menu / big-map hiding.
+
+## Download cache: size cap and LRU eviction (`server/cache.py`; docs/ROADMAP.md "Caching" 1, parts of 3 and 5; built offline 2026-10-11, feature/cache-cap)
+Before, every raw download stayed on disk forever (~/.cache/beamng-earth: 2.4 GB, ~43k files after
+three days of testing: dem 741 MB / 7.5k files, imagery 1.4 GB / 35k, deshadow 74 MB, gravity 145 MB).
+- **Bookkeeping**: one `cache.Cache` per server (`main_async`; `Server(cache=...)`, None by default, so
+  `Server()` and the golden streams are unchanged). Each producer has a `disk` attribute (`cache.NONE`:
+  plain reads, no bookkeeping) that earthd sets: `Dem` / `Imagery._download` read through `disk.read()`
+  (marks the file used before opening it, a miss is None: an evicted file is simply downloaded again)
+  and report writes, 404 markers and removed files; the de-shadow region / relit-tile caches and the
+  colour-seam fields report their loads and `_atomic_write`s. Last use = that record (one dict update
+  under a lock per hit; no stat per request, no atime, which relatime makes unreliable), persisted in
+  `<cache>/index.tsv` every 10 min when it changed, after a clear and at shutdown. At start a
+  background walk takes sizes, and the mtime (download time) as the last use of files the index does
+  not know (the existing cache is adopted as it is); nothing is evicted before it is done.
+- **Eviction**: over the cap (default 20 GB, `--cache-cap`, the page's choice persisted in the index),
+  the least recently used files of `dem/`, `imagery/`, `colormatch/`, `deshadow/` go, down to 90 % of
+  the cap, at most every 3 min. Never: files this server process used within the last hour (checked
+  again under the lock per file, so a tile worker's read during a pass wins), `gravity/` (counted
+  only), `netstats/` and unknown directories (not tracked), empty markers (cleared only). Directories
+  stay (a producer may be between `makedirs` and its write). A de-shadow region whose grids were
+  evicted while its parameters were in memory is computed again (it used to stay "pending").
+- **Clear** (the page's button, `cache` with `clear: true`): the same files regardless of the cap,
+  markers included, on an executor; the answer carries `clearedBytes`.
+- **Layout version** (ROADMAP 5): `<cache>/VERSION` = 1, written when missing; any other value (a newer
+  server's layout, or garbage) leaves the cache alone: counted for the page (`managed: false`), never
+  evicted, cleared or indexed. Producer versions are in the paths (`colormatch/v1/`,
+  `imagery/usgs-ds1-<mode>/`): after a generator update the old directory is never read again and
+  ages out through the LRU, so only what changed is recomputed.
+- **Lifetimes** (ROADMAP 3, the cheap part): `cache.LIFETIMES` (path prefix -> max age after the
+  download), enforced by the start-up walk. Empty: USGS (public domain), EOX (CC BY / CC BY-NC-SA),
+  Mapterhorn and AWS Terrain Tiles set no caching-time limit; 404 markers expire through netfetch's
+  `miss_ttl` (90 days). Background refresh of stale tiles is not built.
+- **Protocol** (additive, no bump; server/README.md): mod -> server `cache` {`capGb`, `clear`} (both
+  optional; neither = fresh numbers), server -> mod `cache` {`v`, `usedBytes`, `capBytes`, `files`,
+  `ready`, `managed`, `clearedBytes` after a clear}, after `hello` and in answer to every mod `cache`.
+  The mod sends the page's cap after every `hello` and on change, keeps the last `cache` for the page
+  (`core.cacheState()`), and the page asks for fresh numbers every 5th 2 s poll (docs/DEVTOOLS.md).
+- Memory ~200 B per tracked file (a full 20 GB cache of ~30 KB imagery tiles: ~130 MB); the walk of
+  today's 43k files took 0.13 s (warm, read-only timing) on its own thread.
+- Tests: `server/tests/test_cache.py`, `test_protocol_agreement.py` (`cache` both ways in the session,
+  the page's cap values = the settings schema's), `mod/tests/test_settings.lua` (the cap setting, the
+  usage line, the clear bridge, the poll), `test_core_stubbed.lua` (cap on hello, the kept message, the
+  requests only with a session). Still to check in-game: the page section (select, the confirmation
+  row, "Clearing..." / "Freed"), a clear while driving (nothing around the player re-downloads), the
+  start-up walk's time on the real cache, and the log line of the first eviction with a small cap.

@@ -734,6 +734,38 @@ drawnCredits = {}
 frames(3)
 T.check(drawnCredits[#drawnCredits] == 'Elevation: s11', 'credits: a new session shows its attribution line until its credits arrive')
 
+-- the download cache (server cache.py) for the settings page: hello sends the page's cap, the
+-- server's 'cache' is kept (outliving levels) and a clear's answer counts; the requests go out only
+-- with a server session; a disconnect or a new session forgets the numbers
+local function sentCaches() return received('cache') end
+local nCache = #sentCaches()
+beamngEarth_settings = { cacheCapGb = function() return 50 end }
+serverSend({ type = 'hello', protocol = 4, format = 4, cells = 64, horizon = true, serverVersion = '0.4.0',
+  sessionId = 's12', farFormat = 'cdae', material = 'bngEarthFar_v3', nearVisual = 'mesh' })
+frames(3)
+T.check(#sentCaches() == nCache + 1 and sentCaches()[nCache + 1].capGb == 50, 'hello: the page\'s cache cap sent')
+T.check(core.cacheState() == nil, 'no cache numbers before the server sends them')
+serverSend({ type = 'cache', v = 1, usedBytes = 1234567890, capBytes = 50000000000, files = 321, ready = true, managed = true })
+frames(2)
+local cs = core.cacheState()
+T.check(cs and cs.usedBytes == 1234567890 and cs.capBytes == 50e9 and cs.files == 321 and cs.ready and cs.managed
+  and cs.clears == 0 and cs.clearedBytes == nil, 'cache message kept for the page')
+T.check(core.cacheSetCap(0) and core.cacheClear() and core.cacheQuery(), 'cache requests sent while connected')
+local sc = sentCaches()
+T.check(sc[#sc - 2].capGb == 0 and sc[#sc - 1].clear == true and sc[#sc].capGb == nil and sc[#sc].clear == nil,
+  'cache requests: cap (0 = unlimited), clear, a plain usage request')
+serverSend({ type = 'cache', v = 1, usedBytes = 200000000, capBytes = 0, files = 12, ready = true, managed = true,
+  clearedBytes = 1034567890 })
+frames(2)
+cs = core.cacheState()
+T.check(cs.clears == 1 and cs.clearedBytes == 1034567890 and cs.usedBytes == 2e8, 'a clear\'s answer counted')
+serverSend({ type = 'cache', v = 1, usedBytes = 210000000, capBytes = 0, files = 13, ready = true, managed = true })
+frames(2)
+T.check(core.cacheState().clears == 1 and core.cacheState().clearedBytes == 1034567890, 'later usage keeps the last clear')
+core.reconnect()
+T.check(core.cacheState() == nil and not core.cacheClear(), 'disconnected: numbers gone, no request sent')
+beamngEarth_settings = nil
+
 core.onExtensionUnloaded()
 T.check(sky.atmoPlanetRadius == 6360 and scenetree.theLevelInfo.visibleDistance == 100000,
   'unload: the level keeps running with its own sky and the 100 km view distance')

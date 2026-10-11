@@ -22,7 +22,8 @@ python3 server/earthd.py --port 47613 --user-dir ~/.local/share/BeamNG/BeamNG.dr
 |---|---|---|
 | `--port` | `47613` | TCP port on 127.0.0.1 (`0` picks a free port and prints it) |
 | `--user-dir` | `~/.local/share/BeamNG/BeamNG.drive/current` | BeamNG user folder. Output goes to `<user-dir>/temp/beamngEarth/<sessionId>/`, which the game sees as `/temp/beamngEarth/<sessionId>/` |
-| `--cache-dir` | `~/.cache/beamng-earth` | Download cache root. DEM tiles: `<cache-dir>/dem/<source>/<z>/<x>/<y>.<ext>`; per-host request counters of each UTC day: `<cache-dir>/netstats/<YYYY-MM-DD>.json` |
+| `--cache-dir` | `~/.cache/beamng-earth` | Download cache root. DEM tiles: `<cache-dir>/dem/<source>/<z>/<x>/<y>.<ext>`; per-host request counters of each UTC day: `<cache-dir>/netstats/<YYYY-MM-DD>.json`; the layout version `VERSION` and the last-use index `index.tsv` (see "Download cache") |
+| `--cache-cap` | the last cap set on the mod's page, else `20` | Size cap of the download cache in GB (`cache.py`; 0 = unlimited). Over it, a background thread removes the least recently used files down to 90 % (at most every 3 min); never what this session used within the hour, the gravity model or `netstats/`. The mod's settings page can change it (`cache` messages); the server keeps that cap in its index for the next start, and this flag overrides it |
 | `--workers` | `3` | Far-tile worker threads. Keep ≤ 3 so tile building cannot starve the game (§4.5) |
 | `--far-format` | `cdae` | `cdae`: server-written binary shapes (default). `dae`: Collada fallback (the engine then compiles each tile itself, ~5× slower to load) |
 | `--lod-k` | per level | One K for every level. Default: the layout's K table, K(L1) = K(L2) = 3, K(L3+) = 2.5 with 32 cells (§3); K' = {L1 0.75, L2 1.5, L3 1.5, L4+ 1.25} with 64 |
@@ -82,6 +83,7 @@ as JSON floats (`512.0`). All positions are in the ENU plane of the anchor named
 | `{"type":"commit_anchor","anchorId":A}` | Switches the far field to A and commits A's first terrain (from `anchor_ready`). Tiles of the previous anchor that were sent but never swapped in are forgotten: the mod drops them. |
 | `{"type":"prepare_terrain","requestId":N,"anchorId":A,"cx":m,"cy":m}` | `cx`,`cy` multiples of 256 (`--block 512`: 128; other values are snapped). For the active anchor this block becomes the **pending** block: in terrain mode the far field is refined to L0 over it at once and its 64 L0 tiles are built first (mesh mode: no tile depends on a block). |
 | `{"type":"commit_terrain","anchorId":A,"cx":m,"cy":m}` | The committed block. **No far-tile key changes**; in terrain mode only the forced-L0 area moves, in mesh mode nothing at all changes. For a newer known anchor it implies `commit_anchor`. |
+| `{"type":"cache","capGb":n,"clear":true}` | The download cache (`server/cache.py`; additive like `weather`): both fields optional. `capGb` = the settings page's size cap in GB (0 = unlimited; sent after every `hello` and on change), `clear: true` = "Clear cache" (everything but this session's last hour and the gravity model, on an executor), neither = fresh usage numbers (the page asks every 10 s while it is open). Always answered with a `cache`; ignored by a `Server()` without a `Cache`. |
 | `{"type":"pose","anchorId":A,"x","y","z","vx","vy","lat","lon","speed","cam":{"x","y","z","fx","fy","fz","fovDeg"}}` | ~2 Hz. Drives LOD selection, the predicted block and the terrain prefetch. `cam` is optional and only stored for now (the camera-weighted priority is phase 4). A pose with a newer known anchor implies `commit_anchor`; a late pose of the previous anchor is transformed into the active frame. |
 
 ### server → mod
@@ -99,6 +101,7 @@ as JSON floats (`512.0`). All positions are in the ENU plane of the anchor named
 | `{"type":"far_remove","anchorId":A,"key":"L_i_j"}` | For the **active** anchor: eviction of a tile sent as `far_tile` that no group needs any more (the desired set changed before its swap); delete it, it was never shown. For a **previous** anchor (after a rebase): remove that shown tile; it is sent only after every `far_swap` whose adds cover its area (footprints compared in the new frame), so apply it once the swaps received before it have run. |
 | `{"type":"far_done","anchorId":A,"count":K}` | Every swap group for the current desired set has been sent. K = number of tiles the mod shows once those swaps have run. Sent again after each later change completes. |
 | `{"type":"credits","v":1,"near":"…","far":"…","ids":[…],"farIds":[…]}` | Data credits (`server/credits.py`; additive like `weather`, `--credits on` only). Every built tile records its sources: `img:<source>` for each imagery source with texels in its texture (`Imagery.render`'s counts; the fallback colour and a palette tile name none), `img:eox2023` + `img:eox2016` (the colour references) for a texture whose USGS tiles `--colormatch s2` changed (`render`'s `colormatch` count; a re-rendered stale texture takes its new render's sources), `dem:mapterhorn` / `dem:aws-terrarium` for the provider of each DEM tile under its footprint at its DEM zoom (`dem.Dem.served`, also after a netfetch failover from Mapterhorn to AWS), and `wx:open-meteo` once weather went to the mod. Shown tiles (previous anchors' included) whose footprint is within 2 km of the player are near, the rest far (a near source stays near while one of its tiles is within 2.2 km, so a player rocking across the radius does not flip it); `far` names only sources the near part does not; nothing is sent before some shown tile's sources are known (the weather alone would replace the mod's full attribution line). `near` = "Imagery: … \| Elevation: … \| Weather data by Open-Meteo.com", `far` = "Far imagery: … \| Far elevation: …" (or ""), in the order USGS, EOX 2023, EOX 2016, Mapterhorn, AWS, weather; EOX in its prescribed wording, Mapterhorn as "Mapterhorn (see mapterhorn.com/attribution)" (CREDITS.md's wording) (its underlying dataset is not in the tiles). Checked after a pose or a swap at most once a second; sent only when it changed; re-sent on `hello`. The mod (`credits.lua`) draws `near` and `far` as two lines in a screen corner. |
+| `{"type":"cache","v":1,"usedBytes":n,"capBytes":n,"files":n,"ready":true,"managed":true,"clearedBytes":n}` | The download cache's usage (`server/cache.py`; additive, only with a `Cache`: the command line has one, `Server()` none). After `hello` and in answer to every mod `cache`. `usedBytes` / `files`: what is tracked (`dem/`, `imagery/`, `colormatch/`, `deshadow/`, and `gravity/`, which is never removed); `capBytes` 0 = unlimited; `ready` false while the start-up walk is still counting; `managed` false when the cache's `VERSION` is a newer layout (then it is left alone: counted, never evicted or cleared); `clearedBytes` only in the answer to a clear (bytes removed). The settings page shows "1.2 GB of 20 GB, 34877 files". |
 | `{"type":"gravity","v":1,"g":m/s²,"lat","lon","h":m,"source":"egm2008"\|"normal"}` | Real gravity (`server/gravity.py` Provider / Tracker; additive like `weather`). \|g\| at the player's pose (geodetic lat/lon from the pose's anchor frame, `h` = metres above sea level, `msl=True` for EGM2008): computed on the provider's own thread (never the event loop) after the first pose on a known anchor, again when the player moved > 2 km or > 200 m in height from the last value, or when EGM2008 became available; re-sent on `hello`. `source` `"normal"` = WGS84 normal gravity (EGM2008 not on disk yet: a daemon thread downloads it, a failure is retried after 10 min). The mod (`weather.lua`) writes `g − 3.086e-6 × (z − h)` through `core_environment.setGravity` in steps of ≤ 1e-3 m/s² per second; it clears the value on a new `hello`. |
 | `{"type":"weather","v":1,"t":epoch,"lat","lon","code":wmo,"isDay","cover":{"total","low","mid","high"},"baseM","baseAglM","rainMmH","snowCmH","visM","fog","thunder","wind":{"ms","fromDeg","gustMs"},"aloft":{"ms","fromDeg"},"tempC","dewC","elevM","slTempC","pressureHpa","utcOffsetS","tz","credit"}` | Real weather (`server/weather.py`; additive, no protocol bump: both sides ignore unknown types). Open-Meteo's current (15-min) conditions at the 0.1° cell of the player's `pose.lat/lon`, fetched when there is none yet, every 10 min, or after 25 km (one request in flight; a failure keeps the last weather and retries after 2 min, or after the host's Retry-After / open circuit if longer; concurrent requests for one cell share a fetch); cached per (cell, 15-min slot) for all connections; re-sent on `hello`. Rates per hour from the 15-min sums (`× 3600 / interval`); a weather code with a zero sum gets a light floor (drizzle 0.3, rain 1, thunder 4 mm/h; snow 0.5 cm/h). `visM` (null = unknown) is ≤ 800 m with fog codes 45/48. `baseM`/`baseAglM`: the drawn deck's base (= max(low, mid)): a low deck at the LCL (125 m/K × (T − Td)), a mid deck ≥ 3000 m ASL; clamped 200–6000 m above the model ground `elevM`. `slTempC` = `tempC` + 0.0065 × `elevM` (the game lowers it with height). `aloft` = 700 hPa wind (cloud drift). `utcOffsetS`/`tz` = the place's real time zone (`timezone=auto`). `credit` = "Weather data by Open-Meteo.com" (CC BY 4.0), also in `hello.attribution` while weather is on. The mod's mapping is `beamngEarth/weather.lua`. |
 
@@ -289,6 +292,42 @@ Format decoded from engine-written files (golden pairs in `tests/fixtures/`):
   `DDSCAPS_MIPMAP|COMPLEX`). Pillow's BC1 on real imagery: 31–40 dB PSNR. Encoding a 512² chain
   takes ~4 ms. (PNG was the alternative: the engine would have to decode it on the main thread
   and build mips itself; DDS needs neither.)
+
+## Download cache (`server/cache.py`; docs/ROADMAP.md "Caching" 1, parts of 3 and 5)
+
+`<cache-dir>` holds `VERSION` (the layout, `1`; written when missing, so an older cache is adopted as
+it is; any other value leaves the cache alone), `index.tsv` (`<unix s>\t<bytes>\t<path>` per tracked
+file, header `# beamng-earth cache index 1\tcap=<bytes>`), and the data directories:
+
+| Directory | Tracked | Evicted / cleared |
+|---|---|---|
+| `dem/`, `imagery/` (incl. `usgs-ds1-<mode>/` relit tiles), `colormatch/`, `deshadow/` | yes | yes (empty `.404` / marker files: cleared only) |
+| `gravity/` | counted | never |
+| `netstats/`, anything else | no | never |
+
+- **Last use** = the server's own record: every disk hit and write in `dem.py`, `imagery.py`,
+  `deshadow.py`, `colormatch.py` goes through `disk.read()` / `disk.used()` / `disk.wrote()` (the
+  `disk` attribute, `cache.NONE` by default, set by `Server(cache=...)`): one dict update under a lock,
+  no stat per request, no reliance on atime (relatime). `read()` marks the file used before opening it,
+  so an eviction pass running at that moment keeps it; a file evicted a moment earlier reads as a miss
+  and is downloaded again.
+- **Start-up walk** (background thread): sizes, and the file's mtime (its download time) as the last use
+  of files the index does not know (e.g. a cache from before this module: 43k files in ~0.15 s, warm);
+  index entries without a file go. Until it is done `cache.ready` is false and nothing is evicted.
+- **Eviction**: when the tracked bytes exceed the cap, least recently used first, down to 90 % of the
+  cap, at most every 3 min (`EVICT_S`), checked every 30 s and after a write over the cap. Protected:
+  files this server process used within the last hour (`PROTECT_S`), `gravity/`, empty markers.
+  Directories stay (a producer may be about to write into one). The index is saved every 10 min when
+  something changed, after a clear and at shutdown (atomic replace; a damaged line is skipped, a
+  damaged header drops the index: last uses then come from the mtimes).
+- **Clear** (`cache` with `clear: true`): every tracked file of the four data directories but the
+  protected ones, markers included; returns the bytes freed.
+- **Lifetimes** (`LIFETIMES`, path prefix → max age after download): enforced by the start-up walk.
+  Empty today: none of the current sources limits caching time (the 404 markers expire through
+  netfetch's `miss_ttl`).
+- **Versions**: per-producer versions live in the paths (`colormatch/v1/`, `imagery/usgs-ds1-<mode>/`):
+  after a generator update the old directory is never read again and ages out through the LRU.
+- Memory: about 200 B per tracked file (a full 20 GB cache of ~30 KB imagery tiles: ~130 MB).
 
 ## Elevation sources
 
@@ -590,6 +629,19 @@ message for the weather alone, no flip-flopping at the near radius), change-only
 sending with the one-per-interval throttle (an injected clock and loop), and in-process sessions
 (sources near and far, nothing on quiet poses, re-sent on hello, messages at least one interval
 apart, none from a default `Server()`). No network: synthetic DEM with providers, fake weather.
+`test_cache.py`: the download cache's cap (`cache.py`; fake wall clock, temporary roots): LRU order
+down to 90 % of the cap, a hit moving a file to the back, unlimited / raised caps, the protection
+rules (this session's last hour, `gravity/`, empty markers, `netstats/` and unknown directories not
+tracked, a use during a pass winning, a previous session's uses not protecting), index persistence
+(last uses and the page's cap across a restart, `--cache-cap` overriding it, vanished files, newer
+downloads) and damage (header, lines, paths outside the data directories), the `VERSION` file (written
+when missing; a newer or unreadable one leaves the cache alone), per-source lifetimes, clear (what
+stays, directories kept, waiting for the walk), eight producer threads writing and reading while
+passes evict and save (byte count = entries, every entry's file exists, no torn reads), uses during
+the start-up walk, the background thread's pacing (`EVICT_S`, `SAVE_S`), the hooks in `dem.py`,
+`imagery.py`, `colormatch.py`, `deshadow.py` (a de-shadow region whose grids were evicted is computed
+again) and earthd's `cache` messages (after hello, cap, usage, clear; none and ignored without a
+`Cache`; bad caps refused; `--cache-cap` parsing). No network: a stub fetcher.
 `test_drive_tool.py` checks `tools/drive.py` and `tools/drive_driver.lua` offline (profile rule on both
 sides, nominal speed, the summary, the driver under luajit, `run_ge` with a fake MCP: polls >= 1 s
 apart and an uninstall on every failure path). `test_v131_default.py` checks that a default

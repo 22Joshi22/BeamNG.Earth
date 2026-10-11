@@ -230,6 +230,52 @@ T.check(res.rebaseDistance == rebase.DEFAULT_DISTANCE and files[settings.FILE].r
   'uiReset: defaults saved')
 
 ------------------------------------------------------------------------------------------
+-- the download cache (server cache.py): the cap setting, the usage line, the clear button
+
+T.check(settings.defaults().cacheCapGb == '20' and settings.cacheCapGb() == 20, 'cache cap: 20 GB by default')
+T.check(settings.validate('cacheCapGb', 'unlimited') == 'unlimited' and settings.validate('cacheCapGb', '7') == nil,
+  'cache cap: the page\'s values only')
+local capsSent, clears, queries, connected = {}, 0, 0, true
+local cacheInfo = nil
+beamngEarth_core = { _state = function() return stTbl end,
+  cacheSetCap = function(gb) capsSent[#capsSent + 1] = gb; return connected end,
+  cacheClear = function() clears = clears + 1; return connected end,
+  cacheQuery = function() queries = queries + 1; return connected end,
+  cacheState = function() return cacheInfo end }
+settings.uiSet('cacheCapGb', '50')
+settings.uiSet('cacheCapGb', 'unlimited')
+T.check(capsSent[1] == 50 and capsSent[2] == 0 and files[settings.FILE].cacheCapGb == 'unlimited',
+  'cache cap: saved, sent to the server in GB (unlimited = 0)')
+settings.applyAll()
+T.check(capsSent[3] == 0, 'cache cap: applied with the rest (the level start)')
+T.check(settings.cacheLine(nil) == 'no information from the server', 'cache line: no server (or one without a cache)')
+T.check(settings.cacheLine({ usedBytes = 1.23e9, capBytes = 20e9, files = 34877, ready = true, managed = true })
+  == '1.2 GB of 20 GB, 34877 files', 'cache line: used of cap')
+T.check(settings.cacheLine({ usedBytes = 45e6, capBytes = 0, files = 9, ready = true, managed = true })
+  == '45 MB, 9 files (no limit)', 'cache line: unlimited, small')
+T.check(settings.cacheLine({ usedBytes = 3e9, capBytes = 5e9, files = 1, ready = false, managed = true })
+  == 'counting files... (3.0 GB so far)', 'cache line: the server is still counting')
+T.check(settings.cacheLine({ usedBytes = 3e9, capBytes = 5e9, files = 2, ready = true, managed = false })
+  :match('newer version'), 'cache line: a cache from a newer version is left alone')
+cacheInfo = { usedBytes = 1.23e9, capBytes = 20e9, files = 10, ready = true, managed = true, clears = 1, clearedBytes = 5e8 }
+local q0 = queries
+local st1 = settings.uiState().status.cache
+T.check(st1.line == '1.2 GB of 20 GB, 10 files' and st1.clears == 1 and st1.clearedText == '0.5 GB',
+  'uiState: the cache line and the last clear')
+for _ = 1, settings.CACHE_POLL - 1 do settings.uiState() end
+T.check(queries - q0 == 1, 'uiState: fresh numbers asked once per CACHE_POLL polls (' .. (queries - q0) .. ')')
+local r = settings.uiCacheClear()
+T.check(r.ok and clears == 1, 'uiCacheClear: sent')
+connected = false
+r = settings.uiCacheClear()
+T.check(not r.ok and r.error == 'server not connected', 'uiCacheClear: not connected')
+beamngEarth_core = nil
+r = settings.uiCacheClear()
+T.check(not r.ok and r.error == 'mod not loaded', 'uiCacheClear: no core')
+settings.uiReset()
+T.check(settings.get('cacheCapGb') == '20', 'uiReset: the cap back to 20 GB')
+
+------------------------------------------------------------------------------------------
 -- the compact HUD draws (permissive imgui stub)
 
 local drawnText = {}

@@ -64,6 +64,8 @@ from dataclasses import dataclass
 import numpy as np
 from PIL import Image
 
+import cache as cachemod
+
 log = logging.getLogger("earthd.deshadow")
 
 VERSION = 1                         # bump: region values and relit tiles are recomputed
@@ -684,6 +686,7 @@ def _atomic_write(path, write):
 
 class Deshadow:
     """Region values (background thread) and per-tile relight for one Imagery (bind())."""
+    disk = cachemod.NONE    # the server's cache.Cache (last use per file, the size cap); set by earthd
 
     def __init__(self, cache_dir, dem, mode="full", mem_tiles=MEM_TILES, wait_s=WAIT_S):
         if mode not in MODES[1:]:
@@ -743,6 +746,7 @@ class Deshadow:
             return None
         if P.get("version") != VERSION or (P.get("ok") and not os.path.exists(npz)):
             return None
+        self.disk.used(jp)
         self._params[rk] = P
         return P
 
@@ -832,11 +836,15 @@ class Deshadow:
             if g is not None:
                 self._grids.move_to_end(rk)
                 return Region(P, g)
+        npz = self._paths(rk)[1]
         try:
-            with np.load(self._paths(rk)[1]) as f:
+            with np.load(npz) as f:
                 g = f["grids"]
         except (OSError, ValueError, KeyError):
+            with self._lock:            # evicted from the disk cache (cache.py): computed again
+                self._params.pop(rk, None)
             return None
+        self.disk.used(npz)
         with self._lock:
             self._grids[rk] = g
             while len(self._grids) > MEM_REGIONS:
@@ -866,7 +874,9 @@ class Deshadow:
             jp, npz = self._paths(rk)
             if grids is not None:
                 _atomic_write(npz, lambda f: np.savez_compressed(f, grids=grids))
+                self.disk.wrote(npz)
             _atomic_write(jp, lambda f: f.write(json.dumps(P).encode()))
+            self.disk.wrote(jp)
             with self._lock:
                 self._params[rk] = P
                 if grids is not None:
@@ -944,9 +954,11 @@ class Deshadow:
         v = None
         if os.path.exists(same):
             v = SAME
+            self.disk.used(same)
         elif os.path.exists(png):
             try:
                 v = np.asarray(Image.open(png).convert("RGB"))
+                self.disk.used(png)
             except (OSError, ValueError):
                 v = None
         if v is None:
@@ -956,6 +968,7 @@ class Deshadow:
             _atomic_write(same if v is SAME else png,
                           (lambda f: None) if v is SAME else
                           (lambda f: Image.fromarray(v, "RGB").save(f, "PNG", compress_level=1)))
+            self.disk.wrote(same if v is SAME else png)
         else:
             self._count("disk")
         with self._lock:

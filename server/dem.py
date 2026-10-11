@@ -25,6 +25,7 @@ from concurrent.futures import ThreadPoolExecutor
 import numpy as np
 from PIL import Image
 
+import cache as cachemod
 import netfetch
 
 log = logging.getLogger("earthd.dem")
@@ -67,6 +68,8 @@ def _resize(a, size):
 
 
 class Dem:
+    disk = cachemod.NONE    # the server's cache.Cache (last use per file, the size cap); set by earthd
+
     # mem_tiles: decoded float32 512² tiles kept in memory (1 MB each; 512 per docs/V1_2_DESIGN.md §4.3).
     # fetcher: the server's netfetch.Fetcher (shared rate limits); None = a Fetcher of its own.
     def __init__(self, cache_dir, fetch_workers=8, mem_tiles=512, fetcher=None):
@@ -100,10 +103,10 @@ class Dem:
         netfetch.FetchError when the host cannot deliver."""
         path = self._path(src, z, x, y)
         miss = os.path.join(self.cache_dir, src["name"], str(z), str(x), f"{y}.404")
-        if os.path.exists(path):
+        data = self.disk.read(path)         # None: not cached (or evicted a moment ago)
+        if data is not None:
             self._count(src["name"] + ":disk")
-            with open(path, "rb") as f:
-                return f.read()
+            return data
         url = src["url"].format(z=z, x=x, y=y)
         if self.fetcher.miss_alive(miss, url):
             return None
@@ -112,6 +115,7 @@ class Dem:
             data = self.fetcher.get(url).body
         except netfetch.NotFound:
             open(miss, "wb").close()        # (re)written: its mtime starts the marker's TTL
+            self.disk.wrote(miss, 0)
             self._count(src["name"] + ":404")
             return None
         except netfetch.FetchError:
@@ -121,8 +125,10 @@ class Dem:
         with open(tmp, "wb") as f:
             f.write(data)
         os.replace(tmp, path)
+        self.disk.wrote(path, len(data))
         if os.path.exists(miss):            # an expired marker: the host has data there now
             os.remove(miss)
+            self.disk.forget(miss)
         self._count(src["name"] + ":net")
         return data
 
@@ -137,6 +143,7 @@ class Dem:
                 os.remove(self._path(src, z, x, y))
             except OSError:
                 pass
+            self.disk.forget(self._path(src, z, x, y))
             self._count(src["name"] + ":undecodable")
             raise netfetch.BadResponse(f"undecodable {src['name']} tile {z}/{x}/{y}: {e}") from None
 
