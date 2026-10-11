@@ -428,7 +428,12 @@ their chunk arrived.
   and `clouds/cloudVrtReconstruct.cs.hlsl`: at every start it deletes its old copies, reads the
   game's current files, replaces the exact line only where it is found, and writes the result into
   the unpacked mod folder at the same path (the mod's mount overlays the game's file; disabling the
-  mod removes it). A packed mod skips the patch (ROADMAP follow-up).
+  mod removes it). A packed mod skips the patch (ROADMAP follow-up). Second edit, same files: the
+  scene distance is read from `depthNdc + 1.2e-7` (the nearest distance the stored depth allows): at
+  150-250 km the depth is coarse and a distance read too far let clouds 200-230 km away show below
+  the horizon as flipped copies of the clouds above it (in-game 2026-10-11, plane at 3 km; same with
+  the plane hidden). The game compiles these compute shaders once at startup (cache
+  `temp/shaders/shaders.vk.db`, no reload command), so the patch takes effect after a game restart.
 
 ## De-shadowing of the USGS imagery (`--deshadow`; built offline 2026-10-10, behind a flag, default off)
 - Integration of docs/research/2026-10-10-deshadow-prototype.md, method A (method B dropped):
