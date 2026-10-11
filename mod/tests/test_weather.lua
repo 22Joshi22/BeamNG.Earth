@@ -2,8 +2,9 @@
 -- beamngEarth/weather.lua: the pure conversions (calibration curve, fog, wind, rain, gravity, gusts,
 -- the targets of the two recorded Open-Meteo fixtures as server/weather.py derives them), then the
 -- runtime against a stubbed core_environment: grace period, smooth approach, writes only on change,
--- manual overrides from the pause menu, BWM_Weather coexistence, missions, gravity, rain objects and
--- the temperature curve.
+-- the switch to manual when someone else changes the weather (and what is no change: repeated values,
+-- our own writes, grace, missions, the big map, gravity), BWM_Weather, gravity, rain objects and the
+-- temperature curve.
 local dir = (arg[0]:match('^(.*)[/\\]') or '.')
 local T = dofile(dir .. '/testlib.lua')
 local S = dofile(dir .. '/stubs.lua')
@@ -99,9 +100,24 @@ check(W.describe(3) == 'overcast' and W.describe(45) == 'fog' and W.describe(63)
   and W.describe(73) == 'snow' and W.describe(95) == 'thunderstorm' and W.describe(81) == 'showers', 'describe')
 check(W.compass(232) == 'SW' and W.compass(98) == 'E' and W.compass(359) == 'N', 'compass')
 
--- override groups and the BWM_Weather rule
-local g = W.overrideGroupsFor({ cloudCover = 1, fogDensity = 2, time = 0.3, cloudWeatherSeed = 4 })
-check(g.clouds and g.fog and not g.time and not g.cloudWeatherSeed, 'override groups')
+-- what is a change: the incoming value against the engine's (getters), per key
+local stubEnv = { getCloudCover = function() return 1 end, getFogDensity = function() return 0.002, {} end,
+  getGroundWind = function() return vec3(1, 2, 0) end, getCloudWindDirection = function() return vec3(0, 1, 0) end }
+local function keys(t) return table.concat(t, ',') end
+check(keys(W.changedKeys({ cloudCover = 1.005, fogDensity = 2, time = 0.3, cloudWeatherSeed = 4 }, stubEnv)) == '',
+  'repeated values (fog in the menu\'s x1000 scale) and non-weather keys: no change')
+check(keys(W.changedKeys({ cloudCover = 1.5, fogDensity = 25 }, stubEnv)) == 'cloudCover,fogDensity', 'changed values')
+check(keys(W.changedKeys({ fogDensity = 0.002 }, stubEnv)) == '' and keys(W.changedKeys({ fogDensity = 0.004 }, stubEnv)) == 'fogDensity',
+  'fog in the engine\'s scale (setFogDensity)')
+check(keys(W.changedKeys({ groundWind = { x = 1, y = 2.1, z = 0 }, cloudWindDirection = vec3(0, 1, 0) }, stubEnv)) == '',
+  'vectors within the tolerance (the menu sends tables)')
+check(keys(W.changedKeys({ groundWind = vec3(3, 2, 0), cloudWindDirection = { x = 1, y = 0 } }, stubEnv)) == 'cloudWindDirection,groundWind',
+  'vectors that changed')
+check(keys(W.changedKeys({ groundWind = vec3(1, 2, 0) }, stubEnv, { groundWind = { x = 5, y = 0 } })) == 'groundWind',
+  'a reference value wins over the engine\'s')
+check(keys(W.changedKeys({ numOfDrops = 500, cloudAltitudeKm = 2 }, stubEnv)) == 'cloudAltitudeKm,numOfDrops', 'no getter: a change')
+check(not W.valueDiffers('cloudCover', 'x', 1, 0.01) and W.valueDiffers('cloudCover', 1, nil, 0.01), 'unreadable values')
+-- the BWM_Weather rule (named in the toast)
 check(not W.bwmFighting(nil), 'no BWM')
 check(not W.bwmFighting({ currentPreset = 'clear', targetPreset = 'clear', automaticWeather = false }), 'BWM on clear')
 check(W.bwmFighting({ currentPreset = 'clear', targetPreset = 'clear', automaticWeather = true }), 'BWM automatic')
@@ -315,24 +331,12 @@ camZ = 10
 run(1)
 check(rain.hidden == false, 'rain again below the clouds')
 
--- a manual change in the pause menu (setState fires the hook with the changed field): fog is now
--- the user's; clouds stay real
-local fogCalls = env.calls.fog
-W.onEnvironmentChanged({ fogDensity = 25 })
-env.fog = 0.025
-run(W.USER_QUIET_S - 0.5)
-local coverCalls = env.calls.cover
-run(10)
-check(env.calls.fog == fogCalls and env.fog == 0.025, 'fog overridden: not written again')
-check(env.calls.cover > coverCalls, 'clouds still driven')
-check(W.statusLine():find('manual overrides', 1, true) ~= nil, 'status line shows the override')
--- back to real: the override is cleared and fog is driven again
-W.setMode('real')
-run(2)
-check(env.calls.fog > fogCalls, 'setMode(real) clears the overrides')
+-- our own writes fire the hook all the time: never a change
+check(W.getMode() == 'real' and #toasts == 0 and env.hooks > 100, 'our own writes: still real, no toast (' .. env.hooks .. ' hooks)')
 
 -- the sun follows the deck (the rain message: low 100 %, still approaching): the level's 1.2 times
 -- the factor
+run(40)
 check(sunB() >= 1.2 * W.sunDimFor(1) - 1e-6 and sunB() < 1.2 * (W.sunDimFor(1) + 0.1),
   'sun dimmed under the overcast deck: ' .. tostring(sunB()))
 local sunWrites = sun.applied
@@ -354,16 +358,99 @@ W.setMode('manual')
 near(sunB(), 0.9, 1e-6, 'manual: a value someone else set is left alone')
 W.setMode('real')
 
--- missions: their own setup changes are not overrides, nothing is written while they run
+-- the settings (beamngEarth_settings.set applies the mode again, as settings.lua does)
+local saved = {}
+beamngEarth_settings = { set = function(k, v)
+  saved[#saved + 1] = k .. '=' .. tostring(v)
+  if k == 'weatherMode' then W.setMode(v) end
+  return { ok = true, value = v }
+end }
+
+-- a setState that only repeats the engine's values (getState x1000 fog, vectors as tables, time keys):
+-- no change
+local nWind, nToasts = env.calls.ground, #toasts
+W.onEnvironmentChanged({ cloudCover = env.cover, fogDensity = env.fog * 1000, fogAtmosphereHeight = env.fogH,
+  windSpeed = env.windSpeed, cloudCirrusCoverage = env.cirrusCov, cloudCirrusDensity = env.cirrusDen,
+  cloudWindDirection = { x = env.cloudDir.x, y = env.cloudDir.y, z = 0 }, cloudAltitudeKm = env.cloudAlt,
+  groundWind = { x = env.ground.x, y = env.ground.y, z = 0 }, time = 0.3, play = true })
+run(5)
+check(W.getMode() == 'real' and #toasts == nToasts and #saved == 0 and env.calls.ground > nWind,
+  'repeated values: still real, still driven')
+
+-- a change in the pause menu (setState with the changed field, before it is applied): writes stop at
+-- once, after MISSION_SETUP_S (no mission started) the weather is manual, saved, one toast
+local fogCalls = env.calls.fog
+W.onEnvironmentChanged({ fogDensity = 25 })
+env.fog = 0.025
+run(W.MISSION_SETUP_S - 0.5)
+check(W.getMode() == 'real' and env.calls.fog == fogCalls and #toasts == nToasts, 'a change: writes wait, not switched yet')
+W.onEnvironmentChanged({ fogDensity = 30 })        -- the slider moves on
+env.fog = 0.03
+run(1)
+check(W.getMode() == 'manual', 'a change: manual')
+check(#saved == 1 and saved[1] == 'weatherMode=manual', 'manual saved as the setting')
+check(#toasts == nToasts + 1 and toasts[#toasts][2].title == 'BeamNG.Earth weather'
+  and toasts[#toasts][2].msg:find('Manual', 1, true) and not toasts[#toasts][2].msg:find('BWM', 1, true), 'one toast')
+check(rain.hidden == true and snow.hidden == true, 'manual: precipitation hidden')
+near(sunB(), 1.2, 1e-6, 'manual: the level\'s sun brightness restored')
+check(W.statusLine():find('manual, changed in the game', 1, true) ~= nil, 'status line says why')
+local nCover = env.calls.cover
+W.onEnvironmentChanged({ cloudCover = 0.1 })
+env.cover = 0.1
+run(10)
+check(env.calls.cover == nCover and env.fog == 0.03 and #toasts == nToasts + 1 and #saved == 1,
+  'manual: hands off, further changes no toast')
+-- Real again (the settings page): driven again, the sun dims again
+W.setMode('real')
+run(W.LERP_S)
+check(env.calls.fog > fogCalls and env.calls.cover > nCover and env.cover > 1.5 and sunB() < 1.2 and rain.hidden == false,
+  'real again: driven again')
+check(W.getMode() == 'real' and #toasts == nToasts + 1, 'real again: stays real')
+
+-- another mod's setGroundWind: core_environment applies it before its hook, so the hook carries the
+-- engine's own (new) value: compared with what we wrote last
+nToasts = #toasts
+W.onEnvironmentChanged({ groundWind = vec3(env.ground.x, env.ground.y, 0) }) -- our own value repeated
+run(W.MISSION_SETUP_S + 0.5)
+check(W.getMode() == 'real', 'ground wind: our own value repeated is no change')
+env.ground = vec3(20, 0, 0)
+W.onEnvironmentChanged({ groundWind = env.ground })
+run(W.MISSION_SETUP_S + 0.5)
+check(W.getMode() == 'manual' and #toasts == nToasts + 1 and env.ground.x == 20, 'ground wind from another mod: manual')
+W.setMode('real')
+run(5)
+
+-- missions: their own setup (just before 'started') is no change, nothing is written while they run,
+-- changes during them are theirs
+local nSaved = #saved
 W.onEnvironmentChanged({ cloudCover = 0.2 })   -- the mission's setup, just before 'started'
 env.cover = 0.2
 W.onAnyMissionChanged('started')
-n0 = env.calls.cover
+local n0 = env.calls.cover
+W.onEnvironmentChanged({ fogDensity = 40 })    -- during the mission
 run(10)
 check(env.calls.cover == n0, 'mission: paused')
 W.onAnyMissionChanged('stopped')
 run(W.MISSION_RESUME_S + 2)
-check(env.calls.cover > n0 and env.cover > 0.3, 'mission stopped: resumed (its setup was not an override)')
+check(env.calls.cover > n0 and env.cover > 0.3, 'mission stopped: resumed')
+check(W.getMode() == 'real' and #saved == nSaved, 'mission: its setup and changes did not switch to manual')
+
+-- the big map: it sets fog, clouds and time and puts them back as it closes: no change, no writes
+local bigMap = false
+freeroam_bigMapMode = { bigMapActive = function() return bigMap end, isTransitionActive = function() return false end }
+W.onBeforeBigMapActivated()
+W.onEnvironmentChanged({ fogDensity = 0 }); env.fog = 0     -- before it is active (instant open)
+bigMap = true
+W.onEnvironmentChanged({ cloudCover = 0 }); env.cover = 0
+n0 = env.calls.cover
+run(10)
+check(env.calls.cover == n0 and env.cover == 0, 'big map: nothing written')
+W.onEnvironmentChanged({ cloudCover = 1.9 }); env.cover = 1.9 -- its restore, still active
+bigMap = false
+W.onDeactivateBigMapCallback()
+run(W.BIGMAP_TAIL_S + 2)
+check(W.getMode() == 'real' and #saved == nSaved and env.calls.cover >= n0, 'big map: still real afterwards')
+freeroam_bigMapMode = nil
 
 -- gravity: a manual gravity change (the menu's presets) is the user's; switching it off restores 9.81
 W.setMode('real')
@@ -373,10 +460,12 @@ near(env.gravity, -W.GRAVITY_DEFAULT, 1e-12, 'gravity off: the level default')
 W.setGravityEnabled(true)
 run(2)
 near(-env.gravity, W.gravityAt(36.58, 4000), W.GRAVITY_EPS, 'gravity on again')
+nToasts = #toasts
 W.onEnvironmentChanged({ gravity = -1.62 })
 env.gravity = -1.62
 run(5)
 check(env.gravity == -1.62, 'gravity override respected')
+check(W.getMode() == 'real' and #toasts == nToasts, 'a gravity change does not switch the weather')
 
 -- the server's real gravity (server/gravity.py 'gravity' message): carried to the player's height
 -- by the free-air gradient, approached in GRAVITY_STEP steps per check, back to normal gravity on
@@ -413,23 +502,28 @@ W.clearGravity()
 run(5)
 near(-env.gravity, gNormal, W.GRAVITY_EPS, 'new session: normal gravity until its message')
 
--- BWM_Weather: set to a preset -> real weather steps back (auto mode) with one notice
-W.setMode('auto')
+-- 'auto' (the old default, a saved setting) is real; BWM_Weather no longer switches anything by itself,
+-- but its weather changes are changes like the player's (and the toast says so)
+W.setMode('manual')
+check(W.setMode('auto') == 'weather mode: real' and W.getMode() == 'real', "setMode('auto') = real")
+check(W.setMode('stormy'):find('must be', 1, true) and W.getMode() == 'real', 'an unknown mode is refused')
 W.onClientEndMission()
 W.onClientStartMission()
 BWM_Weather_main = { getWeatherState = function() return { currentPreset = 'cloudy', targetPreset = 'cloudy', automaticWeather = false } end }
-run(1)
-check(W.getMode() == 'manual', 'BWM fighting: manual by default')
-check(#toasts == 1 and toasts[1][1] == 'toastrMsg', 'one notice')
-run(10)
-check(#toasts == 1, 'notice once')
-run(W.GRACE_S)
-W.onEnvironmentChanged({ cloudCover = 0.3 })        -- a change while it is manual (BWM or the user)
-check(W.getMode() == 'manual' and W.statusLine():find('manual overrides', 1, true), 'manual: the change is recorded')
-BWM_Weather_main = { getWeatherState = function() return { currentPreset = 'clear', targetPreset = 'clear', automaticWeather = false } end }
-run(W.BWM_CHECK_S + 0.5)
-check(W.getMode() == 'real', 'BWM on clear: real again')
-check(not W.statusLine():find('manual overrides', 1, true), 'back to real: changes made while manual are not overrides')
+nToasts = #toasts
+run(W.GRACE_S - 1)
+check(W.getMode() == 'real' and #toasts == nToasts, 'BWM set to a preset: still real, no toast')
+W.onEnvironmentChanged({ cloudCover = 0, fogDensity = 0 })          -- its start transition: grace
+run(2)
+check(W.getMode() == 'real', 'grace: no switch')
+W.onEnvironmentChanged({ cloudCover = env.cover + 0.5 })            -- BWM changes the clouds
+run(W.MISSION_SETUP_S + 0.5)
+check(W.getMode() == 'manual' and #toasts == nToasts + 1 and toasts[#toasts][2].msg:find('BWM_Weather', 1, true),
+  'BWM changes the weather: manual, the toast names BWM_Weather')
+BWM_Weather_main = nil
+W.setMode('real')
+run(W.LERP_S)
+check(W.getMode() == 'real' and env.calls.cover > 0, 'real again after BWM')
 
 -- other levels: nothing happens there
 level = 'west_coast_usa'

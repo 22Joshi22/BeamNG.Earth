@@ -37,7 +37,7 @@ M.SCHEMA = {
   hazeStrength = { kind = 'number', default = 0, min = 0, max = 1, label = 'Distance haze (placeholder)' },
   skyMode = { kind = 'enum', default = 'real', values = { 'real', 'manual' }, label = 'Sky' },
   clouds = { kind = 'bool', default = true, label = 'Clouds' },
-  weatherMode = { kind = 'enum', default = 'auto', values = { 'auto', 'real', 'manual' }, label = 'Weather' },
+  weatherMode = { kind = 'enum', default = 'real', values = { 'real', 'manual' }, label = 'Weather' },
   realGravity = { kind = 'bool', default = true, label = 'Real gravity' },
   hudVisible = { kind = 'bool', default = false, label = 'Status HUD at level start' },
   -- the on-screen data credits (credits.lua): on by default, CC BY licences ask for visible attribution
@@ -50,6 +50,11 @@ M.SCHEMA = {
 M.ORDER = { 'rebaseDistance', 'viewDistanceMode', 'viewDistanceKm', 'hazeStrength', 'skyMode', 'clouds',
   'weatherMode', 'realGravity', 'hudVisible', 'creditsVisible', 'creditsCorner', 'creditsSize', 'devOutlineKm',
   'devMapKm' }
+
+-- Old values that still load (and set) as their replacement, without a warning: 'auto' weather
+-- (real unless BWM_Weather was changing the weather) is Real now, which switches itself to Manual
+-- when anyone changes the weather.
+M.MIGRATE = { weatherMode = { auto = 'real' } }
 
 local values = {}       -- the settings in use (always complete and valid)
 local pageFlag = false  -- index.js said the page exists
@@ -77,6 +82,7 @@ function M.validate(key, v)
     if v == false or v == 'false' or v == 0 then return false end
     return nil, key .. ': not a boolean'
   else
+    if M.MIGRATE[key] and M.MIGRATE[key][v] ~= nil then v = M.MIGRATE[key][v] end
     for _, ok in ipairs(s.values) do if v == ok then return v end end
     return nil, key .. ': must be one of ' .. table.concat(s.values, ', ')
   end
@@ -160,10 +166,12 @@ M.APPLY = {
     local sky = ext('beamngEarth_sky')
     if sky and sky.setClouds and sky.CLOUDS_ENABLED ~= v then sky.setClouds(v) end
   end,
-  -- real weather and gravity (weather.lua; the server's --weather / --gravity decide whether data come)
+  -- real weather and gravity (weather.lua; the server's --weather / --gravity decide whether data come).
+  -- weather.lua and sky.lua save 'manual' here themselves when the weather / time is changed in the
+  -- game; the mode is then already set, so it is not applied again.
   weatherMode = function(v)
     local w = ext('beamngEarth_weather')
-    if w and w.setMode then w.setMode(v) end
+    if w and w.setMode and not (w.getMode and w.getMode() == v) then w.setMode(v) end
   end,
   realGravity = function(v)
     local w = ext('beamngEarth_weather')

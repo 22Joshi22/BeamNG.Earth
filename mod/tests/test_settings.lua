@@ -107,11 +107,11 @@ local saved = files[settings.FILE]
 vals = settings.load()
 T.check(vals.rebaseDistance == 9000 and vals.skyMode == 'manual' and vals.clouds == false, 'save -> load round trip')
 T.check(saved.hudVisible == false and saved.devOutlineKm == 3, 'every value is written')
--- real weather and gravity: through beamngEarth_weather (defaults = its own: auto, gravity on)
-T.check(settings.get('weatherMode') == 'auto' and settings.get('realGravity') == true, 'weather defaults: auto, real gravity on')
-local wCalls = {}
+-- real weather and gravity: through beamngEarth_weather (defaults = its own: real, gravity on)
+T.check(settings.get('weatherMode') == 'real' and settings.get('realGravity') == true, 'weather defaults: real, real gravity on')
+local wCalls, wMode = {}, 'real'
 beamngEarth_weather = { GRAVITY_ENABLED = true,
-  setMode = function(m) wCalls[#wCalls + 1] = 'mode ' .. m end,
+  setMode = function(m) wCalls[#wCalls + 1] = 'mode ' .. m; wMode = m end, getMode = function() return wMode end,
   setGravityEnabled = function(on) wCalls[#wCalls + 1] = 'gravity ' .. tostring(on); beamngEarth_weather.GRAVITY_ENABLED = on end,
   statusLine = function() return 'Weather (real): 20 C' end, gravityLine = function() return '9.78676 m/s2, EGM2008 (server)' end }
 settings.set('weatherMode', 'manual')
@@ -119,8 +119,28 @@ settings.set('realGravity', false)
 T.check(wCalls[1] == 'mode manual' and wCalls[2] == 'gravity false', 'weather mode and gravity applied through beamngEarth_weather')
 settings.set('realGravity', false)
 T.check(#wCalls == 2, 'an unchanged gravity switch is not re-applied')
-T.check(not settings.set('weatherMode', 'stormy').ok, 'weather mode: only auto / real / manual')
-settings.set('weatherMode', 'auto')
+T.check(not settings.set('weatherMode', 'stormy').ok, 'weather mode: only real / manual')
+-- 'auto' (the old default) is real now: set and loaded as 'real', without a warning
+r = settings.set('weatherMode', 'auto')
+T.check(r.ok and r.value == 'real' and wMode == 'real' and files[settings.FILE].weatherMode == 'real', "set('auto') = real")
+files[settings.FILE].weatherMode = 'auto'
+vals, warn = settings.load()
+T.check(vals.weatherMode == 'real' and #warn == 0, "a saved 'auto' loads as 'real' without a warning (" .. #warn .. ')')
+T.check(#settings.SCHEMA.weatherMode.values == 2 and settings.validate('weatherMode', 'auto') == 'real', 'weather values: real, manual')
+-- the switch to manual when the weather (time) is changed in the game: weather.lua / sky.lua set
+-- their own mode, then save it here; applying it again is not needed (and not done)
+local nCalls, nSky = #wCalls, #skyCalls
+wMode, skyMode = 'manual', 'manual'
+local rw, rs = settings.set('weatherMode', 'manual'), settings.set('skyMode', 'manual')
+T.check(rw.ok and rs.ok and files[settings.FILE].weatherMode == 'manual' and files[settings.FILE].skyMode == 'manual',
+  'switch to manual: saved')
+T.check(#wCalls == nCalls and #skyCalls == nSky, 'switch to manual: the mode is not applied again')
+T.check(settings.uiState().settings.weatherMode == 'manual' and settings.uiState().settings.skyMode == 'manual',
+  'switch to manual: the page reads it (uiState, polled every 2 s)')
+T.check(settings.load().weatherMode == 'manual', 'switch to manual: kept for the next start')
+settings.set('weatherMode', 'real')
+settings.set('skyMode', 'real')
+T.check(wCalls[#wCalls] == 'mode real' and skyCalls[#skyCalls] == 'mode real', 'Real again from the page: applied')
 settings.set('realGravity', true)
 -- without the core extension: straight to rebase.lua
 beamngEarth_core = nil

@@ -18,21 +18,23 @@
 -- The sun dims under a thick cloud deck (ScatterSky.brightness, the direct light only: the game's
 -- clouds cast no shadows, so under overcast the car kept a sharp sun shadow; in-game 2026-10-10 the
 -- auto exposure keeps the scene's brightness while the shadows fade). The level's own value is put
--- back when the weather stops driving it (manual mode, a manual cloud change, a mission).
+-- back when the weather stops driving it (manual mode, a mission).
 -- Gravity follows the player (GRAVITY_ENABLED, independent of the mode): the server's 'gravity'
 -- message (server/gravity.py: WGS84 normal + EGM2008 anomaly at the player, every 2 km / 200 m of
 -- height) with the free-air gradient for the height since; normal gravity by latitude and height
 -- until the first message (or with a server without it). Changes are written in steps of at most
--- GRAVITY_STEP per check, so a new value is approached smoothly.
+-- GRAVITY_STEP per check, so a new value is approached smoothly. A gravity change by anyone else
+-- (the menu's presets) is kept until setMode('real') (S.gravityOverride); it does not touch the mode.
 -- Everything runs in the BeamNG.Earth level only.
 --
--- Modes: 'real' = drive the weather; 'manual' = hands off (the game's own controls). The default is
--- 'real' unless the BWM_Weather mod is set to change the weather itself (automatic weather on, or
--- a preset other than clear): then 'manual', with a notice (research §3). A change made by anyone
--- else (pause menu, another mod) after the start-up grace period is a manual override of that
--- group of values: real weather keeps driving the others; setMode('real') clears the overrides.
--- Missions pause it (they set and restore their own weather).
--- Console: beamngEarth_weather.setMode('real'|'manual'|'auto')   .status()   .setGravityEnabled(bool)
+-- Modes: 'real' (the default) = drive the weather; 'manual' = hands off (the game's own controls).
+-- A change made by anyone else (the pause menu, another mod such as BWM_Weather) after the start-up
+-- grace period that really changes a value (the engine's value is compared: a setState repeating
+-- the current values is no change) switches to 'manual' with one toast and saves that as the
+-- setting (beamngEarth_settings, so the settings page shows it); choosing Real again goes back.
+-- 'auto' (the old default: real unless BWM_Weather was changing the weather) means 'real'.
+-- Missions and the big map pause it (they set and restore their own weather).
+-- Console: beamngEarth_weather.setMode('real'|'manual')   .status()   .setGravityEnabled(bool)
 
 local M = {}
 
@@ -45,9 +47,10 @@ M.GROUND_CHECK_S = 5       -- ground height under the player (fog compensation)
 M.GRACE_S = 20             -- after a level start: BWM_Weather's start transition, env's setState(init_env)
 M.USER_QUIET_S = 3         -- after someone else's change: core_environment lerps it over 1.15 s and
                            -- each of its setters cancels a running lerp, so write nothing meanwhile
-M.MISSION_SETUP_S = 2      -- missions set their weather just before 'started': not an override
+M.MISSION_SETUP_S = 2      -- missions set their weather just before 'started': a change switches to
+                           -- manual only when no mission started within this long
 M.MISSION_RESUME_S = 5
-M.BWM_CHECK_S = 5
+M.BIGMAP_TAIL_S = 2        -- the big map restores fog, clouds and time as it closes
 M.TEMP_WRITE_S = 10        -- temperature curve writes at most this often
 M.TEMP_EPS_C = 0.2
 
@@ -108,16 +111,23 @@ M.GRAVITY_DEFAULT = 9.81   -- the level's value, restored when switched off
 M.GRAVITY_STEP = 1e-3      -- m/s^2 per check at most (100 mGal/s) once ours is set: a smooth approach
 M.FREE_AIR = 3.086e-6      -- m/s^2 per m of height (normal free-air gradient)
 
--- core_environment's onEnvironmentChanged keys -> the group a manual change overrides
-M.OVERRIDE_GROUPS = {
-  cloudCover = 'clouds',
-  cloudCirrusCoverage = 'cirrus', cloudCirrusDensity = 'cirrus', cloudCirrusAltitudeKm = 'cirrus',
-  cloudWindDirection = 'cloudWind', windSpeed = 'cloudWind',
-  fogDensity = 'fog', fogAtmosphereHeight = 'fog',
-  groundWind = 'wind',
-  gravity = 'gravity',
-  cloudAltitudeKm = 'cloudAltitude',
-  numOfDrops = 'precip',
+-- core_environment's onEnvironmentChanged keys that are real weather -> the core_environment getter
+-- of the engine's value (the hook fires before a value is applied) and the tolerance within which
+-- an incoming value is no change. Vectors by component; fogDensity relative, in either scale
+-- (setState carries the menu's x1000, setFogDensity the engine's); numOfDrops is no engine field, so
+-- getPrecipitation may have nothing to compare with (a change).
+M.WEATHER_KEYS = {
+  cloudCover = { 'getCloudCover', 0.01 },
+  cloudCirrusCoverage = { 'getCloudCirrusCoverage', 0.01 },
+  cloudCirrusDensity = { 'getCloudCirrusDensity', 0.01 },
+  cloudCirrusAltitudeKm = { 'getCloudCirrusAltitudeKm', 0.05 },
+  cloudWindDirection = { 'getCloudWindDirection', 0.02 },
+  windSpeed = { 'getWindSpeed', 0.002 },
+  fogDensity = { 'getFogDensity', 0.02 },
+  fogAtmosphereHeight = { 'getFogAtmosphereHeight', 1 },
+  groundWind = { 'getGroundWind', 0.2 },
+  cloudAltitudeKm = { 'getCloudAltitudeKm', 0.05 },
+  numOfDrops = { 'getPrecipitation', 0.5 },
 }
 
 ------------------------------------------------------------------------------------------
@@ -258,18 +268,52 @@ function M.step(cur, tgt, dt, T)
   return cur
 end
 
--- The override groups touched by an onEnvironmentChanged table.
-function M.overrideGroupsFor(changes)
-  local out = {}
-  for k in pairs(changes) do
-    local g = M.OVERRIDE_GROUPS[k]
-    if g then out[g] = true end
+-- x, y of a vector (vec3 cdata or the menu's { x, y, z } table), or nil.
+local function xyOf(v)
+  local t = type(v)
+  if t ~= 'table' and t ~= 'cdata' and t ~= 'userdata' then return nil end
+  local ok, x, y = pcall(function() return tonumber(v.x), tonumber(v.y) end)
+  if ok and x and y then return x, y end
+end
+
+-- Does the incoming value v of key differ from the engine's value have by more than tol?
+function M.valueDiffers(key, v, have, tol)
+  local vx, vy = xyOf(v)
+  if vx then
+    local hx, hy = xyOf(have)
+    return not hx or math.abs(vx - hx) > tol or math.abs(vy - hy) > tol
   end
+  v, have = tonumber(v), tonumber(have)
+  if v == nil then return false end -- nothing the setter would apply
+  if have == nil then return true end
+  if key == 'fogDensity' then
+    local t = math.max(tol * have, 1e-6)
+    return math.abs(v - have) > t and math.abs(v / 1000 - have) > t
+  end
+  return math.abs(v - have) > tol
+end
+
+-- The real-weather keys of an onEnvironmentChanged table whose values really change, sorted. e:
+-- core_environment (its getters); ref: values to compare with instead of the engine's (key -> value).
+function M.changedKeys(changes, e, ref)
+  local out = {}
+  for k, v in pairs(changes) do
+    local spec = M.WEATHER_KEYS[k]
+    if spec then
+      local have = ref and ref[k]
+      if have == nil and e and type(e[spec[1]]) == 'function' then
+        local ok, h = pcall(e[spec[1]])
+        if ok then have = h end
+      end
+      if M.valueDiffers(k, v, have, spec[2]) then out[#out + 1] = k end
+    end
+  end
+  table.sort(out)
   return out
 end
 
 -- BWM_Weather (the user's weather mod) changes the weather itself: automatic weather, or a
--- preset other than clear (its getWeatherState()).
+-- preset other than clear (its getWeatherState()). Named in the toast of a switch to manual.
 function M.bwmFighting(state)
   if type(state) ~= 'table' then return false end
   if state.automaticWeather == true then return true end
@@ -298,21 +342,23 @@ end
 ------------------------------------------------------------------------------------------
 -- runtime
 
-local mode, modeSource = 'real', 'auto' -- 'auto': follows BWM_Weather; 'user': setMode()
+local mode = 'real'
 local lastMsg = nil                     -- the latest message, kept across level loads
 local lastGravity = nil                 -- the latest 'gravity' message (server), kept the same way
-local applying = false                  -- our own core_environment calls (their hook is not an override)
+local applying = false                  -- our own core_environment calls (their hook is not a change)
 local S
 
 local function resetState()
   S = {
-    clock = 0, graceUntil = M.GRACE_S, quietUntil = 0, mission = false,
-    override = {}, cur = nil, tgt = lastMsg and M.targets(lastMsg) or nil,
-    applyTimer = 0, windTimer = 0, groundTimer = M.GROUND_CHECK_S, gravTimer = 0, bwmTimer = M.BWM_CHECK_S,
-    groundZ = nil, gust = 0, veer = 0, gravity = nil,
+    clock = 0, graceUntil = M.GRACE_S, quietUntil = 0, mission = false, bigMapUntil = 0,
+    gravityOverride = nil, cur = nil, tgt = lastMsg and M.targets(lastMsg) or nil,
+    applyTimer = 0, windTimer = 0, groundTimer = M.GROUND_CHECK_S, gravTimer = 0,
+    groundZ = nil, gust = 0, veer = 0, gravity = nil, windSent = nil, -- windSent: our last ground wind
     temp = { at = -math.huge, value = nil, method = nil }, dirtyFrames = 0,
     precip = { [M.RAIN_NAME] = {}, [M.SNOW_NAME] = {} },
-    notified = false, bwm = false, inOurLevel = false,
+    pending = nil,  -- { at, keys }: someone else changed the weather; manual after MISSION_SETUP_S
+    switched = nil, -- the last switch to manual: { at, keys, bwm }
+    inOurLevel = false,
     sun = { base = nil, applied = nil }, -- the level's ScatterSky.brightness, the value we wrote
   }
 end
@@ -445,7 +491,6 @@ end
 
 local function applyPrecip(e, c)
   local rain, snow = c.rainPct, c.snowPct
-  if S.override.precip then rain, snow = 0, 0 end
   -- no rain above the cloud base
   local alt = e.getCloudAltitudeKm and tonumber(e.getCloudAltitudeKm())
   local cz = cameraZ()
@@ -489,27 +534,19 @@ end
 M._restoreSun = function() restoreSun() end -- tests
 
 local function apply(e)
-  local c, o = S.cur, S.override
-  if not o.clouds then
-    setIf(e.getCloudCover, e.setCloudCover, c.coverage, 0.005)
-    writeSun(c.sunDim)
-  else
-    restoreSun()
+  local c = S.cur
+  setIf(e.getCloudCover, e.setCloudCover, c.coverage, 0.005)
+  writeSun(c.sunDim)
+  setIf(e.getCloudCirrusCoverage, e.setCloudCirrusCoverage, c.cirrusCoverage, 0.005)
+  setIf(e.getCloudCirrusDensity, e.setCloudCirrusDensity, c.cirrusDensity, 0.005)
+  local l = math.sqrt(c.cloudDirX ^ 2 + c.cloudDirY ^ 2)
+  if l > 1e-3 then
+    local x, y = c.cloudDirX / l, c.cloudDirY / l
+    local have = e.getCloudWindDirection and e.getCloudWindDirection()
+    if not (have and have.x and (have.x * x + have.y * y) > 0.9986) then envCall(e.setCloudWindDirection, x, y, 0) end -- 3 deg
   end
-  if not o.cirrus then
-    setIf(e.getCloudCirrusCoverage, e.setCloudCirrusCoverage, c.cirrusCoverage, 0.005)
-    setIf(e.getCloudCirrusDensity, e.setCloudCirrusDensity, c.cirrusDensity, 0.005)
-  end
-  if not o.cloudWind then
-    local l = math.sqrt(c.cloudDirX ^ 2 + c.cloudDirY ^ 2)
-    if l > 1e-3 then
-      local x, y = c.cloudDirX / l, c.cloudDirY / l
-      local have = e.getCloudWindDirection and e.getCloudWindDirection()
-      if not (have and have.x and (have.x * x + have.y * y) > 0.9986) then envCall(e.setCloudWindDirection, x, y, 0) end -- 3 deg
-    end
-    setIf(e.getWindSpeed, e.setWindSpeed, c.cloudWindSpeed, 0.005)
-  end
-  if not o.fog and S.groundZ then
+  setIf(e.getWindSpeed, e.setWindSpeed, c.cloudWindSpeed, 0.005)
+  if S.groundZ then
     local want = M.fogDensityFor(c.fogSigma, S.groundZ, c.fogHeight)
     local have = e.getFogDensity and tonumber((e.getFogDensity()))
     if not have or math.abs(have - want) > 0.02 * want then envCall(e.setFogDensity, want) end
@@ -525,7 +562,6 @@ local function apply(e)
 end
 
 local function applyWind(e, dt)
-  if S.override.wind then return end
   local c = S.cur
   local speed, dx, dy = c.windMs, c.windDirX, c.windDirY
   if M.GUSTS then
@@ -541,11 +577,11 @@ local function applyWind(e, dt)
   if l > 1e-3 then x, y = speed * dx / l, speed * dy / l end
   local have = e.getGroundWind and e.getGroundWind()
   if have and have.x and math.abs(have.x - x) < M.WIND_EPS_MS and math.abs(have.y - y) < M.WIND_EPS_MS then return end
-  envCall(e.setGroundWind, x, y, 0)
+  if envCall(e.setGroundWind, x, y, 0) then S.windSent = { x = x, y = y } end
 end
 
 local function applyGravity(e)
-  if S.override.gravity or not e.setGravity then return end
+  if S.gravityOverride or not e.setGravity then return end
   local want = S.gravity
   if M.GRAVITY_ENABLED then
     local p = playerPos()
@@ -577,36 +613,48 @@ local function hidePrecip()
   pcall(restoreSun)
 end
 
-local function checkBwm()
+-- Is BWM_Weather changing the weather itself right now?
+local function bwmNow()
   local b = rawget(_G, 'BWM_Weather_main')
-  local st = nil
-  if b and b.getWeatherState then
-    local ok, v = pcall(b.getWeatherState)
-    if ok then st = v end
+  if not (b and b.getWeatherState) then return false end
+  local ok, st = pcall(b.getWeatherState)
+  return ok and M.bwmFighting(st) or false
+end
+
+-- The big map sets fog, clouds and time for its view and puts them back as it closes: not a change
+-- by the player (and nothing is written meanwhile).
+local function bigMapBusy()
+  if S.clock < S.bigMapUntil then return true end
+  local bm = rawget(_G, 'freeroam_bigMapMode')
+  if not bm then return false end
+  local ok, on = pcall(function()
+    return (bm.bigMapActive and bm.bigMapActive()) or (bm.isTransitionActive and bm.isTransitionActive())
+  end)
+  return ok and on and true or false
+end
+
+-- Someone else changed the weather: real weather steps back to manual, saved as the setting (the
+-- settings page shows it; settings.set applies the mode again, which is a no-op now), one toast.
+local function switchToManual()
+  local p = S.pending
+  p.bwm = bwmNow()
+  M.setMode('manual')
+  S.switched = p
+  local st = rawget(_G, 'beamngEarth_settings')
+  if st and st.set then
+    local ok, err = pcall(st.set, 'weatherMode', 'manual')
+    if not ok then log('W', 'beamngEarth', 'weather: saving the mode failed: ' .. tostring(err)) end
   end
-  S.bwm = M.bwmFighting(st)
-  if modeSource == 'auto' then
-    local want = S.bwm and 'manual' or 'real'
-    if want ~= mode then
-      mode = want
-      -- back to real: changes made while it was manual were not overrides of real weather
-      if mode == 'manual' then hidePrecip() else S.cur, S.override, S.quietUntil = nil, {}, 0 end
-    end
-  end
-  if S.bwm and not S.notified then
-    S.notified = true
-    notify(mode == 'manual'
-      and 'BWM_Weather is changing the weather, so real weather is off. Set BWM_Weather to Clear with automatic weather off to use real weather.'
-      or 'BWM_Weather is also changing the weather: set it to Clear with automatic weather off, or turn real weather off.')
-  end
+  notify('Weather set to Manual because it was changed'
+    .. (p.bwm and ' (BWM_Weather is changing the weather: set it to Clear with automatic weather off to keep real weather)' or '')
+    .. '. Choose Real in the BeamNG.Earth settings to go back.')
 end
 
 local function update(dt)
   if not S.inOurLevel or not scenetree.MissionGroup then return end
   local e = env()
   if not e then return end
-  S.bwmTimer = S.bwmTimer + dt
-  if S.bwmTimer >= M.BWM_CHECK_S then S.bwmTimer = 0; checkBwm() end
+  if S.pending and S.clock >= S.pending.at + M.MISSION_SETUP_S then switchToManual() end
   S.groundTimer = S.groundTimer + dt
   if S.groundTimer >= M.GROUND_CHECK_S then
     S.groundTimer = 0
@@ -616,7 +664,7 @@ local function update(dt)
   if S.clock < S.graceUntil or S.mission then return end
   S.gravTimer = S.gravTimer + dt
   if S.gravTimer >= M.GRAVITY_CHECK_S then S.gravTimer = 0; applyGravity(e) end
-  if mode ~= 'real' or not S.tgt or S.clock < S.quietUntil then return end
+  if mode ~= 'real' or not S.tgt or S.clock < S.quietUntil or bigMapBusy() then return end
   if not S.cur then S.cur = readEngine(e, S.tgt) end
   M.step(S.cur, S.tgt, dt, M.LERP_S)
   S.applyTimer = S.applyTimer + dt
@@ -669,29 +717,46 @@ function M.onUpdate(dtReal)
   if not ok then log('W', 'beamngEarth', 'weather: ' .. tostring(err)) end
 end
 
+-- core_environment's hook, fired before a change is applied (setState: the whole table its caller
+-- passed, possibly with unchanged values). Our own writes are not changes (applying).
 function M.onEnvironmentChanged(changes)
   if applying or type(changes) ~= 'table' then return end
   if S.clock < S.graceUntil or S.mission or not S.inOurLevel then return end
-  local touched = M.overrideGroupsFor(changes)
-  if not next(touched) then return end
-  for g in pairs(touched) do S.override[g] = S.clock end
+  if changes.gravity ~= nil then -- gravity is its own setting: the game's value is kept
+    S.gravityOverride = S.clock
+    S.quietUntil = S.clock + M.USER_QUIET_S
+  end
+  if mode ~= 'real' or bigMapBusy() then return end
+  -- the ground wind: setGroundWind applies before its hook, so compare with what we wrote last
+  local keys = M.changedKeys(changes, env(), { groundWind = S.windSent })
+  if #keys == 0 then return end
   S.quietUntil = S.clock + M.USER_QUIET_S
-  if touched.precip then hidePrecip() end
-  if touched.cloudAltitude and sky() and sky().setCloudFollow then sky().setCloudFollow(false) end
+  if not S.pending then S.pending = { at = S.clock, keys = keys } end
+  if changes.cloudAltitudeKm ~= nil and sky() and sky().setCloudFollow then sky().setCloudFollow(false) end
 end
 
 function M.onAnyMissionChanged(state)
   if state == 'started' then
     S.mission = true
     pcall(restoreSun)
-    for g, t in pairs(S.override) do
-      if t >= S.clock - M.MISSION_SETUP_S then S.override[g] = nil end -- the mission's own setup
+    if S.pending then -- the mission's own setup, just before 'started': no switch
+      S.pending = nil
+      local sk = sky()
+      if sk and sk.setCloudFollow then sk.setCloudFollow(true) end
     end
+    if S.gravityOverride and S.gravityOverride >= S.clock - M.MISSION_SETUP_S then S.gravityOverride = nil end
   elseif state == 'stopped' then
     S.mission = false
     S.graceUntil = math.max(S.graceUntil, S.clock + M.MISSION_RESUME_S) -- its restore ran just before
     S.cur = nil
   end
+end
+
+function M.onBeforeBigMapActivated() S.bigMapUntil = S.clock + M.BIGMAP_TAIL_S end
+M.onBigmapStartTransition = M.onBeforeBigMapActivated
+function M.onDeactivateBigMapCallback()
+  S.bigMapUntil = S.clock + M.BIGMAP_TAIL_S
+  S.cur = nil -- from the values it put back
 end
 
 local function onLevel()
@@ -706,18 +771,15 @@ function M.onExtensionLoaded()
   if scenetree.MissionGroup and getCurrentLevelIdentifier and getCurrentLevelIdentifier() then onLevel() end
 end
 
--- 'real' or 'manual' (the user's choice), or 'auto' (the default: real unless BWM_Weather is
--- changing the weather).
+-- 'real' (the default) or 'manual'; 'auto' (the old default) means 'real'. Safe to repeat (the
+-- settings apply the saved mode again after a switch to manual).
 function M.setMode(m)
-  if m ~= 'real' and m ~= 'manual' and m ~= 'auto' then return 'mode must be "real", "manual" or "auto"' end
-  modeSource = (m == 'auto') and 'auto' or 'user'
-  if m == 'auto' then
-    S.bwmTimer = M.BWM_CHECK_S -- decided on the next update
-    m = mode
-  end
+  if m == 'auto' then m = 'real' end
+  if m ~= 'real' and m ~= 'manual' then return 'mode must be "real" or "manual"' end
   mode = m
+  S.pending = nil
   if mode == 'real' then
-    S.override, S.cur, S.quietUntil = {}, nil, 0
+    S.gravityOverride, S.cur, S.quietUntil, S.windSent = nil, nil, 0, nil
     local sk = sky()
     if sk and sk.setCloudFollow then sk.setCloudFollow(true) end
   else
@@ -736,7 +798,7 @@ end
 -- One line for the BeamNG.Earth window.
 function M.statusLine()
   local m = lastMsg
-  local head = 'Weather (' .. mode .. (next(S.override) and ', manual overrides' or '') .. ')'
+  local head = 'Weather (' .. mode .. ((mode == 'manual' and S.switched) and ', changed in the game' or '') .. ')'
   if not m then return head .. ': no data yet' end
   local w = m.wind or {}
   return string.format('%s: %.0f C, %s, wind %.0f m/s from %s, visibility %s', head, tonumber(m.tempC) or 0,
@@ -745,11 +807,8 @@ function M.statusLine()
 end
 
 function M.status()
-  local overrides = {}
-  for g in pairs(S.override) do overrides[#overrides + 1] = g end
-  table.sort(overrides)
-  return dumps({ mode = mode, modeSource = modeSource, bwmFighting = S.bwm, overrides = overrides,
-    inOurLevel = S.inOurLevel, grace = math.max(0, S.graceUntil - S.clock), mission = S.mission,
+  return dumps({ mode = mode, pending = S.pending, switched = S.switched, bwmFighting = bwmNow(),
+    gravityOverride = S.gravityOverride ~= nil, bigMap = bigMapBusy(), inOurLevel = S.inOurLevel, grace = math.max(0, S.graceUntil - S.clock), mission = S.mission,
     groundZ = S.groundZ, gravity = S.gravity, gravityMsg = lastGravity, temperatureCurve = S.temp.method, tempC = S.temp.value,
     msg = lastMsg, target = S.tgt, current = S.cur, line = M.statusLine() })
 end
