@@ -1,5 +1,5 @@
 """Ground surfaces under the physics block (docs/ROADMAP.md v1.5 "Per-cell surface physics"; earthd
---surface on, off by default until its in-game check).
+--surface, on by default since 2026-10-11).
 
 The TerrainBlock is physics-only in mesh mode, so its layer map decides nothing but the tyres'
 ground model (and GroundCover, which binds to a layer). Every 2 m sample of the block gets one of

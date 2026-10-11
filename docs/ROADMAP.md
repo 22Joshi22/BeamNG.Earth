@@ -128,7 +128,7 @@ Manhattan cell: 4.8 s cold, peak RSS 381 MB. Next:
 ## v1.5 "Ground truth"
 - Per-cell surface physics: the invisible TerrainBlock gets material layers from ESA WorldCover
   (+ OSM roads): ASPHALT / DIRT / GRASS / SAND / GRAVEL / ROCK / MUD / SNOW (no more dust on roads).
-  Status (2026-10-11, built, behind `earthd --surface on`, in-game check pending): WorldCover classes
+  Status (2026-10-11, on by default, `earthd --surface off` to disable): WorldCover classes
   (from the map-data cache, prefetched 3 km around the player, never waited for) and a 35° rock rule
   give 8 layers (asphalt for built-up, grass, dusty / loose dirt, rock, snow, mud, dirt) imported with
   each 512² block as 8 greyscale masks; the materials are runtime clones of the level's dirt with
@@ -221,8 +221,8 @@ Manhattan cell: 4.8 s cold, peak RSS 381 MB. Next:
   with some dry West Coast tufts on the grass layer, West Coast scrub with sparse green grass between on
   dusty ground (no hard grass / shrub line). No flicker at block moves: CPU placement plus a same-tick
   grass rebuild (docs/ARCHITECTURE.md "Ground surfaces"), at one ~25 ms frame per block move.
-  Next: per-climate / per-season picks (dry savanna, green temperate, alpine), a settings toggle and
-  density presets.
+  Settings page: "Grass and shrubs" on / off and "Grass density" low / normal / high (2026-10-11).
+  Next: per-climate / per-season picks (dry savanna, green temperate, alpine).
 
 ## Water (with v1.5/v1.6; user 2026-10-10: lakes and rivers are blue dirt today; keep depths
 ## roughly real, no underwater detail needed)

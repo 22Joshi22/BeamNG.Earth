@@ -45,6 +45,9 @@ M.SCHEMA = {
   clouds = { kind = 'bool', default = true, label = 'Clouds' },
   weatherMode = { kind = 'enum', default = 'real', values = { 'real', 'manual' }, label = 'Weather' },
   realGravity = { kind = 'bool', default = true, label = 'Real gravity' },
+  -- grass and shrubs on the surface layers (groundcover.lua; needs the server's --surface on)
+  groundCover = { kind = 'bool', default = true, label = 'Grass and shrubs' },
+  groundCoverDensity = { kind = 'enum', default = 'normal', values = { 'low', 'normal', 'high' }, label = 'Grass density' },
   hudVisible = { kind = 'bool', default = false, label = 'Status HUD at level start' },
   -- the on-screen data credits (credits.lua): on by default, CC BY licences ask for visible attribution
   creditsVisible = { kind = 'bool', default = true, label = 'Data credits on screen' },
@@ -57,8 +60,8 @@ M.SCHEMA = {
   devMapKm = { kind = 'number', default = 10, min = 1, max = 80, label = 'Dev mini-map radius (km)' },
 }
 M.ORDER = { 'rebaseDistance', 'viewDistanceMode', 'viewDistanceKm', 'hazeStrength', 'skyMode', 'clouds',
-  'weatherMode', 'realGravity', 'hudVisible', 'creditsVisible', 'creditsCorner', 'creditsSize', 'cacheCapGb',
-  'devOutlineKm', 'devMapKm' }
+  'weatherMode', 'realGravity', 'groundCover', 'groundCoverDensity', 'hudVisible', 'creditsVisible',
+  'creditsCorner', 'creditsSize', 'cacheCapGb', 'devOutlineKm', 'devMapKm' }
 
 -- Old values that still load (and set) as their replacement, without a warning: 'auto' weather
 -- (real unless BWM_Weather was changing the weather) is Real now, which switches itself to Manual
@@ -219,6 +222,8 @@ M.APPLY = {
     local w = ext('beamngEarth_weather')
     if w and w.setGravityEnabled and w.GRAVITY_ENABLED ~= v then w.setGravityEnabled(v) end
   end,
+  groundCover = function(v) require('beamngEarth/groundcover').setEnabled(v) end,
+  groundCoverDensity = function(v) require('beamngEarth/groundcover').setDensity(v) end,
   hudVisible = function(v)
     if M.pageExists() then ui.visible = v end
   end,

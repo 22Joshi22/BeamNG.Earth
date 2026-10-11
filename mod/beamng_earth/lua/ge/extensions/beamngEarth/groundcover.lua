@@ -52,8 +52,13 @@ M.PREFIX = 'bngEarthGC_'
 -- set on every object after the stock fields (see the header)
 M.PLACEMENT = { { 'useNewPlacement', '1' }, { 'useNewPlacementGpu', '0' } }
 M.enabled = true
+-- element count factor on top of the shares (the settings page: low / normal / high); the block-move
+-- rebuild frame grows with it where tools/gcpatch is not loaded
+M.DENSITY = { low = 0.5, normal = 1.0, high = 2.0 }
+M.density = 1.0
 
 local created = {}        -- object names we made
+local layered = false     -- a block with surface layers was loaded this level (objects can exist)
 local defsCache = {}      -- source -> stock definitions by name (read once per level)
 local loadedMaterials = {} -- source -> true
 local lastError = nil
@@ -122,6 +127,7 @@ end
 
 -- Create the GroundCovers (once per level; the surface layers exist). Returns true if made.
 function M.ensure()
+  layered = true
   if not M.enabled or #created > 0 then return #created > 0 end
   if not scenetree.MissionGroup then return false end
   local ok, err = pcall(function()
@@ -145,7 +151,7 @@ function M.ensure()
         if old then old:delete() end
         do
           local gc = createObject('GroundCover')
-          for _, c in ipairs(M.fieldsFor(def, d.layer, d.share)) do gc:setField(c[1], c[2], c[3]) end
+          for _, c in ipairs(M.fieldsFor(def, d.layer, d.share * M.density)) do gc:setField(c[1], c[2], c[3]) end
           for k, v in pairs(d.fields or {}) do gc:setField(k, 0, tostring(v)) end
           for _, f in ipairs(M.PLACEMENT) do gc:setField(f[1], 0, f[2]) end
           gc.canSave = false
@@ -175,18 +181,34 @@ function M.afterBlockChange()
   return true
 end
 
+-- On / off (the settings page): off removes the objects; on makes them at once when the block has
+-- surface layers (else with the next layered import).
 function M.setEnabled(on)
   M.enabled = on and true or false
   if not M.enabled then
     removeAll()
+  elseif layered and #created == 0 and M.ensure() then
+    M.afterBlockChange()
   end
   return M.enabled
+end
+
+-- Density (the settings page): 'low' / 'normal' / 'high' or a factor; existing objects are made
+-- again with it.
+function M.setDensity(v)
+  local f = M.DENSITY[v] or tonumber(v)
+  if not f or f <= 0 then return false end
+  if f == M.density then return true end
+  M.density = f
+  if #created > 0 then M.rebuild() end
+  return true
 end
 
 -- The level ended (its objects are gone with it).
 function M.reset()
   created = {}
   defsCache = {}
+  layered = false
 end
 
 -- A teleport or a floating-origin rebase moved the world under the grass: make the objects again
@@ -199,7 +221,7 @@ function M.rebuild()
 end
 
 function M.status()
-  return { enabled = M.enabled, objects = #created, materialsLoaded = next(loadedMaterials) ~= nil, error = lastError }
+  return { enabled = M.enabled, density = M.density, objects = #created, materialsLoaded = next(loadedMaterials) ~= nil, error = lastError }
 end
 
 return M

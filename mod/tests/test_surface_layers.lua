@@ -112,6 +112,18 @@ do
   T.check(gc.rebuild() == true and flushes == fl + 1, 'rebuild: generated in the same tick')
   local after = scenetree.findObject(gc.PREFIX .. gc.DEFS[1].src)
   T.check(after ~= nil and after ~= before and gc.status().objects == #gc.DEFS, 'rebuild: new objects, one per definition')
+  -- the settings page: density remakes the objects with the factor; off / on act at once
+  local n1 = tonumber(scenetree.findObject(gc.PREFIX .. gc.DEFS[1].src).fields.maxElements)
+  T.check(gc.setDensity('low') == true and gc.status().density == 0.5, 'density low')
+  local n2 = tonumber(scenetree.findObject(gc.PREFIX .. gc.DEFS[1].src).fields.maxElements)
+  T.check(math.abs(n2 - n1 / 2) <= 1, 'density low: half the elements (' .. tostring(n1) .. ' -> ' .. tostring(n2) .. ')')
+  T.check(gc.setDensity('nonsense') == false and gc.status().density == 0.5, 'unknown density refused')
+  gc.setDensity('normal')
+  gc.setEnabled(false)
+  T.check(gc.status().objects == 0, 'off: objects gone')
+  fl = flushes
+  gc.setEnabled(true)
+  T.check(gc.status().objects == #gc.DEFS and flushes == fl + 1, 'on again: made at once on the layered block')
   gc.setEnabled(false)
   T.check(gc.rebuild() == false, 'rebuild without grass: nothing')
   T.check(gc.status().objects == 0 and gc.afterBlockChange() == false, 'disabled: objects gone, no rebuild')

@@ -901,7 +901,7 @@ three days of testing: dem 741 MB / 7.5k files, imagery 1.4 GB / 35k, deshadow 7
 - Never waiting: a cell not cached yet reads as no data (dirt, as before) and is fetched in the
   background (1 thread, netfetch kind "prefetch", 3 km around the player at most every 500 m); the
   next blocks have it. `surfaceComplete` in the heightmap info says whether every cell was there.
-- Masks are evicted with their heightmap. Off by default until more in-game checks; the tyre contact
+- Masks are evicted with their heightmap. On by default since 2026-10-11 (`--surface off` disables it); the tyre contact
   material per class was checked at Fells Point, Serengeti, Everest Base Camp and Monument Valley.
 - Ground cover (`groundcover.lua`): stock GroundCover definitions read at runtime from official levels
   (Hirochi Raceway green grass, West Coast USA dry grass and scrub, sparse green grass between the scrub;

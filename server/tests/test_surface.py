@@ -207,7 +207,7 @@ class ServerSurfaceTest(unittest.TestCase):
     def test_cli_flag(self):
         with open(earthd.__file__) as f:
             src = f.read()
-        self.assertIn('ap.add_argument("--surface", choices=("on", "off"), default="off"', src)
+        self.assertIn('ap.add_argument("--surface", choices=("on", "off"), default="on"', src)
 
 
 if __name__ == "__main__":

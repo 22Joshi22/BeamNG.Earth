@@ -2081,10 +2081,10 @@ def main():
     ap.add_argument("--offline", action="store_true",
                     help="no network: serve elevation and imagery from the disk cache only (uncached tiles get "
                          "the palette, uncached terrain fails); the status says 'Offline - using cached data'")
-    ap.add_argument("--surface", choices=("on", "off"), default="off",
+    ap.add_argument("--surface", choices=("on", "off"), default="on",
                     help="ground models under the physics block from ESA WorldCover land cover and the slope "
                          "(surface.py: asphalt, grass, dusty / loose dirt, rock, snow, mud, dirt), imported as 8 "
-                         "terrain layers with each block; off = dirt everywhere (default until its in-game check)")
+                         "terrain layers with each block (the mod's grass grows on them); off = dirt everywhere")
     ap.add_argument("--credits", choices=("on", "off"), default="on",
                     help="'credits' messages: the imagery / elevation / weather sources of the tiles within 2 km "
                          "of the player and of the far field, for the mod's on-screen data credits (on change, "
