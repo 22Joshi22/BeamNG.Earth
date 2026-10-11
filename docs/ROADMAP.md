@@ -205,8 +205,46 @@ Popular trails are where players will test the terrain hardest, and they are wel
   between the two abutments (sampled where the road meets solid ground on each side), never the DEM
   under the span; the deck as its own collidable mesh (the TerrainBlock is a height field and
   cannot carry a surface over a river), with the river valley kept below it; same treatment for
-  overpasses and interchanges (layer ordering), and tunnels as the inverse (ignore the road, keep
-  the hill). Embankments/abutments get graded so the deck meets the road without a step.
+  overpasses and interchanges (layer ordering). Embankments/abutments get graded so the deck meets
+  the road without a step.
+- **Road tunnels** (user, 2026-10-10), drivable rather than "ignore the road, keep the hill":
+  - Data: OSM/Overture `tunnel=yes` (+ `layer`, `tunnel=building_passage`/`culvert` excluded) gives
+    the path; the portals are where the road meets the DEM surface at each end; the road inside is a
+    smooth grade between the two portals (never the DEM above it).
+  - Physics: the TerrainBlock is a height field, so the hill stays solid above the tube; the portal
+    mouths need holes in it. Torque terrain supports empty (hole) squares - probe how BeamNG 0.39
+    exposes them (layer-map value / material, at the 2 m square size, survives `importMaps`) and
+    their cost; the server then writes the hole squares into the block's layer map.
+  - Visuals: the mesh tiles get the portal openings cut out (exact level, matching the holes);
+    the tube is a collidable mesh per tunnel segment (profile by road class and lane count:
+    walls, ceiling, lane markings, lights every ~25 m), split into chunks under the ProceduralMesh
+    tri limit and streamed like the roads.
+  - Long tunnels (Gotthard 17 km, Eisenhower, Zion-Mount Carmel) cross physics-block and rebase
+    boundaries underground: the block-follow logic must keep the tube's collision loaded when the
+    block under the car is solid hill, and the far field must not draw the tube.
+  - Underwater tubes (e.g. Baltimore's Fort McHenry and Harbor tunnels near the Fells Point test
+    city) also need the water surface above them (see Water).
+  - Sound: tunnel reverb and echo (Sound design).
+
+## Overhangs, arches and caves (user, 2026-10-10)
+The ground is a height field (one height per 2 m square, both for physics and for our mesh tiles),
+so nothing can sit above other ground: no natural arches, overhanging cliffs, undercut canyon walls,
+rock shelters or caves. The elevation data cannot show them either: DEMs are 2.5D, so an arch is a
+wall or a filled-in bump depending on the source.
+- **3D rock meshes on top of the height field**, with collision, generated where data says there
+  is an overhang:
+  - arches and natural bridges: OSM `natural=arch` (point or way); the opening is cut into the
+    terrain (hole squares, as for tunnel portals) and a rock arch mesh spans it;
+  - overhangs and undercuts: where lidar point clouds exist (USGS 3DEP, IGN LiDAR HD, national
+    lidar), points below the DEM surface at cliff faces mark the undercut; elsewhere a generic rule
+    (steep cliff + rock type/land cover) adds modest overhang lips;
+  - caves: `natural=cave_entrance` as a shallow mouth only (no cave systems).
+- Sizes come from lidar where available, otherwise from tags (rarely present) and a generic
+  size/shape model by rock type; never hand-placed per landmark (Principle: generalise), and
+  deterministic (seeded by the feature id + version).
+- Shares its mesh, material and collision pipeline with the v1.5 cliff faces and textures.
+- Benchmarks only (not special cases): Arches NP (Delicate, Landscape Arch), Natural Bridges NM,
+  Rainbow Bridge, sandstone undercuts in Monument Valley and Zion.
 
 ## v1.7 "Navigation"
 - Navgraph from our roads via `map.reset(customNodes)` (5 known pitfalls, fixes in the research).
