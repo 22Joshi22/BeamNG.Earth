@@ -10,6 +10,8 @@
 -- (nothing copied): West Coast USA's asphalt strip, Johnson Valley's dirt road tracks.
 -- Console: beamngEarth_roads.status(), .setEnabled(bool)
 
+local stopwatch = require('beamngEarth/stopwatch')
+
 local M = {}
 
 M.MATERIAL_FILES = { '/levels/west_coast_usa/art/road/main.materials.json',
@@ -23,6 +25,7 @@ local deleteQ = {}          -- object ids
 local loadedMaterials = false
 local anchorId = nil
 local lastError = nil
+local sinceChange = stopwatch.new()  -- ms since a tile arrived / went or a road was made / deleted
 
 local function tileKey(aid, k) return tostring(aid) .. ':' .. tostring(k) end
 
@@ -52,7 +55,7 @@ function M.fieldsFor(chunk)
   return {
     { 'material', chunk.m }, { 'textureLength', tostring(chunk.tl or 10) },
     { 'renderPriority', tostring(chunk.p or 20) }, { 'drivability', '-1' }, { 'improvedSpline', 'true' },
-    { 'overObjects', 'false' }, { 'distanceFade', M.FADE }, { 'decalBias', '0.005' },
+    { 'overObjects', 'false' }, { 'distanceFade', M.FADE }, { 'decalBias', '0.1' },
   }
 end
 
@@ -81,6 +84,7 @@ function M.onTile(msg, currentAnchor)
     return false
   end
   tiles[key] = { anchor = msg.anchorId, objs = {}, queued = #data.chunks }
+  sinceChange = stopwatch.new()
   for _, c in ipairs(data.chunks) do createQ[#createQ + 1] = { key = key, chunk = c } end
   return true
 end
@@ -88,6 +92,7 @@ end
 -- Server message `roads_drop` {anchorId, key}.
 function M.onDrop(msg)
   dropTile(tileKey(msg.anchorId, msg.key))
+  sinceChange = stopwatch.new()
 end
 
 -- Once per frame (core onUpdate): deletions, then creations, within the governor's budget.
@@ -98,6 +103,7 @@ function M.update(gov, currentAnchor)
     local o = scenetree.findObjectById(table.remove(deleteQ))
     if o then o:delete() end
     gov:charge('roadDelete', now() - t0)
+    sinceChange = stopwatch.new()
   end
   while #createQ > 0 and gov:try('roadChunk') do
     local q = table.remove(createQ, 1)
@@ -112,6 +118,7 @@ function M.update(gov, currentAnchor)
       if ok then t.objs[#t.objs + 1] = id else lastError = tostring(id) end
       t.queued = t.queued - 1
       gov:charge('roadChunk', now() - t0)
+      sinceChange = stopwatch.new()
     end
   end
 end
@@ -147,7 +154,7 @@ function M.status()
   local nt, no = 0, 0
   for _, t in pairs(tiles) do nt = nt + 1; no = no + #t.objs end
   return { enabled = M.enabled, tiles = nt, roads = no, queued = #createQ, deleting = #deleteQ, anchor = anchorId,
-    error = lastError }
+    quietS = sinceChange() / 1000, error = lastError }
 end
 
 return M

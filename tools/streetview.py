@@ -11,7 +11,8 @@ fetch: the Mapillary Graph API v4 (images in a bbox around the point: perspectiv
 panoramas; spread over distinct spots and headings; newest first). It downloads each photo's
 2048 px thumbnail and writes <dir>/photos.json and <dir>/set.json, a benchmark set (docs/benchmarks.json
 format) with one place and one view per photo: the photo's (computed) position, 2 m above the ground,
-its compass heading, level, and the horizontal field of view from its camera parameters.
+its compass heading, level, and the horizontal field of view from its camera parameters; one place
+per photo, so the car (and the detailed ground around it) is at the photo, as when driving there.
 run: tools/benchmark.py run --benchmarks <dir>/set.json (teleport, wait for the world, clear sky at
 the photos' local hour, the free camera per view, screenshots, everything put back after).
 compare: each photo next to its screenshot, the screenshot cropped to the photo's aspect ratio
@@ -156,8 +157,10 @@ def cmd_fetch(a):
             "defaults": {"date": "2026-06-21", "hour": hour, "weather": "clear",
                          # required by the set format; the place's own views are the ones used
                          "views": [{"name": "ground", "agl": 1.7, "pitch": -3, "fov": 70}]},
-            "places": [{"id": a.name, "name": a.name, "lat": a.lat, "lon": a.lon, "heading": 0, "group": "streetview",
-                        "heldout": False, "tags": ["streetview"], "why": "street view comparison", "views": views}]}
+            # one place per photo: the car (and so the detailed ground) at the photo, as when driving there
+            "places": [{"id": f"{a.name}_{k:02d}", "name": f"{a.name} photo {k}", "lat": v["lat"], "lon": v["lon"],
+                        "heading": v["heading"], "group": "streetview", "heldout": False, "tags": ["streetview"],
+                        "why": "street view comparison", "views": [v]} for k, v in enumerate(views)]}
     with open(os.path.join(d, "set.json"), "w") as f:
         json.dump(setj, f, indent=1)
     print(f"{len(images)} images found, {len(photos)} chosen -> {d}")
@@ -169,8 +172,9 @@ def cmd_run(a):
     if os.path.exists(game):                    # keep the previous shots: game_<time of that run>
         stamp = time.strftime("%Y%m%d-%H%M%S", time.localtime(os.path.getmtime(game)))
         os.rename(game, os.path.join(d, f"game_{stamp}"))
+    ids = ",".join(p["id"] for p in json.load(open(os.path.join(d, "set.json")))["places"])
     cmd = [sys.executable, os.path.join(ROOT, "tools", "benchmark.py"), "run", "--benchmarks", os.path.join(d, "set.json"),
-           "--places", a.name, "--label", f"streetview-{a.name}", "--out", os.path.join(d, "game"), "--weather", "clear"]
+           "--places", ids, "--label", f"streetview-{a.name}", "--out", os.path.join(d, "game"), "--weather", "clear"]
     if a.force:
         cmd.append("--force")
     sys.exit(subprocess.call(cmd))

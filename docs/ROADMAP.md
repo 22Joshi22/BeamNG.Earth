@@ -676,6 +676,16 @@ Gameplay
 - **Generated challenges**: point-to-point time trials between real places, a timed Cannonball run
   with checkpoints, delivery jobs between real towns.
 
+## Bugs to look at (reported, not fixed yet)
+- **Rain particles "spazzing out"** (user, 2026-10-11): some raindrops jump around or streak across the
+  view (seen in Fells Point's real rain). Suspects: the Precipitation object's box following the
+  camera or the rebase, or the wind gusts (weather.lua) changing its speed every frame.
+- **Road decals partly hidden by coarse ground tiles** (2026-10-11): beyond the exact-ground radius
+  around the car (~150 m), the coarser mesh tiles can lie above the physics block and cover parts
+  of a road in a jagged pattern (seen in street-view shots taken 150-300 m from the car). Options:
+  sink the coarse tiles a little more under roads, draw far roads into the tile imagery, or keep
+  DecalRoads to the exact-ground radius.
+
 ## In-game probes still to run (when the user is not driving)
 Origin P1/P2 (precision at 15 km), GroundCover on a hidden terrain, Forest item cost, decal roads
 on mesh tiles, 8-layer terrain import cost, navgraph `map.reset` at ~5k nodes, CEF fetch from

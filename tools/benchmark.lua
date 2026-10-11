@@ -203,6 +203,11 @@ function B.progress()
     local ok, s = pcall(ff.stats)
     if ok then out.far = s end
   end
+  local roads = package.loaded['beamngEarth/roads']   -- DecalRoads (roads.lua): made a few per frame
+  if roads and roads.status then
+    local ok, s = pcall(roads.status)
+    if ok then out.roads = { enabled = s.enabled, roads = s.roads, queued = s.queued, deleting = s.deleting, quietS = s.quietS } end
+  end
   return toJson(out)
 end
 

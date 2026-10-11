@@ -318,6 +318,17 @@ class RulesTest(unittest.TestCase):
         f.update(far)
         return {"mod": True, "anchorId": 8, "pending": None, "far": f, "serverBacklog": 0}
 
+    def test_readiness_waits_for_roads(self):
+        p = self.prog()
+        p["roads"] = {"enabled": True, "roads": 10, "queued": 4, "deleting": 0, "quietS": 0.1}
+        self.assertTrue(any(r.startswith("roads: 4 to make") for r in bm.readiness(p, 7)))
+        p["roads"].update(queued=0, quietS=1.0)
+        self.assertIn("roads: still arriving / settling", bm.readiness(p, 7))
+        p["roads"]["quietS"] = bm.ROADS_QUIET_S + 1
+        self.assertEqual(bm.readiness(p, 7), [])
+        p["roads"] = {"enabled": False, "queued": 9, "quietS": 0.0}
+        self.assertEqual(bm.readiness(p, 7), [], "roads off: nothing to wait for")
+
     def test_readiness(self):
         self.assertEqual(bm.readiness(self.prog(), 7), [])
         self.assertIn("teleport not committed yet", bm.readiness(self.prog(), 8))
