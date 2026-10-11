@@ -18,8 +18,8 @@ Monument Valley, the Kern River ravine or a famous trail are test cases, never s
 - Per-region choices are allowed only for data sources (e.g. the best imagery per country), never for
   how the world is built from them.
 - Every tuning change is checked on a fixed, diverse benchmark set of places (all continents and
-  biomes, data-rich and data-poor, flat and steep, cities and wilderness), with before/after
-  screenshots and numbers, plus a held-out set that is not used for tuning. A change that improves
+  biomes, data-rich and data-poor, flat and steep, cities and wilderness; the list so far is
+  docs/PLACES.md), with before/after screenshots and numbers, plus a held-out set that is not used for tuning. A change that improves
   the test place but makes the benchmark worse elsewhere is rejected or reworked.
 - Fixes like de-shadowing and colour matching are global methods with automatic gates (they switch
   themselves off where they do not apply), validated on places with and without the problem.
@@ -447,6 +447,13 @@ World
 - **Airports and runways** (for plane mods): flattened, paved runways with markings from OSM,
   taxiways, the airport as a spawn point.
 - **Railways, power lines, fences, guardrails** from OSM as cheap repeated props.
+- **Energy infrastructure** (user found the Kayenta PV Solar Plant, 2026-10-10; docs/PLACES.md):
+  solar farms from OSM `power=plant` + `plant:source=solar` and `generator:source=solar` areas as
+  instanced panel rows (row pitch, tilt from latitude, fixed or single-axis tracking from
+  `generator:method`/tags, east-west rows by default), fenced, with service tracks; wind farms from
+  `generator:source=wind` points (hub height and rotor size from tags, else the US Wind Turbine
+  Database in the US, else a typical size) with turning blades driven by the real wind; substations
+  and the power lines between them. All generic rules, deterministic per feature id.
 - **Gas stations** at real locations using the game's fuel-station system, so long trips need
   refuelling (fits the Cannonball run).
 - **Off-road trails** with surfaces from OSM track grades.
