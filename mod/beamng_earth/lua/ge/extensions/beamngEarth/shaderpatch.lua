@@ -18,33 +18,16 @@
 local M = {}
 
 M.MOD_ROOT = '/mods/unpacked/beamng_earth'
--- Per file: the exact lines to replace, all of which must be found (else the file is left alone).
---  1. the sky test: depthNdc <= 1e-6 -> 1e-9 (sky only at the clear depth);
---  2. the scene distance from the depth: depthNdc + DEPTH_EPS, i.e. the nearest distance the stored
---     depth allows. At 150-250 km the depth (~0.1 m / d = 4e-7..7e-7) is coarse; a distance read too
---     far let clouds 200-230 km away show through the terrain just below the horizon, as flipped
---     copies of the clouds above it (in-game 2026-10-11, from a plane at 3 km). Reading it
---     nearer only clips clouds that may lie behind the terrain.
-M.DEPTH_EPS = '1.2e-7f'
-M.EDITS = {
-  ['/shaders/common/clouds/include/cloudCommon.h.hlsl'] = {
-    { 'depthNdc <= 1e-6f', 'depthNdc <= 1e-9f' },
-    { 'cloudCommon::screenSpaceToWorldPos0Space(ssPos, depthNdc, size)',
-      'cloudCommon::screenSpaceToWorldPos0Space(ssPos, depthNdc + ' .. M.DEPTH_EPS .. ', size)' },
-  },
-  ['/shaders/common/clouds/cloudVrtReconstruct.cs.hlsl'] = {
-    { 'depthNdc <= 1e-6f', 'depthNdc <= 1e-9f' },
-    { 'float3((uv * 2.0f - 1.0f) * float2(1.0f, -1.0f), depthNdc);',
-      'float3((uv * 2.0f - 1.0f) * float2(1.0f, -1.0f), depthNdc + ' .. M.DEPTH_EPS .. ');' },
-  },
+M.TARGETS = {
+  '/shaders/common/clouds/include/cloudCommon.h.hlsl',
+  '/shaders/common/clouds/cloudVrtReconstruct.cs.hlsl',
 }
-M.TARGETS = {}
-for path in pairs(M.EDITS) do M.TARGETS[#M.TARGETS + 1] = path end
-table.sort(M.TARGETS)
--- (the header must not contain any of the searched lines itself)
+M.NEEDLE = 'depthNdc <= 1e-6f'
+M.REPLACEMENT = 'depthNdc <= 1e-9f'
+-- (the header must not contain NEEDLE itself)
 M.HEADER = '// Patched by the BeamNG.Earth mod (lua/ge/extensions/beamngEarth/shaderpatch.lua): the sky\n'
-  .. '// test threshold 1e-6 -> 1e-9 and the scene distance read at its nearest, so clouds are not drawn\n'
-  .. "// over terrain beyond 100 km. Regenerated from the game's file at every start; removed with the mod.\n"
+  .. '// test threshold 1e-6 -> 1e-9, so terrain beyond 100 km is not taken for sky. Regenerated from the\n'
+  .. "// game's file at every start; removed with the mod.\n"
 
 local function plainReplace(s, needle, repl)
   local out, n, i = {}, 0, 1
@@ -60,20 +43,12 @@ local function plainReplace(s, needle, repl)
   return table.concat(out), n
 end
 
--- Pure: the patched source of `path` and the number of replaced lines (0: leave the file alone,
--- because it is already patched, missing, or a searched line is not there exactly once).
-function M.patch(src, path)
+-- Pure: the patched source and the number of replacements (0: leave the file alone).
+function M.patch(src)
   if type(src) ~= 'string' or src:sub(1, #M.HEADER) == M.HEADER then return nil, 0 end
-  local edits = M.EDITS[path or M.TARGETS[1]]
-  if not edits then return nil, 0 end
-  local out, total = src, 0
-  for _, e in ipairs(edits) do
-    local n
-    out, n = plainReplace(out, e[1], e[2])
-    if n ~= 1 then return nil, 0 end
-    total = total + n
-  end
-  return M.HEADER .. out, total
+  local out, n = plainReplace(src, M.NEEDLE, M.REPLACEMENT)
+  if n == 0 then return nil, 0 end
+  return M.HEADER .. out, n
 end
 
 local function logInfo(msg) if log then log('I', 'beamngEarth.shaderpatch', msg) else print(msg) end end
@@ -91,9 +66,9 @@ function M.apply()
     local own = M.MOD_ROOT .. path
     if FS:fileExists(own) then FS:removeFile(own) end
     local src = readFile(path)
-    local out, n = M.patch(src, path)
+    local out, n = M.patch(src)
     if not out then
-      logWarn('cloud shader patch: the expected lines are not all in ' .. path .. ' (game update?), left as is')
+      logWarn('cloud shader patch: "' .. M.NEEDLE .. '" not found in ' .. path .. ' (game update?), left as is')
       done[#done + 1] = path .. ': skipped'
     elseif writeFile(own, out) == false then
       logWarn('cloud shader patch: could not write ' .. own)
