@@ -190,6 +190,9 @@ class CliDefaultTest(unittest.TestCase):
         # M4 is on from the command line in mesh mode (P2, P7, P11 passed in-game); terrain mode keeps 1024
         self.assertEqual((earthd.resolve_block(None, "mesh"), earthd.resolve_block(None, "terrain"),
                           earthd.resolve_block(1024, "mesh")), (512, 1024, 1024))
+        # M1h is on from the command line in mesh mode (2026-10-11); --no-horizon and terrain mode: off
+        self.assertEqual((earthd.resolve_horizon(None, "mesh"), earthd.resolve_horizon(None, "terrain"),
+                          earthd.resolve_horizon(False, "mesh")), (True, False, False))
         p = inspect.signature(earthd.Server).parameters
         self.assertEqual((p["block"].default, p["horizon"].default), (1024, False))   # M1h off until P12
 

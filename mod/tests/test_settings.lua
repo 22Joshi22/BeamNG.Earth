@@ -38,8 +38,8 @@ local same = true
 for k, v in pairs(d) do if vals[k] ~= v then same = false end end
 T.check(same, 'no file: every value is its default')
 T.check(d.rebaseDistance == rebase.DEFAULT_DISTANCE and d.skyMode == 'real' and d.clouds == true
-  and d.viewDistanceMode == 'fixed' and d.viewDistanceKm == 100 and d.hudVisible == false,
-  'defaults are today\'s behaviour (15 km rebase, real sky, clouds on, 100 km, HUD hidden with the page)')
+  and d.viewDistanceMode == 'horizon' and d.viewDistanceKm == 100 and d.hudVisible == false,
+  'defaults (15 km rebase, real sky, clouds on, the real horizon (2026-10-11), 100 km fixed, HUD hidden with the page)')
 for _, k in ipairs(settings.ORDER) do T.check(settings.SCHEMA[k] ~= nil, 'ORDER key in SCHEMA: ' .. k) end
 local n = 0
 for _ in pairs(settings.SCHEMA) do n = n + 1 end
@@ -135,17 +135,22 @@ scenetree.theLevelInfo = { visibleDistance = 100000, postApply = function() post
 local level = 'west_coast_usa'
 function getCurrentLevelIdentifier() return level end
 settings.set('viewDistanceKm', 300)
+T.check(scenetree.theLevelInfo.visibleDistance == 100000 and post == 0, 'view distance: the horizon default never touches it')
+settings.set('viewDistanceMode', 'fixed')
 T.check(scenetree.theLevelInfo.visibleDistance == 100000 and post == 0, 'view distance: other levels untouched')
 level = 'beamng_earth'
 settings.onClientPostStartMission()
 T.check(scenetree.theLevelInfo.visibleDistance == 300000 and post == 1, 'view distance: applied in our level, with postApply')
 settings.set('viewDistanceMode', 'horizon')
 settings.set('viewDistanceKm', 200)
-T.check(scenetree.theLevelInfo.visibleDistance == 300000 and post == 1, 'view distance: horizon mode leaves it to M1h')
+
+T.check(scenetree.theLevelInfo.visibleDistance == 100000 and post == 2, 'horizon after fixed: the level\'s 100 km back once')
+settings.set('viewDistanceMode', 'fixed')
+T.check(scenetree.theLevelInfo.visibleDistance == 200000 and post == 3, 'fixed again: 200 km')
 settings.uiReset()
-T.check(scenetree.theLevelInfo.visibleDistance == 100000 and post == 2, 'reset: back to 100 km (applied, it had changed)')
+T.check(scenetree.theLevelInfo.visibleDistance == 100000 and post == 4, 'reset (horizon): back to 100 km (applied, it had changed)')
 settings.onClientPostStartMission()
-T.check(post == 2, 'the default at level start: the engine is not touched')
+T.check(post == 4, 'the default at level start: the engine is not touched')
 
 ------------------------------------------------------------------------------------------
 -- the page: compact HUD, hidden unless hudVisible

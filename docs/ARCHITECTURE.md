@@ -382,7 +382,7 @@ their chunk arrived.
   ≤ 40 ms, rebase frame per §3.5) before flipping `BLOCK_DEFAULT`.
 
 ## v1.4 M1h: the line-of-sight horizon (docs/V1_4_SPEC.md §3.6 "Radius"; built offline 2026-10-10, behind a flag)
-- **Server**: `earthd.py --horizon` (mesh mode only; **off by default** until P12 extended passes).
+- **Server**: `earthd.py --horizon` (mesh mode only; **on by default in mesh mode since 2026-10-11**, the owner's choice; `--no-horizon` for the fixed far radius; `Server()` keeps it off).
   The eye is the pose's camera z (else player z + 1.5 m) as a height above sea level in the pose's
   anchor frame (`frame.enu_to_geodetic`; the frame's h0 is sea level), quantised to max(10 m, 5 %),
   kept across rebases. Per anchor, one `horizon` worker builds `farfield.HorizonGrid`: the highest

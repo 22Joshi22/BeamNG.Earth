@@ -94,6 +94,14 @@ def resolve_block(block, near_visual):
     return CLI_BLOCK_MESH if near_visual == "mesh" else heightmap.SIZE
 
 
+def resolve_horizon(horizon, near_visual):
+    """--horizon / --no-horizon, else on in mesh mode (the owner's choice, 2026-10-11) and off in
+    terrain mode. Server() keeps horizon=False (test_v131_default / test_cli_default)."""
+    if horizon is not None:
+        return horizon
+    return near_visual == "mesh"
+
+
 def resolve_cells(cells, near_visual):
     """The --cells value to use: the given one, else 64 in mesh mode and 32 in terrain mode."""
     if cells is not None:
@@ -1665,11 +1673,11 @@ def main():
                     help="terrain block samples per edge: 512 = docs/V1_4_SPEC.md M4 (on a 128 m grid, "
                          "hello.blockSize; mesh mode only; the default in mesh mode), 1024 = the v1.3.1 block "
                          "(terrain mode always)")
-    ap.add_argument("--horizon", action="store_true",
+    ap.add_argument("--horizon", action=argparse.BooleanOptionalAction, default=None,
                     help="docs/V1_4_SPEC.md M1h: the far field out to the line-of-sight horizon (a disc up to "
                          "1500 km from the eye's height above sea level and the terrain in sight, L10 tiles, "
-                         "per-tile horizon cull; hello.horizon, status.radius; mesh mode only; off by default "
-                         "until the in-game probe P12 passes)")
+                         "per-tile horizon cull; hello.horizon, status.radius; mesh mode only; on by default in "
+                         "mesh mode since 2026-10-11, --no-horizon for the fixed far radius)")
     ap.add_argument("--tex", type=parse_tex_list, default=None,
                     help="texture size (px) per level from the finest, the last value repeating "
                          "(default: 64 cells 256,256,256,512; 32 cells from --tex-near / --tex-far)")
@@ -1708,6 +1716,7 @@ def main():
     args = ap.parse_args()
     args.cells = resolve_cells(args.cells, args.near_visual)
     args.block = resolve_block(args.block, args.near_visual)
+    args.horizon = resolve_horizon(args.horizon, args.near_visual)
     if args.cells != 32 and args.near_visual != "mesh":
         ap.error("--cells 64 needs --near-visual mesh (terrain mode is frozen at the v1.3.1 layout)")
     if args.block != heightmap.SIZE and args.near_visual != "mesh":

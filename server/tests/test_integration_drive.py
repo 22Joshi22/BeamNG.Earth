@@ -1253,7 +1253,7 @@ class MeshDriveTest(DriveBase):
     """The v1.3 layout: --near-visual mesh with imagery (offline fake source), --cells 32 (the
     command line defaults to 64 cells in mesh mode since P8: MeshDrive64Test)."""
     near_visual = "mesh"
-    server_args = ("--near-visual", "mesh", "--cells", "32", "--block", "1024")
+    server_args = ("--near-visual", "mesh", "--cells", "32", "--block", "1024", "--no-horizon")
     launcher = "fake_imagery_earthd.py"
 
     def test_drive_and_rebase(self):
@@ -1267,7 +1267,7 @@ class MeshDrive64Test(DriveBase):
     far_tile.tex) and the per-kind, per-object-count cost model. (Not a MeshDriveTest subclass:
     it would inherit that class's skip flag.)"""
     near_visual = "mesh"
-    server_args = ("--near-visual", "mesh", "--cells", "64", "--block", "1024")
+    server_args = ("--near-visual", "mesh", "--cells", "64", "--block", "1024", "--no-horizon")
     launcher = "fake_imagery_earthd.py"
     cells = 64
 
@@ -1283,7 +1283,7 @@ class MeshDrive64Block512Test(DriveBase):
     (overlapping samples bit-identical across every 128 m move), (f) against the 512² heightmap,
     the player >= 150 m inside the block's collidable area at every frame, commits at 18.4 ms."""
     near_visual = "mesh"
-    server_args = ("--near-visual", "mesh", "--cells", "64", "--block", "512")
+    server_args = ("--near-visual", "mesh", "--cells", "64", "--block", "512", "--no-horizon")
     launcher = "fake_imagery_earthd.py"
     cells = 64
     block = 512

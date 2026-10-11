@@ -1031,7 +1031,7 @@ near-car rules apply only to prio-0 tiles, so a server that sends no prio disabl
 disabled.
 
 **Implementation notes, M1h "Radius" (built offline 2026-10-10, docs/ARCHITECTURE.md "v1.4 M1h").**
-- Behind `earthd --horizon` (mesh mode only), **off by default** until P12 (extended, below) passes;
+- Behind `earthd --horizon` (mesh mode only); **on by default in mesh mode since 2026-10-11** (`--no-horizon`), was off until P12 (extended, below);
   without it hello, status and the selection are unchanged (test_v131_default unchanged).
 - Wire (additive under protocol 4, like M1/M4): `hello.horizon: true` and `status.radius` (m, every
   status) with `--horizon` only; `far_tile.level` up to 10. `pose_reply` stays M5: until then the radius

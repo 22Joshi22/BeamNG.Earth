@@ -32,7 +32,7 @@ M.LEVEL_ID = 'beamng_earth'
 M.SCHEMA = {
   rebaseDistance = { kind = 'number', default = rebase.DEFAULT_DISTANCE, min = rebase.MIN_DISTANCE,
     max = rebase.MAX_DISTANCE, label = 'Rebase distance (m)' },
-  viewDistanceMode = { kind = 'enum', default = 'fixed', values = { 'fixed', 'horizon' }, label = 'View distance' },
+  viewDistanceMode = { kind = 'enum', default = 'horizon', values = { 'fixed', 'horizon' }, label = 'View distance' },
   viewDistanceKm = { kind = 'number', default = 100, min = 20, max = 1000, label = 'Fixed view distance (km)' },
   hazeStrength = { kind = 'number', default = 0, min = 0, max = 1, label = 'Distance haze (placeholder)' },
   skyMode = { kind = 'enum', default = 'real', values = { 'real', 'manual' }, label = 'Sky' },
@@ -134,10 +134,19 @@ local function ext(name) return rawget(_G, name) end
 -- level, and the default (the level file's 100 km) never touches the engine: nothing changes until
 -- the player picks another distance.
 local function applyViewDistance()
-  if values.viewDistanceMode ~= 'fixed' then return end -- 'horizon': v1.4 M1h drives it
-  local m = values.viewDistanceKm * 1000
   local li = scenetree and scenetree.theLevelInfo
   local level = rawget(_G, 'getCurrentLevelIdentifier') and getCurrentLevelIdentifier()
+  if values.viewDistanceMode ~= 'fixed' then
+    -- 'horizon' (the default): v1.4 M1h drives it. Coming back from a fixed distance we set, the
+    -- level's own distance is put back once (M1h's next status sets its own).
+    if li and level == M.LEVEL_ID and appliedView ~= nil then
+      li.visibleDistance = M.SCHEMA.viewDistanceKm.default * 1000
+      if li.postApply then li:postApply() end
+      appliedView = nil
+    end
+    return
+  end
+  local m = values.viewDistanceKm * 1000
   if not li or level ~= M.LEVEL_ID or appliedView == m then return end
   if appliedView == nil and m == M.SCHEMA.viewDistanceKm.default * 1000 then return end
   li.visibleDistance = m
