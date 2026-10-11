@@ -142,6 +142,9 @@
               </div>
             </div>
 
+            <!-- Short help under a control (always shown, not only on hover) -->
+            <div v-if="item.note" class="option-note">{{ item.note }}</div>
+
             <!-- Bottom Half: wrapped text (attribution) -->
             <div v-if="item.type === 'text'" class="stacked-controls text-block">{{ infoValue(item) }}</div>
 
@@ -177,6 +180,7 @@ const dev = ref({ on: {}, lastPreset: "lod", active: false })
 const hoveredItem = ref(null)
 const openDropdown = ref(null) // Tracks which dropdown is currently open
 let pollTimer = null
+let lastWriteAt = 0 // a poll answered just after a uiSet may carry the value from before it
 
 // Mirrors lua/ge/extensions/beamngEarth/settings.lua SCHEMA (the Lua side validates and clamps).
 const settingsSchema = [
@@ -200,11 +204,13 @@ const settingsSchema = [
         options: [ { label: "Fixed distance", value: "fixed" }, { label: "Real horizon (v1.4 M1h)", value: "horizon" } ] },
       { id: "viewDistanceKm", type: "float", min: 20, max: 1000, step: 10, default: 100, name: "Fixed view distance (km)", desc: "The renderer's view distance in km (LevelInfo visibleDistance) in fixed mode. The far field itself extends 80 km today." },
       { id: "hazeStrength", type: "float", min: 0, max: 1, step: 0.05, default: 0, name: "Distance haze (placeholder)", desc: "Strength of the distance haze. Placeholder: the haze comes with the real-horizon far field (v1.4 M1h); this value is saved but has no effect yet.", disabled: true },
-      { id: "skyMode", type: "select", default: "real", name: "Sky", desc: "Real time: the sun, moon and stars follow the real clock and date at the player's position. Manual: hands off, use the game's own Time & Weather controls.",
+      { id: "skyMode", type: "select", default: "real", name: "Sky", desc: "Real time: the sun, moon and stars follow the real clock and date at the player's position. Manual: hands off, use the game's own Time & Weather controls. Changing the time in the pause menu (or another mod changing it) switches this to Manual by itself; choose Real time to go back.",
+        note: "Changing the time in the pause menu switches this to Manual.",
         options: [ { label: "Real time", value: "real" }, { label: "Manual", value: "manual" } ] },
       { id: "clouds", type: "bool", default: true, name: "Clouds", desc: "A volumetric cloud layer that follows the ground under the player." },
-      { id: "weatherMode", type: "select", default: "auto", name: "Weather", desc: "Auto: real weather unless the BWM_Weather mod is changing the weather. Real: always drive clouds, fog, wind, rain, snow and temperature from the real weather. Manual: hands off, use the game's own Time & Weather controls.",
-        options: [ { label: "Auto", value: "auto" }, { label: "Real weather", value: "real" }, { label: "Manual", value: "manual" } ] },
+      { id: "weatherMode", type: "select", default: "real", name: "Weather", desc: "Real: clouds, fog, wind, rain, snow and temperature follow the real weather at the player's position. Manual: hands off, use the game's own Time & Weather controls. Changing the weather in the pause menu (or another mod such as BWM_Weather changing it) switches this to Manual by itself; choose Real weather to go back.",
+        note: "Changing the weather in the pause menu switches this to Manual.",
+        options: [ { label: "Real weather", value: "real" }, { label: "Manual", value: "manual" } ] },
       { id: "realGravity", type: "bool", default: true, name: "Real gravity", desc: "Gravity follows the player: the server's real value (normal gravity plus the EGM2008 anomalies) or normal gravity by latitude and height. Off: the level's 9.81 m/s2." },
     ],
   },
@@ -311,9 +317,11 @@ function engineLua(script, cb) {
   window.bngApi.engineLua(script, cb)
 }
 
+// The poll refreshes the values too: weather.lua / sky.lua switch Weather and Sky to Manual by
+// themselves when they are changed in the game, and the dropdowns show it within 2 s.
 function applyState(state) {
   if (!state) return
-  if (state.settings) config.value = { ...defaultSettings, ...state.settings }
+  if (state.settings && Date.now() - lastWriteAt > 1000) config.value = { ...defaultSettings, ...state.settings }
   if (state.status) status.value = state.status
   if (state.dev) dev.value = state.dev
 }
@@ -324,6 +332,7 @@ function refresh() {
 
 function updateSetting(key) {
   const script = `beamngEarth_settings and beamngEarth_settings.uiSet(${JSON.stringify(key)}, ${luaValue(config.value[key])}) or nil`
+  lastWriteAt = Date.now()
   engineLua(script, res => {
     if (res && res.value !== undefined) config.value[key] = res.value // the Lua side clamps
   })
@@ -574,6 +583,13 @@ details[open] > summary.category-title {
     color: #ccc;
     line-height: 1.35;
     white-space: pre-wrap;
+  }
+
+  .option-note {
+    margin-top: 0.35em;
+    font-size: 0.8rem;
+    color: rgba(255, 255, 255, 0.55);
+    line-height: 1.3;
   }
 }
 

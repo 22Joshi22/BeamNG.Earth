@@ -10,17 +10,35 @@
 -- The real UTC offset (Open-Meteo timezone=auto, from beamngEarth_weather) replaces the guess
 -- within REAL_TZ_KM of the point it was reported for.
 --
--- Modes: 'real'   = real UTC now, clock runs at real speed, re-synced every RESYNC_S seconds.
+-- Modes: 'real'   = real UTC now, clock runs at real speed, re-synced every RESYNC_S seconds
+--                   (the default; missions and the big map pause it, they set and restore their own time).
 --        'manual' = hands off (use the game's own environment/time controls).
+-- In the BeamNG.Earth level, a time change by anyone else (the pause menu, another mod) after the
+-- level-start grace period that really moves the clock off the real one (timeChanges) switches to
+-- 'manual' with one toast and saves that as the setting (beamngEarth_settings); choosing Real again
+-- re-syncs. Our own re-syncs write the TimeOfDay fields directly, so core_environment's
+-- onEnvironmentChanged never sees them.
 
 local M = {}
 
 local RESYNC_S = 30
 M.REAL_TZ_KM = 200
+M.LEVEL_ID = 'beamng_earth'
+M.REAL_DAY_S = 86400       -- dayLength of the real clock
+M.GRACE_S = 20             -- after a level start: core_environment's setState(init_env), freeroam's start time
+M.TIME_EPS = 0.002         -- day fraction (~3 min): a time this close to the clock is no change
+M.MISSION_SETUP_S = 2      -- missions set their time just before 'started': a change switches to manual
+                           -- only when no mission started within this long
+M.MISSION_RESUME_S = 5
+M.BIGMAP_TAIL_S = 2        -- the big map puts its time back as it closes
 
 local mode = 'real'
 local timer = RESYNC_S -- sync on the first update
 local realTz = nil     -- { hours, lat, lon }: the real UTC offset at a point (setRealUtcOffset)
+local clock, graceUntil, bigMapUntil = 0, M.GRACE_S, 0
+local inOurLevel, mission = false, false
+local pending = nil    -- { at, keys }: someone else changed the time; manual after MISSION_SETUP_S
+local switched = nil   -- the last switch to manual: { at, keys }
 
 -- Day of week, 0 = Sunday (Sakamoto), and the Sunday helpers mirror celestial.lua:261-283 so the
 -- clock we display agrees with what core_celestial would derive on its own.
@@ -87,6 +105,41 @@ local function getTod()
   return names and names[1] and scenetree.findObject(names[1]) or nil
 end
 
+-- Pure: the TimeOfDay keys of an onEnvironmentChanged table that move the clock off the real one:
+-- cur = the TimeOfDay now (the hook fires before the change is applied), real = todFields for now
+-- (nil = cur only). A time within TIME_EPS of either (the real clock moves on between a caller's
+-- read and its write), the same date, play on, the real day length and the same UTC offset are no
+-- change. Returns the keys, sorted.
+local TIME_KEYS = { time = true, year = true, month = true, day = true, play = true, dayLength = true, utcOffset = true }
+function M.timeChanges(changes, cur, real)
+  local out = {}
+  local function far(a, b)
+    a, b = tonumber(a), tonumber(b)
+    if not a or not b then return true end
+    local d = math.abs(a - b) % 1
+    return math.min(d, 1 - d) > M.TIME_EPS
+  end
+  local t = tonumber(changes.time)
+  if t and far(t, cur.time) and (not real or far(t, real.time)) then out[#out + 1] = 'time' end
+  for _, k in ipairs({ 'year', 'month', 'day' }) do
+    local v = tonumber(changes[k])
+    if v and v ~= tonumber(cur[k]) and (not real or v ~= real[k]) then out[#out + 1] = k end
+  end
+  local p = changes.play
+  if p == false or p == 'false' or p == 0 or p == '0' then out[#out + 1] = 'play' end
+  local dl = tonumber(changes.dayLength)
+  if dl and math.abs(dl - M.REAL_DAY_S) > 1 then out[#out + 1] = 'dayLength' end
+  local off = tonumber(changes.utcOffset)
+  if off then
+    local have = tonumber(cur.utcOffset)
+    if (not have or math.abs(off - have) > 0.01) and (not real or math.abs(off - real.utcOffset) > 0.01) then
+      out[#out + 1] = 'utcOffset'
+    end
+  end
+  table.sort(out)
+  return out
+end
+
 function M.sync()
   local tod = getTod()
   if not tod then return false end
@@ -95,7 +148,7 @@ function M.sync()
   tod.year, tod.month, tod.day = f.year, f.month, f.day
   tod.utcOffset = f.utcOffset
   tod.time = f.time
-  tod.dayLength = 86400 -- real-time clock between re-syncs
+  tod.dayLength = M.REAL_DAY_S -- real-time clock between re-syncs
   tod.play = true
   return true
 end
@@ -103,6 +156,7 @@ end
 function M.setMode(m)
   if m ~= 'real' and m ~= 'manual' then return 'mode must be "real" or "manual"' end
   mode = m
+  pending = nil
   if mode == 'real' then timer = RESYNC_S end
   return 'sky mode: ' .. mode
 end
@@ -118,10 +172,11 @@ end
 
 function M.status()
   local tod = getTod()
-  if not tod then return { mode = mode } end
+  if not tod then return { mode = mode, pending = pending, switched = switched } end
   local h = ((tonumber(tod.time) or 0) + 0.5) % 1.0 * 24
   return {
-    mode = mode, lat = tod.latitude, lon = tod.longitude,
+    mode = mode, pending = pending, switched = switched, inOurLevel = inOurLevel,
+    grace = math.max(0, graceUntil - clock), mission = mission, lat = tod.latitude, lon = tod.longitude,
     date = string.format('%04d-%02d-%02d', tod.year or 0, tod.month or 0, tod.day or 0),
     localTime = string.format('%02d:%02d', math.floor(h), math.floor((h % 1) * 60)),
     utcOffset = tod.utcOffset,
@@ -238,10 +293,93 @@ function M.setCloudFollow(on)
   if cloudFollow then cloudTimer = M.CLOUD_CHECK_S end
 end
 
+------------------------------------------------------------------------------------------
+-- Someone else changes the time (the pause menu, another mod): manual.
+
+local function notify(text)
+  log('W', 'beamngEarth', 'sky: ' .. text)
+  local gh = rawget(_G, 'guihooks')
+  if gh and gh.trigger then pcall(gh.trigger, 'toastrMsg', { type = 'warning', title = 'BeamNG.Earth time', msg = text }) end
+end
+
+-- The big map sets its own time and puts it back as it closes (see weather.lua).
+local function bigMapBusy()
+  if clock < bigMapUntil then return true end
+  local bm = rawget(_G, 'freeroam_bigMapMode')
+  if not bm then return false end
+  local ok, on = pcall(function()
+    return (bm.bigMapActive and bm.bigMapActive()) or (bm.isTransitionActive and bm.isTransitionActive())
+  end)
+  return ok and on and true or false
+end
+
+-- Saved as the setting (the settings page shows it; settings.set applies it again: a no-op now).
+local function switchToManual()
+  local p = pending
+  M.setMode('manual')
+  switched = p
+  local st = rawget(_G, 'beamngEarth_settings')
+  if st and st.set then
+    local ok, err = pcall(st.set, 'skyMode', 'manual')
+    if not ok then log('W', 'beamngEarth', 'sky: saving the mode failed: ' .. tostring(err)) end
+  end
+  notify('Time set to Manual because it was changed. Choose Real time in the BeamNG.Earth settings to go back.')
+end
+
+-- core_environment's hook (setTimeOfDay passes the whole TimeOfDay table, setState whatever its
+-- caller gave), fired before the change is applied.
+function M.onEnvironmentChanged(changes)
+  if mode ~= 'real' or pending or type(changes) ~= 'table' then return end
+  local any = false
+  for k in pairs(TIME_KEYS) do if changes[k] ~= nil then any = true; break end end
+  if not any then return end -- most hooks are weather (ours at 4 Hz): nothing to read
+  if not inOurLevel or clock < graceUntil or mission or bigMapBusy() then return end
+  local tod = getTod()
+  if not tod then return end
+  local real = M.todFields(os.time(), tonumber(tod.latitude) or 0, tonumber(tod.longitude) or 0, realTz)
+  local keys = M.timeChanges(changes, tod, real)
+  if #keys > 0 then pending = { at = clock, keys = keys } end
+end
+
+function M.onAnyMissionChanged(state)
+  if state == 'started' then
+    mission = true
+    pending = nil -- the mission's own setup, just before 'started'
+  elseif state == 'stopped' then
+    mission = false
+    graceUntil = math.max(graceUntil, clock + M.MISSION_RESUME_S) -- its restore ran just before
+    timer = RESYNC_S
+  end
+end
+
+function M.onBeforeBigMapActivated() bigMapUntil = clock + M.BIGMAP_TAIL_S end
+M.onBigmapStartTransition = M.onBeforeBigMapActivated
+function M.onDeactivateBigMapCallback()
+  bigMapUntil = clock + M.BIGMAP_TAIL_S
+  timer = RESYNC_S -- its time back is the time it opened: re-sync once it is done
+end
+
+local function onLevel()
+  clock, graceUntil, bigMapUntil, mission, pending = 0, M.GRACE_S, 0, false, nil
+  inOurLevel = getCurrentLevelIdentifier and getCurrentLevelIdentifier() == M.LEVEL_ID or false
+end
+M.onClientStartMission = onLevel
+function M.onClientEndMission() inOurLevel, pending = false, nil end
+-- A Lua reload mid-level: settings.lua loads (and applies) before this extension, and no level
+-- start follows to apply again, so the saved mode is read here.
+function M.onExtensionLoaded()
+  local st = rawget(_G, 'beamngEarth_settings')
+  local saved = st and st.get and st.get('skyMode')
+  if saved then M.setMode(saved) end
+  if scenetree.MissionGroup and getCurrentLevelIdentifier and getCurrentLevelIdentifier() then onLevel() end
+end
+
 function M.onUpdate(dtReal)
+  clock = clock + (dtReal or 0)
   local ok, err = pcall(updateClouds, dtReal)
   if not ok then log('W', 'beamngEarth', 'clouds: ' .. tostring(err)) end
-  if mode ~= 'real' then return end
+  if pending and clock >= pending.at + M.MISSION_SETUP_S then switchToManual() end
+  if mode ~= 'real' or pending or mission or bigMapBusy() then return end
   timer = timer + (dtReal or 0)
   if timer < RESYNC_S then return end
   timer = 0

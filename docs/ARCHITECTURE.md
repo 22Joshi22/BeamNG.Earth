@@ -567,18 +567,42 @@ in 2026-10-10-weather-probe-results.md.
   dirty for 3 frames so core_environment re-reads it). The sun dims under the deck: ScatterSky
   `brightness` = the level's value × (1 − 0.7·deck^1.5) (the clouds cast no shadows, so under
   overcast the car kept a sharp sun shadow; in-game at noon 0.35 made it faint while the auto
-  exposure kept the scene's brightness); restored in manual mode, on a manual cloud change and for
-  missions, unless someone else changed it since. The cloud base above the ground goes to
+  exposure kept the scene's brightness); restored in manual mode and for missions, unless someone
+  else changed it since. The cloud base above the ground goes to
   sky.lua (it keeps the ground-following altitude and the rebase weather-offset shift); the real UTC
   offset too (`sky.todFields(..., real)` within 200 km of the reported point; Singapore +8, Delhi
   +5.5 instead of the meridian guess).
-- **Modes**: `setMode('auto')` (default) = real unless BWM_Weather has automatic weather on or a preset
-  other than clear (then manual, one toast); `'real'` / `'manual'` = the user's choice. Writes wait 20 s
-  after a level start (BWM's start transition, env's `setState(init_env)`). Any other change
-  (onEnvironmentChanged not from our own calls) afterwards overrides its group (clouds, cirrus, cloud
-  wind, fog, wind, gravity, cloud altitude, precipitation) and pauses all writes 3 s (env's 1.15 s
-  menu lerp would be cancelled by our setters); `setMode('real')` clears overrides. Missions pause it;
-  their setup changes are not overrides.
+- **Modes** (changed 2026-10-11, "keep it on real and switch to manual if edited"): `'real'` (default)
+  / `'manual'`; `'auto'` (the old BWM_Weather-driven default) is accepted by `setMode` and from a
+  saved setting and means real. Writes wait 20 s after a level start (BWM's start transition, env's
+  `setState(init_env)`). Afterwards an onEnvironmentChanged that is not from our own calls (the
+  `applying` guard) and really changes a weather value (`WEATHER_KEYS`: cloud cover, cirrus, cloud
+  wind direction / speed, fog density / height, ground wind, cloud altitude, precipitation; compared
+  with the engine's value through the core_environment getters, since the hook fires before the value
+  is applied; fog in either scale, setState carries the menu's x1000; keys without a value to compare
+  count as changes; every tolerance is at least half the menu's slider step, since its number field
+  sends the value rounded to the step when it loses focus, even unedited) stops all writes at once (3 s quiet, env's 1.15 s menu lerp) and, unless a
+  mission starts within 2 s (its setup comes just before `started`), switches to manual: rain and
+  snow hidden, the level's sun brightness back, one toast ("Weather set to Manual because it was
+  changed ...", naming BWM_Weather when it is changing the weather at that moment), and
+  `beamngEarth_settings.set('weatherMode', 'manual')` so the settings page shows it (its apply skips
+  a repeated manual; Real is always applied, which clears a gravity change as before). A setState
+  repeating the current values is no change. `setGroundWind`
+  applies before its hook, so the ground wind is compared with the value we wrote last. BWM_Weather
+  no longer switches anything by itself; its changes count like the player's. Choosing Real again
+  drives everything again. A cloud altitude someone else sets is kept in manual mode too (the layer
+  stops following the ground until Real). Missions and the big map (`freeroam_bigMapMode`: fog 0, clouds 0, its own
+  time, put back as it closes; `onBeforeBigMapActivated` / `onDeactivateBigMapCallback` + 2 s) pause
+  it and their changes are not edits. Gravity is its own setting: a gravity change by the game (the
+  menu's presets) is kept until `setMode('real')`, as before, and does not switch the weather.
+  sky.lua does the same for the time: in the BeamNG.Earth level, after its own 20 s level-start
+  grace, outside missions and the big map, a `time` more than 0.002 day (~3 min) off both the
+  TimeOfDay and the real clock, another date, `play = false`, a day length other than 86400 s or
+  another UTC offset (`sky.timeChanges`) switches the sky to manual (saved as `skyMode`, one toast).
+  Its own re-syncs write the TimeOfDay fields directly and never reach the hook. Missions and the big
+  map also pause the re-sync now; it runs at once when they end. After a Lua reload mid-level both
+  read the saved mode back (`beamngEarth_settings.get`): settings.lua loads and applies first, and no
+  level start follows to apply it again.
 - **Gravity** by latitude and height (WGS84 Somigliana minus 3.086e-6·h; 9.7803 equator, 9.8322 pole)
   through `core_environment.setGravity` when it changes by 1e-4 (~30 m of climb); `GRAVITY_ENABLED`
   (on); a menu gravity change is respected; off restores 9.81.
@@ -593,8 +617,10 @@ in 2026-10-10-weather-probe-results.md.
     gravity" (on) = `GRAVITY_ENABLED`.
 - Tests: `server/tests/test_weather.py` (fixtures, codes, cache, refetch rule, server, the Lua mapping
   under luajit, the level objects = generator output), `mod/tests/test_weather.lua` (pure conversions
-  + a stubbed core_environment run: grace, convergence, writes only on change, overrides, BWM, missions,
-  gravity, rain objects, temperature curve, other levels untouched), `test_sky.lua` (real offset),
+  + a stubbed core_environment run: grace, convergence, writes only on change, the switch to manual
+  and what is no change (repeated values, our own writes, grace, missions, the big map, gravity),
+  BWM, gravity, rain objects, temperature curve, other levels untouched), `test_sky.lua` (real
+  offset, the same switch matrix for the time), `test_settings.lua` (the 'auto' migration),
   `test_core_stubbed.lua` (forwarding). Still to check in-game: the temperature-curve setter form,
   `setPercentage` drops visible, coverage calibration above 0.95 (overcast), fog k = 1/H, wind push.
 ## Dev tools and the pause-menu settings page (docs/DEVTOOLS.md; built offline 2026-10-10)
