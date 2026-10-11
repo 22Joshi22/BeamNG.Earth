@@ -15,12 +15,12 @@ only, nothing redistributed. Licence notes marked *(verify)* must be re-checked 
 | Data | Provider | Used for | Licence / terms | Attribution | Status |
 |---|---|---|---|---|---|
 | USGS National Map ImageryOnly (NAIP-based orthoimagery) | U.S. Geological Survey | ground imagery in the US | public domain (US federal) | "Imagery: USGS The National Map" | in use |
-| Sentinel-2 cloudless 2023 | EOX IT Services GmbH (s2maps.eu), contains modified Copernicus Sentinel data 2023 | ground imagery worldwide; the colour reference of `--colormatch s2` (credited whenever it is on) | CC BY-NC-SA 4.0 (non-commercial) | "EOxCloudless https://cloudless.eox.at by EOX IT Services GmbH (Contains modified Copernicus Sentinel data 2023)" (EOX's June 2026 wording; imagery.py uses it) | in use |
+| Sentinel-2 cloudless 2023 | EOX IT Services GmbH (s2maps.eu), contains modified Copernicus Sentinel data 2023 | ground imagery worldwide; the colour reference of `--colormatch s2` (in the session's attribution whenever it is on, and in the on-screen credits for the textures it corrected) | CC BY-NC-SA 4.0 (non-commercial) | "EOxCloudless https://cloudless.eox.at by EOX IT Services GmbH (Contains modified Copernicus Sentinel data 2023)" (EOX's June 2026 wording; imagery.py uses it) | in use |
 | Sentinel-2 cloudless 2016 | EOX IT Services GmbH, contains modified Copernicus Sentinel data 2016 | imagery fallback; `--colormatch` reference fallback | CC BY 4.0 | as above, "...data 2016 & 2017)" | in use |
 | Mapterhorn terrain tiles | Mapterhorn (aggregating many national and global elevation sources) | elevation | per source, see https://mapterhorn.com/attribution | "Elevation: Mapterhorn (see mapterhorn.com/attribution)" | in use |
 | AWS Terrain Tiles (Terrarium) | Mapzen / Linux Foundation, hosted on AWS Open Data; sources incl. SRTM, GMTED2010, ETOPO1, USGS 3DEP/NED, and others | elevation fallback | per source, see https://github.com/tilezen/joerd/blob/master/docs/attribution.md | "AWS Terrain Tiles / Mapzen" + source list | in use |
-| Open-Meteo forecast API | Open-Meteo.com (weather models from national weather services) | real weather, time zone | CC BY 4.0 data, free non-commercial API use | "Weather data by Open-Meteo.com" | branch (feature/weather) |
-| EGM2008 / EGM96 geopotential model | U.S. National Geospatial-Intelligence Agency (via GeographicLib data files) | real gravity incl. regional anomalies | public domain (NGA) *(verify the mirror's terms)* | "Gravity model: EGM2008, NGA" | branch (feature/gravity) |
+| Open-Meteo forecast API | Open-Meteo.com (weather models from national weather services) | real weather, time zone | CC BY 4.0 data, free non-commercial API use | "Weather data by Open-Meteo.com" | in use |
+| EGM2008 / EGM96 geopotential model | U.S. National Geospatial-Intelligence Agency (via GeographicLib data files) | real gravity incl. regional anomalies | public domain (NGA) *(verify the mirror's terms)* | "Gravity model: EGM2008, NGA" | in use |
 | OpenStreetMap | OpenStreetMap contributors | roads, buildings, water, signs, places | ODbL 1.0 | "© OpenStreetMap contributors" | planned |
 | Overture Maps | Overture Maps Foundation (incl. OSM, Microsoft, Meta, Esri community data) | roads, buildings | ODbL (transportation/buildings themes) / CDLA *(verify per theme)* | per Overture release notes | planned |
 | ESA WorldCover 10 m | European Space Agency / WorldCover consortium | land cover, surface types | CC BY 4.0 | "© ESA WorldCover project / Contains modified Copernicus Sentinel data" | planned |
@@ -49,7 +49,7 @@ only, nothing redistributed. Licence notes marked *(verify)* must be re-checked 
 | NumPy | terrain, mesh and imagery processing | BSD-3-Clause | in use |
 | Pillow | image decoding and encoding | MIT-CMU (HPND) | in use |
 | LuaJIT | offline tests of the mod's Lua | MIT | in use (tests) |
-| GeographicLib (data files) | gravity model data | MIT (library) / NGA data public domain | branch (feature/gravity) |
+| GeographicLib (data files) | gravity model data | MIT (library) / NGA data public domain | in use |
 | Leaflet | world map page | BSD-2-Clause | planned |
 | DuckDB | reading Overture GeoParquet | MIT | planned |
 | Git, GitHub, GitHub CLI | version control and hosting | GPL-2.0 (git) / MIT (gh) | in use |

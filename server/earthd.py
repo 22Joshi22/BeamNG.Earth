@@ -738,15 +738,19 @@ class Server:
         px = self.tex_size(tile.level)
         pending = set()
         try:
-            rgb, _ = self.imagery.render(anchor.frame, *imagerymod.gutter_square(x0, y0, tile.size, px), px,
-                                         pending=pending)
+            rgb, used = self.imagery.render(anchor.frame, *imagerymod.gutter_square(x0, y0, tile.size, px), px,
+                                            pending=pending)
         except imagerymod.ImageryError as e:
             log.debug("tile %s of anchor %d: texture not rendered again (%s)", tile.key, anchor.id, e)
             return prev
         texture = self.texture_name(anchor.id, tile.key, prev.rev + 1)
         tex_bytes = imagerymod.write_dds(os.path.join(self.out_dir, texture), rgb)
+        sources = prev.credits
+        if self.credits is not None:        # the new texture's sources (the corrected one names S2 too)
+            sources = creditsmod.tile_sources(anchor.frame, tile.bbox, self.dem, anchor.zooms[max(tile.level, 0)],
+                                              used)
         return replace(prev, texture=texture, tex_bytes=tex_bytes, tex_seconds=time.perf_counter() - t0,
-                       cm_pending=frozenset(pending), stale=False, rev=prev.rev + 1)
+                       cm_pending=frozenset(pending), stale=False, rev=prev.rev + 1, credits=sources)
 
     def tile(self, anchor, tile):
         """asyncio future for the tile's TileInfo; generated at most once per (anchorId, key)."""

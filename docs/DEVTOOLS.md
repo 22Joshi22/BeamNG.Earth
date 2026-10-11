@@ -41,11 +41,13 @@ player right now, e.g.:
 - The full credit list stays in CREDITS.md and on the settings page.
 - Built after the dev tools branch is merged (shares ui.lua / settings.lua).
 
-### Built (2026-10-10, branch feature/credits; offline-tested, in-game check pending)
+### Built (2026-10-10, merged to main; offline-tested, in-game check pending)
 - **Server** `server/credits.py` + small hooks: `dem.Dem.served` records which provider served each
-  DEM tile (Mapterhorn / AWS fallback / none); `Server.make_tile` stores every tile's source ids in
-  `TileInfo.credits` (`img:<source>` for each imagery source with texels in its texture, from
-  `Imagery.render`'s counts - imagery.py is unchanged; `dem:<provider>` for each DEM tile under the
+  DEM tile (Mapterhorn / AWS fallback / none; also when netfetch fails over from Mapterhorn to AWS);
+  `Server.make_tile` stores every tile's source ids in `TileInfo.credits` (`img:<source>` for each
+  imagery source with texels in its texture, from `Imagery.render`'s counts; with `--colormatch s2`
+  also the S2 references for a texture the seam feather changed (the counts' `colormatch` share), and a
+  stale texture rendered again takes its new sources; `dem:<provider>` for each DEM tile under the
   footprint at the tile's DEM zoom); `Connection` has a `credits.Tracker`. The near set = sources of
   the shown tiles (previous anchors' included) whose footprint is within 2 km of the player (a near
   source stays near while one of its tiles is within 2.2 km: no flip-flopping when the player rocks

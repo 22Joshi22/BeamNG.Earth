@@ -25,6 +25,7 @@ import earthd  # noqa: E402
 import farfield as ff  # noqa: E402
 import geodesy  # noqa: E402
 import imagery  # noqa: E402
+import netfetch  # noqa: E402
 import test_server  # noqa: E402
 import test_weather  # noqa: E402
 import weather  # noqa: E402
@@ -160,6 +161,31 @@ class DemServedTest(unittest.TestCase):
         dem.pool.shutdown()
         tmp.cleanup()
 
+    def test_served_through_the_failover(self):
+        """netfetch: a Mapterhorn tile that cannot be asked (open circuit, errors) comes from AWS,
+        and Dem.served names AWS for it (None where AWS has nothing; no entry when neither answered)."""
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        dem = demmod.Dem(tmp.name, fetcher=netfetch.Fetcher(offline=True))
+        self.addCleanup(dem.pool.shutdown)
+        buf = io.BytesIO()
+        Image.new("RGB", (256, 256), (128, 10, 0)).save(buf, "PNG")
+
+        def download(src, z, x, y):
+            if src is demmod.MAPTERHORN:
+                raise netfetch.HostUnavailable("open circuit (test)")
+            if x // 2 == 4:                                     # AWS down there too
+                raise netfetch.FetchFailed("down (test)")
+            return buf.getvalue() if x // 2 == 2 else None      # AWS z+1 children of x == 2
+        dem._download = download
+        got = dem.tiles([(12, 2, 7), (12, 3, 7)])
+        self.assertEqual(dem.served, {(12, 2, 7): "aws-terrarium", (12, 3, 7): None})
+        self.assertEqual(float(got[(12, 2, 7)][0, 0]), 128 * 256 + 10 - 32768)
+        with self.assertRaises(demmod.DemUnavailable):
+            dem.tiles([(12, 4, 7)])
+        self.assertNotIn((12, 4, 7), dem.served)
+        self.assertEqual(dem.stats_snapshot()["mapterhorn:failover"], 3)
+
 
 class TileSourcesTest(unittest.TestCase):
     def test_tile_sources(self):
@@ -173,6 +199,11 @@ class TileSourcesTest(unittest.TestCase):
                          {"img:eox2016"})                # a DEM without providers: imagery only
         self.assertEqual(credits.tile_sources(frame, t.bbox, dem, 15, {"usgs": 0, "none": 70000}),
                          {"dem:aws-terrarium"})
+        # --colormatch: texels the seam feather corrected name its S2 references (not a source itself)
+        self.assertEqual(credits.tile_sources(frame, t.bbox, dem, 15, {"usgs": 65536, "colormatch": 65536}),
+                         {"img:usgs", "img:eox2023", "img:eox2016", "dem:aws-terrarium"})
+        self.assertEqual(credits.tile_sources(frame, t.bbox, dem, 15, {"usgs": 65536, "colormatch": 0}),
+                         {"img:usgs", "dem:aws-terrarium"})
 
 
 class ServerTileCreditsTest(unittest.TestCase):
@@ -219,6 +250,25 @@ class ServerTileCreditsTest(unittest.TestCase):
         info = s.make_tile(a, ff.tile_of("-1_8_0"))
         self.assertIsNone(info.material)
         self.assertEqual(info.credits, {"dem:mapterhorn"})      # no imagery: elevation only
+
+    def test_retexture_updates_the_sources(self):
+        """--colormatch: a stale tile's texture rendered again takes the new render's sources (the
+        corrected texture names the S2 references; the DEM part stays)."""
+        s, a = self.make(credits.Credits())
+        t = ff.tile_of("-1_160_0")
+        prev = s.make_tile(a, t)
+        self.assertEqual(prev.credits, {"img:usgs", "dem:aws-terrarium"})
+
+        class Corrected(test_server.FakeImagery):
+            def render(self, *args, **kw):
+                rgb, used = super().render(*args, **kw)
+                return rgb, dict(used, colormatch=used["usgs"])
+        s.imagery.close()
+        s.imagery = Corrected(os.path.join(s.out_dir, "corrected"))
+        self.addCleanup(s.imagery.close)
+        info = s.retexture(a, t, prev)
+        self.assertEqual(info.rev, 1)
+        self.assertEqual(info.credits, {"img:usgs", "img:eox2023", "img:eox2016", "dem:aws-terrarium"})
 
     def test_off_by_default(self):
         import inspect

@@ -602,13 +602,14 @@ in 2026-10-10-weather-probe-results.md.
 - Tests: `mod/tests/test_dev.lua`, `mod/tests/test_settings.lua`. The Vue files are checked
   in-game only.
 
-## Network: rate limits, failover, offline (`server/netfetch.py`; built offline 2026-10-10, feature/netfetch)
+## Network: rate limits, failover, offline (`server/netfetch.py`; built offline 2026-10-10, merged to main)
 docs/research/2026-10-10-rate-limits.md §5. Before, the thread pools were the only limiter (cold start
 ~30 req/s to USGS, up to ~80 req/s to Mapterhorn, the same after every teleport), 429/503 and
 Retry-After were treated like any error, the DEM had no breaker and a Mapterhorn error never fell
 over to AWS, a 400 wrote a permanent `.404` marker, and the User-Agent lived in two copies.
 - **One `Fetcher` per server** (`main_async`), handed to `Dem`, `Imagery`, `weather.fetch` and
-  `gravity.Provider`. Per host (`POLICIES`, §5.2 for today's hosts; unknown hosts 2/s, 2 at once, no
+  `gravity.Provider` (and through `Imagery`, the de-shadow and colour-seam region fetches, both as
+  kind `background`). Per host (`POLICIES`, §5.2 for today's hosts; unknown hosts 2/s, 2 at once, no
   prefetch): a token bucket and a concurrency semaphore (apart from the pools), priorities (demand
   waits up to 30 s; prefetch / background take a token only above 1/2 / 3/4 of the burst and are
   dropped, not queued), 3 attempts with full-jitter backoff, Retry-After pausing the whole host (bucket
@@ -656,9 +657,13 @@ over to AWS, a 400 wrote a permanent `.404` marker, and the User-Agent lived in 
   an open host, UA) and `test_weather.py`
   (UA, shared in-flight fetch, Retry-After retry).
 
-## Data credits overlay (docs/DEVTOOLS.md; built offline 2026-10-10, feature/credits)
+## Data credits overlay (docs/DEVTOOLS.md; built offline 2026-10-10, merged to main)
 - Server `credits.py`: each built tile records its imagery sources (from `Imagery.render`'s texel
-  counts) and DEM providers (`dem.Dem.served`); per connection a `credits` message (sources within
+  counts) and DEM providers (`dem.Dem.served`, set on every path of the netfetch failover:
+  Mapterhorn, AWS after a Mapterhorn miss, error or open circuit, none); with `--colormatch s2` a
+  texture whose USGS tiles the seam feather changed also names the S2 references (`render`'s
+  "colormatch" count), and a stale tile's re-rendered texture (`retexture`) takes the new render's
+  sources; per connection a `credits` message (sources within
   2 km of the player, kept up to 2.2 km against flip-flopping, + the far field's other sources +
   Open-Meteo; none before a tile's sources are known) on change, at most once a second, re-sent on
   hello (`--credits on`, the command line's default; `Server()` sends none).

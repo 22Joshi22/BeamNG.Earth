@@ -315,7 +315,7 @@ terrain at all (same fall risk). Plan:
 7. **Tests**: fault injection in the integration drive (kill the server mid-drive, restart it, drop
    network with a fake fetcher, start the mod with no server) and the same as in-game probes.
 
-Status (2026-10-10, branch feature/netfetch, built offline): the server side of 1 and 4 is in
+Status (2026-10-10, built offline, merged to main): the server side of 1 and 4 is in
 place: `server/netfetch.py` (docs/research/2026-10-10-rate-limits.md §5) rate-limits every host,
 retries with backoff, honours Retry-After, opens a circuit breaker per host and fails over along the
 source chains (USGS -> EOX 2023 -> EOX 2016 -> palette; Mapterhorn -> AWS), `--offline` serves the
@@ -363,8 +363,8 @@ Plan (with the netfetch / rate-limit work):
    (ARCHITECTURE.md "Real weather"); waiting for its in-game checks and the cloud calibration.
 4. **Airports and runways** for plane mods (pairs with v1.4 M5 flight).
 5. **Data credits overlay** (user, 2026-10-10; docs/DEVTOOLS.md): small text in a screen corner naming
-   the imagery / elevation / weather sources around the player. Built offline on branch
-   feature/credits (2026-10-10): server `credits` message (on change, at most 1/s), mod
+   the imagery / elevation / weather sources around the player. Built offline (2026-10-10, merged
+   to main with netfetch and colour seams): server `credits` message (on change, at most 1/s), mod
    `credits.lua`, settings on / corner / size; reviewed adversarially (overlay wording now CREDITS.md's
    word for word, no weather-only message, hysteresis at the 2 km radius); waiting for its in-game check.
 All other candidates below are approved too ("all these look good") and get scheduled after these.

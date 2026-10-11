@@ -5,7 +5,9 @@ player sees right now (CC BY and similar licences ask for visible attribution). 
 them per tile:
 
   - imagery: the sources whose texels a tile's texture took (Imagery.render's per-source counts;
-    "none" = the fallback colour and "deshadow" = a relit share are not sources). Capture dates
+    "none" = the fallback colour and "deshadow" = a relit share are not sources; "colormatch" =
+    texels whose colours the seam feather corrected names its S2 references, as hello.attribution
+    does with --colormatch s2). Capture dates
     are not in the tiles (USGS ImageryOnly carries none; EOX's year is the layer's own, part of
     its credit);
   - elevation: the provider of every DEM tile under the tile's footprint at its DEM zoom
@@ -33,6 +35,7 @@ import time
 
 import numpy as np
 
+import colormatch as colormatchmod
 import dem as demmod
 import weather as weathermod
 
@@ -62,6 +65,10 @@ ELEVATION = {
 WEATHER_ID = "wx:open-meteo"
 # Display order of the ids (unknown imagery sources follow, by name)
 ORDER = ([f"img:{n}" for n in IMAGERY] + [f"dem:{n}" for n in ELEVATION] + [WEATHER_ID])
+
+
+# Imagery.render's counts that are no source: the fallback colour, the relit and colour-matched shares
+NOT_SOURCES = ("none", "deshadow", "colormatch")
 
 
 def _rank(i):
@@ -124,7 +131,10 @@ def tile_sources(frame, bbox, dem, zoom, used):
     `used` (Imagery.render's counts; None = no imagery), 'dem:<provider>' for every DEM tile
     under the footprint at `zoom` whose provider the Dem recorded (dem.served; a DEM without it,
     e.g. a test's synthetic one, gives none)."""
-    ids = {f"img:{name}" for name, n in (used or {}).items() if name not in ("none", "deshadow") and n > 0}
+    used = used or {}
+    ids = {f"img:{name}" for name, n in used.items() if name not in NOT_SOURCES and n > 0}
+    if used.get("colormatch", 0) > 0:       # --colormatch: the S2 layers the correction came from
+        ids |= {f"img:{name}" for name in colormatchmod.REFS}
     served = getattr(dem, "served", None)
     if served is not None and zoom is not None:
         for k in dem_keys(frame, bbox, zoom):
