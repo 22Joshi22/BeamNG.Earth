@@ -655,3 +655,15 @@ over to AWS, a 400 wrote a permanent `.404` marker, and the User-Agent lived in 
   `test_imagery.py` (EOX breaker shared, marker TTL, 400, dropped prefetch fetched once, prefetch past
   an open host, UA) and `test_weather.py`
   (UA, shared in-flight fetch, Retry-After retry).
+
+## Data credits overlay (docs/DEVTOOLS.md; built offline 2026-10-10, feature/credits)
+- Server `credits.py`: each built tile records its imagery sources (from `Imagery.render`'s texel
+  counts) and DEM providers (`dem.Dem.served`); per connection a `credits` message (sources within
+  2 km of the player, kept up to 2.2 km against flip-flopping, + the far field's other sources +
+  Open-Meteo; none before a tile's sources are known) on change, at most once a second, re-sent on
+  hello (`--credits on`, the command line's default; `Server()` sends none).
+- Mod `credits.lua`: one background-draw-list text per frame in a screen corner (settings: on,
+  corner, size), hidden in the pause menu and big map; the session's attribution line before the
+  first message. No allocation per frame; the text is measured only when it changes.
+- Tests: `server/tests/test_credits.py`, `test_protocol_agreement.py`, `mod/tests/test_credits.lua`,
+  `test_core_stubbed.lua`. Still to check in-game: readability, the pause-menu / big-map hiding.

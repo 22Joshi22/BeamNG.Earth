@@ -362,6 +362,11 @@ Plan (with the netfetch / rate-limit work):
    level-file parity objects, the real time zone and gravity by latitude/height
    (ARCHITECTURE.md "Real weather"); waiting for its in-game checks and the cloud calibration.
 4. **Airports and runways** for plane mods (pairs with v1.4 M5 flight).
+5. **Data credits overlay** (user, 2026-10-10; docs/DEVTOOLS.md): small text in a screen corner naming
+   the imagery / elevation / weather sources around the player. Built offline on branch
+   feature/credits (2026-10-10): server `credits` message (on change, at most 1/s), mod
+   `credits.lua`, settings on / corner / size; reviewed adversarially (overlay wording now CREDITS.md's
+   word for word, no weather-only message, hysteresis at the 2 km radius); waiting for its in-game check.
 All other candidates below are approved too ("all these look good") and get scheduled after these.
 
 ## Seasons, snow and weather events (user, 2026-10-10)
@@ -506,4 +511,5 @@ Gameplay
 ## In-game probes still to run (when the user is not driving)
 Origin P1/P2 (precision at 15 km), GroundCover on a hidden terrain, Forest item cost, decal roads
 on mesh tiles, 8-layer terrain import cost, navgraph `map.reset` at ~5k nodes, CEF fetch from
-127.0.0.1, stock tree/sign asset borrowing from other levels.
+127.0.0.1, stock tree/sign asset borrowing from other levels, the data credits overlay (readability,
+pause-menu / big-map hiding).

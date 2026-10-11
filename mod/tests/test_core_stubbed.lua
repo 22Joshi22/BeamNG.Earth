@@ -699,6 +699,40 @@ frames(3)
 T.check(cleared == 1, 'hello: the previous session\'s gravity cleared')
 beamngEarth_weather = nil
 
+-- the on-screen data credits (credits.lua): the attribution line until the server's credits arrive,
+-- then near + far; one text draw per frame; hidden in the pause menu; a new session clears them
+local creditsMod = require('beamngEarth/credits')
+creditsMod._reset()
+local drawnCredits = {}
+ui_imgui.GetMainViewport = function() return { Pos = { x = 0, y = 0 }, Size = { x = 1920, y = 1080 } } end
+ui_imgui.GetFont = function() return 'font' end
+ui_imgui.GetFontSize = function() return 16 end
+ui_imgui.CalcTextSize = function(t) return { x = #t * 8, y = 16 } end
+ui_imgui.ImVec2 = function(x, y) return { x = x, y = y } end
+ui_imgui.ImDrawList_AddText2 = function(dl, font, px, pos, col, text) drawnCredits[#drawnCredits + 1] = text end
+frames(1)
+T.check(#drawnCredits == 1 and drawnCredits[1] == core.attribution(), 'credits: the attribution line before any credits message')
+serverSend({ type = 'credits', v = 1, near = 'Imagery: USGS The National Map | Elevation: Mapterhorn (see mapterhorn.com/attribution)',
+  far = 'Far imagery: EOX', ids = { 'img:usgs', 'dem:mapterhorn' }, farIds = { 'img:eox2023' } })
+drawnCredits = {}
+frames(3)
+T.check(#drawnCredits == 3, 'credits: one text draw per frame')
+T.check(drawnCredits[3] == 'Imagery: USGS The National Map | Elevation: Mapterhorn (see mapterhorn.com/attribution)\nFar imagery: EOX',
+  'credits: the server\'s near and far lines')
+T.check(core.credits() == drawnCredits[3], 'core.credits(): the text on screen (the settings page)')
+core.onUiChangedState('menu', 'play')
+drawnCredits = {}
+frames(2)
+T.check(#drawnCredits == 0, 'credits: hidden while the pause menu is open')
+core.onUiChangedState('play', 'menu')
+frames(1)
+T.check(#drawnCredits == 1, 'credits: back after the pause menu')
+serverSend({ type = 'hello', protocol = 4, format = 4, cells = 64, horizon = true, serverVersion = '0.4.0',
+  sessionId = 's11', farFormat = 'cdae', material = 'bngEarthFar_v3', nearVisual = 'mesh', attribution = 'Elevation: s11' })
+drawnCredits = {}
+frames(3)
+T.check(drawnCredits[#drawnCredits] == 'Elevation: s11', 'credits: a new session shows its attribution line until its credits arrive')
+
 core.onExtensionUnloaded()
 T.check(sky.atmoPlanetRadius == 6360 and scenetree.theLevelInfo.visibleDistance == 100000,
   'unload: the level keeps running with its own sky and the 100 km view distance')

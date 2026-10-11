@@ -21,6 +21,7 @@ local M = {}
 local rebase = require('beamngEarth/rebase')
 local ui = require('beamngEarth/ui')
 local net = require('beamngEarth/net')
+local credits = require('beamngEarth/credits')
 
 M.FILE = '/settings/beamngEarth.json'
 M.VERSION = 1
@@ -39,11 +40,16 @@ M.SCHEMA = {
   weatherMode = { kind = 'enum', default = 'auto', values = { 'auto', 'real', 'manual' }, label = 'Weather' },
   realGravity = { kind = 'bool', default = true, label = 'Real gravity' },
   hudVisible = { kind = 'bool', default = false, label = 'Status HUD at level start' },
+  -- the on-screen data credits (credits.lua): on by default, CC BY licences ask for visible attribution
+  creditsVisible = { kind = 'bool', default = true, label = 'Data credits on screen' },
+  creditsCorner = { kind = 'enum', default = 'bottom-left', values = credits.CORNERS, label = 'Data credits corner' },
+  creditsSize = { kind = 'enum', default = 'small', values = { 'small', 'normal' }, label = 'Data credits size' },
   devOutlineKm = { kind = 'number', default = 3, min = 0.5, max = 20, label = 'Dev outlines radius (km)' },
   devMapKm = { kind = 'number', default = 10, min = 1, max = 80, label = 'Dev mini-map radius (km)' },
 }
 M.ORDER = { 'rebaseDistance', 'viewDistanceMode', 'viewDistanceKm', 'hazeStrength', 'skyMode', 'clouds',
-  'weatherMode', 'realGravity', 'hudVisible', 'devOutlineKm', 'devMapKm' }
+  'weatherMode', 'realGravity', 'hudVisible', 'creditsVisible', 'creditsCorner', 'creditsSize', 'devOutlineKm',
+  'devMapKm' }
 
 local values = {}       -- the settings in use (always complete and valid)
 local pageFlag = false  -- index.js said the page exists
@@ -166,6 +172,9 @@ M.APPLY = {
   hudVisible = function(v)
     if M.pageExists() then ui.visible = v end
   end,
+  creditsVisible = function(v) credits.setEnabled(v) end,
+  creditsCorner = function(v) credits.setCorner(v) end,
+  creditsSize = function(v) credits.setSize(v) end,
   devOutlineKm = function(v)
     local dev = ext('beamngEarth_dev')
     if dev and dev.setParam then dev.setParam('outlineKm', v) end
@@ -248,6 +257,7 @@ function M.uiState()
     dist = st and st.player and st.player.dist, rebaseDistance = rebase.distance,
     status = st and st.status or '', inOurLevel = st and st.inOurLevel or false,
     attribution = core and core.attribution and core.attribution() or '',
+    credits = core and core.credits and core.credits() or nil, -- the on-screen data credits now
   }
   -- server features (status only): weather, gravity, imagery de-shadowing and colour seams
   local w = ext('beamngEarth_weather')
