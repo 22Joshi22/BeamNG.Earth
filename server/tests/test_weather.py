@@ -18,8 +18,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-import dem  # noqa: E402
 import modsim  # noqa: E402
+import netfetch  # noqa: E402
 import test_server  # noqa: E402
 import weather  # noqa: E402
 
@@ -158,8 +158,47 @@ class RequestTest(unittest.TestCase):
         for name in ("baltimore", "whitney"):
             self.assertEqual(set(fixture(name)["current"]) - {"time", "interval"}, set(weather.CURRENT))
 
-    def test_generic_user_agent(self):
-        self.assertNotRegex(dem.USER_AGENT, r"@|tecnagamer|/home/")
+    def test_project_user_agent(self):
+        """fetch() goes through netfetch as a background request with the project's User-Agent."""
+        seen = []
+
+        class Transport:
+            def request(self, url, headers, timeout):
+                seen.append((url, dict(headers), timeout))
+                return 200, {"content-type": "application/json"}, json.dumps(fixture("baltimore")).encode()
+        net = netfetch.Fetcher(transport=Transport())
+        self.assertEqual(weather.fetch(*BALTIMORE, net=net), fixture("baltimore"))
+        url, headers, timeout = seen[0]
+        self.assertEqual(url, weather.url(*BALTIMORE))
+        self.assertEqual(headers, {"User-Agent": netfetch.USER_AGENT})
+        self.assertEqual(timeout, weather.TIMEOUT_S)
+        self.assertEqual(net.snapshot()["api.open-meteo.com"]["requests"], 1)
+
+    def test_shared_fetch_per_cell(self):
+        """Two connections asking for the same cell at once: one request."""
+        import threading
+        gate, started = threading.Event(), threading.Event()
+        calls = []
+
+        def slow(lat, lon):
+            calls.append((lat, lon))
+            started.set()
+            gate.wait(5)
+            return fixture("baltimore")
+        svc = weather.Service(fetch=slow)
+        out = []
+        t1 = threading.Thread(target=lambda: out.append(svc.get(*BALTIMORE)))
+        t1.start()
+        started.wait(5)
+        t2 = threading.Thread(target=lambda: out.append(svc.get(*BALTIMORE)))
+        t2.start()
+        gate.set()
+        t1.join(5)
+        t2.join(5)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(len(out), 2)
+        self.assertIs(out[0], out[1])
+        self.assertEqual(svc.inflight, {})
 
     def test_cache_and_cells(self):
         f, clock = FakeFetch(), Clock()
@@ -193,6 +232,9 @@ class RequestTest(unittest.TestCase):
         self.assertEqual(tr.msg, {"type": "weather"})
         self.assertFalse(tr.due(svc, 41.0, -76.53, t0 + 20 + 119))
         self.assertTrue(tr.due(svc, 41.0, -76.53, t0 + 20 + 120))
+        tr.done(svc, 40.0, -76.53, t0 + 200, None, retry_after=300.0)  # the host said 300 s (Retry-After)
+        self.assertFalse(tr.due(svc, 41.0, -76.53, t0 + 200 + 299))
+        self.assertTrue(tr.due(svc, 41.0, -76.53, t0 + 200 + 300))
 
     def test_distance(self):
         self.assertAlmostEqual(weather.distance_m(0, 0, 1, 0), 111195, delta=5)

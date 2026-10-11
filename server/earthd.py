@@ -5,7 +5,7 @@
     python3 server/earthd.py [--port 47613] [--user-dir DIR] [--cache-dir DIR] [--far-format cdae|dae]
                              [--imagery usgs,eox2023,eox2016|off] [--near-visual mesh|terrain]
                              [--cells 32|64] [--tex 256,256,256,512] [--block 1024|512] [--horizon]
-                             [--deshadow off|lambert|full] [--weather on|off] [--gravity on|off]
+                             [--deshadow off|lambert|full] [--weather on|off] [--gravity on|off] [--offline]
 
 Listens on 127.0.0.1 for the mod, builds terrain-block heightmaps (1024² on a world-locked
 2 m lattice, 256 m-aligned centres; in mesh near-visual mode the block is physics only) and a
@@ -29,6 +29,12 @@ zmax from a coarse DEM pass per anchor (farfield.horizon_grid, in its own worker
 clamp(sqrt(2R'h_eye) + sqrt(2R'zmax_region), 80 km, 1500 km), the per-tile horizon cull with
 refraction R' = R/(1-0.13), MAX_LEVEL 10, 256/128 px textures from L8, hello.horizon and
 status.radius (the mod's visibleDistance follows it).
+
+Network (docs/research/2026-10-10-rate-limits.md §5): every download goes through one
+netfetch.Fetcher (per-host rate limits, priorities, retries, circuit breakers with failover along
+the source chains, daily budgets in <cache-dir>/netstats/, one summary line a minute in the log).
+--offline serves the disk caches only. While a host is unreachable, or tiles fell back to the
+palette, every status text carries a note ("Offline - using cached data", "Degraded: ...").
 """
 import os
 
@@ -60,6 +66,7 @@ import geodesy  # noqa: E402
 import gravity as gravitymod  # noqa: E402
 import heightmap  # noqa: E402
 import imagery as imagerymod  # noqa: E402
+import netfetch  # noqa: E402
 import protocol  # noqa: E402
 import weather as weathermod  # noqa: E402
 
@@ -89,7 +96,7 @@ def resolve_cells(cells, near_visual):
     if cells is not None:
         return cells
     return CLI_CELLS_MESH if near_visual == "mesh" else 32
-SERVER_VERSION = "0.4.0"
+SERVER_VERSION = netfetch.SERVER_VERSION      # one place: the User-Agent carries it too
 NEAR_VISUALS = ("mesh", "terrain")
 TEX_NEAR, TEX_FAR = 256, 256    # 32 cells: texture edge (px) of the two finest levels / of the others (512
                                  # near was 15x finer than USGS: no visible gain for 2x build time and VRAM);
@@ -203,6 +210,7 @@ IMAGERY_PREFETCH = 12       # queued tiles whose imagery is fetched ahead of the
 # --status-interval S > 0 the last status is also re-sent from on_pose at most every S seconds
 # while the backlog changed, so tools/drive.py can sample it (M0 harness runs use 1).
 STATUS_INTERVAL = 0.0
+NET_TICK_S = 60.0           # the network summary line in the log and the netstats file
 # Shown in the mod's UI (V1_3_SPEC §C), after the imagery credits.
 ELEVATION_CREDIT = "Elevation: Mapterhorn (see mapterhorn.com/attribution), AWS Terrain Tiles / Mapzen"
 
@@ -295,13 +303,15 @@ class Server:
                  hysteresis=farfield.HYSTERESIS, radius=farfield.RADIUS, far_format="cdae",
                  imagery=imagerymod.DEFAULT_CHAIN, near_visual="mesh", tex_near=TEX_NEAR, tex_far=TEX_FAR,
                  tone=1.0, near_radii=None, status_interval=STATUS_INTERVAL, cells=CELLS_DEFAULT, tex=None,
-                 block=BLOCK_DEFAULT, horizon=False, deshadow="off", weather=None, gravity=None):
+                 block=BLOCK_DEFAULT, horizon=False, deshadow="off", weather=None, gravity=None, net=None):
         """kfun: K(L) for every level (default: the layout's K table); near_radii: the min-level
         radii (default: the layout's); cells: 32 (v1.3.1) or 64 (M1, mesh mode only); tex: texture
         px per level from the finest (default: tex_near, tex_near, tex_far with 32 cells,
         farfield.TEX_DEFAULT[64] with 64); block: terrain block samples per edge, 1024 (v1.3.1) or
         512 (M4, mesh mode only: a 128 m centre grid and the 512 follow table); horizon: M1h, the
-        far field out to the line-of-sight horizon (mesh mode only; `radius` is then unused)."""
+        far field out to the line-of-sight horizon (mesh mode only; `radius` is then unused); net:
+        the netfetch.Fetcher every download goes through (main_async passes the command line's; None =
+        one of its own, no statistics file)."""
         self.sid = time.strftime("%Y%m%d-%H%M%S-") + secrets.token_hex(2)
         root = os.path.join(user_dir, "temp", "beamngEarth")
         self._clean_old_sessions(root, os.path.join(user_dir, *CDAE_ROOT))
@@ -325,16 +335,20 @@ class Server:
         self.min_level = self.layout.min_level
         self.near_radii = dict(self.layout.near_radii if near_radii is None else near_radii)
         self.tile_cache = TILE_CACHE[cells]
-        self.dem = demmod.Dem(os.path.join(cache_dir, "dem"))
+        self.net = net if net is not None else netfetch.Fetcher()
+        self.dem = demmod.Dem(os.path.join(cache_dir, "dem"), fetcher=self.net)
         # Satellite imagery (§A); None = --imagery off (v3-style palette tiles).
         # De-shadowing of the USGS tiles (--deshadow lambert|full; off = the imagery as served).
         self.deshadow = None
         if deshadow != "off" and imagery and deshadowmod.SOURCE in [getattr(s, "name", s) for s in imagery]:
             self.deshadow = deshadowmod.Deshadow(cache_dir, self.dem, deshadow)
         self.imagery = (imagerymod.Imagery(os.path.join(cache_dir, "imagery"), imagery, tone=tone,
-                                           deshadow=self.deshadow)
+                                           deshadow=self.deshadow, fetcher=self.net)
                         if imagery else None)
         self.imagery_failures = 0           # tiles that fell back to the palette (network trouble)
+        # (anchorId, key) of cached tiles built with the palette because the imagery failed; shown in
+        # the status note (re-texturing them once the host is back is a ROADMAP follow-up)
+        self.degraded = set()
         # Two heightmap workers so a mod request never waits behind a prefetch.
         self.hm_pool = ThreadPoolExecutor(2, thread_name_prefix="heightmap")
         self.tile_pool = ThreadPoolExecutor(tile_workers, thread_name_prefix="far")
@@ -531,6 +545,20 @@ class Server:
             parts.append(weathermod.CREDIT)
         return "; ".join(parts + [ELEVATION_CREDIT])
 
+    def net_note(self):
+        """The network state for the status text: "" when all is well, "Offline - using cached data"
+        (--offline, or every imagery / DEM host unreachable), else the unreachable hosts and the
+        tiles drawn without imagery."""
+        if self.net.offline:
+            return netfetch.OFFLINE_TEXT
+        parts = []
+        down = self.net.unavailable_hosts()
+        if down:
+            parts.append(", ".join(down) + " unreachable")
+        if self.degraded:
+            parts.append(f"{len(self.degraded)} tiles without imagery")
+        return "Degraded: " + "; ".join(parts) if parts else ""
+
     def level_summary(self):
         """'L<level> <geometry ms>/<texture ms> <shape KB>/<texture KB>' medians, for the log."""
         out = []
@@ -633,6 +661,7 @@ class Server:
         t1 = time.perf_counter()
         material = texture = None
         tex_bytes = 0
+        ck = (anchor.id, tile.key)
         if self.imagery is not None:
             x0, y0, _, _ = tile.bbox
             try:
@@ -641,8 +670,10 @@ class Server:
                 texture = self.texture_name(anchor.id, tile.key)
                 tex_bytes = imagerymod.write_dds(os.path.join(self.out_dir, texture), rgb)
                 material = sat_material(anchor.id, tile.key)
+                self.degraded.discard(ck)
             except imagerymod.ImageryError as e:
                 # Network trouble: this tile keeps the palette look (the mod's static material).
+                self.degraded.add(ck)
                 self.imagery_failures += 1
                 if self.imagery_failures % 100 == 1:
                     log.warning("tile %s of anchor %d: no imagery (%s), palette material (%d tiles so far)",
@@ -708,6 +739,7 @@ class Server:
             used = self.in_use()
             for old in [k for k in self.tiles if k not in used][:len(self.tiles) - self.tile_cache]:
                 del self.tiles[old]
+                self.degraded.discard(old)
                 # through the rate-limited queue: the mod loaded most of these files once (P9)
                 self.queue_delete((p for p in self.tile_files(self.tile_name(*old)) if os.path.exists(p)), old)
 
@@ -738,6 +770,8 @@ class Server:
             self.horizon_failed.pop(aid, None)
             for ck in [k for k in self.tiles if k[0] == aid]:
                 del self.tiles[ck]
+            for ck in [ck for ck in list(self.degraded) if ck[0] == aid]:     # list(): workers add meanwhile
+                self.degraded.discard(ck)
             for fut in [f for k, f in self.tile_inflight.items() if k[0] == aid]:
                 fut.cancel()
             for key in [k for k in self.hm if k[0] == aid]:
@@ -820,6 +854,7 @@ class Connection:
         self.wake = asyncio.Event()
         self.streamer = None
         self.last_status = ""           # text of the last status message (re-sent with a new backlog)
+        self.note_sent = ""             # the network note (Server.net_note) the last status carried
         self.status_sent = (0.0, None)  # (monotonic time, backlog) of the last status message
         # M1h (horizon mode): the eye in m above sea level (quantised, see EYE_STEP; frame
         # independent, so it survives a rebase; None before the first pose), the far-field radius of
@@ -845,6 +880,9 @@ class Connection:
     def status(self, text):
         n = self.backlog()
         self.last_status, self.status_sent = text, (time.monotonic(), n)
+        note = self.note_sent = self.s.net_note()
+        if note:                        # offline / degraded: the mod shows the status text as it is
+            text = f"{text} | {note}" if text else note
         m = {"type": "status", "text": text, "backlog": n}
         if self.s.horizon:              # M1h: the far-field radius (the mod's visibleDistance follows it)
             m["radius"] = round(self.radius)
@@ -852,8 +890,12 @@ class Connection:
         self.send(m)
 
     def refresh_status(self):
-        """--status-interval: re-send the last status when the backlog changed, at most every
-        status_interval seconds (off by default: v1.3.1 sends status on events only)."""
+        """Re-send the last status when the network note changed (a host went down or came back);
+        --status-interval: also when the backlog changed, at most every status_interval seconds
+        (off by default: v1.3.1 sends status on events only)."""
+        if self.s.net_note() != self.note_sent:
+            self.status(self.last_status)
+            return
         iv = self.s.status_interval
         if iv <= 0 or time.monotonic() - self.status_sent[0] < iv:
             return
@@ -918,6 +960,8 @@ class Connection:
                 self.send(self.weather.msg)
             if self.gravity.msg is not None:        # ... and its gravity
                 self.send(self.gravity.msg)
+            if self.s.net_note():                   # --offline / hosts down: say so at once
+                self.status(self.last_status)
         elif kind == "prepare_anchor":
             self.spawn(self.prepare_anchor(msg))
         elif kind == "prepare_terrain":
@@ -1411,14 +1455,26 @@ async def main_async(args):
     if args.near_radii is not None:
         ml = farfield.MESH_MIN_LEVEL[args.cells]
         radii = {ml: args.near_radii[0], ml + 1: args.near_radii[1]}
+    net = netfetch.Fetcher(stats_dir=os.path.join(args.cache_dir, "netstats"), offline=args.offline)
     server = Server(args.user_dir, args.cache_dir, args.workers, kfun, args.hysteresis, args.far_radius, fmt,
                     imagery=args.imagery, near_visual=args.near_visual, tex_near=args.tex_near,
                     tex_far=args.tex_far, tone=args.tone, near_radii=radii,
                     status_interval=args.status_interval, cells=args.cells, tex=args.tex, block=args.block,
                     horizon=args.horizon, deshadow=args.deshadow,
-                    weather=weathermod.Service() if args.weather == "on" else None,
-                    gravity=(gravitymod.Provider(os.path.join(args.cache_dir, "gravity"))
-                             if args.gravity == "on" else None))
+                    weather=(weathermod.Service(fetch=lambda lat, lon: weathermod.fetch(lat, lon, net=net))
+                             if args.weather == "on" else None),
+                    gravity=(gravitymod.Provider(os.path.join(args.cache_dir, "gravity"), net=net)
+                             if args.gravity == "on" else None), net=net)
+
+    async def net_log():
+        while True:
+            await asyncio.sleep(NET_TICK_S)
+            line = await asyncio.get_running_loop().run_in_executor(None, net.tick)
+            if line:
+                log.info("net: %s", line)
+            for c in list(server.connections):     # a host that came back while nobody posed
+                c.refresh_status()
+    ticker = asyncio.create_task(net_log())
     srv = await asyncio.start_server(
         lambda r, w: Connection(server, r, w).run(), "127.0.0.1", args.port)
     port = srv.sockets[0].getsockname()[1]
@@ -1428,10 +1484,14 @@ async def main_async(args):
           f"horizon: {'on' if server.horizon else 'off'}, "
           f"imagery: {','.join(args.imagery) if args.imagery else 'off'}"
           f"{'' if server.deshadow is None else ', deshadow: ' + server.deshadow.mode}, "
-          f"weather: {args.weather}, gravity: {args.gravity})",
+          f"weather: {args.weather}, gravity: {args.gravity}{', OFFLINE' if args.offline else ''})",
           flush=True)
-    async with srv:
-        await srv.serve_forever()
+    try:
+        async with srv:
+            await srv.serve_forever()
+    finally:
+        ticker.cancel()
+        net.close()                 # today's request counters
 
 
 def parse_tex_px(text):
@@ -1515,6 +1575,9 @@ def main():
     ap.add_argument("--gravity", choices=("on", "off"), default="on",
                     help="real gravity at the player (gravity.py: WGS84 normal + EGM2008 from <cache-dir>/gravity/, "
                          "every 2 km or 200 m of height; normal gravity while EGM2008 downloads, once, 74 MB)")
+    ap.add_argument("--offline", action="store_true",
+                    help="no network: serve elevation and imagery from the disk cache only (uncached tiles get "
+                         "the palette, uncached terrain fails); the status says 'Offline - using cached data'")
     ap.add_argument("-v", "--verbose", action="store_true")
     args = ap.parse_args()
     args.cells = resolve_cells(args.cells, args.near_visual)

@@ -46,6 +46,7 @@ import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from geodesy import A, F, B, E2, geodetic_to_ecef  # noqa: E402
+import netfetch  # noqa: E402
 
 # --- WGS84 (NIMA TR8350.2, 3rd ed., Tables 3.1-3.4) --------------------------------------------
 GM = 3.986004418e14              # m^3/s^2, incl. the atmosphere
@@ -67,7 +68,6 @@ EGM2008_A = 6378136.3            # ModelRadius
 EGM2008_HEIGHT_OFFSET = -0.41    # m, NGA's zero-degree geoid term for WGS84
 EGM2008_NMAX = 2190
 DEFAULT_NMAX = 2190              # see server/README.md "Gravity" for the timings behind this
-USER_AGENT = "BeamNG.Earth/0.1 (+personal mod)"
 CACHE_DIR = os.path.join(os.path.expanduser("~"), ".cache", "beamng-earth", "gravity")
 
 
@@ -447,10 +447,13 @@ def _sha256(path):
     return hsh.hexdigest()
 
 
-def _download(url, dest, sha256, size, attempts=10, min_rate=50e3, log=print):
+def _download(url, dest, sha256, size, attempts=10, min_rate=50e3, log=print, net=None):
     """Download with resume and retries, then verify size and SHA-256. SourceForge redirects each
     request to a random mirror; some stall or close early, so a short or slow transfer is resumed
-    (HTTP Range) from another one. Generic user agent; nothing else is sent."""
+    (HTTP Range) from another one. Each request goes through net (a netfetch.Fetcher; None = the
+    process-wide one): the host's policy (one at a time), the project User-Agent (nothing else is
+    sent), its circuit breaker and Retry-After."""
+    net = net if net is not None else netfetch.default_fetcher()
     part = dest + ".part"
     for i in range(attempts):
         have = os.path.getsize(part) if os.path.exists(part) else 0
@@ -458,26 +461,32 @@ def _download(url, dest, sha256, size, attempts=10, min_rate=50e3, log=print):
             os.remove(part)
             have = 0
         if have < size:
-            req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
-            if have:
-                req.add_header("Range", f"bytes={have}-")
             try:
-                with urllib.request.urlopen(req, timeout=30) as resp:
-                    mode = "ab" if have and resp.status == 206 else "wb"
-                    with open(part, mode) as f:
-                        t0, got = time.monotonic(), 0
-                        while True:
-                            chunk = resp.read(1 << 16)
-                            if not chunk:
-                                break
-                            f.write(chunk)
-                            got += len(chunk)
-                            dt = time.monotonic() - t0
-                            if dt > 20 and got / dt < min_rate:   # a stalled mirror: try another
-                                raise TimeoutError(f"{got / dt / 1e3:.0f} kB/s")
-            except (OSError, http.client.HTTPException) as e:   # URLError, timeouts, resets
+                with net.session(url) as s:
+                    req = urllib.request.Request(url, headers=s.headers)
+                    if have:
+                        req.add_header("Range", f"bytes={have}-")
+                    with urllib.request.urlopen(req, timeout=30) as resp:
+                        s.status = resp.status
+                        mode = "ab" if have and resp.status == 206 else "wb"
+                        with open(part, mode) as f:
+                            t0, got = time.monotonic(), 0
+                            while True:
+                                chunk = resp.read(1 << 16)
+                                if not chunk:
+                                    break
+                                f.write(chunk)
+                                got += len(chunk)
+                                s.nbytes = got
+                                dt = time.monotonic() - t0
+                                if dt > 20 and got / dt < min_rate:   # a stalled mirror: try another
+                                    raise TimeoutError(f"{got / dt / 1e3:.0f} kB/s")
+            except (netfetch.Offline, netfetch.PolicyDenied, netfetch.BudgetExceeded):
+                raise                   # asking again will not help
+            except (OSError, http.client.HTTPException) as e:   # URLError, timeouts, resets, netfetch
                 log(f"gravity: download attempt {i + 1} interrupted ({e}); resuming")
-                time.sleep(min(2 ** i, 10))
+                # the host's own wait (Retry-After, circuit open) if longer, up to a minute
+                time.sleep(max(min(2 ** i, 10), min(getattr(e, "retry_after", 0.0) or 0.0, 60.0)))
                 continue
         if os.path.getsize(part) < size:   # the mirror closed the connection early
             log(f"gravity: download attempt {i + 1} ended short; resuming")
@@ -520,8 +529,9 @@ def read_cof(fileobj):
             "corr_nmax": sets[1][0], "corr_c": sets[1][1], "corr_s": sets[1][2]}
 
 
-def ensure_egm2008(cache_dir=CACHE_DIR, log=print):
-    """Path of the converted coefficient cache, downloading and converting on first use."""
+def ensure_egm2008(cache_dir=CACHE_DIR, log=print, net=None):
+    """Path of the converted coefficient cache, downloading (through net, a netfetch.Fetcher) and
+    converting on first use."""
     os.makedirs(cache_dir, exist_ok=True)
     npy = os.path.join(cache_dir, "egm2008_rowmajor.npy")
     meta = os.path.join(cache_dir, "egm2008_rowmajor.json")
@@ -530,7 +540,7 @@ def ensure_egm2008(cache_dir=CACHE_DIR, log=print):
     arc = os.path.join(cache_dir, "egm2008.tar.bz2")
     if not os.path.exists(arc):
         log(f"gravity: downloading EGM2008 coefficients (74 MB, once) to {cache_dir}")
-        _download(EGM2008_URL, arc, EGM2008_SHA256, EGM2008_SIZE, log=log)
+        _download(EGM2008_URL, arc, EGM2008_SHA256, EGM2008_SIZE, log=log, net=net)
     with tarfile.open(arc, "r:bz2") as tf:
         member = tf.getmember("gravity/egm2008.egm.cof")
         d = read_cof(tf.extractfile(member))
@@ -618,15 +628,17 @@ class Provider:
     EGM2008 (normal + anomaly at the point, MSL height) once the converted coefficients are on disk,
     loading them on first use; until then the normal formula, while a daemon thread downloads and
     converts them (74 MB, once; a failure is retried after DOWNLOAD_RETRY_S). Nothing here waits
-    for the network. ``model``: a ready GravityModel (tests); ``download=False``: never fetch."""
+    for the network. ``model``: a ready GravityModel (tests); ``download=False``: never fetch;
+    ``net``: earthd's netfetch.Fetcher (None = the process-wide one; --offline: no download)."""
 
-    def __init__(self, cache_dir=CACHE_DIR, model=None, nmax=None, download=True, log=None):
+    def __init__(self, cache_dir=CACHE_DIR, model=None, nmax=None, download=True, log=None, net=None):
         import logging
         from concurrent.futures import ThreadPoolExecutor
         self.cache_dir = cache_dir
         self.nmax = nmax or int(os.environ.get("BNGE_GRAVITY_NMAX", DEFAULT_NMAX))
         self.model = model
         self.download = download
+        self.net = net
         self.log = log or logging.getLogger("earthd.gravity")
         self.pool = ThreadPoolExecutor(1, thread_name_prefix="gravity")
         self.lock = threading.Lock()
@@ -642,7 +654,7 @@ class Provider:
 
     def _fetch(self):
         try:
-            ensure_egm2008(self.cache_dir, log=self.log.info)
+            ensure_egm2008(self.cache_dir, log=self.log.info, net=self.net)
             self.log.info("gravity: EGM2008 ready; real gravity from the next update")
         except Exception as e:      # network, checksum, disk: the normal formula stays
             self.log.warning("gravity: EGM2008 download failed (%s: %s); normal gravity meanwhile", type(e).__name__, e)
@@ -654,7 +666,7 @@ class Provider:
 
     def _start_download(self):
         with self.lock:
-            if not self.download or self.fetcher is not None:
+            if not self.download or self.fetcher is not None or (self.net is not None and self.net.offline_flag):
                 return
             if self.failed_at is not None and time.monotonic() - self.failed_at < DOWNLOAD_RETRY_S:
                 return

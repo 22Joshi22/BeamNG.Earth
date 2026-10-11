@@ -4,15 +4,18 @@ docs/research/2026-10-10-weather-probe-results.md).
 
 Open-Meteo (https://open-meteo.com/en/docs) is keyless and free for non-commercial use (< 600
 calls/min, 10,000/day); its data are CC BY 4.0, so every place that shows them carries CREDIT
-(Server.attribution). One GET per fetch with a generic user agent and no personal data. Its
+(Server.attribution). One GET per fetch through netfetch (kind "background": 1 at a time, at most
+one per 10 s, a hard cap of 500 requests = 1,000 calls a day; the project User-Agent, no personal
+data). Its
 `current` block is 15-minutely (`interval` 900 s): precipitation, rain, showers and snowfall are
 sums over that interval, so a rate per hour is value * 3600 / interval. `timezone=auto` adds the
 real UTC offset of the place (the mod's clock uses it instead of its longitude guess).
 
 Per connection (Tracker): fetch at the player's lat/lon when there is no weather yet, every
 REFRESH_S, or once the player moved REFETCH_M from the last fetch point; one request in flight; a
-failure keeps the last weather and retries after RETRY_S. Results are cached for every
-connection by (CELL_DEG cell, SLOT_S slot), the resolution of the data.
+failure keeps the last weather and retries after RETRY_S (or the host's Retry-After / circuit-open
+time, if longer). Results are cached for every connection by (CELL_DEG cell, SLOT_S slot), the
+resolution of the data; concurrent requests for the same cell and slot share one fetch.
 
 derive() keeps the physical quantities (rates, visibility, cloud base, sea-level temperature);
 the mapping onto the game's controls (coverage calibration, fog density, wind vectors, rain
@@ -24,9 +27,8 @@ import math
 import threading
 import time
 import urllib.parse
-import urllib.request
 
-import dem as demmod
+import netfetch
 
 log = logging.getLogger("earthd.weather")
 
@@ -42,7 +44,7 @@ VERSION = 1                 # weather.v: the message layout
 REFRESH_S = 600.0           # new data every 10 min (the models update hourly at best)
 REFETCH_M = 25000.0         # ... or after this far from the last fetch point
 RETRY_S = 120.0             # after a failed fetch
-TIMEOUT_S = 10.0
+TIMEOUT_S = 10.0            # per request: the api.open-meteo.com policy (netfetch.POLICIES)
 CELL_DEG = 0.1              # cache cell (~11 km); also the lat/lon the message reports
 SLOT_S = 900                # cache slot = Open-Meteo's 15-minute `current` step
 CACHE_MAX = 256
@@ -67,11 +69,11 @@ def url(lat, lon):
     return API + "?" + urllib.parse.urlencode(q, safe=",")
 
 
-def fetch(lat, lon, timeout=TIMEOUT_S):
-    """One Open-Meteo GET (blocking): the parsed JSON."""
-    req = urllib.request.Request(url(lat, lon), headers={"User-Agent": demmod.USER_AGENT})
-    with urllib.request.urlopen(req, timeout=timeout) as r:
-        return json.loads(r.read().decode("utf-8"))
+def fetch(lat, lon, net=None):
+    """One Open-Meteo GET (blocking) through net (a netfetch.Fetcher; None = the process-wide one):
+    the parsed JSON. Raises netfetch.FetchError (RateLimited / HostUnavailable carry retry_after)."""
+    net = net if net is not None else netfetch.default_fetcher()
+    return json.loads(net.get(url(lat, lon), kind="background").body.decode("utf-8"))
 
 
 def _f(v, default=0.0):
@@ -160,6 +162,7 @@ class Service:
         self.fetch, self.clock = fetch, clock
         self.refresh_s, self.refetch_m, self.retry_s = refresh_s, refetch_m, retry_s
         self.cache = {}
+        self.inflight = {}          # key -> Event of the fetch in progress (one per cell and slot)
         self.lock = threading.Lock()
         self.fetches = 0
 
@@ -171,15 +174,29 @@ class Service:
         k = self.key(lat, lon, self.clock())
         with self.lock:
             hit = self.cache.get(k)
+            ev = None if hit is not None else self.inflight.get(k)
+            if hit is None and ev is None:
+                self.inflight[k] = threading.Event()
         if hit is not None:
             return hit
-        clat, clon = k[0], k[1]
-        msg = derive(self.fetch(clat, clon), clat, clon)
-        self.fetches += 1
-        with self.lock:
-            self.cache[k] = msg
-            while len(self.cache) > CACHE_MAX:
-                self.cache.pop(next(iter(self.cache)))
+        if ev is not None:              # another connection is fetching this cell: share its result
+            ev.wait(2 * TIMEOUT_S)
+            with self.lock:
+                hit = self.cache.get(k)
+            if hit is not None:
+                return hit
+            raise IOError("weather: the shared fetch for this cell failed")
+        try:
+            clat, clon = k[0], k[1]
+            msg = derive(self.fetch(clat, clon), clat, clon)
+            self.fetches += 1
+            with self.lock:
+                self.cache[k] = msg
+                while len(self.cache) > CACHE_MAX:
+                    self.cache.pop(next(iter(self.cache)))
+        finally:
+            with self.lock:
+                self.inflight.pop(k).set()
         return msg
 
 
@@ -200,10 +217,11 @@ class Tracker:
         llat, llon, lt = self.last
         return now - lt >= svc.refresh_s or distance_m(llat, llon, lat, lon) > svc.refetch_m
 
-    def done(self, svc, lat, lon, now, msg):
+    def done(self, svc, lat, lon, now, msg, retry_after=0.0):
+        """retry_after: the host's own wait (netfetch RateLimited / HostUnavailable), if longer."""
         self.inflight = False
         if msg is None:
-            self.retry_at = now + svc.retry_s
+            self.retry_at = now + max(svc.retry_s, retry_after)
         else:
             self.last, self.msg = (lat, lon, now), msg
 
@@ -219,13 +237,15 @@ class Tracker:
         self.inflight = True
 
         async def run():
-            msg = None
+            msg, wait = None, 0.0
             try:
                 msg = await conn.loop.run_in_executor(None, svc.get, lat, lon)
-            except Exception as e:      # network, HTTP, JSON: keep the last weather
-                log.warning("weather fetch at %.3f, %.3f failed: %s: %s", lat, lon, type(e).__name__, e)
+            except Exception as e:      # network, HTTP, JSON, the rate limiter: keep the last weather
+                wait = getattr(e, "retry_after", 0.0) or 0.0
+                (log.info if isinstance(e, netfetch.Offline) else log.warning)(
+                    "weather fetch at %.3f, %.3f failed: %s: %s", lat, lon, type(e).__name__, e)
             finally:
-                self.done(svc, lat, lon, svc.clock(), msg)
+                self.done(svc, lat, lon, svc.clock(), msg, wait)
             if msg is not None:
                 conn.send(msg)
         conn.spawn(run())

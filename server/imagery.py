@@ -16,32 +16,33 @@ while a later source remains, counts as missing, so the chain falls back per sou
 Samples no source covers (beyond +-85.05 deg, or 404 everywhere) get FALLBACK_RGB.
 
 Caching: raw tiles on disk under <cache>/<source>/<z>/<x>/<y>.jpg (whatever format the server
-sent), 404s remembered as <y>.404 markers (as dem.py does), decoded tiles in an in-memory LRU.
-Downloads run on a small pool (FETCH_WORKERS <= 6 concurrent requests, polite User-Agent), each
-thread keeping one persistent HTTPS connection per host (a fresh TLS handshake per tile roughly
-doubled the latency).
+sent), 404s remembered as <y>.404 markers (as dem.py does; they expire after the host's miss_ttl,
+90 days), decoded tiles in an in-memory LRU. Downloads run on a small pool (FETCH_WORKERS <= 6)
+through a netfetch.Fetcher: the host's rate limit, concurrency cap, retries and circuit breaker
+(keyed by host, so eox2023 and eox2016 share one), one persistent HTTPS connection per thread and
+host. A source whose host cannot be asked fails at once (ImageryError), and render() takes the
+next source. prefetch() asks with kind="prefetch" (dropped when the host's bucket is low; render
+then fetches the tile on demand).
 
 Output: DDS DXT1 with a full mip chain (write_dds). Pillow 12 writes DXT1 but no mipmaps (its
 header always says 0 mips), so every level is box-downsampled and BC1-encoded by Pillow separately
 and the levels are concatenated under our own header (DDSD_MIPMAPCOUNT, DDSCAPS_MIPMAP|COMPLEX).
 """
-import http.client
 import io
 import logging
 import math
 import os
 import struct
 import threading
-import time
 from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
-from urllib.parse import urlsplit
 
 import numpy as np
 from PIL import Image
 
 import dem as demmod
+import netfetch
 
 log = logging.getLogger("earthd.imagery")
 
@@ -50,15 +51,10 @@ MAX_LAT = demmod.MAX_LAT
 EARTH_CIRC = 40075016.686          # m, equatorial circumference (Web-Mercator scale)
 FETCH_WORKERS = 6
 MEM_TILES = 512                    # decoded 256² RGB tiles kept in memory (~100 MB)
-ATTEMPTS = 3
-RETRY_DELAY = 0.5                  # s, doubled per attempt
-TIMEOUT = 20.0
-# After a tile fetch failed every attempt (network down, server errors), the source counts as
-# unreachable for this long: its tiles fail at once instead of each paying ATTEMPTS x TIMEOUT
-# plus the retry delays (offline, every texture took ~10 s, so the 3 tile workers - which also
-# build the geometry - fell minutes behind the player). Tiles fall back to the next source or,
-# with none left, to the palette material.
-SOURCE_BACKOFF = 30.0              # s
+# Attempts, retry delays, timeouts and the "source unreachable" backoff are the host's netfetch
+# policy now: once its circuit is open, its tiles fail at once instead of each paying the attempts
+# and timeouts (offline, every texture took ~10 s before the backoff existed), and fall back to
+# the next source or, with none left, to the palette material.
 MAX_MOSAIC = 36                    # source tiles per texture and source (zoom is lowered beyond)
 MESH_CELLS = 8                     # render(): exact reprojection on an 8 x 8 grid of texture cells
 FALLBACK_RGB = (100, 89, 69)       # no imagery anywhere: the terrain material's dirt colour
@@ -99,7 +95,16 @@ ATTRIBUTION = "Imagery: " + "; ".join(SOURCES[n].attribution for n in DEFAULT_CH
 
 
 class ImageryError(IOError):
-    """Imagery could not be fetched (network or server errors, not a missing tile)."""
+    """Imagery could not be fetched (network or server errors, not a missing tile). deferred: a
+    prefetch / background request the limiter dropped (a demand fetch may still get it)."""
+
+    def __init__(self, msg, deferred=False):
+        super().__init__(msg)
+        self.deferred = deferred
+
+
+# netfetch errors of a non-demand request that a demand request would not get
+_DEFERRED = (netfetch.Deferred, netfetch.PolicyDenied, netfetch.BudgetExceeded)
 
 
 def parse_chain(text):
@@ -164,11 +169,14 @@ def as_tile(rgb):
 
 class Imagery:
     def __init__(self, cache_dir, chain=DEFAULT_CHAIN, fetch_workers=FETCH_WORKERS, mem_tiles=MEM_TILES,
-                 tone=1.0, deshadow=None):
+                 tone=1.0, deshadow=None, fetcher=None):
         """deshadow: an optional deshadow.Deshadow (--deshadow lambert|full): _mosaic relights its
-        source's tiles; None = the imagery as served (byte-identical textures)."""
+        source's tiles; None = the imagery as served (byte-identical textures). fetcher: the
+        server's netfetch.Fetcher (shared limits); None = one of its own."""
         self.cache_dir = cache_dir
         self.chain = tuple(SOURCES[s] if isinstance(s, str) else s for s in chain)
+        self.fetcher = fetcher if fetcher is not None else netfetch.Fetcher()
+        self.fetcher.register_chain("imagery", [s.url for s in self.chain])
         self.pool = ThreadPoolExecutor(min(fetch_workers, FETCH_WORKERS), thread_name_prefix="img-fetch")
         self.mem_tiles = mem_tiles
         self.lut = tone_lut(tone)
@@ -180,10 +188,9 @@ class Imagery:
         self._lru = OrderedDict()           # (source, z, x, y) -> Tile, or None (404)
         self._inflight = {}
         self._lock = threading.RLock()     # RLock: a done future's callback runs at once
-        self._local = threading.local()     # per fetch thread: {host: HTTPSConnection}
+        self._local = threading.local()     # per fetch thread: the kind of the request being loaded
         self.stats = {}                     # counters ("usgs:net", "eox2023:404", ...), and fetch times
         self.fetch_ms = []                  # network fetch latencies (ms), for the log / measurements
-        self._down = {}                     # source name -> monotonic time until it counts as unreachable
 
     def attribution(self):
         """Attribution line for the sources in use."""
@@ -214,26 +221,6 @@ class Imagery:
         d = os.path.join(self.cache_dir, src.name, str(z), str(x))
         return os.path.join(d, f"{y}.jpg"), os.path.join(d, f"{y}.404")
 
-    def _http_get(self, url):
-        """(status, body) over this thread's persistent connection to the host."""
-        u = urlsplit(url)
-        conns = self._local.__dict__.setdefault("conns", {})
-        path = u.path + (f"?{u.query}" if u.query else "")
-        for retry_closed in (0, 1):
-            conn = conns.get(u.netloc)
-            if conn is None:
-                conn = conns[u.netloc] = http.client.HTTPSConnection(u.netloc, timeout=TIMEOUT)
-            try:
-                conn.request("GET", path, headers={"User-Agent": demmod.USER_AGENT, "Connection": "keep-alive"})
-                r = conn.getresponse()
-                return r.status, r.read()
-            except (http.client.HTTPException, OSError):
-                conn.close()
-                del conns[u.netloc]
-                if retry_closed:        # a fresh connection failed too
-                    raise
-                # else: the server closed the idle keep-alive connection; reconnect once
-
     def _discard(self, src, z, x, y):
         try:
             os.remove(self._paths(src, z, x, y)[0])
@@ -247,43 +234,43 @@ class Imagery:
             self._count(src.name + ":disk")
             with open(path, "rb") as f:
                 return f.read()
-        if os.path.exists(miss):
-            return None
         url = src.url.format(z=z, x=x, y=y)
-        if time.monotonic() < self._down.get(src.name, 0.0):
-            self._count(src.name + ":skipped")
-            raise ImageryError(f"{src.name} unreachable (backing off): {url}")
-        err = None
-        for attempt in range(ATTEMPTS):
-            if attempt:
-                time.sleep(RETRY_DELAY * 2 ** (attempt - 1))
-            t0 = time.perf_counter()
-            try:
-                status, data = self._http_get(url)
-            except (http.client.HTTPException, OSError) as e:
-                err = e
-            else:
-                if status == 200:
-                    break
-                if status in (400, 404):            # outside the source's coverage
-                    os.makedirs(os.path.dirname(miss), exist_ok=True)
-                    open(miss, "wb").close()
-                    self._count(src.name + ":404")
-                    return None
-                err = f"HTTP {status}"
-        else:
-            self._down[src.name] = time.monotonic() + SOURCE_BACKOFF
-            raise ImageryError(f"imagery fetch failed: {url}: {err}")
+        if self.fetcher.miss_alive(miss, url):
+            return None
+        kind = getattr(self._local, "kind", "demand")
+        try:
+            r = self.fetcher.get(url, kind=kind)
+        except netfetch.NotFound:               # outside the source's coverage
+            os.makedirs(os.path.dirname(miss), exist_ok=True)
+            open(miss, "wb").close()            # (re)written: its mtime starts the marker's TTL
+            self._count(src.name + ":404")
+            return None
+        except netfetch.FetchError as e:
+            deferred = kind != "demand" and isinstance(e, _DEFERRED)
+            self._count(src.name + (":deferred" if deferred else ":skipped" if isinstance(e, netfetch.HostUnavailable)
+                                    else ":error"))
+            raise ImageryError(f"imagery fetch failed: {url}: {e}", deferred) from None
+        data = r.body
         with self._lock:
-            self.fetch_ms.append((time.perf_counter() - t0) * 1000)
+            self.fetch_ms.append(r.elapsed * 1000)
             del self.fetch_ms[:-2000]
         os.makedirs(os.path.dirname(path), exist_ok=True)
         tmp = f"{path}.{threading.get_ident()}.tmp"
         with open(tmp, "wb") as f:
             f.write(data)
         os.replace(tmp, path)
+        if os.path.exists(miss):                # an expired marker: the source has data there now
+            os.remove(miss)
         self._count(src.name + ":net")
         return data
+
+    def _load_kind(self, key, kind):
+        """_load(key) in a pool thread, its requests made as `kind` (subclasses override _load(key))."""
+        self._local.kind = kind
+        try:
+            return self._load(key)
+        finally:
+            self._local.kind = "demand"
 
     def _load(self, key):
         """Decoded tile (Tile), or None if the source has none there."""
@@ -324,26 +311,40 @@ class Imagery:
         for pz in sorted(p for p in src.probe_zooms if p < z):
             p = (src, pz, x >> (z - pz), y >> (z - pz))
             if p not in self._lru:
-                self._future(p)
+                self._future(p, "prefetch")
                 return "unknown"
             if not self._covered(self._lru[p]):
                 return "outside"
         return "covered"
 
-    def _future(self, key):
-        """The fetch of key (started if needed). Caller holds the lock."""
+    def _future(self, key, kind="demand", stale=None):
+        """The fetch of key (started if needed, or when the one in flight is `stale`, a finished
+        fetch whose done callback has not run yet). Caller holds the lock."""
         fut = self._inflight.get(key)
-        if fut is None:
-            fut = self._inflight[key] = self.pool.submit(self._load, key)
+        if fut is None or fut is stale:
+            fut = self._inflight[key] = self.pool.submit(self._load_kind, key, kind)
             fut.add_done_callback(lambda f: self._finish(key, f))
         return fut
 
-    def tiles(self, keys):
+    def _result(self, key, fut, kind):
+        """fut's tile; a demand caller that met a dropped prefetch fetches the tile itself (one fetch
+        shared by every caller that met the same dropped one)."""
+        while True:                         # (a demand fetch is never dropped: this ends)
+            try:
+                return fut.result()
+            except ImageryError as e:
+                if not e.deferred or kind != "demand":
+                    raise
+            with self._lock:
+                fut = self._future(key, stale=fut)
+
+    def tiles(self, keys, kind="demand"):
         """{(source, z, x, y): Tile or None (404, or outside the coverage probe)}, fetched
-        concurrently and deduplicated across callers. Raises ImageryError if a fetch failed."""
+        concurrently and deduplicated across callers. Raises ImageryError if a fetch failed.
+        kind: the netfetch kind of the requests ("background": de-shadow region fits)."""
         keys = list(dict.fromkeys(keys))
         probes = {k: self._probe_key(k) for k in keys}
-        known = self.tiles({p for p in probes.values() if p is not None}) if any(probes.values()) else {}
+        known = self.tiles({p for p in probes.values() if p is not None}, kind) if any(probes.values()) else {}
         out, futs = {}, {}
         with self._lock:
             for k in keys:
@@ -353,11 +354,11 @@ class Imagery:
                     self._lru.move_to_end(k)
                     out[k] = self._lru[k]
                 else:
-                    futs[k] = self._future(k)
+                    futs[k] = self._future(k, kind)
         err = None
         for k, fut in futs.items():
             try:
-                out[k] = fut.result()
+                out[k] = self._result(k, fut, kind)
             except ImageryError as e:
                 err = e
         if err is not None:
@@ -368,7 +369,9 @@ class Imagery:
         """Start fetching the source tiles render(frame, x0, y0, size, px) will need, without
         waiting: the first source of the chain, or the next one where every tile of the
         previous source is already known to be missing (an unknown coverage probe is fetched
-        first). Errors are left for render to meet."""
+        first). Errors are left for render to meet. Skips a source whose host's circuit is open
+        (render fails over past it) and stops at one whose host takes no prefetch now (policy,
+        budget, bucket below half): render fetches those on demand."""
         t = size / px
         c = np.array([0.0, 0.5, 1.0]) * size
         E, N = np.meshgrid(x0 + c, y0 + c)
@@ -387,6 +390,11 @@ class Imagery:
             ty0, ty1 = max(0, int(math.floor(fy.min() - 1)) // TILE), min(n - 1, int(math.floor(fy.max() + 1)) // TILE)
             if (tx1 - tx0 + 1) * (ty1 - ty0 + 1) > MAX_MOSAIC:
                 return
+            host = netfetch.host_of(src.url)
+            if not self.fetcher.available(host):
+                continue                    # circuit open: render fails over to the next source, warm that
+            if not self.fetcher.allow(host, "prefetch"):
+                return
             missing = True                  # every tile of this source known to be missing
             with self._lock:
                 for ty in range(ty0, ty1 + 1):
@@ -403,7 +411,7 @@ class Imagery:
                             missing &= a is None or (k < len(self.chain) - 1 and a.uniform)
                             continue
                         missing = False
-                        self._future(key)
+                        self._future(key, "prefetch")
             if not missing:
                 return
 

@@ -1,16 +1,20 @@
 """server/imagery.py (docs/V1_3_SPEC.md §A): reprojection (a known lat/lon lands on the right
 texel), the source chain with coverage detection (404 / blank tiles), the disk cache with
-remembered 404s, unreachable sources, the tone curve and the DXT1 DDS with its mip chain.
-Synthetic tile servers, no network, except NetworkImageryTest (a few real tiles, cached in
-<tmp>/beamng-earth-test-cache/imagery; skipped when offline)."""
+remembered 404s (and their TTL), unreachable sources (netfetch circuit breakers), prefetch
+priorities, the tone curve and the DXT1 DDS with its mip chain. Synthetic tile servers behind a
+netfetch.Fetcher with a fake transport, no network, except NetworkImageryTest (a few real tiles,
+cached in <tmp>/beamng-earth-test-cache/imagery; skipped when offline)."""
 import io
 import math
 import os
 import re
 import sys
 import tempfile
+import threading
 import time
 import unittest
+from concurrent import futures
+from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
@@ -19,6 +23,7 @@ from PIL import Image
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import geodesy as g  # noqa: E402
 import imagery  # noqa: E402
+import netfetch  # noqa: E402
 
 LAT0, LON0 = 36.5785, -118.2923
 CACHE = os.path.join(tempfile.gettempdir(), "beamng-earth-test-cache", "imagery")
@@ -38,20 +43,40 @@ def background(z, x, y):
                                         (i[:, None] + y) % 40 + 10), -1).astype(np.uint8)
 
 
-class FakeNet(imagery.Imagery):
-    """Imagery whose HTTP layer is a function host_name -> (z, x, y) -> (status, body)."""
+# The real host policies without their rates (the tests count requests, not seconds); retry delays
+# are not slept (FakeNet's fetcher sleeps nothing).
+FAST = {h: replace(p, rate=1e9, burst=1e9) for h, p in netfetch.POLICIES.items()}
 
-    def __init__(self, cache_dir, serve, chain=imagery.DEFAULT_CHAIN, **kw):
-        super().__init__(cache_dir, chain, **kw)
-        self.serve = serve
-        self.requests = []
 
-    def _http_get(self, url):
+class ServeTransport:
+    """netfetch transport over a function source_name -> (z, x, y) -> (status, body); logs
+    (name, z, x, y) of every request into `requests`."""
+
+    def __init__(self, serve, requests):
+        self.serve, self.requests = serve, requests
+        self.headers = []
+
+    def request(self, url, headers, timeout):
         name = next(n for n, s in imagery.SOURCES.items() if url.startswith(s.url.split("{z}")[0]))
         z, a, b = (int(v) for v in URL.search(url).groups())
-        x, y = (b, a) if name == "usgs" else (b, a)        # both are .../{z}/{y}/{x}
+        x, y = b, a                                         # both are .../{z}/{y}/{x}
         self.requests.append((name, z, x, y))
-        return self.serve(name, z, x, y)
+        self.headers.append(headers)
+        status, body = self.serve(name, z, x, y)
+        return status, {}, body
+
+
+class FakeNet(imagery.Imagery):
+    """Imagery whose network is a function source_name -> (z, x, y) -> (status, body), behind a
+    netfetch.Fetcher (host policies without rate limits unless `policies` is given)."""
+
+    def __init__(self, cache_dir, serve, chain=imagery.DEFAULT_CHAIN, policies=None, clock=None, **kw):
+        self.requests = []
+        self.transport = ServeTransport(serve, self.requests)
+        net = netfetch.Fetcher(transport=self.transport, sleep=lambda s: None, policies=policies or FAST,
+                               **({"clock": clock} if clock else {}))
+        super().__init__(cache_dir, chain, fetcher=net, **kw)
+        self.serve = serve
 
 
 class ReprojectionTest(unittest.TestCase):
@@ -122,10 +147,8 @@ class ReprojectionTest(unittest.TestCase):
 class ChainTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
-        imagery.RETRY_DELAY, self._delay = 0.0, imagery.RETRY_DELAY
 
     def tearDown(self):
-        imagery.RETRY_DELAY = self._delay
         self.tmp.cleanup()
 
     @staticmethod
@@ -231,27 +254,167 @@ class ChainTest(unittest.TestCase):
         self.assertFalse([f for _, _, fs in os.walk(self.tmp.name) for f in fs])
 
     def test_unreachable_source_backs_off(self):
-        """After a fetch failed every attempt, the source is skipped (no requests, no retry
-        delays) for SOURCE_BACKOFF seconds; then it is asked again."""
+        """After failed attempts open the host's circuit, the source is skipped (no requests, no retry
+        delays) until the open time ran out; then one probe, and it is used again."""
         up = {"usgs": False}
+        clock = [1000.0]
 
         def serve(name, z, x, y):
             if name == "usgs" and not up["usgs"]:
                 raise OSError("network down")
             return self.tile(name, z, x, y)
-        im = FakeNet(self.tmp.name, serve, tone=0.0)
-        _, used = self.render(im)
-        self.assertEqual(set(used), {"eox2023"})
+        im = FakeNet(self.tmp.name, serve, tone=0.0, clock=lambda: clock[0])
+        pol = netfetch.POLICIES["basemap.nationalmap.gov"]
+        for x0 in (0.0, 2000.0):            # 3 attempts per tile: the second texture opens the circuit
+            _, used = self.render(im, x0=x0)
+            self.assertEqual(set(used), {"eox2023"})
         n = sum(1 for r in im.requests if r[0] == "usgs")
-        self.assertEqual(n, imagery.ATTEMPTS)          # the first fetch failed; the rest were skipped
-        _, used = self.render(im, x0=5000.0)            # other source tiles: still skipped
+        self.assertEqual(n, pol.breaker_threshold)     # the 6th attempt met the open circuit
+        self.assertTrue(im.fetcher.host("basemap.nationalmap.gov").breaker.is_open())
+        _, used = self.render(im, x0=5000.0)            # other source tiles: skipped, no requests
         self.assertEqual(set(used), {"eox2023"})
         self.assertEqual(sum(1 for r in im.requests if r[0] == "usgs"), n)
         self.assertGreater(im.stats_snapshot().get("usgs:skipped", 0), 0)
+        self.assertEqual(im.fetcher.unavailable_hosts(), ["basemap.nationalmap.gov"])
         up["usgs"] = True
-        im._down["usgs"] = time.monotonic() - 1.0       # the backoff has run out
+        clock[0] += pol.breaker_open + 1                # the open time has run out
         _, used = self.render(im, x0=10000.0)
         self.assertEqual(set(used), {"usgs"})
+        self.assertEqual(im.fetcher.unavailable_hosts(), [])
+
+    def test_open_eox_host_skips_both_layers(self):
+        """eox2023 and eox2016 share one host and so one breaker: while it is open neither is asked
+        and the next source of the chain fills the texture."""
+        def serve(name, z, x, y):
+            return self.tile(name, z, x, y)
+        im = FakeNet(self.tmp.name, serve, chain=("eox2023", "eox2016", "usgs"), tone=0.0)
+        im.fetcher.host("tiles.maps.eox.at").breaker.trip(60.0)
+        _, used = self.render(im)
+        self.assertEqual(set(used), {"usgs"})
+        self.assertFalse([r for r in im.requests if r[0] != "usgs"])
+        st = im.stats_snapshot()
+        self.assertGreater(st.get("eox2023:skipped", 0), 0)
+        self.assertGreater(st.get("eox2016:skipped", 0), 0)
+
+    def test_400_is_not_a_miss(self):
+        """Only 404 means "no coverage": a 400 (an overloaded ArcGIS server) leaves no marker."""
+        def serve(name, z, x, y):
+            return (400, b"bad request") if name == "usgs" else self.tile(name, z, x, y)
+        _, used = self.render(FakeNet(self.tmp.name, serve, tone=0.0))
+        self.assertEqual(set(used), {"eox2023"})
+        self.assertFalse([f for _, _, fs in os.walk(self.tmp.name) for f in fs if f.endswith(".404")])
+
+    def test_miss_marker_ttl(self):
+        """A .404 marker is valid for the host's miss_ttl (90 days): older ones are asked again. An
+        old-style marker (an empty file from before TTLs) works the same way."""
+        def serve(name, z, x, y):
+            return (404, b"") if name == "usgs" else self.tile(name, z, x, y)
+        im = FakeNet(self.tmp.name, serve, tone=0.0)
+        self.render(im)
+        markers = [os.path.join(d, f) for d, _, fs in os.walk(os.path.join(self.tmp.name, "usgs"))
+                   for f in fs if f.endswith(".404")]
+        self.assertTrue(markers)
+        n = len(im.requests)
+        im2 = FakeNet(self.tmp.name, serve, tone=0.0)
+        self.render(im2)
+        self.assertEqual(sum(1 for r in im2.requests if r[0] == "usgs"), 0)     # fresh markers
+        old = time.time() - netfetch.POLICIES["basemap.nationalmap.gov"].miss_ttl - 60
+        for m in markers:
+            os.utime(m, (old, old))
+        im3 = FakeNet(self.tmp.name, serve, tone=0.0)
+        self.render(im3)
+        self.assertTrue([r for r in im3.requests if r[0] == "usgs"])            # expired: asked again
+        self.assertTrue(all(time.time() - os.path.getmtime(m) < 60 for m in markers if os.path.exists(m)))
+        self.assertTrue(n)
+
+    def test_prefetch_dropped_then_fetched_on_demand(self):
+        """A prefetch the limiter drops (bucket below half) is not an error: render fetches the tile."""
+        def serve(name, z, x, y):
+            return (404, b"") if name == "usgs" else self.tile(name, z, x, y)
+        pol = netfetch.with_policy(FAST, "basemap.nationalmap.gov", rate=1e-6, burst=60.0)
+        im = FakeNet(self.tmp.name, serve, tone=0.0, policies=pol)
+        b = im.fetcher.host("basemap.nationalmap.gov").bucket
+        b.tokens = 29.0                                  # below half: no prefetch
+        f = g.EnuFrame(LAT0, LON0)
+        im.prefetch(f, 0.0, 0.0, 256.0, 64)
+        time.sleep(0.2)
+        self.assertEqual(im.requests, [])
+        # a prefetch future that was submitted and then dropped: the demand fetch replaces it
+        key = (imagery.SOURCES["usgs"], 10, 175, 408)
+        with im._lock:
+            fut = im._future(key, "prefetch")
+        with self.assertRaises(imagery.ImageryError) as cm:
+            fut.result()
+        self.assertTrue(cm.exception.deferred)
+        _, used = self.render(im)
+        self.assertEqual(set(used), {"eox2023"})
+        self.assertTrue([r for r in im.requests if r[0] == "usgs"])
+        self.assertGreater(im.stats_snapshot().get("usgs:deferred", 0), 0)
+
+    def test_prefetch_skips_an_open_host(self):
+        """While USGS's circuit is open render fails over to EOX, so prefetch warms the EOX tiles
+        instead of stopping at USGS (and asks USGS nothing)."""
+        im = FakeNet(self.tmp.name, self.tile, tone=0.0)
+        im.fetcher.host("basemap.nationalmap.gov").breaker.trip(60.0)
+        im.prefetch(g.EnuFrame(LAT0, LON0), 0.0, 0.0, 256.0, 64)
+        self.idle(im)
+        self.assertEqual({r[0] for r in im.requests}, {"eox2023"})
+        n = len(im.requests)
+        _, used = self.render(im)
+        self.assertEqual(set(used), {"eox2023"})
+        self.assertEqual(len(im.requests), n)                   # render found everything prefetched
+
+    def test_dropped_prefetch_refetched_once(self):
+        """Two renders waiting on the same dropped prefetch future fetch the tile once, together (the
+        dropped future may still be in _inflight: its done callback runs after the waiters wake)."""
+        gate = threading.Event()
+
+        def serve(name, z, x, y):
+            gate.wait(5)
+            return self.tile(name, z, x, y)
+        im = FakeNet(self.tmp.name, serve, chain=("eox2023",), tone=0.0)
+        key = (imagery.SOURCES["eox2023"], 14, 100, 200)
+        stale = futures.Future()
+        stale.set_exception(imagery.ImageryError("dropped", deferred=True))
+        calls = []
+        future = im._future
+
+        def counted(*a, **kw):
+            calls.append(a)
+            return future(*a, **kw)
+        im._future = counted
+        with im._lock:
+            im._inflight[key] = stale
+        out = []
+        threads = [threading.Thread(target=lambda: out.append(im._result(key, stale, "demand"))) for _ in range(2)]
+        for t in threads:
+            t.start()
+        t0 = time.monotonic()
+        while len(calls) < 2 and time.monotonic() - t0 < 5:
+            time.sleep(0.01)
+        gate.set()
+        for t in threads:
+            t.join(5)
+        self.assertEqual(len(out), 2)
+        self.assertIs(out[0], out[1])
+        self.assertEqual(len(im.requests), 1)
+
+    @staticmethod
+    def idle(im, timeout=5.0):
+        t0 = time.monotonic()
+        while time.monotonic() - t0 < timeout:
+            with im._lock:
+                if not im._inflight:
+                    return
+            time.sleep(0.01)
+
+    def test_user_agent(self):
+        def serve(name, z, x, y):
+            return self.tile(name, z, x, y)
+        im = FakeNet(self.tmp.name, serve, tone=0.0)
+        self.render(im)
+        self.assertTrue(im.transport.headers)
+        self.assertTrue(all(h == {"User-Agent": netfetch.USER_AGENT} for h in im.transport.headers))
 
     def test_undecodable_tile_is_an_error(self):
         def serve(name, z, x, y):

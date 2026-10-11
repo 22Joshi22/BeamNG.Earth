@@ -305,6 +305,28 @@ terrain at all (same fall risk). Plan:
 7. **Tests**: fault injection in the integration drive (kill the server mid-drive, restart it, drop
    network with a fake fetcher, start the mod with no server) and the same as in-game probes.
 
+Status (2026-10-10, branch feature/netfetch, built offline): the server side of 1 and 4 is in
+place: `server/netfetch.py` (docs/research/2026-10-10-rate-limits.md §5) rate-limits every host,
+retries with backoff, honours Retry-After, opens a circuit breaker per host and fails over along the
+source chains (USGS -> EOX 2023 -> EOX 2016 -> palette; Mapterhorn -> AWS), `--offline` serves the
+disk cache only, and the status text says "Offline - using cached data" / "Degraded: ..." (the mod
+shows it as is). Reviewed adversarially the same day (late successes no longer close a breaker,
+Retry-After makes waiting demand fail over, no doubled timeouts, prefetch past an open host, an
+undecodable DEM tile leaves the cache; docs/ARCHITECTURE.md "Network"). Follow-ups:
+- Re-texture the degraded (palette-fallback) tiles once the breaker closes: `Server.degraded` lists
+  them, but a rebuilt tile needs a new file name (the engine caches by path) and a same-footprint
+  replace swap in the protocol, so it waits for the retex / rebuild swap of item 4.
+- The coarse global offline DEM (item 4) at `dem.DemUnavailable`; until then an uncached area's
+  terrain request fails (`terrain_error`) when neither Mapterhorn nor AWS can be reached.
+- Per-host state (breakers, budgets) in `status` for the dev tools window; the mod's banner (item 1).
+- Mapterhorn revalidation after 180 days (`If-Modified-Since`); Cache-Control for OSM-type hosts
+  (`HostPolicy.honor_cache_headers`, unused until such a host exists).
+- The near-terrain heightmap prefetch (`Connection.maybe_prefetch`) still asks the DEM as demand;
+  give `Dem` a request kind so it comes after the far tiles' demand and is dropped first.
+- Select fine levels by 3D distance in flight (rate-limit report §2.2), which removes most of the
+  21 req/s to USGS at 10 km altitude (the limiter caps it at 15/s meanwhile). The steady 30 / 134
+  m/s demand per host is a test now (`test_demand.NetDemandTest`, below each policy rate).
+
 ## Caching (user, 2026-10-10: "save and cache stuff so we don't need to redownload it")
 Today: raw downloads are already kept on disk forever (~/.cache/beamng-earth: elevation 537 MB,
 imagery 481 MB, gravity model 145 MB, 26k files after two days of testing) and revisits reuse them;
