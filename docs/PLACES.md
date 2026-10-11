@@ -6,6 +6,9 @@ every fix found here must come from a rule that works everywhere, and is checked
 the rest of the list before and after. Teleport with `beamngEarth_core.teleport(lat, lon)`, or from
 the settings page's "Places" section: this table is the start of its saved places on a first run
 (`places.SEED`, data only, followed by a few well-known drives; the player can edit or delete them).
+Every place here (and every photo benchmark) is also in `docs/benchmarks.json` with fixed cameras,
+together with a global set and a held-out set; `tools/benchmark.py` shoots and measures them all
+(docs/DEVTOOLS.md "Visual benchmark"). Add a new place to both (a test checks the table).
 
 | Place | lat, lon | What it shows | Relevant work |
 |---|---|---|---|

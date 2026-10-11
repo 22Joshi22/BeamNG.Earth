@@ -748,7 +748,15 @@ again) and earthd's `cache` messages (after hello, cap, usage, clear; none and i
 `Cache`; bad caps refused; `--cache-cap` parsing). No network: a stub fetcher.
 `test_drive_tool.py` checks `tools/drive.py` and `tools/drive_driver.lua` offline (profile rule on both
 sides, nominal speed, the summary, the driver under luajit, `run_ge` with a fake MCP: polls >= 1 s
-apart and an uninstall on every failure path). `test_v131_default.py` checks that a default
+apart and an uninstall on every failure path). `test_benchmark_tool.py` checks the visual benchmark
+`tools/benchmark.py` offline (docs/DEVTOOLS.md "Visual benchmark"): `docs/benchmarks.json` against
+docs/PLACES.md and its coverage (continents, data-rich / poor, flat / steep, held-out places), the
+plan (views, local mean solar time), the readiness and safety rules, whole runs against a fake game
+(load numbers, files, the restore order and that it runs after an MCP error, Ctrl-C also during the
+restore, a refused or failed home teleport, a timed-out place, a failed or uncommitted teleport with
+no shots, a lost screenshot, the user driving off mid-run, retried MCP timeouts, a Lua reload), the
+compare metrics (SSIM against a brute-force version)
+and report (failed / never-ready places flagged, moved cameras noted), and runs `mod/tests/test_benchmark.lua` (the GE chunk under luajit). `test_v131_default.py` checks that a default
 `earthd.Server` reproduces the v1.3.1 selection, geometry and heightmap (`fixtures/v131_golden.json`,
 written by the v1.3.1 code). `bench_build.py` (not discovered: run it
 by hand, it downloads unless `--synthetic`) times `Server.make_tile` per level, cold and warm.
