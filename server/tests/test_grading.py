@@ -58,6 +58,17 @@ class GradePointsTest(unittest.TestCase):
         mid = (np.abs(py) > p.half) & (np.abs(py) < p.half + grading.T_MIN)
         self.assertTrue((np.abs(out[mid] - base[mid]) <= np.abs(out[core].mean() - base[mid]) + 1.0).all())
 
+    def test_lift_under_roads_only(self):
+        px, py, base = self.grid()
+        p, _ = plan_line(-200, 200, 0.0)
+        flat = grading.grade_points(px, py, base, [p])
+        lifted = grading.grade_points(px, py, base, [p], lift=grading.ROAD_LIFT)
+        core = np.abs(py) <= p.half - 0.01
+        self.assertTrue(np.allclose(lifted[core] - flat[core], grading.ROAD_LIFT), "the physics ground under the road")
+        far = np.abs(py) > p.half + grading.T_MAX + 0.5
+        self.assertTrue(np.allclose(lifted[far], base[far]), "untouched away from roads")
+        self.assertTrue(((lifted - flat) <= grading.ROAD_LIFT + 1e-9).all() and ((lifted - flat) >= -1e-9).all())
+
     def test_junction_blends_and_deterministic(self):
         px, py, base = self.grid()
         a, _ = plan_line(-200, 200, 0.0)

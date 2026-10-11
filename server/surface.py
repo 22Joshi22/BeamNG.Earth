@@ -173,14 +173,11 @@ def paint_roads(idx, lat, lon, feats_list, square, urban_fn=None):
             seen.add(fid)
             width, kind = specs[i].width, specs[i].kind
             px = max(1, int(round(width / square)))
-            for part in feats.parts(i):
-                for ring in part:
-                    if len(ring) < 2:
-                        continue
-                    c, r = to_px(ring[:, 0], ring[:, 1])
-                    if c.max() < -px or c.min() > w + px or r.max() < -px or r.min() > h + px:
-                        continue
-                    draws[kind].line(list(zip(c.tolist(), r.tolist())), fill=255, width=px, joint="curve")
+            for ring in roadsmod.ground_parts(feats, i):      # not bridges / tunnels
+                c, r = to_px(ring[:, 0], ring[:, 1])
+                if c.max() < -px or c.min() > w + px or r.max() < -px or r.min() > h + px:
+                    continue
+                draws[kind].line(list(zip(c.tolist(), r.tolist())), fill=255, width=px, joint="curve")
     out = idx.copy()
     for k in ROAD_ORDER:
         m = np.asarray(layers[k]) > 0

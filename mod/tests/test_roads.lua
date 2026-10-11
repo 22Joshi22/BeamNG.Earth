@@ -112,6 +112,19 @@ roads.onDrop({ anchorId = 2, key = '5_5' })
 roads.update(gov, 2)
 T.check(#statics() == 0 and decalRoads() == 0 and S.calls.reloadCollision == 2, 'dropped tile: mesh deleted, collision reloaded')
 
+-- a road mesh: the tile's DecalRoads are not made; one TSStatic without collision instead
+files['/t/r.json'] = '{ chunks = { ' .. chunk(0) .. ', ' .. chunk(5) .. ' }, road = { shape = "/t/road_2_6_6.cdae", pos = { 0, 0, 0 } } }'
+S.calls.reloadCollision = 0
+roads.onTile({ anchorId = 2, key = '6_6', path = '/t/r.json', n = 2 }, 2)
+roads.update(gov, 2)
+local rm = statics()[1]
+T.check(#statics() == 1 and decalRoads() == 0 and roads.status().roadMeshes == 1, 'road mesh instead of DecalRoads')
+T.check(rm.fields.shapeName == '/t/road_2_6_6.cdae' and rm.fields.collisionType == 'None', 'render only')
+T.check(S.calls.reloadCollision == 0, 'no collision reload for it')
+roads.onDrop({ anchorId = 2, key = '6_6' })
+roads.update(gov, 2)
+T.check(#statics() == 0 and S.calls.reloadCollision == 0, 'dropped without a collision reload')
+
 -- a Lua reload: the new module state deletes the objects the old one left
 roads.onTile({ anchorId = 2, key = '0_0', path = '/t/a.json', n = 2 }, 2)
 roads.update(gov, 2)

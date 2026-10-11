@@ -63,7 +63,6 @@ LOOK = {
     "gravel": {"m": "m_dirt_road", "tl": 88.0, "p": 21},
     "dirt": {"m": "m_dirt_road", "tl": 88.0, "p": 21},
 }
-SKIP_FLAGS = {"is_bridge", "is_tunnel"}
 Spec = namedtuple("Spec", "width kind urban cls")   # road_specs' result per feature (width = carriageway)
 
 # Sidewalks and markings (user 2026-10-11, after the first street-view comparison of Fells Point:
@@ -106,6 +105,92 @@ def _rule_value(table, i):
     return table.value[sel[int(np.argmax(span))]]
 
 
+def level_ranges(feats, i):
+    """The off-ground ranges of feature i as sorted (start, end, "bridge" | "tunnel") fractions of its
+    length, from its flags (is_bridge / is_tunnel) and level (> 0 bridge, < 0 tunnel) rules. Overture
+    puts most bridges on a range of a longer segment (2026-10-11: a street with a few metres of bridge
+    was taken whole as a bridge and dropped). Pure."""
+    out = []
+    for name in ("flags", "level"):
+        t = feats.rules.get(name)
+        if t is None or len(t.feature) == 0:
+            continue
+        for j in np.nonzero(t.feature == i)[0]:
+            v = t.value[j]
+            if name == "flags":
+                kind = "tunnel" if "is_tunnel" in str(v) else "bridge" if "is_bridge" in str(v) else None
+            else:
+                try:
+                    lv = float(v)
+                except (TypeError, ValueError):
+                    lv = 0.0
+                kind = "bridge" if lv > 0 else "tunnel" if lv < 0 else None
+            if kind is not None and t.end[j] > t.start[j]:
+                out.append((float(t.start[j]), float(t.end[j]), kind))
+    out.sort()
+    merged = []                                 # overlapping ranges merged (a tunnel wins over a bridge)
+    for a, b, k in out:
+        if merged and a <= merged[-1][1] + 1e-9:
+            pa, pb, pk = merged[-1]
+            merged[-1] = (pa, max(pb, b), "tunnel" if "tunnel" in (pk, k) else "bridge")
+        else:
+            merged.append((a, b, k))
+    return merged
+
+
+def sub_polyline(ring, a, b):
+    """The part of a lon/lat polyline (k, >=2) between fractions a < b of its length (metres along it,
+    lon scaled by cos lat). Pure."""
+    ring = np.asarray(ring, np.float64)
+    c = math.cos(math.radians(float(np.mean(ring[:, 1]))))
+    seg = np.hypot(np.diff(ring[:, 0]) * c, np.diff(ring[:, 1]))
+    s = np.r_[0.0, np.cumsum(seg)]
+    if s[-1] <= 0:
+        return ring[:1]
+    sa, sb = a * s[-1], b * s[-1]
+    inner = ring[(s > sa) & (s < sb)]
+    pa = np.array([np.interp(sa, s, ring[:, d]) for d in range(ring.shape[1])])
+    pb = np.array([np.interp(sb, s, ring[:, d]) for d in range(ring.shape[1])])
+    return np.vstack([pa, inner, pb])
+
+
+MIN_PART = 1e-3     # parts shorter than this share of a segment are dropped
+
+
+def _parts_by_level(feats, i, want):
+    rngs = level_ranges(feats, i)
+    if want == "ground":
+        pieces, at = [], 0.0
+        for a, b, _ in rngs:
+            if a - at > MIN_PART:
+                pieces.append((at, a))
+            at = max(at, b)
+        if 1.0 - at > MIN_PART:
+            pieces.append((at, 1.0))
+    else:
+        pieces = [(a, b) for a, b, k in rngs if k == want and b - a > MIN_PART]
+    out = []
+    for part in feats.parts(i):
+        for ring in part:
+            if len(ring) < 2:
+                continue
+            for a, b in pieces:
+                r = ring if (a, b) == (0.0, 1.0) else sub_polyline(ring, a, b)
+                if len(r) >= 2:
+                    out.append(r)
+    return out
+
+
+def ground_parts(feats, i):
+    """The on-ground pieces of feature i (lon/lat polylines): its rings minus the bridge / tunnel ranges."""
+    return _parts_by_level(feats, i, "ground")
+
+
+def bridge_parts(feats, i):
+    """The bridge pieces of feature i (lon/lat polylines)."""
+    return _parts_by_level(feats, i, "bridge")
+
+
 def surface_kind(cls, surface):
     """'paved', 'cobble', 'gravel' or 'dirt' from the class and the surface rule value (None if unknown)."""
     if surface is not None:
@@ -137,7 +222,45 @@ def carriageway(cls, kind, urban, rule_width=None):
 
 def road_specs(feats, urban_fn=None):
     """Per feature: None (left out) or (width m, surface kind). urban_fn(lat, lon) -> bool array (built-up
-    land cover), None = rural everywhere. Pure given urban_fn."""
+    land cover), None = rural everywhere; called once for every candidate's points (its cost is per
+    call: 2026-10-11, one call per road made 4.4 of a physics block's 6 s). Pure given urban_fn."""
+    out = []
+    rules = feats.rules
+    ask = []                                    # (index in out, cls, kind, rule_w, coordinate range)
+    for i in range(len(feats)):
+        cls = str(feats.attrs["class"][i]) if "class" in feats.attrs else "unknown"
+        if str(feats.attrs.get("subtype", ["road"] * len(feats))[i]) != "road" or cls not in STYLE:
+            out.append(None)
+            continue
+        rngs = level_ranges(feats, i)
+        if rngs and sum(b - a for a, b, _ in rngs) > 1.0 - MIN_PART:     # entirely off the ground
+            out.append(None)
+            continue
+        width = _rule_value(rules.get("width"), i)
+        rule_w = float(width) if width is not None and 1.0 <= float(width) <= 40.0 else None
+        kind = surface_kind(cls, _rule_value(rules.get("surface"), i))
+        if urban_fn is not None and rule_w is None and kind in BUILT:
+            a = feats.coord_off[feats.ring_off[feats.part_off[i]]]
+            b = feats.coord_off[feats.ring_off[feats.part_off[i + 1]]]
+            if b > a:
+                ask.append((len(out), cls, kind, a, b))
+                out.append(None)
+                continue
+        out.append(Spec(carriageway(cls, kind, False, rule_w), kind, False, cls))
+    if ask:
+        ll = np.concatenate([feats.lonlat[a:b] for _, _, _, a, b in ask])
+        u = np.asarray(urban_fn(ll[:, 1], ll[:, 0]), bool)
+        k = 0
+        for j, cls, kind, a, b in ask:
+            urban = float(np.mean(u[k:k + (b - a)])) >= URBAN_SHARE
+            k += b - a
+            out[j] = Spec(carriageway(cls, kind, urban, None), kind, urban, cls)
+    return out
+
+
+def bridge_specs(feats):
+    """Per feature: the Spec of a road bridge (flag is_bridge, or level above ground; not a tunnel), else
+    None. No parking widths on bridges (urban False). Pure."""
     out = []
     rules = feats.rules
     for i in range(len(feats)):
@@ -145,21 +268,75 @@ def road_specs(feats, urban_fn=None):
         if str(feats.attrs.get("subtype", ["road"] * len(feats))[i]) != "road" or cls not in STYLE:
             out.append(None)
             continue
-        flags = _rule_value(rules.get("flags"), i)
-        level = _rule_value(rules.get("level"), i)
-        if (flags is not None and str(flags) in SKIP_FLAGS) or (level is not None and float(level) != 0.0):
+        if not any(k == "bridge" for _, _, k in level_ranges(feats, i)):
             out.append(None)
             continue
         width = _rule_value(rules.get("width"), i)
         rule_w = float(width) if width is not None and 1.0 <= float(width) <= 40.0 else None
         kind = surface_kind(cls, _rule_value(rules.get("surface"), i))
-        urban = False
-        if urban_fn is not None and rule_w is None and kind in BUILT:
-            ll = feats.lonlat[feats.coord_off[feats.ring_off[feats.part_off[i]]]:
-                              feats.coord_off[feats.ring_off[feats.part_off[i + 1]]]]
-            if len(ll):
-                urban = float(np.mean(np.asarray(urban_fn(ll[:, 1], ll[:, 0]), bool))) >= URBAN_SHARE
-        out.append(Spec(carriageway(cls, kind, urban, rule_w), kind, urban, cls))
+        out.append(Spec(carriageway(cls, kind, False, rule_w), kind, False, cls))
+    return out
+
+
+def deck_heights(lines, end_z):
+    """Deck heights of chained bridge parts. lines: polylines (k, 2) in metres (one per bridge part);
+    parts sharing an end point (within 0.5 m) are joined. end_z(xy (m, 2)) -> heights of the ground at
+    the abutments (chain ends: points used by one part only). A point's height is the abutments'
+    heights weighted by 1 / their distance along the chain (between two abutments: a straight line).
+    Returns one height array per line. Pure given end_z."""
+    if not lines:
+        return []
+    keys, nodes = {}, []
+
+    def node(p):
+        k = (round(float(p[0]) * 2), round(float(p[1]) * 2))      # 0.5 m
+        if k not in keys:
+            keys[k] = len(nodes)
+            nodes.append(np.asarray(p[:2], np.float64))
+        return keys[k]
+    edges = []
+    for ln in lines:
+        seg = np.hypot(*np.diff(ln[:, :2], axis=0).T)
+        s = np.r_[0.0, np.cumsum(seg)]
+        edges.append((node(ln[0]), node(ln[-1]), s))
+    deg = np.zeros(len(nodes), int)
+    adj = [[] for _ in nodes]
+    for a, b, s in edges:
+        deg[a] += 1
+        deg[b] += 1
+        adj[a].append((b, s[-1]))
+        adj[b].append((a, s[-1]))
+    ends = [i for i in range(len(nodes)) if deg[i] == 1]
+    ez = np.asarray(end_z(np.array([nodes[i] for i in ends]).reshape(-1, 2)), np.float64) if ends else np.zeros(0)
+    import heapq
+    dist = []                                   # per abutment: distance along the chain to every node
+    for e in ends:
+        d = np.full(len(nodes), np.inf)
+        d[e] = 0.0
+        q = [(0.0, e)]
+        while q:
+            dd, u = heapq.heappop(q)
+            if dd > d[u]:
+                continue
+            for v, w in adj[u]:
+                if dd + w < d[v]:
+                    d[v] = dd + w
+                    heapq.heappush(q, (dd + w, v))
+        dist.append(d)
+    out = []
+    for a, b, s in edges:
+        if not ends:                            # a closed loop: no abutment known
+            out.append(np.full(len(s), np.nan))
+            continue
+        num = np.zeros(len(s))
+        den = np.zeros(len(s))
+        for k, d in enumerate(dist):
+            dk = np.minimum(d[a] + s, d[b] + (s[-1] - s))
+            ok = np.isfinite(dk)
+            w = np.where(ok, 1.0 / np.maximum(dk, 1e-6), 0.0)
+            num += w * np.where(ok, ez[k], 0.0)
+            den += w
+        out.append(np.where(den > 0, num / np.maximum(den, 1e-12), np.nan))
     return out
 
 
@@ -373,16 +550,78 @@ def tile_distance(tx, ty, x, y):
     return max(x0 - x, x - x1, y0 - y, y - y1, 0.0)
 
 
-def cells_of_tile(frame, tx, ty):
+BRIDGE_REACH = 600.0    # m around a tile whose cells are read, so a bridge's whole chain is known
+
+
+def cells_of_tile(frame, tx, ty, margin=OVERLAP):
     x0, y0, x1, y1 = tile_bbox(tx, ty)
-    lat, lon, _ = frame.enu_to_geodetic(np.array([x0 - OVERLAP, x1 + OVERLAP, x0 - OVERLAP, x1 + OVERLAP]),
-                                        np.array([y0 - OVERLAP, y0 - OVERLAP, y1 + OVERLAP, y1 + OVERLAP]), 0.0)
+    lat, lon, _ = frame.enu_to_geodetic(np.array([x0 - margin, x1 + margin, x0 - margin, x1 + margin]),
+                                        np.array([y0 - margin, y0 - margin, y1 + margin, y1 + margin]), 0.0)
     return mapcells.cells_for_bbox(float(np.min(lat)), float(np.min(lon)), float(np.max(lat)), float(np.max(lon)))
 
 
 def _chunk(look, w, c):
     return {"m": look["m"], "w": round(float(w), 2), "tl": look["tl"], "p": look["p"],
             "n": [[round(float(v), 3) for v in p] for p in c]}
+
+
+DECK = {"m": "road_asphalt_2lane", "tl": 11.0, "p": 20}      # bridge decks (roadmesh.deck)
+DECK_STEP = 4.0         # m between deck profile points
+DECK_CLEAR = 0.05       # m a deck stays above the ground under it (no z-fighting where it rests on it)
+
+
+def _bridge_chunks(frame, bseen, elev, exact):
+    """The chunks of the bridges crossing the tile box `exact` (deck surfaces flagged "deck", their
+    centre / edge lines; every bridge chunk "fixed": its z is the deck's, not the ground's). Deck
+    heights come from whole chains of bridge parts (deck_heights) over every bridge in the cells."""
+    if not bseen:
+        return []
+    parts = []                                  # (fid, spec, xy (k, 2), lon)
+    for fid in sorted(bseen):
+        feats, i, spec = bseen[fid]
+        for ring in bridge_parts(feats, i):
+            if len(ring) >= 2:
+                e, n, _ = frame.geodetic_to_enu(ring[:, 1], ring[:, 0], 0.0)
+                parts.append((fid, spec, densify(np.stack([e, n], axis=1), DECK_STEP),
+                              float(np.mean(ring[:, 0]))))
+
+    def ground(xy):
+        la, lo, _ = frame.enu_to_geodetic(xy[:, 0], xy[:, 1], 0.0)
+        h = np.asarray(elev(la, lo), np.float64)
+        return frame.geodetic_to_enu(la, lo, h)[2]
+    zs = deck_heights([p[2] for p in parts], ground)
+    allxy = np.concatenate([p[2] for p in parts])
+    gz = ground(allxy)                          # one call: the ground under every deck point
+    out, k = [], 0
+    for (fid, spec, xy, lon), z in zip(parts, zs):
+        g = gz[k:k + len(xy)]
+        k += len(xy)
+        if not np.isfinite(z).all():
+            continue
+        # never below the ground under it (2026-10-11: abutments on low spots buried decks), then
+        # smoothed along it like a road profile (the ends keep their heights: the abutments)
+        g = g + DECK_CLEAR
+        z = np.maximum(z, g)
+        if len(z) > 3:
+            import grading
+            zz = grading.smooth_profile(z, DECK_STEP, grading.SIGMA_M)
+            zz[0], zz[-1] = z[0], z[-1]
+            z = np.maximum(zz, g)
+        pts = np.c_[xy, z]
+        lines = [({**DECK, "deck": True}, spec.width, pts)]
+        for look, w, line in extras(spec, pts, lon):
+            if look["m"] != SIDEWALK["m"] and look["m"] != GUTTER["m"]:
+                lines.append((look, w, line))
+        for look, w, line in lines:
+            for piece in clip_polyline(line, *exact):
+                for c in split(densify(simplify(piece))):
+                    if len(c) >= 2:
+                        ch = _chunk(look, w, c)
+                        ch["fixed"] = True
+                        if look.get("deck"):
+                            ch["deck"] = True
+                        out.append(ch)
+    return out
 
 
 def _on_box(p, box, eps=1e-6):
@@ -429,30 +668,38 @@ def build_tile(frame, tx, ty, cells, elev, urban_fn=None, walks=None):
     x0, y0, x1, y1 = tile_bbox(tx, ty)
     box = (x0 - OVERLAP, y0 - OVERLAP, x1 + OVERLAP, y1 + OVERLAP)
     near = (x0 - NEAR_M, y0 - NEAR_M, x1 + NEAR_M, y1 + NEAR_M)
-    seen = {}
+    seen, bseen = {}, {}
     for feats in cells:
         if feats is None or len(feats) == 0:
             continue
         specs = road_specs(feats, urban_fn)
+        bspecs = bridge_specs(feats)
         for i in range(len(feats)):
+            if bspecs[i] is not None and str(feats.ids[i]) not in bseen:
+                bseen[str(feats.ids[i])] = (feats, i, bspecs[i])
             if specs[i] is None or str(feats.ids[i]) in seen:
                 continue
             seen[str(feats.ids[i])] = (feats, i, specs[i])
-    roads = []                                  # (fid, spec, centreline (k, 3), lon) near the tile
+    rings = []                                  # (fid, spec, lon/lat ring) near the tile (xy at h = 0)
     for fid in sorted(seen):
         feats, i, spec = seen[fid]
-        for part in feats.parts(i):
-            for ring in part:
-                if len(ring) < 2:
-                    continue
-                lon, lat = ring[:, 0], ring[:, 1]
-                h = np.asarray(elev(lat, lon), np.float64)
-                e, n, u = frame.geodetic_to_enu(lat, lon, h)
-                pts = np.stack([e, n, u], axis=1)
-                if (pts[:, 0].max() < near[0] or pts[:, 0].min() > near[2] or pts[:, 1].max() < near[1]
-                        or pts[:, 1].min() > near[3]):
-                    continue
-                roads.append((fid, spec, pts, float(np.mean(lon))))
+        for ring in ground_parts(feats, i):
+            e, n, _ = frame.geodetic_to_enu(ring[:, 1], ring[:, 0], 0.0)
+            if (e.max() < near[0] or e.min() > near[2] or n.max() < near[1] or n.min() > near[3]):
+                continue
+            rings.append((fid, spec, ring))
+    roads = []                                  # (fid, spec, centreline (k, 3), lon) near the tile
+    if rings:                                   # one elevation call for every ring (the grader's cost
+        lon = np.concatenate([r[:, 0] for _, _, r in rings])     # is per call: 2026-10-11 profile,
+        lat = np.concatenate([r[:, 1] for _, _, r in rings])     # 1,240 calls took 7 of a tile's 8 s)
+        h = np.asarray(elev(lat, lon), np.float64)
+        e, n, u = frame.geodetic_to_enu(lat, lon, h)
+        k = 0
+        for fid, spec, ring in rings:
+            m = len(ring)
+            roads.append((fid, spec, np.stack([e[k:k + m], n[k:k + m], u[k:k + m]], axis=1),
+                          float(np.mean(ring[:, 0]))))
+            k += m
     chunks = []
     for fid, spec, pts, _ in roads:
         look = LOOK[spec.kind]
@@ -467,6 +714,7 @@ def build_tile(frame, tx, ty, cells, elev, urban_fn=None, walks=None):
                 for c in split(densify(simplify(piece))):
                     if len(c) >= 2:
                         chunks.append(_chunk(look, lw, c))
+    chunks.extend(_bridge_chunks(frame, bseen, elev, (x0, y0, x1, y1)))
     for fid, spec, pts, lon in roads:
         ex = extras(spec, pts, lon)
         if not ex:
@@ -534,14 +782,27 @@ class Tracker:
         conn.send({"type": "roads_tile", "anchorId": aid, "key": f"{key[0]}_{key[1]}", "path": path, "n": n})
 
 
-def write_tile(out_dir, vfs_dir, aid, tx, ty, chunks, walks=None):
-    """Write a tile's chunks (atomically) and its sidewalk mesh (walks: build_tile's runs, if any:
-    `walks_<a>_<tx>_<ty>.cdae`, announced in the tile as "walk": {shape, pos}); returns (vfs path,
-    number of chunks)."""
+def write_tile(out_dir, vfs_dir, aid, tx, ty, chunks, walks=None, road_mesh=None, deck_mesh=None):
+    """Write a tile's chunks (atomically), its sidewalk mesh (walks: build_tile's runs, if any:
+    `walks_<a>_<tx>_<ty>.cdae`, announced in the tile as "walk": {shape, pos}) and its road mesh
+    (road_mesh: roadmesh.build's result: `road_<a>_<tx>_<ty>.cdae`, "road": {shape, pos}; the mod then
+    shows it instead of a DecalRoad per chunk) and its bridge decks (deck_mesh: roadmesh.deck's result:
+    `deck_<a>_<tx>_<ty>.cdae`, "deck": {shape, pos}, colliding); returns (vfs path, number of chunks)."""
+    import roadmesh
     import sidewalks
     name = f"roads_{aid}_{tx}_{ty}.json"
     path = os.path.join(out_dir, name)
     data = {"v": VERSION, "chunks": chunks}
+    if road_mesh is not None:
+        x0, y0, _, _ = tile_bbox(tx, ty)
+        shape = f"road_{aid}_{tx}_{ty}.cdae"
+        roadmesh.write(os.path.join(out_dir, shape), road_mesh)
+        data["road"] = {"shape": f"{vfs_dir}/{shape}", "pos": [x0, y0, 0.0]}
+    if deck_mesh is not None:
+        x0, y0, _, _ = tile_bbox(tx, ty)
+        shape = f"deck_{aid}_{tx}_{ty}.cdae"
+        roadmesh.write(os.path.join(out_dir, shape), deck_mesh)
+        data["deck"] = {"shape": f"{vfs_dir}/{shape}", "pos": [x0, y0, 0.0]}
     if walks:
         x0, y0, _, _ = tile_bbox(tx, ty)
         b = sidewalks.Builder((x0, y0, 0.0))

@@ -972,6 +972,46 @@ three days of testing: dem 741 MB / 7.5k files, imagery 1.4 GB / 35k, deshadow 7
 - Measured at Fells Point: 809 DecalRoads, +0.08 ms per frame (A/B, 5 rounds); every sampled road
   node within 250 m is asphalt under the tyres.
 
+### Roads as meshes, the road lift, bridges (`server/roadmesh.py`; 2026-10-11)
+- **Why not DecalRoads.** A DecalRoad re-clips itself to the terrain whenever the TerrainBlock
+  changes, and ours moves every few seconds at speed. With 3,740 DecalRoads one block move cost a
+  140-148 ms frame (9 ms without them; ~37 us per decal). That was the user's "massive lag spikes at
+  speed". The official maps never move their terrain.
+- **Road mesh.** Every chunk of a road tile (asphalt, cobble strips, lines, gutters, drains) becomes
+  a ribbon in the DecalRoad's own UV layout (u across, v = distance / texture length). Ribbons are
+  cut every 2 m and both edges sampled from the physics elevation in one call per tile. The result
+  is one render-only TSStatic per tile: about 6k triangles / 360 KB, built in ~0.03 s. The same
+  terrain-signal test now costs 8-12 ms, and roads show beyond the physics block too.
+  - The stock decal materials render on a mesh (translucent with zwrite: fixed draw order inside
+    one mesh, no flicker).
+  - On a MeshRoad, `sidewalk_concrete` drew nothing.
+- **Road lift.** The physics ground (block + road heights) is raised `grading.ROAD_LIFT` (4 cm)
+  under roads, tapering with the grading weight. The visible ground tiles are not raised. So the road
+  mesh lies exactly on what the tyres touch (the user saw the tyres sink into a mesh lifted over the
+  ground) and above what is drawn (no z-fighting). Markings sit 1 cm higher, gutters 0.5 cm.
+- **Bridges.** Overture puts most bridges on a range of a longer segment (`between`).
+  - Before: the rule covering the largest share decided the whole segment, so a street with a few
+    metres of bridge was dropped whole (the user's "sections of road missing").
+  - Now: `level_ranges` / `ground_parts` / `bridge_parts` split each segment. Ground parts are
+    drawn, graded and painted; tunnel parts are left out.
+  - Bridge parts are chained by shared end points. Deck heights are the abutments' ground heights
+    weighted by 1 / distance along the chain (between two abutments, a straight line), never below
+    the ground under the deck + 5 cm, and smoothed like a road profile.
+  - Cells within `BRIDGE_REACH` (600 m) of a tile are read, so chains are whole.
+  - `roadmesh.deck` builds one colliding TSStatic per tile: an opaque concrete slab (`sidewalk1`,
+    1.2 m deep) whose top is the road surface. The asphalt and lines are the road mesh's, 1 cm above
+    it. A deck topped with the translucent decal asphalt was see-through.
+- **Grading fixes found driving at speed** (the car flipped):
+  - roads close together (divided carriageways, junctions) jumped from one road's height to the
+    other's at a core edge. They now blend by 1 / (1 + (d / 4 m)^2) from each centreline, and the
+    minimum transition is 5 m.
+  - Centreline second difference p99 per metre went 0.17 -> 0.027 m, worst 0.5 -> 0.087 m (the DEM
+    itself: 0.13).
+- **Build speed.** The tile's elevation calls, the grading plans' DEM samples and the land-cover
+  urban check (`road_specs`) are each one batched call. Before, they were one call per road: tiles
+  took 6-8 s and physics blocks ~6 s (15-35 s under load, so the car outran its ground). Now tiles
+  take ~0.5 s and blocks 1.6-2.4 s.
+
 ### Raised sidewalks, curbs and storm drains (`server/sidewalks.py`; 2026-10-11)
 - Asked by the user ("will that include making the curbs and sidewalks 3d?"). A curb is a sharp
   15 cm step, which neither the height field (1 m+ samples) nor a decal can draw.

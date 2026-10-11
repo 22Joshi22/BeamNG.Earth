@@ -32,8 +32,9 @@ M.FADE = '450 150'          -- distanceFade: start, range (m)
 M.enabled = true
 M.RELOAD_EVERY_S = 0.5      -- be:reloadCollision() at most this often
 
-local tiles = {}            -- key "a:tx_ty" -> { anchor, objs = { DecalRoad ids }, queued = n, walk = TSStatic id }
-local walkQ = {}            -- { key, walk = {shape, pos} } FIFO
+local tiles = {}            -- key "a:tx_ty" -> { anchor, objs = { DecalRoad ids }, queued = n, walk = TSStatic id,
+                            --   road = TSStatic id }
+local walkQ = {}            -- { key, walk = {shape, pos}, what = 'walk' | 'road' } FIFO
 local createQ = {}          -- { key, chunk } FIFO
 local deleteQ = {}          -- object ids
 local loadedMaterials = false
@@ -81,6 +82,8 @@ local function dropTile(key)
   if not t then return end
   for _, id in ipairs(t.objs) do deleteQ[#deleteQ + 1] = id end
   if t.walk then deleteQ[#deleteQ + 1] = t.walk end
+  if t.road then deleteQ[#deleteQ + 1] = t.road end
+  if t.deck then deleteQ[#deleteQ + 1] = t.deck end
   tiles[key] = nil
 end
 
@@ -110,13 +113,14 @@ end
 
 local function isCollider(o)
   local c = o.class or (o.getClassName and o:getClassName())
-  return c == 'TSStatic' or c == 'MeshRoad'
+  if c == 'MeshRoad' then return true end
+  return c == 'TSStatic' and o:getField('collisionType', 0) ~= 'None'
 end
 
-local function createWalk(walk)
+local function createWalk(walk, collide)
   local o = createObject('TSStatic')
   o:setField('shapeName', 0, walk.shape)
-  o:setField('collisionType', 0, 'Visible Mesh')
+  o:setField('collisionType', 0, collide and 'Visible Mesh' or 'None')
   o:setField('decalType', 0, 'None')
   o.canSave = false
   o:setPosition(vec3(walk.pos[1], walk.pos[2], walk.pos[3]))
@@ -149,11 +153,19 @@ function M.onTile(msg, currentAnchor)
     lastError = 'unreadable road tile ' .. tostring(msg.path)
     return false
   end
-  tiles[key] = { anchor = msg.anchorId, objs = {}, queued = #data.chunks }
+  local road = type(data.road) == 'table' and data.road.shape and type(data.road.pos) == 'table' and data.road
+  tiles[key] = { anchor = msg.anchorId, objs = {}, queued = road and 0 or #data.chunks }
   sinceChange = stopwatch.new()
-  for _, c in ipairs(data.chunks) do createQ[#createQ + 1] = { key = key, chunk = c } end
-  if type(data.walk) == 'table' and data.walk.shape and type(data.walk.pos) == 'table' then
-    walkQ[#walkQ + 1] = { key = key, walk = data.walk }
+  if road then                -- the tile's road mesh replaces its DecalRoads (server/roadmesh.py)
+    walkQ[#walkQ + 1] = { key = key, walk = road, what = 'road' }
+  else
+    for _, c in ipairs(data.chunks) do createQ[#createQ + 1] = { key = key, chunk = c } end
+  end
+  for _, what in ipairs({ 'walk', 'deck' }) do  -- sidewalks and bridge decks: colliding meshes
+    local w = data[what]
+    if type(w) == 'table' and w.shape and type(w.pos) == 'table' then
+      walkQ[#walkQ + 1] = { key = key, walk = w, what = what }
+    end
   end
   return true
 end
@@ -198,8 +210,15 @@ function M.update(gov, currentAnchor)
     local t = tiles[q.key]
     if t then
       local t0 = now()
-      local ok, id = pcall(createWalk, q.walk)
-      if ok then t.walk = id; collisionDirty = true else lastError = tostring(id) end
+      if not loadedMaterials then
+        for _, f in ipairs(M.MATERIAL_FILES) do loadJsonMaterialsFile(f) end
+        loadedMaterials = true
+      end
+      local isRoad = q.what == 'road'
+      local ok, id = pcall(createWalk, q.walk, not isRoad)
+      if ok then
+        if isRoad then t.road = id else t[q.what] = id; collisionDirty = true end
+      else lastError = tostring(id) end
       gov:charge('roadWalk', now() - t0)
       sinceChange = stopwatch.new()
     end
@@ -246,13 +265,15 @@ function M.setEnabled(on)
 end
 
 function M.status()
-  local nt, no, nw = 0, 0, 0
+  local nt, no, nw, nr, nd = 0, 0, 0, 0, 0
   for _, t in pairs(tiles) do
     nt = nt + 1; no = no + #t.objs
     if t.walk then nw = nw + 1 end
+    if t.road then nr = nr + 1 end
+    if t.deck then nd = (nd or 0) + 1 end
   end
   return { enabled = M.enabled, tiles = nt, roads = no, queued = #createQ, deleting = #deleteQ, anchor = anchorId,
-    walks = nw, walksQueued = #walkQ,
+    walks = nw, roadMeshes = nr, decks = nd, walksQueued = #walkQ,
     quietS = sinceChange() / 1000, error = lastError }
 end
 

@@ -10,7 +10,8 @@ Per road (roads.road_specs; bridges, tunnels and off-ground segments are left ou
   SHOULDER_M, or the sidewalk plus SIDEWALK_MARGIN_M on the classes that get sidewalks in towns, so a
   raised sidewalk slab sits on flat ground), then back to the natural ground over a transition of 2x the height difference (a
   1:2 cut or fill slope), clamped to [T_MIN, T_MAX] m;
-- several roads at one point (junctions) blend their targets by weight.
+- several roads at one point (junctions, divided carriageways) blend their targets by inverse distance
+  from each centreline (BLEND_R), so they meet in a gradual slope.
 The core width never depends on the land cover (it is taken as urban for every built road), and
 each map cell's plan is made once per anchor and cached, so the block and the tiles built later from
 the same anchor always agree.
@@ -36,10 +37,12 @@ SIGMA_M = 12.0              # m, profile smoothing of built roads
 DIRT_SIGMA_M = 5.0          # m, profile smoothing of gravel / dirt roads
 SHOULDER_M = 1.0            # m of flat shoulder beyond the carriageway, each side
 SIDEWALK_MARGIN_M = 0.5     # m of flat ground beyond a sidewalk (roads.SIDEWALK_CLASSES)
-T_MIN, T_MAX = 2.0, 12.0    # m, transition back to the natural ground
+T_MIN, T_MAX = 5.0, 12.0    # m, transition back to the natural ground (5: roads close together meet gently)
 SLOPE_RUN = 2.0             # transition = SLOPE_RUN x the height difference (1:2 slope)
 VERTEX_STEP = 16.0          # m between the plan's vertices (segments for the grading pass)
 BUCKET = 32.0               # m, query-point buckets
+ROAD_LIFT = 0.04            # m the physics ground is raised under roads (see Grader.apply)
+BLEND_R = 4.0               # m: roads near each other blend their targets by 1 / (1 + (d / BLEND_R)^2)
 PROFILE_ZOOM = 15           # DEM zoom of the profiles (one zoom for every caller)
 RETRY_S = 60.0              # s before a cell whose road data failed is asked for again
 
@@ -78,13 +81,39 @@ class Plan:
 
 def plan_road(frame, lonlat, spec, elev):
     """The Plan of one road part (lonlat (k, 2)); elev(lat, lon) -> m at PROFILE_ZOOM. Pure given elev."""
-    lat, lon = lonlat[:, 1], lonlat[:, 0]
-    e, n, _ = frame.geodetic_to_enu(lat, lon, 0.0)
-    xy, s = resample(np.stack([e, n], axis=1), PROFILE_STEP)
-    if len(xy) < 2:
-        return None
-    la, lo, _ = frame.enu_to_geodetic(xy[:, 0], xy[:, 1], 0.0)
-    z = np.asarray(elev(la, lo), np.float64)
+    return plan_roads(frame, [(lonlat, spec)], elev)[0]
+
+
+def plan_roads(frame, parts, elev):
+    """plan_road for many (lonlat, spec) parts with one elev call (its cost is per call). Pure given elev."""
+    if not parts:
+        return []
+    ll = np.concatenate([lonlat for lonlat, _ in parts])
+    E, N, _ = frame.geodetic_to_enu(ll[:, 1], ll[:, 0], 0.0)
+    prof, k = [], 0
+    for lonlat, spec in parts:
+        m = len(lonlat)
+        xy, _ = resample(np.stack([E[k:k + m], N[k:k + m]], axis=1), PROFILE_STEP)
+        k += m
+        prof.append(xy if len(xy) >= 2 else None)
+    pts = [xy for xy in prof if xy is not None]
+    if not pts:
+        return [None] * len(parts)
+    allxy = np.concatenate(pts)
+    la, lo, _ = frame.enu_to_geodetic(allxy[:, 0], allxy[:, 1], 0.0)
+    zall = np.asarray(elev(la, lo), np.float64)
+    out, k = [], 0
+    for (lonlat, spec), xy in zip(parts, prof):
+        if xy is None:
+            out.append(None)
+            continue
+        z = zall[k:k + len(xy)]
+        k += len(xy)
+        out.append(_plan(xy, z, spec))
+    return out
+
+
+def _plan(xy, z, spec):
     built = spec.kind in roadsmod.BUILT
     zs = smooth_profile(z, PROFILE_STEP, SIGMA_M if built else DIRT_SIGMA_M)
     # thin to VERTEX_STEP (the profile stays smooth between: linear in the grading pass)
@@ -132,15 +161,16 @@ class Grader:
         plans = []
         if feats is not None and len(feats):
             specs = roadsmod.road_specs(feats)
+            parts, ids = [], []
             for i in range(len(feats)):
                 if specs[i] is None:
                     continue
-                for part in feats.parts(i):
-                    for ring in part:
-                        if len(ring) >= 2:
-                            p = plan_road(self.frame, np.asarray(ring, np.float64), specs[i], self.elev)
-                            if p is not None:
-                                plans.append((str(feats.ids[i]), p))
+                for ring in roadsmod.ground_parts(feats, i):     # not bridges / tunnels
+                    parts.append((np.asarray(ring, np.float64), specs[i]))
+                    ids.append(str(feats.ids[i]))
+            for fid, p in zip(ids, plan_roads(self.frame, parts, self.elev)):
+                if p is not None:
+                    plans.append((fid, p))
         with self.lock:
             self.cells.setdefault(key, plans)
             return self.cells[key]
@@ -161,8 +191,12 @@ class Grader:
                     out.append(p)
         return out
 
-    def apply(self, lat, lon, base):
-        """base (the ungraded heights at the points) graded under the roads. Same shape as base."""
+    def apply(self, lat, lon, base, lift=0.0):
+        """base (the ungraded heights at the points) graded under the roads. Same shape as base.
+        lift: m added under the roads (tapering with the grading's weight): the physics block and the
+        road mesh use ROAD_LIFT, the visible ground tiles 0, so the road mesh lies exactly on the
+        ground the tyres touch while the visible ground stays a little below it (no z-fighting;
+        2026-10-11 the user saw the tyres sink into a road mesh lifted above the physics ground)."""
         lat = np.asarray(lat, np.float64)
         lon = np.asarray(lon, np.float64)
         base = np.asarray(base, np.float64)
@@ -173,10 +207,10 @@ class Grader:
         if not plans:
             return base
         e, n, _ = self.frame.geodetic_to_enu(lat.ravel(), lon.ravel(), 0.0)
-        return grade_points(np.asarray(e), np.asarray(n), base.ravel(), plans).reshape(shape)
+        return grade_points(np.asarray(e), np.asarray(n), base.ravel(), plans, lift).reshape(shape)
 
 
-def grade_points(px, py, base, plans):
+def grade_points(px, py, base, plans, lift=0.0):
     """base at the points (px, py) graded under the plans (see the module doc). Pure."""
     x0, y0, x1, y1 = px.min(), py.min(), px.max(), py.max()
     bx = np.floor((px - x0) / BUCKET).astype(np.int64)
@@ -224,12 +258,17 @@ def grade_points(px, py, base, plans):
             if not m.any():
                 continue
             i = idx[m]
-            np.add.at(num, i, w[m] * target[m])
-            np.add.at(den, i, w[m])
+            # the blend between roads by inverse distance from each centreline (times w), so two roads
+            # near each other (divided carriageways, junctions) meet in a gradual slope; with w alone
+            # the target jumped at a core's edge (2026-10-11, the user's car flipped at speed:
+            # centreline 2nd difference p99 0.17 m per metre, worst 0.5 m)
+            wb = w[m] / (1.0 + (d[m] / BLEND_R) ** 2)
+            np.add.at(num, i, wb * target[m])
+            np.add.at(den, i, wb)
             np.maximum.at(wmax, i, w[m])
     out = base.copy()
     g = den > 0
-    out[g] = base[g] + wmax[g] * (num[g] / den[g] - base[g])
+    out[g] = base[g] + wmax[g] * (num[g] / den[g] - base[g] + lift)
     return out
 
 

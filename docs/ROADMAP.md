@@ -282,7 +282,10 @@ Popular trails are where players will test the terrain hardest, and they are wel
   "Roads" on / off. Since then: sidewalks, gutters and lines, cobblestone streets, the ground graded
   under roads, raised sidewalks with curbs as one mesh per road tile (West Coast USA's way and
   materials) and storm drain grates (ARCHITECTURE "Raised sidewalks"). Next: curb ramps / driveways,
-  corner radii, painted curbs (red / yellow bands) by rule, bridges, the navgraph.
+  corner radii, painted curbs (red / yellow bands) by rule, the navgraph. Since then: roads as one mesh
+  per tile (no DecalRoads: they re-clipped on every block move, 140 ms at speed), the road lift, bridge
+  decks (split from partial-bridge segments, collidable), smoother grading, batched builds.
+  Next: intersections (corner radii, crosswalks, curb ramps), bridge parapets and piers, tunnels.
 - Overture transportation (GeoParquet via the STAC per-file index; 2.6-3.7 s per 30 km box cold).
 - Near roads: meshes on the 2 m lattice, ground graded under them on the server so physics and
   visuals agree; markings; bridges as collidable decks. Far roads painted into the imagery.
@@ -682,7 +685,7 @@ Gameplay
 - **Rain particles "spazzing out"** (user, 2026-10-11): some raindrops jump around or streak across the
   view (seen in Fells Point's real rain). Suspects: the Precipitation object's box following the
   camera or the rebase, or the wind gusts (weather.lua) changing its speed every frame.
-- **Road decals partly hidden by coarse ground tiles** (2026-10-11): beyond the exact-ground radius
+- **Road meshes vs coarse ground tiles** (was: road decals partly hidden by coarse ground tiles) (2026-10-11): beyond the exact-ground radius
   around the car (~150 m), the coarser mesh tiles can lie above the physics block and cover parts
   of a road in a jagged pattern (seen in street-view shots taken 150-300 m from the car). Options:
   sink the coarse tiles a little more under roads, draw far roads into the tile imagery, or keep

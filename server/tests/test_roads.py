@@ -23,12 +23,14 @@ M_LON = 111320.0 * np.cos(np.radians(LAT))
 
 
 def rules(entries, kind="text"):
-    """RuleTable from [(feature, value), ...] covering whole features."""
+    """RuleTable from [(feature, value[, start, end]), ...] (default: covering whole features)."""
     if not entries:
         return mapgeom.RuleTable(np.zeros(0, np.int32), np.zeros(0, "<U8"), np.zeros(0, np.float32), np.zeros(0, np.float32))
     f = np.array([e[0] for e in entries], np.int32)
     v = np.array([e[1] for e in entries], np.float32 if kind == "float" else "<U16")
-    return mapgeom.RuleTable(f, v, np.zeros(len(f), np.float32), np.ones(len(f), np.float32))
+    a = np.array([e[2] if len(e) > 2 else 0.0 for e in entries], np.float32)
+    b = np.array([e[3] if len(e) > 3 else 1.0 for e in entries], np.float32)
+    return mapgeom.RuleTable(f, v, a, b)
 
 
 def features(lines, classes, surfaces=(), widths=(), levels=(), flags=(), ids=None, subtypes=None):
@@ -196,7 +198,8 @@ class BuildTileTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             path, n = roads.write_tile(d, "/vfs", 1, 0, 0, chunks, walks)
             import json
-            data = json.load(open(os.path.join(d, os.path.basename(path))))
+            with open(os.path.join(d, os.path.basename(path))) as fh:
+                data = json.load(fh)
             self.assertEqual(data["walk"]["pos"], [x0, y0, 0.0])
             shape = cdae.read(os.path.join(d, os.path.basename(data["walk"]["shape"])))
             self.assertEqual([m["name"] for m in shape["materials"]], list(sidewalks.MATERIALS))
@@ -233,6 +236,37 @@ class BuildTileTest(unittest.TestCase):
         self.assertTrue(all(abs(c["w"] - w / n) < 0.01 for c in cob))
         self.assertTrue(any(c["m"] == roads.SIDEWALK["m"] for c in chunks), "cobbled city streets keep sidewalks")
         self.assertFalse(any(c["m"].startswith("line_") for c in chunks), "no lines painted on cobbles")
+
+    def test_partial_bridge_kept_and_decked(self):
+        # 400 m street; level 1 on 40-60 % of it (a bridge in the middle): ground parts drawn, the
+        # bridge part a deck between the two abutments' heights (the ground slopes 5 % east)
+        f = features([[(-200, 50), (200, 50)]], ["secondary"], levels=[(0, 1.0, 0.4, 0.6)])
+        (a, b, k), = roads.level_ranges(f, 0)
+        self.assertAlmostEqual(a, 0.4, places=5)
+        self.assertAlmostEqual(b, 0.6, places=5)
+        self.assertEqual(k, "bridge")
+        self.assertEqual(len(roads.ground_parts(f, 0)), 2)
+        self.assertEqual(len(roads.bridge_parts(f, 0)), 1)
+        self.assertIsNotNone(roads.road_specs(f)[0], "a street with a bridge in it stays")
+        self.assertIsNotNone(roads.bridge_specs(f)[0])
+
+        def slope(la, lo):
+            e, _, _ = FRAME.geodetic_to_enu(np.asarray(la), np.asarray(lo), 0.0)
+            return 10.0 + 0.05 * e
+        chunks = roads.build_tile(FRAME, -1, 0, [f], slope)
+        decks = [c for c in chunks if c.get("deck")]
+        self.assertTrue(decks)
+        for c in decks:
+            for x, y, z in c["n"]:
+                self.assertTrue(-41 <= x <= 1, x)              # the bridge range, clipped to the tile
+                self.assertAlmostEqual(z, 10.0 + 0.05 * x, delta=0.3)   # straight between abutments
+        asphalt = [c for c in chunks if c["m"] == roads.LOOK["paved"]["m"] and not c.get("deck")]
+        for c in asphalt:
+            for x, _, _ in c["n"]:
+                self.assertFalse(-39 < x < -1, x)               # no ground road over the bridge range
+        tunnel = features([[(-200, 50), (200, 50)]], ["secondary"], flags=[(0, "is_tunnel", 0.0, 1.0)])
+        self.assertIsNone(roads.road_specs(tunnel)[0])
+        self.assertIsNone(roads.bridge_specs(tunnel)[0])
 
     def test_offset_and_colour(self):
         pts = np.array([[0.0, 0, 5], [10, 0, 5], [10, 10, 5]])

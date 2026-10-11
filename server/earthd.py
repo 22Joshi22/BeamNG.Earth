@@ -79,6 +79,7 @@ import credits as creditsmod  # noqa: E402
 import surface as surfacemod  # noqa: E402
 import roads as roadsmod  # noqa: E402
 import grading as gradingmod  # noqa: E402
+import roadmesh as roadmeshmod  # noqa: E402
 import mapdata as mapdatamod  # noqa: E402
 import dem as demmod  # noqa: E402
 import deshadow as deshadowmod  # noqa: E402
@@ -704,17 +705,20 @@ class Server:
         if anchor is None or self.mapdata is None:
             return None
         cells = [self.mapdata.cell(k, layers=("roads",), kind="demand").layers.get("roads")
-                 for k in roadsmod.cells_of_tile(anchor.frame, tx, ty)]
+                 for k in roadsmod.cells_of_tile(anchor.frame, tx, ty, roadsmod.BRIDGE_REACH)]
         zoom = anchor.zooms[0]
         urban = self.surface.urban if self.surface is not None and hasattr(self.surface, "urban") else None
         g = self.grader_for(anchor)
 
-        def elev(la, lo):
+        def elev(la, lo):           # the physics ground (lifted under roads: grading.ROAD_LIFT)
             z = self.dem.sample(la, lo, zoom)
-            return g.apply(la, lo, z) if g is not None else z
+            return g.apply(la, lo, z, gradingmod.ROAD_LIFT) if g is not None else z
         walks = []
         chunks = roadsmod.build_tile(anchor.frame, tx, ty, cells, elev, urban, walks=walks)
-        return roadsmod.write_tile(self.out_dir, self.vfs_dir, aid, tx, ty, chunks, walks)
+        x0, y0, _, _ = roadsmod.tile_bbox(tx, ty)
+        mesh = roadmeshmod.build(anchor.frame, chunks, elev, (x0, y0, 0.0))
+        dmesh = roadmeshmod.deck(chunks, (x0, y0, 0.0))
+        return roadsmod.write_tile(self.out_dir, self.vfs_dir, aid, tx, ty, chunks, walks, mesh, dmesh)
 
     def grader_for(self, anchor):
         """The anchor's grading.Grader (--grading on), else None."""
@@ -735,7 +739,7 @@ class Server:
 
         def elev(la, lo):
             z = self.dem.sample(la, lo, anchor.hm_zoom, progress)
-            return g.apply(la, lo, z) if g is not None else z
+            return g.apply(la, lo, z, gradingmod.ROAD_LIFT) if g is not None else z
         info = heightmap.generate(anchor.frame, elev,
                                   os.path.join(self.out_dir, self.hm_name((anchor.id, cx, cy))), cx, cy, q=q,
                                   size=self.layout.block, keep=keep)
