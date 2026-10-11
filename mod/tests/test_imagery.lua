@@ -247,6 +247,17 @@ do
     'unused material re-pointed at the new texture')
   T.check(satmat.ref(name, '/temp/beamngEarth/new/b.dds') and matNamed(name).fields.colorMap == '/temp/beamngEarth/new/a.dds',
     'material in use keeps its texture')
+  -- ... unless its file is gone (a restarted server deleted the old session): the new one, reloaded
+  local realExists = FS.fileExists
+  FS.fileExists = function(_, p) return p ~= '/temp/beamngEarth/new/a.dds' end
+  local m = matNamed(name)
+  local reloads = 0
+  m.flush = function() end
+  m.reload = function() reloads = reloads + 1 end
+  T.check(satmat.ref(name, '/temp/beamngEarth/new/c.dds') and m.fields.colorMap == '/temp/beamngEarth/new/c.dds' and reloads == 1,
+    'material in use whose file is gone: re-pointed and reloaded')
+  FS.fileExists = realExists
+  satmat.unref(name)
   satmat.unref(name) -- back to the one reference the pending tile holds
 end
 

@@ -99,14 +99,21 @@ end
 -- One more instance uses the material (it must exist). A different texture under the same name
 -- (a restarted server re-uses anchor ids, so names repeat across its sessions): an unused material
 -- (waiting for deletion) is pointed at the new file; one still in use keeps its texture, since its
--- tiles' loaded shapes keep theirs anyway.
+-- tiles' loaded shapes keep theirs anyway - unless its file is gone (the restarted server deleted
+-- the old session's folder: in-game 2026-10-11 every tile showed the engine's orange "no texture"),
+-- then it takes the new file too and reloads.
 function M.ref(name, texture)
   local e = mats[name]
   if not e then return false end
   if texture and e.texture and texture ~= e.texture then
-    local m = e.refs == 0 and scenetree.findObject(name)
+    local gone = not FS:fileExists(e.texture)
+    local m = (e.refs == 0 or gone) and scenetree.findObject(name)
     if m and FS:fileExists(texture) then
       m:setField('colorMap', 0, texture)
+      if gone and e.refs > 0 then
+        pcall(function() m:flush() end)
+        pcall(function() m:reload() end)
+      end
       e.texture = texture
     else
       warnOnce('retex:' .. name, 'material ' .. name .. ' re-sent with another texture; keeping ' .. tostring(e.texture))
