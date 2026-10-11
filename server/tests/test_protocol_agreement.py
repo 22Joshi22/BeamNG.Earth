@@ -56,6 +56,7 @@ import heightmap  # noqa: E402
 import imagery  # noqa: E402
 import modsim  # noqa: E402
 import test_server  # noqa: E402
+import colormatch as colormatchmod  # noqa: E402
 import deshadow as deshadowmod  # noqa: E402
 import gravity as gravitymod  # noqa: E402
 import test_weather  # noqa: E402
@@ -92,7 +93,8 @@ SERVER_TO_MOD = {
               "cells": F(int, OPT),             # v1.4 M1: cells per tile edge, FORMAT 4 only
               "blockSize": F(int, OPT),         # v1.4 M4: terrain block size, only when not 1024 (--block 512)
               "horizon": F(bool, OPT),          # v1.4 M1h: true with --horizon only
-              "deshadow": F(str, OPT)},         # --deshadow lambert|full only (the settings page shows it)
+              "deshadow": F(str, OPT),          # --deshadow lambert|full only (the settings page shows it)
+              "colormatch": F(str, OPT)},       # --colormatch s2 only (likewise)
     "status": {"text": F(str),
                "backlog": F(int),           # v1.4 M0: desired - shown far tiles of the current anchor
                "radius": F(NUM, OPT)},      # v1.4 M1h: the far-field radius (m), --horizon only
@@ -659,6 +661,21 @@ class DeshadowHelloTest(test_server.ServerHarness):
         self.assertEqual(m["deshadow"], "full")
         self.assertIn("deshadow", SERVER_TO_MOD["hello"])
         self.assertIn(m["deshadow"], deshadowmod.MODES)
+
+
+class ColormatchHelloTest(test_server.ServerHarness):
+    """hello.colormatch: absent with --colormatch off (the default hello is unchanged), the mode otherwise."""
+
+    def test_hello_colormatch(self):
+        self.c.send({"type": "hello", "protocol": 4, "format": self.MOD_FORMAT, "modVersion": "0.4.0"})
+        m, _ = self.c.until(lambda m: m["type"] == "hello", 10)
+        self.assertNotIn("colormatch", m)
+        self.server.colormatch = types.SimpleNamespace(mode="s2", prepare=lambda lat, lon: None)
+        self.c.send({"type": "hello", "protocol": 4, "format": self.MOD_FORMAT, "modVersion": "0.4.0"})
+        m, _ = self.c.until(lambda m: m["type"] == "hello", 10)
+        self.assertEqual(m["colormatch"], "s2")
+        self.assertIn("colormatch", SERVER_TO_MOD["hello"])
+        self.assertIn(m["colormatch"], colormatchmod.MODES)
 
 
 class MeshImageryMessagesTest(ServerMessagesTest):

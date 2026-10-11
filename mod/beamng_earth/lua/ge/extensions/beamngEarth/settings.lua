@@ -249,11 +249,12 @@ function M.uiState()
     status = st and st.status or '', inOurLevel = st and st.inOurLevel or false,
     attribution = core and core.attribution and core.attribution() or '',
   }
-  -- server features (status only): weather, gravity, imagery de-shadowing
+  -- server features (status only): weather, gravity, imagery de-shadowing and colour seams
   local w = ext('beamngEarth_weather')
   status.weather = w and w.statusLine and w.statusLine() or nil
   status.gravity = w and w.gravityLine and w.gravityLine() or nil
   status.deshadow = st and st.deshadow or 'off'
+  status.colormatch = st and st.colormatch or 'off'
   local schema = {}
   for _, k in ipairs(M.ORDER) do
     local s = M.SCHEMA[k]

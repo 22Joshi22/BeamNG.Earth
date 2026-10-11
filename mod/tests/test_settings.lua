@@ -187,6 +187,9 @@ T.check(s.status.weather == 'Weather (real): 20 C' and s.status.gravity:match('E
   'uiState: server features (weather, gravity, de-shadowing off)')
 stTbl.deshadow = 'full'
 T.check(settings.uiState().status.deshadow == 'full', 'uiState: de-shadowing mode from the hello')
+T.check(s.status.colormatch == 'off', 'uiState: colour seams off without hello.colormatch')
+stTbl.colormatch = 's2'
+T.check(settings.uiState().status.colormatch == 's2', 'uiState: colour-seam mode from the hello')
 T.check(settings.uiDevSet('tint', true).active and devCalls[1] == 'tint=true', 'uiDevSet forwards')
 settings.uiDevPreset('lod')
 T.check(devCalls[2] == 'preset lod', 'uiDevPreset forwards')

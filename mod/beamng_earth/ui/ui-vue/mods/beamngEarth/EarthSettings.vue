@@ -189,6 +189,7 @@ const settingsSchema = [
       { id: "weather", type: "info", name: "Weather", desc: "Real weather from the server (Open-Meteo.com, every 10 min or 25 km; the server's --weather on|off)." },
       { id: "gravity", type: "info", name: "Gravity", desc: "The gravity in use: the server's real value (WGS84 normal + EGM2008, every 2 km or 200 m of height; the server's --gravity on|off) or normal gravity by latitude." },
       { id: "deshadow", type: "info", name: "Imagery de-shadowing", desc: "Server-side relighting of the baked terrain shadows in the USGS imagery (the server's --deshadow off|lambert|full)." },
+      { id: "colormatch", type: "info", name: "Imagery colour seams", desc: "Server-side removal of the colour steps between survey flights in the USGS imagery, e.g. at state lines (the server's --colormatch off|s2)." },
     ],
   },
   {
@@ -279,6 +280,7 @@ function infoValue(item) {
   if (item.id === "weather") return s.weather || "-"
   if (item.id === "gravity") return s.gravity || "-"
   if (item.id === "deshadow") return s.deshadow || "off"
+  if (item.id === "colormatch") return s.colormatch || "off"
   return ""
 }
 

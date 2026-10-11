@@ -5,7 +5,8 @@
     python3 server/earthd.py [--port 47613] [--user-dir DIR] [--cache-dir DIR] [--far-format cdae|dae]
                              [--imagery usgs,eox2023,eox2016|off] [--near-visual mesh|terrain]
                              [--cells 32|64] [--tex 256,256,256,512] [--block 1024|512] [--horizon]
-                             [--deshadow off|lambert|full] [--weather on|off] [--gravity on|off] [--offline]
+                             [--deshadow off|lambert|full] [--colormatch off|s2]
+                             [--weather on|off] [--gravity on|off] [--offline]
 
 Listens on 127.0.0.1 for the mod, builds terrain-block heightmaps (1024² on a world-locked
 2 m lattice, 256 m-aligned centres; in mesh near-visual mode the block is physics only) and a
@@ -54,11 +55,12 @@ import threading  # noqa: E402
 import time  # noqa: E402
 from collections import OrderedDict, deque  # noqa: E402
 from concurrent.futures import ThreadPoolExecutor  # noqa: E402
-from dataclasses import dataclass, field  # noqa: E402
+from dataclasses import dataclass, field, replace  # noqa: E402
 
 import numpy as np  # noqa: E402
 
 import cdae  # noqa: E402
+import colormatch as colormatchmod  # noqa: E402
 import dem as demmod  # noqa: E402
 import deshadow as deshadowmod  # noqa: E402
 import farfield  # noqa: E402
@@ -244,6 +246,12 @@ class TileInfo:
     texture: str | None = None      # file name of its texture (next to the shape)
     tex_bytes: int = 0
     tex_seconds: float = 0.0
+    # --colormatch: regions whose correction was not ready when the texture was rendered (left raw
+    # there), whether one of them has turned out to change it (the texture is then rendered again
+    # the next time the tile is sent, under a new file name), and the texture's revision
+    cm_pending: frozenset = frozenset()
+    stale: bool = False
+    rev: int = 0
 
 
 def predict_centre(px, py, vx, vy, lead, reach=FOLLOW_REACH, grid=heightmap.GRID):
@@ -303,7 +311,8 @@ class Server:
                  hysteresis=farfield.HYSTERESIS, radius=farfield.RADIUS, far_format="cdae",
                  imagery=imagerymod.DEFAULT_CHAIN, near_visual="mesh", tex_near=TEX_NEAR, tex_far=TEX_FAR,
                  tone=1.0, near_radii=None, status_interval=STATUS_INTERVAL, cells=CELLS_DEFAULT, tex=None,
-                 block=BLOCK_DEFAULT, horizon=False, deshadow="off", weather=None, gravity=None, net=None):
+                 block=BLOCK_DEFAULT, horizon=False, deshadow="off", weather=None, gravity=None, net=None,
+                 colormatch="off"):
         """kfun: K(L) for every level (default: the layout's K table); near_radii: the min-level
         radii (default: the layout's); cells: 32 (v1.3.1) or 64 (M1, mesh mode only); tex: texture
         px per level from the finest (default: tex_near, tex_near, tex_far with 32 cells,
@@ -311,7 +320,8 @@ class Server:
         512 (M4, mesh mode only: a 128 m centre grid and the 512 follow table); horizon: M1h, the
         far field out to the line-of-sight horizon (mesh mode only; `radius` is then unused); net:
         the netfetch.Fetcher every download goes through (main_async passes the command line's; None =
-        one of its own, no statistics file)."""
+        one of its own, no statistics file); colormatch: --colormatch (off, or s2: the colour-seam
+        feather on the USGS tiles)."""
         self.sid = time.strftime("%Y%m%d-%H%M%S-") + secrets.token_hex(2)
         root = os.path.join(user_dir, "temp", "beamngEarth")
         self._clean_old_sessions(root, os.path.join(user_dir, *CDAE_ROOT))
@@ -342,8 +352,16 @@ class Server:
         self.deshadow = None
         if deshadow != "off" and imagery and deshadowmod.SOURCE in [getattr(s, "name", s) for s in imagery]:
             self.deshadow = deshadowmod.Deshadow(cache_dir, self.dem, deshadow)
+        # Colour seams of the USGS mosaic (--colormatch s2; off = no object, textures as before).
+        self.colormatch = None
+        if colormatch != "off" and imagery and colormatchmod.SOURCE in [getattr(s, "name", s) for s in imagery]:
+            self.colormatch = colormatchmod.ColorMatch(cache_dir, colormatch)
+            self.colormatch.add_listener(self._cm_listener)
+        self.loop = None                    # the event loop (set by tile()), for the colormatch listener
+        self.cm_waiting = {}                # region -> {(anchorId, key)} rendered without its correction
+        self.tex_rev = {}                   # (anchorId, key) -> texture revision of its next build
         self.imagery = (imagerymod.Imagery(os.path.join(cache_dir, "imagery"), imagery, tone=tone,
-                                           deshadow=self.deshadow, fetcher=self.net)
+                                           deshadow=self.deshadow, colormatch=self.colormatch, fetcher=self.net)
                         if imagery else None)
         self.imagery_failures = 0           # tiles that fell back to the palette (network trouble)
         # (anchorId, key) of cached tiles built with the palette because the imagery failed; shown in
@@ -411,6 +429,8 @@ class Server:
         a.zooms[0] = a.hm_zoom                      # L0 shares the terrain's DEM (§1.4)
         if self.deshadow is not None:
             self.deshadow.prepare(lat, lon)         # the regions around it, in the background
+        if self.colormatch is not None:
+            self.colormatch.prepare(lat, lon)
         self._next_anchor += 1
         return a
 
@@ -571,12 +591,17 @@ class Server:
             out.append(f"L{lvl} {1000 * med[0]:.1f}/{1000 * med[1]:.1f} {med[2] / 1024:.0f}/{med[3] / 1024:.0f}")
         return ", ".join(out)
 
-    def texture_name(self, aid, key):
-        return f"far_{aid}_{key}.dds"
+    def texture_name(self, aid, key, rev=0):
+        """A tile's texture file; one rendered again (--colormatch, rev > 0) gets a new name: the engine
+        caches textures by path, and the mod points the tile's material at the new file."""
+        return f"far_{aid}_{key}.dds" if rev == 0 else f"far_{aid}_{key}_r{rev}.dds"
 
-    def tile_files(self, name):
-        """A far tile's files: the shape, its texture and the engine's .cdae cache of it (DAE tiles)."""
+    def tile_files(self, name, texture=None):
+        """A far tile's files: the shape, its texture (`texture`: a re-rendered one's name) and the
+        engine's .cdae cache of it (DAE tiles)."""
         out = [os.path.join(self.out_dir, name), os.path.join(self.out_dir, os.path.splitext(name)[0] + ".dds")]
+        if texture is not None and os.path.join(self.out_dir, texture) not in out:
+            out.append(os.path.join(self.out_dir, texture))
         if name.endswith(".dae"):
             out.append(os.path.join(self.cdae_dir, os.path.splitext(name)[0].lower() + ".cdae"))
         return out
@@ -649,8 +674,11 @@ class Server:
             px = self.tex_size(tile.level)
             self.imagery.prefetch(anchor.frame, *imagerymod.gutter_square(x0, y0, tile.size, px), px)
 
-    def make_tile(self, anchor, tile):
-        """Worker thread: build and write one far tile (and its texture). Returns its TileInfo."""
+    def make_tile(self, anchor, tile, prev=None):
+        """Worker thread: build and write one far tile (and its texture). Returns its TileInfo.
+        prev: the tile's stale TileInfo (--colormatch): only its texture is rendered again."""
+        if prev is not None:
+            return self.retexture(anchor, tile, prev)
         t0 = time.perf_counter()
         lvl = tile.level
         q = self.anchor_q(anchor) if lvl <= 0 else None
@@ -662,12 +690,14 @@ class Server:
         material = texture = None
         tex_bytes = 0
         ck = (anchor.id, tile.key)
+        pending = set() if self.colormatch is not None else None
         if self.imagery is not None:
             x0, y0, _, _ = tile.bbox
             try:
                 px = self.tex_size(lvl)
-                rgb, _ = self.imagery.render(anchor.frame, *imagerymod.gutter_square(x0, y0, tile.size, px), px)
-                texture = self.texture_name(anchor.id, tile.key)
+                rgb, _ = self.imagery.render(anchor.frame, *imagerymod.gutter_square(x0, y0, tile.size, px), px,
+                                             pending=pending)
+                texture = self.texture_name(anchor.id, tile.key, self.tex_rev.get((anchor.id, tile.key), 0))
                 tex_bytes = imagerymod.write_dds(os.path.join(self.out_dir, texture), rgb)
                 material = sat_material(anchor.id, tile.key)
                 self.degraded.discard(ck)
@@ -684,21 +714,47 @@ class Server:
         dt = time.perf_counter() - t0
         self.build_stats.append(dt)
         self.level_stats.setdefault(lvl, deque(maxlen=200)).append((dt - (t2 - t1), t2 - t1, size, tex_bytes))
-        return TileInfo(built.pos, built.err, built.sink, built.skirt, built.grid, size, dt,
+        info = TileInfo(built.pos, built.err, built.sink, built.skirt, built.grid, size, dt,
                         material, texture, tex_bytes, t2 - t1)
+        if material is not None:
+            info.rev = self.tex_rev.get((anchor.id, tile.key), 0)
+            info.cm_pending = frozenset(pending or ())
+        return info
+
+    def retexture(self, anchor, tile, prev):
+        """Worker thread: render a stale tile's texture again (its colour-match regions are ready now)
+        under the next revision's file name; the shape and its material name stay. Network trouble:
+        the previous TileInfo, still stale."""
+        t0 = time.perf_counter()
+        x0, y0, _, _ = tile.bbox
+        px = self.tex_size(tile.level)
+        pending = set()
+        try:
+            rgb, _ = self.imagery.render(anchor.frame, *imagerymod.gutter_square(x0, y0, tile.size, px), px,
+                                         pending=pending)
+        except imagerymod.ImageryError as e:
+            log.debug("tile %s of anchor %d: texture not rendered again (%s)", tile.key, anchor.id, e)
+            return prev
+        texture = self.texture_name(anchor.id, tile.key, prev.rev + 1)
+        tex_bytes = imagerymod.write_dds(os.path.join(self.out_dir, texture), rgb)
+        return replace(prev, texture=texture, tex_bytes=tex_bytes, tex_seconds=time.perf_counter() - t0,
+                       cm_pending=frozenset(pending), stale=False, rev=prev.rev + 1)
 
     def tile(self, anchor, tile):
         """asyncio future for the tile's TileInfo; generated at most once per (anchorId, key)."""
         ck = (anchor.id, tile.key)
-        loop = asyncio.get_running_loop()
+        loop = self.loop = asyncio.get_running_loop()
+        prev = None
         if ck in self.tiles:
             self.tiles.move_to_end(ck)
-            f = loop.create_future()
-            f.set_result(self.tiles[ck])
-            return f
+            if not self.tiles[ck].stale:
+                f = loop.create_future()
+                f.set_result(self.tiles[ck])
+                return f
+            prev = self.tiles[ck]           # --colormatch: its texture is rendered again
         fut = self.tile_inflight.get(ck)
         if fut is None:
-            fut = self.tile_inflight[ck] = loop.run_in_executor(self.tile_pool, self.make_tile, anchor, tile)
+            fut = self.tile_inflight[ck] = loop.run_in_executor(self.tile_pool, self.make_tile, anchor, tile, prev)
             fut.add_done_callback(lambda f: self._tile_done(ck, f))
         return fut
 
@@ -734,14 +790,50 @@ class Server:
         self.tile_inflight.pop(ck, None)
         if fut.cancelled() or fut.exception() is not None:
             return
-        self.tiles[ck] = fut.result()
+        info = self.tiles[ck] = fut.result()
+        for rk in sorted(info.cm_pending):  # --colormatch: regions it was rendered without
+            st = self.colormatch.status(rk)
+            if st is None:
+                self.cm_waiting.setdefault(rk, set()).add(ck)
+            else:                           # ready meanwhile (while the texture was being rendered)
+                self._cm_settle(ck, rk, st)
         if len(self.tiles) > self.tile_cache:
             used = self.in_use()
             for old in [k for k in self.tiles if k not in used][:len(self.tiles) - self.tile_cache]:
-                del self.tiles[old]
-                self.degraded.discard(old)
-                # through the rate-limited queue: the mod loaded most of these files once (P9)
-                self.queue_delete((p for p in self.tile_files(self.tile_name(*old)) if os.path.exists(p)), old)
+                self._evict_tile(old)
+
+    def _evict_tile(self, ck):
+        info = self.tiles.pop(ck)
+        self.degraded.discard(ck)
+        # --colormatch: a later build must not reuse its texture's name (re-rendered, or rendered raw
+        # for a region that may finish before the tile is built again: the listener misses it then)
+        if info.stale or info.rev or info.cm_pending:
+            self.tex_rev[ck] = info.rev + 1
+        # through the rate-limited queue: the mod loaded most of these files once (P9)
+        files = self.tile_files(self.tile_name(*ck), info.texture if info.rev else None)
+        self.queue_delete((p for p in files if os.path.exists(p)), ck)
+
+    def _cm_listener(self, rk, changed):
+        """ColorMatch worker thread: a region's correction is ready."""
+        loop = self.loop
+        if loop is not None and not loop.is_closed():
+            loop.call_soon_threadsafe(self._cm_ready, rk, changed)
+
+    def _cm_ready(self, rk, changed):
+        """The far tiles whose textures were rendered without the region's correction: if it changes
+        them they are stale, and tile() renders the texture again (only the texture, under the next
+        revision's name) whenever the tile is sent again. Swapping the texture of a tile the mod
+        shows needs its far_retex message (V1_4_SPEC M3a)."""
+        for ck in sorted(self.cm_waiting.pop(rk, ())):
+            self._cm_settle(ck, rk, changed)
+
+    def _cm_settle(self, ck, rk, changed):
+        info = self.tiles.get(ck)
+        if info is None or rk not in info.cm_pending:
+            return
+        info.cm_pending = info.cm_pending - {rk}
+        if changed:
+            info.stale = True
 
     def schedule_prune(self, keep_from):
         """prune(keep_from) after prune_delay seconds (once per keep_from)."""
@@ -772,6 +864,8 @@ class Server:
                 del self.tiles[ck]
             for ck in [ck for ck in list(self.degraded) if ck[0] == aid]:     # list(): workers add meanwhile
                 self.degraded.discard(ck)
+            for ck in [k for k in self.tex_rev if k[0] == aid]:
+                del self.tex_rev[ck]
             for fut in [f for k, f in self.tile_inflight.items() if k[0] == aid]:
                 fut.cancel()
             for key in [k for k in self.hm if k[0] == aid]:
@@ -955,6 +1049,8 @@ class Connection:
                 m["horizon"] = True
             if self.s.deshadow is not None:     # --deshadow lambert|full: shown on the mod's settings page
                 m["deshadow"] = self.s.deshadow.mode
+            if self.s.colormatch is not None:   # --colormatch s2: likewise
+                m["colormatch"] = self.s.colormatch.mode
             self.send(m)
             if self.weather.msg is not None:        # a reconnected mod gets the weather again
                 self.send(self.weather.msg)
@@ -1460,7 +1556,7 @@ async def main_async(args):
                     imagery=args.imagery, near_visual=args.near_visual, tex_near=args.tex_near,
                     tex_far=args.tex_far, tone=args.tone, near_radii=radii,
                     status_interval=args.status_interval, cells=args.cells, tex=args.tex, block=args.block,
-                    horizon=args.horizon, deshadow=args.deshadow,
+                    horizon=args.horizon, deshadow=args.deshadow, colormatch=args.colormatch,
                     weather=(weathermod.Service(fetch=lambda lat, lon: weathermod.fetch(lat, lon, net=net))
                              if args.weather == "on" else None),
                     gravity=(gravitymod.Provider(os.path.join(args.cache_dir, "gravity"), net=net)
@@ -1483,7 +1579,8 @@ async def main_async(args):
           f"(format {server.layout.format}), block: {server.layout.block}, "
           f"horizon: {'on' if server.horizon else 'off'}, "
           f"imagery: {','.join(args.imagery) if args.imagery else 'off'}"
-          f"{'' if server.deshadow is None else ', deshadow: ' + server.deshadow.mode}, "
+          f"{'' if server.deshadow is None else ', deshadow: ' + server.deshadow.mode}"
+          f"{'' if server.colormatch is None else ', colormatch: ' + server.colormatch.mode}, "
           f"weather: {args.weather}, gravity: {args.gravity}{', OFFLINE' if args.offline else ''})",
           flush=True)
     try:
@@ -1564,6 +1661,10 @@ def main():
                     help="undo the capture sun's shading in the USGS imagery (docs/research/"
                          "2026-10-10-deshadow-prototype.md): lambert = slopes only, full = slopes and cast "
                          "shadows of the terrain; off = the imagery as served (default)")
+    ap.add_argument("--colormatch", choices=colormatchmod.MODES, default="off",
+                    help="remove the colour seams between NAIP flights in the USGS imagery (docs/research/"
+                         "2026-10-10-imagery-colormatch.md): s2 = the seam feather against Sentinel-2 (EOX), "
+                         "only near detected survey seams; off = the imagery as served (default)")
     ap.add_argument("--near-radii", type=parse_radii, default=None,
                     help="mesh mode: radii in m around the player of the exact level and the next one "
                          "(L-2, L-1 with 32 cells; L-1, L0 with 64; default 150,400)")

@@ -144,6 +144,16 @@ Target: 300 mph sustained with the near ground always detailed, and a rebase tha
   - Near ground (0-250 m) blends toward procedural land-cover materials anyway (like the official
     maps' detail band), which hides most baked shadow close up.
   - Prefer imagery captured near noon / in summer where sources offer a choice.
+  - Status: de-shadowing built offline behind `--deshadow lambert|full` (default off; docs/ARCHITECTURE.md).
+- **Colour seams in the imagery** (user, 2026-10-10: Monument Valley sits on a colour border that
+  stretches for miles): USGS is a mosaic of NAIP flights per state and year, so flight boundaries
+  are colour steps. Status: the "seam feather" (docs/research/2026-10-10-imagery-colormatch.md) is
+  built offline behind `--colormatch s2` (default off; docs/ARCHITECTURE.md): detected survey seams
+  only, each side moved half way against Sentinel-2 as the reference, gain exactly 1 elsewhere.
+  Before default-on: a geometric prior for moderate seams in farmland and cities (state boundaries
+  from a generic boundary dataset, the NAIP quarter-quad graticule), the far rings (z10-z11),
+  faster detection, and an in-game check of known state-line seams (UT/AZ, NM/CO, KS/NE) and snowy
+  mountains. The far-ring switch from USGS to EOX needs a regional palette mapping (separate item).
 - Sky: CloudLayer + wind, haze, per-biome cubemap, black night colours.
 - GroundCover grass if probes show it renders on a hidden terrain.
 

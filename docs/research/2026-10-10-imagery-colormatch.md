@@ -245,6 +245,12 @@ All are under the 10 ms target. The tile output matches the full-window result w
 
 ## 7. Integration plan (`server/imagery.py`, flag `--colormatch off|s2`, default off)
 
+Status: integrated offline (`server/colormatch.py`, `server/tests/test_colormatch.py`); what was built,
+the measured numbers and the deviations are in docs/ARCHITECTURE.md, "Colour seams of the USGS imagery".
+Review correction to §5: the S2 gate alone does not reject a step in S2 only (|D_s2| ≈ |D| passes it
+with a third of the score), so the edge of the per-tile 2016 fallback and EOX compositing steps were
+imported into USGS; the integration now also requires USGS to carry each component's step.
+
 - **New module `server/colormatch.py`.** Port `colormatch.py` and the `Region` and `apply` code from `tile.py`. Pure numpy.
 - **Region unit: a USGS z12 tile.** About 7.8 km at 37° N, 1024² cells at z14.
   - Inputs:
