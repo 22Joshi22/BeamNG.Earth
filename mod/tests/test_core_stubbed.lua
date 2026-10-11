@@ -745,6 +745,9 @@ serverSend({ type = 'hello', protocol = 4, format = 4, cells = 64, horizon = tru
 frames(3)
 T.check(#sentCaches() == nCache + 1 and sentCaches()[nCache + 1].capGb == 50, 'hello: the page\'s cache cap sent')
 T.check(core.cacheState() == nil, 'no cache numbers before the server sends them')
+local okClear, whyClear = core.cacheClear()
+T.check(not okClear and whyClear == 'the server has no download cache' and #sentCaches() == nCache + 1,
+  'clear: not sent to a server without a cache (no answer would come; the page would wait 2 min)')
 serverSend({ type = 'cache', v = 1, usedBytes = 1234567890, capBytes = 50000000000, files = 321, ready = true, managed = true })
 frames(2)
 local cs = core.cacheState()

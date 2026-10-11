@@ -210,5 +210,6 @@ player right now, e.g.:
   and on change (`core.cacheSetCap`; the server keeps it for its next start); the page's 2 s poll asks
   the server for fresh numbers every 5th poll (`core.cacheQuery`, `settings.CACHE_POLL`); the server's
   `cache` message is kept in core.lua (`core.cacheState()`, outliving levels, forgotten on a disconnect
-  or a new hello). Bridge: `beamngEarth_settings.uiCacheClear()` -> `{ ok, error }`;
+  or a new hello). Bridge: `beamngEarth_settings.uiCacheClear()` -> `{ ok, error }` (error "server not connected", or
+  "the server has no download cache" when it sent no `cache` after its hello: no answer would come);
   `uiState().status.cache` = `{ line, clears, clearedBytes, clearedText }`.

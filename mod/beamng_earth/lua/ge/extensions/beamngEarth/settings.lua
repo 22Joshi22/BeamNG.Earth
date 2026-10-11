@@ -345,7 +345,8 @@ end
 function M.uiCacheClear()
   local core = ext('beamngEarth_core')
   if not (core and core.cacheClear) then return { ok = false, error = 'mod not loaded' } end
-  if not core.cacheClear() then return { ok = false, error = 'server not connected' } end
+  local sent, why = core.cacheClear()
+  if not sent then return { ok = false, error = why or 'server not connected' } end
   return { ok = true }
 end
 

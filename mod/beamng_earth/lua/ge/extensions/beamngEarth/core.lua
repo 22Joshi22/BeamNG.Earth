@@ -965,7 +965,8 @@ function M.credits() return credits.text(creditsFallback) end
 -- The download cache (server cache.py), for the settings page: the last usage the server sent (nil
 -- before any: no server, or one without a cache), and the page's requests to the server: the size cap
 -- in GB (0 = unlimited), a clear (answered with clearedBytes), fresh usage numbers. Each returns
--- whether it went out (false without a server session).
+-- whether it went out (false without a server session; a clear also needs the server's numbers, and
+-- says why it did not go out).
 function M.cacheState() return cacheInfo end
 local function cacheReady() return net.isConnected() and st.sessionId ~= nil end
 function M.cacheSetCap(gb)
@@ -974,7 +975,9 @@ function M.cacheSetCap(gb)
   return true
 end
 function M.cacheClear()
-  if not cacheReady() then return false end
+  if not cacheReady() then return false, 'server not connected' end
+  -- a server without a cache sends no 'cache' after hello and would never answer the clear
+  if not cacheInfo then return false, 'the server has no download cache' end
   net.send({ type = 'cache', clear = true })
   return true
 end

@@ -269,6 +269,9 @@ T.check(r.ok and clears == 1, 'uiCacheClear: sent')
 connected = false
 r = settings.uiCacheClear()
 T.check(not r.ok and r.error == 'server not connected', 'uiCacheClear: not connected')
+beamngEarth_core.cacheClear = function() return false, 'the server has no download cache' end
+r = settings.uiCacheClear()
+T.check(not r.ok and r.error == 'the server has no download cache', 'uiCacheClear: core\'s reason shown')
 beamngEarth_core = nil
 r = settings.uiCacheClear()
 T.check(not r.ok and r.error == 'mod not loaded', 'uiCacheClear: no core')
