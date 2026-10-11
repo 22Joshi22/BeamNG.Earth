@@ -128,6 +128,14 @@ Manhattan cell: 4.8 s cold, peak RSS 381 MB. Next:
 ## v1.5 "Ground truth"
 - Per-cell surface physics: the invisible TerrainBlock gets material layers from ESA WorldCover
   (+ OSM roads): ASPHALT / DIRT / GRASS / SAND / GRAVEL / ROCK / MUD / SNOW (no more dust on roads).
+  Status (2026-10-11, built, behind `earthd --surface on`, in-game check pending): WorldCover classes
+  (from the map-data cache, prefetched 3 km around the player, never waited for) and a 35° rock rule
+  give 8 layers (asphalt for built-up, grass, dusty / loose dirt, rock, snow, mud, dirt) imported with
+  each 512² block as 8 greyscale masks; the materials are runtime clones of the level's dirt with
+  other ground models (server/surface.py, terrain.lua). OSM / Overture overrides (roads, parking,
+  sand, lawns vs streets) come with the roads work. Tyre contact checked in-game (Fells Point
+  ASPHALT, Serengeti GRASS, Everest Base Camp SNOW, Monument Valley DIRT_DUSTY); stock grass
+  GroundCover rides on the grass / dusty layers (groundcover.lua, +1.1 ms per frame).
 - Tile material v1.5 (PBR): normal maps baked from the DEM, roughness from land cover (water glint).
 - **Real ground materials up close** (user, 2026-10-10: satellite photos are low-res near the car):
   - Material splatting on the near tiles (0-250 m full, blend out to ~1 km, photo only beyond, the
@@ -209,7 +217,10 @@ Manhattan cell: 4.8 s cold, peak RSS 381 MB. Next:
   longer reads as ready (that re-rendered shown tiles in a loop); the mod never switches a material
   back to an older revision.
 - Sky: CloudLayer + wind, haze, per-biome cubemap, black night colours.
-- GroundCover grass if probes show it renders on a hidden terrain.
+- GroundCover grass: done with v1.5 surfaces (2026-10-11, groundcover.lua): green Hirochi Raceway grass
+  with some dry West Coast tufts on the grass layer, West Coast scrub on dusty ground, +1.1 ms/frame.
+  Next: per-climate / per-season picks (dry savanna, green temperate, alpine), a settings toggle and
+  density presets.
 
 ## Water (with v1.5/v1.6; user 2026-10-10: lakes and rivers are blue dirt today; keep depths
 ## roughly real, no underwater detail needed)

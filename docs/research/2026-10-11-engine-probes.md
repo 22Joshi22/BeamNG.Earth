@@ -55,7 +55,7 @@ Markers: **[V]** measured or seen in this session, **[I]** inference.
 | PP1 prefab | GO, load the source level's materials first | Italy petrol station: 625 ms first spawn (loads Italy shapes), 6 children. `Prefab:setPosition` moves the children (0.02 ms). Ground slab without Italy materials: orange "no material". `removePrefab` 0.07 ms |
 | PE1 particles | GO | `ParticleEmitterNode` (waterfall spray) 0.08 ms, renders. After a 100 m move the live particles fade out at the old spot. Frame cost within noise |
 | BAT materials | GO | `wall.mat.json` loads in 11 ms, and `m_bricks_01_bat` then exists |
-| **GroundCover on the hidden terrain** (ROADMAP) | **GO**. Grass on the physics block's layers | Renders on the **render-disabled** block. It **honours the layer map** (grass only on its layer's stripes) and **follows re-imports by itself**: no flush needed, grass goes away when the layer leaves the block and comes back with it. 200k elements, radius 80: **+0.8-1.3 ms** frame (present wait +2.8 ms), noisy |
+| **GroundCover on the hidden terrain** (ROADMAP) | **GO**. Grass on the physics block's layers | Renders on the **render-disabled** block. It **honours the layer map** (grass only on its layer's stripes) but **not re-imports by itself** (corrected later the same day): it reads a layer copy refreshed only when the block is drawn in view, see §4. 200k elements, radius 80: **+0.8-1.3 ms** frame (present wait +2.8 ms), noisy |
 | **8-layer terrain import** (ROADMAP) | **GO**: 8 greyscale masks | 512² live block, medians of 4-5: 1 layer 16.5-17.8 ms, **8 greyscale masks 20.8-22.6 ms (+4-5 ms)**, 8 packed as 2 RGBA PNGs 35 ms (worse). `reloadCollision` unchanged (0.6-1.3 ms). 1024² not measured (the session runs 512²) |
 | **PT1 groundmodel from layers** | **GO** | Wheel contact material changes with the layer (DIRT id 15 → 10 / 19 on two layers). A `setMaterialIdxWs` strip changed the wheels' contact material (to id 21) within 0.7 s with **no `reloadCollision`** |
 | **Navgraph `map.reset` at 5k nodes** (ROADMAP) | **NO-GO per terrain commit.** OK for rebases or rare rebuilds | 5 041-node grid: **96-161 ms** (median ~127, n=8) with the UI dump, **53-178 ms** (median ~101, n=8) with `NavigationMapChanged` suppressed. 900 nodes: 11-32 ms. 20k: 383 / 818 ms. Mailbox 1.86 MB (lpack 7-11 ms). Player-vehicle import (`mapmgr.setMap`) 16 ms at 5k, 119 ms at 20k |
@@ -346,6 +346,11 @@ local fd = f:getData()                       -- ForestData: createNewItem/update
   - A GroundCover on layer 4 (`bngProbeL4`) shows grass only on that 128 m stripe (`gc12_fresh_layer4_no_postapply.jpg`),
     and one on layer 3 only on its stripe (`gc6_layer3_postapply.jpg`).
   - Rendering the block on (`tbRender`) changes nothing for GroundCover.
+- **Correction (2026-10-11, later in-game):** it does *not* follow re-imports by itself. GroundCover
+  reads a layer copy that the block refreshes only in a frame where it is drawn and in view (the probe's
+  stripes were refreshed by the `tbRender` step; the re-imports below brought back the same stripes and
+  material names). A block never drawn reads as layer 0 everywhere. See ARCHITECTURE.md "Ground
+  surfaces" for the one-frame sunk refresh the mod does. Original observation:
 - **It follows re-imports by itself:**
   - Re-importing the block with 1 layer made the layer-3 grass disappear (`gc10_after_import_1layer.jpg`).
   - Re-importing 8 layers brought it back with no flush and no `postApply` (`gc11_after_import_8layer_no_postapply.jpg`).

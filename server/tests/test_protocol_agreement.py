@@ -106,7 +106,8 @@ MOD_TO_SERVER = {
 }
 CAM = {"x", "y", "z", "fx", "fy", "fz", "fovDeg"}
 TERRAIN = {"cx": F(NUM), "cy": F(NUM), "heightmap": F(str), "size": F(int), "squareSize": F(NUM),
-           "zBase": F(NUM), "maxHeight": F(NUM), "q": F(NUM)}
+           "zBase": F(NUM), "maxHeight": F(NUM), "q": F(NUM),
+           "layers": F(list, OPT), "materials": F(list, OPT)}     # --surface on (surface.py)
 SERVER_TO_MOD = {
     "hello": {"protocol": F(int), "format": F(int), "serverVersion": F(str), "sessionId": F(str),
               "farFormat": F(str), "material": F(str),
@@ -647,10 +648,13 @@ class ServerMessagesTest(test_server.ServerHarness):
                 self.assertGreaterEqual(m["level"], ff.MESH_MIN_LEVEL[64])
             self.assertEqual(m["key"], ff.tile_of(m["key"]).key)
         if kind in ("anchor_ready", "terrain_ready"):
-            t = m["terrain"] if kind == "anchor_ready" else {f: m[f] for f in TERRAIN}
-            self.assertEqual(set(t), set(TERRAIN))
+            t = m["terrain"] if kind == "anchor_ready" else {f: m[f] for f in TERRAIN if f in m}
+            required = {f for f, (_, flags) in TERRAIN.items() if OPT not in flags}
+            self.assertLessEqual(required, set(t))
+            self.assertLessEqual(set(t), set(TERRAIN))
             for f, (types, _) in TERRAIN.items():
-                self.assertIsInstance(t[f], types, (f, t))
+                if f in t:
+                    self.assertIsInstance(t[f], types, (f, t))
             self.assertRegex(t["heightmap"], HM_RE)
             # M4: the session's block size (hello.blockSize), on its grid
             self.assertEqual((t["size"], t["squareSize"]), (self.server.layout.block, modsim.LATTICE["SQUARE"]))
