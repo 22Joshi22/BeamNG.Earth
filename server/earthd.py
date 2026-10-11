@@ -78,6 +78,7 @@ import colormatch as colormatchmod  # noqa: E402
 import credits as creditsmod  # noqa: E402
 import surface as surfacemod  # noqa: E402
 import roads as roadsmod  # noqa: E402
+import grading as gradingmod  # noqa: E402
 import mapdata as mapdatamod  # noqa: E402
 import dem as demmod  # noqa: E402
 import deshadow as deshadowmod  # noqa: E402
@@ -286,6 +287,7 @@ class Anchor:
     first_terrain: tuple = None                    # (cx, cy) of the anchor_ready terrain
     q: float = None                                # height quantum, from the relief survey
     q_lock: threading.Lock = field(default_factory=threading.Lock)
+    grader: object = None                          # grading.Grader (--grading on), made on first use
 
 
 @dataclass
@@ -374,7 +376,7 @@ class Server:
                  tone=1.0, near_radii=None, status_interval=STATUS_INTERVAL, cells=CELLS_DEFAULT, tex=None,
                  block=BLOCK_DEFAULT, horizon=False, deshadow="off", weather=None, gravity=None, net=None,
                  colormatch="off", credits=None, cache=None, retex_rate=RETEX_RATE, surface=None,
-                 mapdata=None):
+                 mapdata=None, grading=False):
         """kfun: K(L) for every level (default: the layout's K table); near_radii: the min-level
         radii (default: the layout's); cells: 32 (v1.3.1) or 64 (M1, mesh mode only); tex: texture
         px per level from the finest (default: tex_near, tex_near, tex_far with 32 cells,
@@ -492,6 +494,8 @@ class Server:
         self.credits = credits
         self.surface = surface      # surface.Surface: ground models under the physics block (--surface on)
         self.mapdata = mapdata      # mapdata.MapData for the roads (--roads on), else None
+        self.grading = bool(grading) and mapdata is not None   # ground graded under roads (grading.py)
+        self.grader_lock = threading.Lock()
         # The download cache's bookkeeping (cache.py): every producer reports its disk hits and writes
         self.cache = cache
         if cache is not None:
@@ -703,16 +707,35 @@ class Server:
                  for k in roadsmod.cells_of_tile(anchor.frame, tx, ty)]
         zoom = anchor.zooms[0]
         urban = self.surface.urban if self.surface is not None and hasattr(self.surface, "urban") else None
-        chunks = roadsmod.build_tile(anchor.frame, tx, ty, cells, lambda la, lo: self.dem.sample(la, lo, zoom), urban)
+        g = self.grader_for(anchor)
+
+        def elev(la, lo):
+            z = self.dem.sample(la, lo, zoom)
+            return g.apply(la, lo, z) if g is not None else z
+        chunks = roadsmod.build_tile(anchor.frame, tx, ty, cells, elev, urban)
         return roadsmod.write_tile(self.out_dir, self.vfs_dir, aid, tx, ty, chunks)
+
+    def grader_for(self, anchor):
+        """The anchor's grading.Grader (--grading on), else None."""
+        if not self.grading:
+            return None
+        with self.grader_lock:
+            if anchor.grader is None:
+                anchor.grader = gradingmod.Grader(anchor.frame, self.mapdata,
+                                                  lambda la, lo: self.dem.sample(la, lo, gradingmod.PROFILE_ZOOM))
+            return anchor.grader
 
     def make_heightmap(self, anchor, cx, cy, progress):
         """Worker thread: build and write one 1024² terrain."""
         t0 = time.perf_counter()
         q = self.anchor_q(anchor)
         keep = {} if self.surface is not None else None
-        info = heightmap.generate(anchor.frame,
-                                  lambda la, lo: self.dem.sample(la, lo, anchor.hm_zoom, progress),
+        g = self.grader_for(anchor)
+
+        def elev(la, lo):
+            z = self.dem.sample(la, lo, anchor.hm_zoom, progress)
+            return g.apply(la, lo, z) if g is not None else z
+        info = heightmap.generate(anchor.frame, elev,
                                   os.path.join(self.out_dir, self.hm_name((anchor.id, cx, cy))), cx, cy, q=q,
                                   size=self.layout.block, keep=keep)
         if keep is not None:
@@ -914,7 +937,9 @@ class Server:
         q = self.anchor_q(anchor) if lvl <= 0 else None
         ref_zoom = anchor.zooms[lvl - 1] if lvl > 0 else None
         path = os.path.join(self.out_dir, self.tile_name(anchor.id, tile.key))
-        built = farfield.build_tile(anchor.frame, self.dem, tile, anchor.zooms[max(lvl, 0)], q,
+        g = self.grader_for(anchor) if lvl <= 0 else None      # graded like the block (grading.py)
+        src = gradingmod.GradedDem(self.dem, g) if g is not None else self.dem
+        built = farfield.build_tile(anchor.frame, src, tile, anchor.zooms[max(lvl, 0)], q,
                                     ref_zoom, with_sink=self.near_visual == "terrain", layout=self.layout)
         t1 = time.perf_counter()
         material = texture = used = None
@@ -1963,7 +1988,8 @@ async def main_async(args):
                     credits=creditsmod.Credits() if args.credits == "on" else None, cache=disk,
                     retex_rate=args.retex_rate,
                     surface=(surfacemod.Surface(mapdata) if args.surface == "on" else None),
-                    mapdata=mapdata if args.roads == "on" else None)
+                    mapdata=mapdata if args.roads == "on" else None,
+                    grading=args.grading == "on" and args.roads == "on")
 
     async def net_log():
         while True:
@@ -2113,6 +2139,9 @@ def main():
     ap.add_argument("--roads", choices=("on", "off"), default="on",
                     help="Overture roads near the player (roads.py): DecalRoads in the mod (paved asphalt, "
                          "gravel / dirt tracks) within ~640 m, in 256 m tiles; off = none")
+    ap.add_argument("--grading", choices=("on", "off"), default="on",
+                    help="grade the ground under roads (grading.py: smooth along, flat across, 1:2 slopes back "
+                         "to the natural ground) in the physics block and the near mesh tiles; needs --roads on")
     ap.add_argument("--surface", choices=("on", "off"), default="on",
                     help="ground models under the physics block from ESA WorldCover land cover and the slope "
                          "(surface.py: asphalt, grass, dusty / loose dirt, rock, snow, mud, dirt), imported as 8 "

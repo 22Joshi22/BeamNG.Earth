@@ -972,6 +972,29 @@ three days of testing: dem 741 MB / 7.5k files, imagery 1.4 GB / 35k, deshadow 7
 - Measured at Fells Point: 809 DecalRoads, +0.08 ms per frame (A/B, 5 rounds); every sampled road
   node within 250 m is asphalt under the tyres.
 
+## Ground graded under roads (`server/grading.py`, `earthd --grading on`, 2026-10-11)
+- From the official-map study (docs/research/2026-10-11-official-road-study.md §3):
+  - Along each road, the centreline height is the DEM every 2 m, Gaussian-smoothed (σ 12 m;
+    5 m on dirt).
+  - Across the road it is flat over the core: the carriageway taken as a city street would have
+    it, parking included, plus a 1 m shoulder. Built roads always get this width, so it never
+    depends on the land cover.
+  - Then it blends back to the natural ground over 2x the height difference (a 1:2 slope),
+    within 2-12 m.
+  - Junctions blend the targets by weight. Bridges, tunnels and off-ground segments are not
+    graded (roads.road_specs leaves them out).
+- One `Grader` per anchor makes each map cell's road plans once and caches them. The physics
+  block (make_heightmap's elevation function), the level -1 / 0 mesh tiles (`GradedDem`, a
+  drop-in for dem.Dem) and the road decals' z all sample the same graded heights, so they agree
+  exactly. Measured at Kern River: visible vs physics ground within 0.01 mm over 2,601 points.
+  Coarser tiles stay ungraded (they sink under the block).
+- Offline at Fells Point:
+  - Cross-road |dz| at 2 m: median 0.026 -> 0.002 m, p90 0.073 -> 0.018 m (the official maps:
+    0.00-0.08 m).
+  - 25 % of a city block's samples move by more than 1 cm (median 6 cm, p95 21 cm).
+  - Cost: 1.8 s for a 512² block with the plans cold (mostly the profiles' DEM samples), 0.16 s
+    with them cached.
+
 ## Map data (`server/mapdata.py`; built offline 2026-10-11, branch feature/mapdata)
 The shared input of every content feature (roads, buildings, water, land use, trees, ground
 types), per docs/research/2026-10-10-world-data-sources.md. Not wired into earthd or the mod yet:
