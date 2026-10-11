@@ -40,6 +40,7 @@ local horizon = require('beamngEarth/horizon')
 local ui = require('beamngEarth/ui')
 local settings = require('beamngEarth/settings') -- the pause-menu page's values (docs/DEVTOOLS.md)
 local credits = require('beamngEarth/credits') -- the on-screen data credits (docs/DEVTOOLS.md)
+local places = require('beamngEarth/places') -- saved and recent places (the settings page)
 
 local LEVEL_ID = 'beamng_earth'
 local MOD_VERSION = '0.4.0'
@@ -130,6 +131,14 @@ local function nextId()
   local id = st.nextRequestId
   st.nextRequestId = id + 1
   return id
+end
+
+local teleportTo -- defined with M.teleport (the level start's own teleport is one too)
+
+-- the level start's teleport: to the window's lat/lon (the default start until it is changed)
+local function startTeleport()
+  local lat, lon = ui.getLatLon(DEFAULT_LAT, DEFAULT_LON)
+  return teleportTo(lat, lon, nil, 'start')
 end
 
 -- cx, cy: where the anchor's first terrain should be centred in the NEW frame
@@ -482,7 +491,7 @@ local function onMessage(msg)
       requestAnchor(st.anchor.lat, st.anchor.lon, 'resync', resyncHint())
     elseif st.inOurLevel and not st.anchor and not st.autoTeleportDone then
       st.autoTeleportDone = true
-      M.teleport(ui.getLatLon(DEFAULT_LAT, DEFAULT_LON))
+      startTeleport()
     end
   elseif t == 'status' then
     st.status = tostring(msg.text)
@@ -817,7 +826,7 @@ local function onLevelStart()
   end
   if net.isConnected() then
     st.autoTeleportDone = true
-    M.teleport(ui.getLatLon(DEFAULT_LAT, DEFAULT_LON))
+    startTeleport()
   end
 end
 
@@ -853,7 +862,8 @@ end
 ------------------------------------------------------------------------------------------
 -- public / console API
 
-function M.teleport(lat, lon)
+-- kind: 'teleport' (M.teleport) or 'start' (the level start's), for the recent places list
+teleportTo = function(lat, lon, name, kind)
   lat, lon = tonumber(lat), tonumber(lon)
   if not lat or not lon or lat < -90 or lat > 90 or lon < -180 or lon > 180 then
     setStatus('Teleport: invalid lat/lon')
@@ -862,9 +872,16 @@ function M.teleport(lat, lon)
   ui.setLatLon(lat, lon)
   if requestAnchor(lat, lon, 'teleport') then
     setStatus(string.format('Preparing terrain at %.5f, %.5f ...', lat, lon))
+    local ok, err = pcall(places.noteTeleport, lat, lon, name, kind)
+    if not ok then log('W', 'beamngEarth', 'recent places: ' .. tostring(err)) end
     return true
   end
   return false
+end
+
+-- name (optional): the place's name for the recent places (places.lua; the settings page's Go)
+function M.teleport(lat, lon, name)
+  return teleportTo(lat, lon, name, 'teleport')
 end
 
 function M.toggleUI() ui.visible = not ui.visible end

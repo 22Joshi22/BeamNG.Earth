@@ -7,6 +7,10 @@
 --   beamngEarth_settings.uiReset()             every setting back to its default
 --   beamngEarth_settings.uiDevSet(name, on)    beamngEarth_settings.uiDevPreset(name)  (dev tools)
 --   beamngEarth_settings.setPageExists(true)   (index.js, once the button is registered)
+--   beamngEarth_settings.uiPlaces() / uiPlaceAddHere(name) / uiPlaceAdd(name, "lat, lon") /
+--     uiPlaceRename(id, name) / uiPlaceDelete(id) / uiPlaceGo(id) / uiPlaceGoText("lat, lon") /
+--     uiPlaceGoRecent(i)  -> { ok, error, places, recent, cannotGo, here, warning }  (places.lua;
+--     saved in places.FILE, apart from the settings)
 -- Values persist in FILE (jsonReadFile / jsonWriteFile, as taa_standalone). Every default is
 -- today's behaviour, so a missing or broken file changes nothing. The dev overlays themselves are
 -- per session (DEVTOOLS.md "State persists per session only"); only their parameters persist here.
@@ -22,6 +26,7 @@ local rebase = require('beamngEarth/rebase')
 local ui = require('beamngEarth/ui')
 local net = require('beamngEarth/net')
 local credits = require('beamngEarth/credits')
+local places = require('beamngEarth/places')
 
 M.FILE = '/settings/beamngEarth.json'
 M.VERSION = 1
@@ -319,6 +324,23 @@ function M.uiShowHud(on)
   ui.visible = on and true or false
   return ui.visible
 end
+
+-- Saved places (places.lua): the page's "Places" section. Each answers with the whole list again;
+-- an error inside answers { ok = false, error } (the page would otherwise get nothing back).
+local function placesCall(f, ...)
+  local ok, res = pcall(f, ...)
+  if ok then return res end
+  log('W', 'beamngEarth', 'places: ' .. tostring(res))
+  return { ok = false, error = 'Places: ' .. tostring(res), places = {}, recent = {} }
+end
+function M.uiPlaces() return placesCall(places.uiState) end
+function M.uiPlaceAddHere(name) return placesCall(places.uiAddHere, name) end
+function M.uiPlaceAdd(name, text) return placesCall(places.uiAdd, name, text) end
+function M.uiPlaceRename(id, name) return placesCall(places.uiRename, id, name) end
+function M.uiPlaceDelete(id) return placesCall(places.uiDelete, id) end
+function M.uiPlaceGo(id) return placesCall(places.uiGo, id) end
+function M.uiPlaceGoText(text) return placesCall(places.uiGoText, text) end
+function M.uiPlaceGoRecent(i) return placesCall(places.uiGoRecent, i) end
 
 ------------------------------------------------------------------------------------------
 -- extension hooks

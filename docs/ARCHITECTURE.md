@@ -706,3 +706,32 @@ over to AWS, a 400 wrote a permanent `.404` marker, and the User-Agent lived in 
   first message. No allocation per frame; the text is measured only when it changes.
 - Tests: `server/tests/test_credits.py`, `test_protocol_agreement.py`, `mod/tests/test_credits.lua`,
   `test_core_stubbed.lua`. Still to check in-game: readability, the pause-menu / big-map hiding.
+
+## Saved places (quick win 1; docs/DEVTOOLS.md; built offline 2026-10-11, branch feature/places)
+- Mod `places.lua` (a module, nothing per frame): saved places `{ id, name, lat, lon }` and recent
+  places `{ lat, lon, name?, kind }` in `/settings/beamngEarth_places.json` (apart from the settings
+  file; jsonReadFile / jsonWriteFile, lat/lon rounded to 1e-6). No file yet: the list starts with
+  `places.SEED` (docs/PLACES.md's first table, then El Capitan Meadow, Pikes Peak, the Fuji Subaru
+  Line 5th station, Everest North Base Camp, Stelvio Pass, the Blue Mountains) and is written at
+  once, so an emptied list stays empty. A file that cannot be read (or is not a places file): one
+  warning (log and page), its text copied to `beamngEarth_places.json.bak` (readFile / writeFile),
+  an empty list; broken entries are skipped with one warning, duplicate ids renumbered.
+- Recent places: `beamngEarth_core.teleport(lat, lon[, name])` records every teleport it sends
+  (`kind = 'teleport'`, the place's name when it came from the list) and the level start's own
+  (`kind = 'start'`, from `onLevelStart` or the first hello); newest first, an older one within 200 m
+  goes (its name stays when the new one has none), at most 10. A refused teleport (no server,
+  invalid lat/lon) is not recorded. The recording is a pcall: a file problem never stops a teleport.
+- Go (`places.goTo`): only with `beamngEarth_core` loaded, the server connected and a player vehicle
+  (`getPlayerVehicle(0)`), else the reason (the page shows it and disables Go); then
+  `beamngEarth_core.teleport(lat, lon, name)`.
+- `places.parseLatLon(text)`: "36.5785, -118.2923" (Google Maps' copy), space-separated, N/S/E/W as
+  prefix or suffix (either order: a N/S coordinate is the latitude), degrees-minutes(-seconds) with
+  or without °'" (and ′″, no-break spaces); refuses one number, three coordinates, two latitudes,
+  "-36 N", minutes/seconds >= 60, out-of-range values.
+- Settings page bridge (settings.lua): `uiPlaces`, `uiPlaceAddHere(name)`, `uiPlaceAdd(name, text)`,
+  `uiPlaceRename(id, name)`, `uiPlaceDelete(id)`, `uiPlaceGo(id)`, `uiPlaceGoText(text)`,
+  `uiPlaceGoRecent(i)`, each answering `{ ok, error, places, recent, cannotGo, here, warning }` (in a
+  pcall: an error inside answers `ok = false` with it, never nothing).
+- Tests: `mod/tests/test_places.lua` (seed on the first run only, round trip, corrupt files, recent
+  dedup / order / cap, parsing, go and its checks, the bridge), `test_core_stubbed.lua` (the level
+  start and console teleports recorded). The Vue section is checked in-game only.

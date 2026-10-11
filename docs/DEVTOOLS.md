@@ -200,3 +200,13 @@ player right now, e.g.:
 - HUD: once the page exists (index.js says so, or the pause menu lists the button) the imgui
   window is a compact status HUD, hidden at level start unless "Status HUD" is on; "Full window"
   brings the old window back for the session. Without the page nothing changes.
+- Places (quick win 1, 2026-10-11, branch feature/places; ARCHITECTURE.md "Saved places"): a
+  "Places" section (second, closed by default): "Save current place" (name field, the position
+  shown; Save off until there is one), a "Latitude, longitude" field (Google Maps' "lat, lon" paste,
+  N/S/E/W, degrees-minutes-seconds) with Go and Save (under the name above), the saved places with
+  Go / Rename (inline field, OK / Cancel) / Delete (the button reads "Confirm" for 4 s), and the
+  recent places (name or lat/lon, "level start" tag) with Go / Save. Go is disabled with a note
+  ("Companion server not connected", "No player vehicle") when it cannot teleport; errors and
+  "Going to ..." show in a line at the top. BngInput fields (`v-bng-text-input`, so typing does not
+  drive the car), BngButton text buttons, no glyphs, no ::before / ::after. The 2 s poll also
+  refreshes the lists (`uiPlaces`), so a teleport from the console or the level start shows up.
