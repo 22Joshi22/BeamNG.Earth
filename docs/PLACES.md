@@ -13,3 +13,12 @@ the rest of the list before and after. Teleport with `beamngEarth_core.teleport(
 | Monument Valley mesas | 36.7818, -110.1393 | mesas and buttes; near the stock Utah map's look; cliff faces stretched by the height field | v1.5 cliff materials, overhangs, biome reference (Utah) |
 | Arizona / Utah state line, Monument Valley | 36.998218, -110.102293 | a colour seam between two imagery surveys running for miles | colour matching (seam feather) |
 | Kayenta PV Solar Plant, Arizona | 36.7874, -110.2382 | a 55.3 MW solar farm (OSM way 750628044, since 2017-05): rows of panels only blurry in the imagery | energy infrastructure (ROADMAP), imagery resolution / real materials |
+
+## Photo benchmarks (a real photo and the same view in game)
+
+Photos stay where they are published (their licences differ from this repository's); only our own
+renders are kept here, with the camera that reproduces the photo.
+
+| View | Real photo | Game render | Camera | Differences seen (2026-10-11) |
+|---|---|---|---|---|
+| Mount Whitney summit, looking south | [A346, Brian W. Schaller, 2011](https://commons.wikimedia.org/wiki/File:A346,_from_summit_of_Mount_Whitney,_California,_USA,_2011.JPG) (CC BY-NC-SA 4.0 / FAL 1.3) | `docs/research/photo_benchmarks/whitney_summit_south_game_2026-10-11.jpg` (local, like every docs/research subfolder) | free camera 12 m south of 36.5785, -118.2923 at 4416.5 m, heading 170, pitch -18, FOV 65, time 0.92 (10:00 local) | layout matches (the wall, the plateau on the right, the lake basins on the left, the crest behind); the wall is satellite pixels stretched into vertical streaks (real: jointed granite blocks, v1.5 cliff materials); the plateau is smooth sand (real: granite slabs and boulders, v1.5 detail + v1.9 rocks); lakes are flat bright green imagery (real: dark blue water, Water); softer light and fewer snow patches than the photo (season, imagery date) |
