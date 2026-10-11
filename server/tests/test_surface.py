@@ -42,6 +42,41 @@ class ClassifyTest(unittest.TestCase):
         self.assertTrue((sf.classify(grass, gentle, 2.0) == sf.GRASS).all())
 
 
+class WarpTest(unittest.TestCase):
+    """Organic class borders: the land cover is read a few metres off, by smooth world-fixed noise."""
+
+    def grid(self, lat0=LAT, lon0=LON, n=64):
+        lat = lat0 + np.arange(n)[:, None] * 2.0 / 111320.0 + np.zeros((1, n))
+        lon = lon0 + np.arange(n)[None, :] * 2.0 / (111320.0 * np.cos(np.radians(lat0))) + np.zeros((n, 1))
+        return lat, lon
+
+    def offsets(self, lat, lon):
+        wl, wo = sf.warp(lat, lon)
+        return (wo - lon) * 111320.0 * np.cos(np.radians(lat)), (wl - lat) * 111320.0
+
+    def test_bounded_smooth_and_not_constant(self):
+        dx, dy = self.offsets(*self.grid())
+        bound = sum(a for _, a in sf.WARP_OCTAVES) + 1e-6
+        self.assertTrue((np.abs(dx) <= bound).all() and (np.abs(dy) <= bound).all())
+        self.assertLess(np.abs(np.diff(dx, axis=1)).max(), 3.0, "smooth between 2 m samples")
+        self.assertGreater(dx.std(), 1.0, "it does move the samples")
+
+    def test_world_fixed_and_deterministic(self):
+        lat, lon = self.grid()
+        a = sf.warp(lat, lon)
+        b = sf.warp(lat[10:20, 10:20], lon[10:20, 10:20])      # another block sharing these points
+        self.assertTrue(np.array_equal(a[0][10:20, 10:20], b[0]) and np.array_equal(a[1][10:20, 10:20], b[1]))
+        c = sf.warp(lat, lon)
+        self.assertTrue(np.array_equal(a[0], c[0]) and np.array_equal(a[1], c[1]))
+
+    def test_straight_border_becomes_irregular(self):
+        lat, lon = self.grid(n=128)
+        wl, _ = sf.warp(lat, lon)
+        north = wl > lat[64, 0]                                 # a straight east-west class border
+        rows = [int(np.argmax(north[:, j])) for j in range(128)]
+        self.assertGreater(len(set(rows)), 4, "the border wanders instead of staying on one row")
+
+
 class MaskTest(unittest.TestCase):
     def test_one_mask_per_material_every_sample_in_one(self):
         rng = np.random.default_rng(1)

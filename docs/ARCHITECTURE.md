@@ -898,6 +898,12 @@ three days of testing: dem 741 MB / 7.5k files, imagery 1.4 GB / 35k, deshadow 7
   import, docs/research/2026-10-11-engine-probes.md), making the 7 extra TerrainMaterials as runtime
   clones of `beamngEarthDirt` with other `groundmodelName`s (they join the material set by themselves).
   Any unusable layer list falls back to the single dirt layer.
+- Organic borders: WorldCover's 10 m square pixels gave stair-stepped, ruler-straight class
+  borders that the grass made visible (Monument Valley, 2026-10-11). `surface.warp` moves every
+  sample's land-cover lookup by smooth value noise on a fixed world grid (40 m / +-8 m and
+  12 m / +-3 m octaves, at most ~10.5 m), so borders curve while patches keep their size and place.
+  It is a pure function of the world position, so neighbouring blocks agree. Cost: ~64 ms per 512²
+  block on the heightmap thread.
 - Never waiting: a cell not cached yet reads as no data (dirt, as before) and is fetched in the
   background (1 thread, netfetch kind "prefetch", 3 km around the player at most every 500 m); the
   next blocks have it. `surfaceComplete` in the heightmap info says whether every cell was there.

@@ -52,6 +52,12 @@ ASPHALT, GRASS, DUSTY, LOOSE, ROCK, SNOW, MUD, DIRT = range(len(MATERIALS))
 CLASS_MATERIAL = {0: DIRT, 10: GRASS, 20: DUSTY, 30: GRASS, 40: DIRT, 50: ASPHALT, 60: LOOSE, 70: SNOW,
                   80: MUD, 90: MUD, 95: MUD, 100: GRASS}
 ROCK_SLOPE_DEG = 35.0       # steeper ground is rock (cliffs, scree), except snow
+# Organic borders (user 2026-10-11: rectangular grass in Monument Valley). WorldCover's 10 m square
+# pixels give stair-stepped, ruler-straight class borders, which the grass makes visible. Every
+# sample reads the land cover a few metres off, by smooth value noise on a fixed world grid (no
+# state, the same for every block): (feature size m, amplitude m) per octave.
+WARP_OCTAVES = ((40.0, 8.0), (12.0, 3.0))
+M_PER_DEG = 111320.0
 PREFETCH_M = 3000.0         # land cover is fetched this far around the player
 PREFETCH_MOVE_M = 500.0     # ... again after the player moved this far
 
@@ -71,6 +77,51 @@ def classify(classes, u, square):
     gy, gx = np.gradient(u, square)
     steep = (gx * gx + gy * gy) > math.tan(math.radians(ROCK_SLOPE_DEG)) ** 2
     return np.where(steep & (idx != SNOW), np.uint8(ROCK), idx).astype(np.uint8)
+
+
+def _hash01(ix, iy, seed):
+    """Deterministic pseudo-random in [-1, 1] per integer lattice point (uint64 arithmetic)."""
+    h = (ix.astype(np.int64).astype(np.uint64) * np.uint64(0x9E3779B185EBCA87)
+         ^ iy.astype(np.int64).astype(np.uint64) * np.uint64(0xC2B2AE3D27D4EB4F)
+         ^ np.uint64(seed) * np.uint64(0x165667B19E3779F9))
+    h ^= h >> np.uint64(29)
+    h *= np.uint64(0xBF58476D1CE4E5B9)
+    h ^= h >> np.uint64(32)
+    return (h >> np.uint64(11)).astype(np.float64) / float(1 << 53) * 2.0 - 1.0
+
+
+def _value_noise(x, y, seed):
+    """Smooth value noise in [-1, 1] at points (x, y) given in lattice units."""
+    x0 = np.floor(x)
+    y0 = np.floor(y)
+    fx = x - x0
+    fy = y - y0
+    fx = fx * fx * (3.0 - 2.0 * fx)
+    fy = fy * fy * (3.0 - 2.0 * fy)
+    ix = x0.astype(np.int64)
+    iy = y0.astype(np.int64)
+    a = _hash01(ix, iy, seed)
+    b = _hash01(ix + 1, iy, seed)
+    c = _hash01(ix, iy + 1, seed)
+    d = _hash01(ix + 1, iy + 1, seed)
+    return (a + (b - a) * fx) + ((c + (d - c) * fx) - (a + (b - a) * fx)) * fy
+
+
+def warp(lat, lon):
+    """(lat, lon) moved by a few metres of smooth noise (WARP_OCTAVES): where each sample reads the
+    land cover, so class borders follow organic curves instead of the 10 m pixel grid. A pure
+    function of the world position (blocks agree along their shared samples). Pure."""
+    lat = np.asarray(lat, np.float64)
+    lon = np.asarray(lon, np.float64)
+    m_lon = M_PER_DEG * np.cos(np.radians(lat))
+    xm = lon * m_lon                     # metres east of the lon 0 meridian (at this latitude)
+    ym = lat * M_PER_DEG                 # metres north of the equator
+    dx = np.zeros_like(lat)
+    dy = np.zeros_like(lat)
+    for k, (size, amp) in enumerate(WARP_OCTAVES):
+        dx += amp * _value_noise(xm / size, ym / size, 2 * k + 1)
+        dy += amp * _value_noise(xm / size, ym / size, 2 * k + 2)
+    return lat + dy / M_PER_DEG, lon + dx / np.maximum(m_lon, 1e-6)
 
 
 def mask_names(stem):
@@ -163,9 +214,9 @@ class Surface:
         return False
 
     def classes(self, lat, lon):
-        """(WorldCover class per point, complete): 0 (no data) where the cell is not cached yet."""
-        lat = np.asarray(lat, np.float64)
-        lon = np.asarray(lon, np.float64)
+        """(WorldCover class per point, complete): 0 (no data) where the cell is not cached yet. The
+        land cover is read at the warped points (warp: organic borders)."""
+        lat, lon = warp(lat, lon)
         out = np.zeros(lat.shape, np.uint8)
         complete = True
         for key in mapcells.cells_for_bbox(float(lat.min()), float(lon.min()), float(lat.max()), float(lon.max())):
