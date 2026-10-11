@@ -514,6 +514,9 @@ class ServerMessagesTest(test_server.ServerHarness):
         self.server.gravity = gravitymod.Provider(model=gravitymod.GravityModel.from_npz(GRAVITY_FIXTURE),
                                                   download=False)               # no network either
         self.server.credits = creditsmod.Credits(interval=0.1)
+        # the synthetic DEM's tiles as if Mapterhorn served them (dem.Dem.served): tiles with sources,
+        # so 'credits' goes out (the weather alone sends none)
+        self.server.dem.served = types.SimpleNamespace(get=lambda key: creditsmod.demmod.MAPTERHORN["name"])
 
     def check(self, m):
         kind = m["type"]
