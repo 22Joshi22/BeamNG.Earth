@@ -252,7 +252,8 @@ Format decoded from engine-written files (golden pairs in `tests/fixtures/`):
   counts as degraded in the status note. The far-tile prefetch asks with kind `prefetch` (only while
   the host's bucket is above half; dropped requests are fetched on demand at build time, once for
   every render waiting on them; a source whose circuit is open is skipped, so the prefetch warms the
-  source render fails over to), the de-shadow region fits with kind `background`.
+  source render fails over to), the de-shadow region fits and the colour-seam regions
+  (`--colormatch s2`) with kind `background`.
 - **Tone curve** (`--tone`, LUT per channel): +0.06 at black, −0.10 at white, ~0 at mid-grey: lifts
   baked shadows a little and stops bright rock/sand glowing under the engine's own lighting.
 - **De-shadowing** (`--deshadow lambert|full`, default off; docs/research/2026-10-10-deshadow-prototype.md,

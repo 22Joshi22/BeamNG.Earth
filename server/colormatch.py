@@ -50,7 +50,11 @@ Regions are computed by one background thread, nearest the anchor first (queued 
 PREP_M, and by prefetch / render for the tiles they need, within REQUEST_M). Until a region is ready
 its tiles render raw; render() reports the regions it lacked (pending=) so the server can rebuild
 those textures once they are ready (earthd: the listener marks the far tiles stale). Tiles of regions
-beyond REQUEST_M render raw without being reported (nothing is queued for them). The calls earthd
+beyond REQUEST_M render raw without being reported (nothing is queued for them). A region's imagery
+(z14 / z16 USGS and the S2 references) is fetched as netfetch kind "background", as the de-shadow
+fits are: dropped while the host's bucket is kept for demand (a cold start), and the region is tried
+again after RETRY_S with what was fetched so far cached. The inpaint margin of a tile being rendered
+is demand (render's own fetch). The calls earthd
 makes on its event loop (prepare, request, status) never decode a field (stat calls only); tile
 workers read fields from disk without holding the lock.
 """
@@ -1148,7 +1152,9 @@ class ColorMatch:
             except Exception as e:      # network trouble: tried again later
                 if self._closed:
                     return
-                log.warning("colormatch region %s: %s: %s", rk, type(e).__name__, e)
+                # deferred: the imagery host's bucket is kept for demand (a cold start): not a fault
+                (log.debug if getattr(e, "deferred", False) else log.warning)(
+                    "colormatch region %s: %s: %s", rk, type(e).__name__, e)
                 with self._lock:
                     self._failed[rk] = time.monotonic()
                     self._events.pop(rk).set()
@@ -1239,14 +1245,14 @@ class ColorMatch:
         W = len(cols) * TILE
         keys = {(i, j): (usgs, GRID_Z, c % n14, r) for j, r in enumerate(rows) for i, c in enumerate(cols)
                 if 0 <= r < n14}
-        got = im.tiles(keys.values())
+        got = im.tiles(keys.values(), kind="background")     # never the demand budget (netfetch)
         have = {ij for ij, key in keys.items() if got[key] is not None and not got[key].uniform}
         if not have & {(i, j) for i in range(h, h + k) for j in range(h, h + k)}:
             return _seams_empty()           # no USGS in the core (outside its coverage)
         ref, todo = {}, sorted(have)
         for name in REFS:                   # S2 2023, per tile 2016 where 2023 has nothing
             rkeys = {ij: (SOURCES[name], GRID_Z, keys[ij][2], keys[ij][3]) for ij in todo}
-            rgot = im.tiles(rkeys.values())
+            rgot = im.tiles(rkeys.values(), kind="background")
             for ij in todo:
                 t = rgot[rkeys[ij]]
                 if t is not None and not t.uniform:
@@ -1264,7 +1270,7 @@ class ColorMatch:
             return _seams_empty()
 
         def fetch16(tiles):
-            g = im.tiles([(usgs, 16, tx, ty) for tx, ty in tiles])
+            g = im.tiles([(usgs, 16, tx, ty) for tx, ty in tiles], kind="background")
             return {(tx, ty): None if (t := g[(usgs, 16, tx, ty)]) is None or t.uniform else t.rgb for tx, ty in tiles}
         s = detect_region(U, S, valid, self.cell_m(rk), (h * TILE, (h + k) * TILE, h * TILE, (h + k) * TILE),
                           TileSampler(fetch16, (rows[0] * TILE * LINE_F, cols[0] * TILE * LINE_F), 16))

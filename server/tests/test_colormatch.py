@@ -590,6 +590,51 @@ class S2OnlyStepTest(unittest.TestCase):
                 self.assertEqual(len(s["y"]), 0, rk)
 
 
+class KindImagery(WorldImagery):
+    """Records the netfetch kind each load ran as; `defer`: background loads fail as a dropped
+    (deferred) request would, like a host whose bucket is kept for demand."""
+    defer = False
+
+    def _load(self, key):
+        kind = getattr(self._local, "kind", "demand")
+        with self._lock:
+            self.kinds = getattr(self, "kinds", set()) | {kind}
+        if self.defer and kind != "demand":
+            raise imagery.ImageryError("deferred (test)", deferred=True)
+        return super()._load(key)
+
+
+class NetfetchKindTest(unittest.TestCase):
+    def test_region_fetches_are_background(self):
+        """A region's detection window (USGS and the S2 references) is fetched as netfetch kind
+        "background", like the de-shadow fits: never the demand budget of the textures."""
+        with tempfile.TemporaryDirectory() as tmp:
+            w = World(seam=False)
+            c = cm.ColorMatch(os.path.join(tmp, "c"), "s2", region_z=RZ)
+            im = KindImagery(os.path.join(tmp, "c", "imagery"), w, colormatch=c, tone=0.0)
+            self.addCleanup(im.close)
+            self.assertIs(c.wait(regions(w)[0], 600), cm.EMPTY)
+            self.assertEqual(im.kinds, {"background"})
+
+    def test_deferred_region_is_quiet_and_retried(self):
+        """A region whose background fetches the limiter dropped is not ready (its tiles render raw),
+        logs no warning (a cold start is no fault) and is queued again after RETRY_S."""
+        with tempfile.TemporaryDirectory() as tmp:
+            w = World(seam=False)
+            c = cm.ColorMatch(os.path.join(tmp, "c"), "s2", region_z=RZ)
+            im = KindImagery(os.path.join(tmp, "c", "imagery"), w, colormatch=c, tone=0.0)
+            self.addCleanup(im.close)
+            im.defer = True
+            rk = regions(w)[0]
+            with self.assertNoLogs("earthd.colormatch", "WARNING"):
+                self.assertIsNone(c.wait(rk, 600))
+            self.assertIsNone(c.status(rk))
+            self.assertIn(rk, c._failed)
+            im.defer = False
+            c._failed[rk] -= cm.RETRY_S             # the retry time has passed
+            self.assertIs(c.wait(rk, 600), cm.EMPTY)
+
+
 class LoopSideTest(unittest.TestCase):
     def test_no_field_decoded_on_the_event_loop(self):
         """prepare (anchor), request (prefetch) and status (a finished tile) run on earthd's event
