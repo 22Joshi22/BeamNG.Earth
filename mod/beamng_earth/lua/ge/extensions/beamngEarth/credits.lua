@@ -8,8 +8,8 @@
 -- of the player (or of the far field) change, at most once a second. Before the first one (or from
 -- an older server) the session's attribution line is shown instead (core's attributionText).
 --
--- Cost: no window. One background draw-list rectangle and one AddText per frame; the text's size is
--- measured (CalcTextSize) only when the text, the size or the viewport width changed. Hidden when
+-- Cost: no window. One background draw-list rectangle and one AddText1 per frame; the text is
+-- wrapped and measured (CalcTextSize) only when the text, the font size or the viewport width changed. Hidden when
 -- off, outside our world, while the pause menu ('menu*' UI states, onUiChangedState via core) or the
 -- big map is open.
 -- Settings (settings.lua): creditsVisible, creditsCorner, creditsSize.
@@ -32,7 +32,7 @@ M.size = 'small'
 local joined = nil        -- near (+ '\n' + far) of the last credits message, nil before one
 local near, far = nil, nil
 local uiHidden = false    -- the game's UI state (onUiChangedState) hides the credits
-local layout = nil        -- { text, px, vw, fsz, wrap, w, h }: the measured text
+local layout = nil        -- { text, vw, fsz, wrap, wrapped, w, h }: the measured text
 local textU32, backU32 = nil, nil
 local vecs = nil          -- reused ImVec2 (text position, backdrop corners)
 M.draws = 0               -- frames drawn (tests, the dev stats)
@@ -106,30 +106,38 @@ function M.place(corner, px, py, vw, vh, w, h)
   return x, y
 end
 
--- Once per frame. active: our world is shown (core's st.active); fallback: the attribution line
--- (string or function, only called while no credits message arrived). Returns true if drawn.
-function M.draw(active, fallback)
-  if not M.enabled or not active or M.hiddenByUi() then return false end
-  local text = joined
-  if not text then
-    if type(fallback) == 'function' then text = fallback() else text = fallback end
+-- The text wrapped at `wrap` px by inserting line breaks between words (AddText1 does not wrap).
+-- Called only when the layout changes.
+local function wrapText(im, text, wrap)
+  local out = {}
+  for para in (text .. '\n'):gmatch('(.-)\n') do
+    local line = ''
+    for word in para:gmatch('%S+') do
+      local cand = (line == '') and word or (line .. ' ' .. word)
+      if line ~= '' and im.CalcTextSize(cand).x > wrap then
+        out[#out + 1] = line
+        line = word
+      else
+        line = cand
+      end
+    end
+    out[#out + 1] = line
   end
-  if not nonEmpty(text) then return false end
-  local im = rawget(_G, 'ui_imgui')
-  if not im or not im.GetMainViewport then return false end
+  return table.concat(out, '\n')
+end
+
+local function drawImgui(im, text)
   local vp = im.GetMainViewport()
   if not vp then return false end
-  local font, fsz = im.GetFont(), im.GetFontSize()
-  if not font or not fsz or fsz <= 0 then return false end
-  local px = M.SIZE_PX[M.size] or M.SIZE_PX.small
+  local fsz = im.GetFontSize()
+  if not fsz or fsz <= 0 then return false end
   local vw, vh = vp.Size.x, vp.Size.y
   local L = layout
-  if not L or L.text ~= text or L.px ~= px or L.vw ~= vw or L.fsz ~= fsz then
-    -- CalcTextSize measures in the current font size; the glyphs scale linearly to px
+  if not L or L.text ~= text or L.vw ~= vw or L.fsz ~= fsz then
     local wrap = math.max(M.MIN_WRAP, vw * M.WRAP_FRACTION)
-    local s = px / fsz
-    local ts = im.CalcTextSize(text, nil, false, wrap / s)
-    L = { text = text, px = px, vw = vw, fsz = fsz, wrap = wrap, w = ts.x * s, h = ts.y * s }
+    local wrapped = wrapText(im, text, wrap)
+    local ts = im.CalcTextSize(wrapped)
+    L = { text = text, vw = vw, fsz = fsz, wrap = wrap, wrapped = wrapped, w = ts.x, h = ts.y }
     layout = L
     M.measures = M.measures + 1
   end
@@ -142,9 +150,33 @@ function M.draw(active, fallback)
   b.x, b.y = x + L.w + M.PAD, y + L.h + M.PAD
   local dl = im.GetBackgroundDrawList1() -- under every imgui window, over the 3D view
   im.ImDrawList_AddRectFilled(dl, a, b, backU32, 3)
-  im.ImDrawList_AddText2(dl, font, px, p, textU32, text, nil, L.wrap)
-  M.draws = M.draws + 1
+  -- AddText1 (the current font at its size), as the game's own editor overlays draw text: the
+  -- binding's GetFont() fails in 0.39 ("bad argument #3 to 'GetFont'", in-game 2026-10-11), so
+  -- AddText2 with a font and a size cannot be used; the size setting waits for another way.
+  im.ImDrawList_AddText1(dl, p, textU32, L.wrapped, nil)
   return true
+end
+
+-- Once per frame. active: our world is shown (core's st.active); fallback: the attribution line
+-- (string or function, only called while no credits message arrived). Returns true if drawn.
+-- An error in the imgui calls turns the overlay off (logged once) instead of failing every frame.
+function M.draw(active, fallback)
+  if not M.enabled or not active or M.hiddenByUi() then return false end
+  local text = joined
+  if not text then
+    if type(fallback) == 'function' then text = fallback() else text = fallback end
+  end
+  if not nonEmpty(text) then return false end
+  local im = rawget(_G, 'ui_imgui')
+  if not im or not im.GetMainViewport then return false end
+  local ok, drawn = pcall(drawImgui, im, text)
+  if not ok then
+    M.enabled, M.failed = false, tostring(drawn)
+    if log then log('E', 'beamngEarth.credits', 'data credits overlay turned off: ' .. M.failed) end
+    return false
+  end
+  if drawn then M.draws = M.draws + 1 end
+  return drawn
 end
 
 -- For tests: forget the cached measurement and colours (a new imgui stub).

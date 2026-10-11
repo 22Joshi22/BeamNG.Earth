@@ -705,13 +705,14 @@ local creditsMod = require('beamngEarth/credits')
 creditsMod._reset()
 local drawnCredits = {}
 ui_imgui.GetMainViewport = function() return { Pos = { x = 0, y = 0 }, Size = { x = 1920, y = 1080 } } end
-ui_imgui.GetFont = function() return 'font' end
+ui_imgui.GetFont = function() error("GetFont() fails in 0.39") end
 ui_imgui.GetFontSize = function() return 16 end
 ui_imgui.CalcTextSize = function(t) return { x = #t * 8, y = 16 } end
 ui_imgui.ImVec2 = function(x, y) return { x = x, y = y } end
-ui_imgui.ImDrawList_AddText2 = function(dl, font, px, pos, col, text) drawnCredits[#drawnCredits + 1] = text end
+ui_imgui.ImDrawList_AddText1 = function(dl, pos, col, text) drawnCredits[#drawnCredits + 1] = text end
 frames(1)
-T.check(#drawnCredits == 1 and drawnCredits[1] == core.attribution(), 'credits: the attribution line before any credits message')
+local function words(x) return (x:gsub('%s+', ' ')) end -- the overlay wraps long lines at spaces
+T.check(#drawnCredits == 1 and words(drawnCredits[1]) == words(core.attribution()), 'credits: the attribution line before any credits message')
 serverSend({ type = 'credits', v = 1, near = 'Imagery: USGS The National Map | Elevation: Mapterhorn (see mapterhorn.com/attribution)',
   far = 'Far imagery: EOX', ids = { 'img:usgs', 'dem:mapterhorn' }, farIds = { 'img:eox2023' } })
 drawnCredits = {}

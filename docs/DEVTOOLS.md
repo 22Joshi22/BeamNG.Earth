@@ -62,16 +62,20 @@ player right now, e.g.:
   `Server()` has none, so the golden message streams (test_cli_default, test_v131_default) are
   unchanged. Agreement table, server/README.md protocol table.
 - **Mod** `beamngEarth/credits.lua` (driven by core.lua): one background-draw-list rectangle
-  (black, 30 %) and one `ImDrawList_AddText2` per frame (white, 80 %), no window; the text is
-  measured with `CalcTextSize` only when it, the size or the screen width changes, and wraps at 60 %
-  of the screen width. Shown while our world is active (`st.active`), hidden in the pause menu (UI
+  (black, 30 %) and one `ImDrawList_AddText1` per frame (white, 80 %, the UI font at its own size),
+  no window; the text is wrapped (line breaks between words) and measured with `CalcTextSize` only
+  when it, the font size or the screen width changes, at 60 % of the screen width. (In-game
+  2026-10-11 the first build used `GetFont()` + `AddText2`: the 0.39 binding's `GetFont()` throws
+  "bad argument #3", every frame, which flooded the log and stalled the MCP server. Any imgui error
+  now turns the overlay off once, logged.) Shown while our world is active (`st.active`), hidden in the pause menu (UI
   state `menu*`, via core's `onUiChangedState`), on loading screens and while the big map is open
   (`freeroam_bigMapMode.bigMapActive()`). Until the first credits message (an older server, or the
   first seconds of a session) it shows the session's attribution line (`hello.attribution`, or the
   built-in one). A new hello clears the previous session's credits.
 - **Settings** (settings.lua + EarthSettings.vue, "Interface"): `creditsVisible` (on),
   `creditsCorner` (bottom-left / bottom-right / top-left / top-right; bottom-left), `creditsSize`
-  (small 11 px / normal 14 px; small), persisted in `/settings/beamngEarth.json`; the
+  (small 11 px / normal 14 px; small; **no effect yet**: AddText1 draws at the UI font's size; a
+  sized font needs a working ImFont handle or a borderless window with SetWindowFontScale), persisted in `/settings/beamngEarth.json`; the
   "Attribution" section shows the credits on screen now.
 - Tests: `server/tests/test_credits.py` (wording against the sources' own credits, DEM keys vs what
   `Dem.sample` reads, `Dem.served`, per-tile sources in `make_tile`, the near / far split, change-only

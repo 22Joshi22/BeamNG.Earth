@@ -28,7 +28,7 @@ end
 local function newImgui()
   return {
     GetMainViewport = function() return { Pos = { x = 0, y = 0 }, Size = { x = VW, y = VH } } end,
-    GetFont = function() return 'font' end,
+    GetFont = function() error("bad argument #3 to 'GetFont' (table expected, got nil)") end, -- as in 0.39
     GetFontSize = function() return FONT_PX end,
     CalcTextSize = function(text, _, _, wrap)
       measured[#measured + 1] = { text = text, wrap = wrap }
@@ -42,8 +42,8 @@ local function newImgui()
     ImDrawList_AddRectFilled = function(dl, a, b, col, r)
       draws[#draws + 1] = { kind = 'rect', dl = dl, a = { x = a.x, y = a.y }, b = { x = b.x, y = b.y }, col = col }
     end,
-    ImDrawList_AddText2 = function(dl, font, px, pos, col, text, textEnd, wrap)
-      draws[#draws + 1] = { kind = 'text', dl = dl, font = font, px = px, x = pos.x, y = pos.y, col = col, text = text, wrap = wrap }
+    ImDrawList_AddText1 = function(dl, pos, col, text, textEnd)
+      draws[#draws + 1] = { kind = 'text', dl = dl, x = pos.x, y = pos.y, col = col, text = text }
     end,
   }
 end
@@ -81,9 +81,8 @@ T.check(fbCalls == 0, 'with credits from the server the fallback is never called
 T.check(#draws == 2 and draws[1].kind == 'rect' and draws[2].kind == 'text', 'one backdrop + one text draw per frame')
 local t = textDraw()
 T.check(t.dl == 'bg' and draws[1].dl == 'bg', 'on the background draw list (under every imgui window)')
-T.check(t.text == NEAR .. '\n' .. FAR and t.px == 11 and t.font == 'font', 'the server\'s text at 11 px in the UI font')
+T.check(t.text == NEAR .. '\n' .. FAR, 'the server\'s text (AddText1: the UI font at its size; GetFont() fails in 0.39)')
 T.check(t.col == '1.00,1.00,1.00,0.80' and draws[1].col == '0.00,0.00,0.00,0.30', 'semi-transparent text on a faint backdrop')
-T.check(t.wrap == VW * credits.WRAP_FRACTION, 'wraps at 60 % of the screen width')
 credits.onMessage({ type = 'credits', near = NEAR, far = '' })
 T.check(credits.serverText() == NEAR, 'an empty far part: one line')
 credits.onMessage({ type = 'credits', near = '', far = FAR })
@@ -91,24 +90,21 @@ T.check(credits.serverText() == FAR, 'only a far part: that line')
 credits.onMessage({ type = 'credits', near = NEAR, far = FAR })
 
 ------------------------------------------------------------------------------------------
--- layout: corners, sizes, measuring only on change
+-- layout: corners, measuring only on change, wrapping by inserted line breaks
 
 local m = credits.MARGIN + credits.PAD
-local s = 11 / FONT_PX
-local w = math.max(#NEAR, #FAR) * GLYPH * s
-local h = 2 * FONT_PX * s
+local w = math.max(#NEAR, #FAR) * GLYPH
+local h = 2 * FONT_PX
 credits._reset()
-measured = {}
 frame(true)
 t = textDraw()
 T.near(t.x, m, 1e-9, 'bottom-left: x')
 T.near(t.y, VH - m - h, 1e-9, 'bottom-left: y (two lines above the bottom edge)')
 T.near(draws[1].a.x, t.x - credits.PAD, 1e-9, 'backdrop around the text (left)')
 T.near(draws[1].b.y, t.y + h + credits.PAD, 1e-9, 'backdrop around the text (bottom)')
-T.check(#measured == 1 and math.abs(measured[1].wrap - VW * 0.6 / s) < 1e-9,
-  'measured once, at the font size: wrap width / scale')
+T.check(credits.measures == 1, 'measured once')
 for _ = 1, 10 do frame(true) end
-T.check(#measured == 1, 'unchanged text: not measured again (10 frames)')
+T.check(credits.measures == 1, 'unchanged text: not measured again (10 frames)')
 T.check(credits.setCorner('top-right') == 'top-right', 'corner top-right')
 frame(true)
 t = textDraw()
@@ -119,29 +115,43 @@ T.check(math.abs(t.x - m) < 1e-9 and math.abs(t.y - m) < 1e-9, 'top-left')
 credits.setCorner('bottom-right'); frame(true); t = textDraw()
 T.check(math.abs(t.x - (VW - m - w)) < 1e-9 and math.abs(t.y - (VH - m - h)) < 1e-9, 'bottom-right')
 T.check(credits.setCorner('middle') == 'bottom-right', 'an unknown corner is refused')
-T.check(#measured == 1, 'a corner change needs no new measurement')
-T.check(credits.setSize('normal') == 'normal', 'size normal')
-frame(true); t = textDraw()
-T.check(t.px == 14 and #measured == 2, 'normal: 14 px, measured again')
-T.near(t.y, VH - m - 2 * FONT_PX * 14 / FONT_PX, 1e-9, 'normal: the block grows with the size')
-T.check(credits.setSize('huge') == 'normal', 'an unknown size is refused')
+T.check(credits.measures == 1, 'a corner change needs no new measurement')
+T.check(credits.setSize('normal') == 'normal' and credits.setSize('huge') == 'normal', 'the size setting is kept (no effect with AddText1 yet)')
 credits.setSize('small')
 credits.setCorner('bottom-left')
--- a narrow window wraps the text onto more lines
+-- a narrow window wraps the text onto more lines (line breaks between words)
 VW = 800
 ui_imgui = newImgui()
 frame(true); t = textDraw()
-T.check(#measured == 3 and t.wrap == 800 * credits.WRAP_FRACTION, 'a resized screen: measured again, wrap width follows')
-local nLines = select(2, lines(NEAR .. '\n' .. FAR, t.wrap / s))
-T.check(nLines > 2, 'long lines wrap on a narrow screen (' .. nLines .. ' lines)')
-T.near(t.y, VH - m - nLines * FONT_PX * s, 1e-9, 'bottom-left: the wrapped block still sits on the bottom edge')
+local nLines = select(2, t.text:gsub('\n', '\n')) + 1
+T.check(credits.measures > 1 and nLines > 2, 'a resized screen: wrapped again onto ' .. nLines .. ' lines')
+for ln in (t.text .. '\n'):gmatch('(.-)\n') do
+  T.check(#ln * GLYPH <= math.max(credits.MIN_WRAP, 800 * credits.WRAP_FRACTION), 'each line fits the wrap width: ' .. #ln)
+end
+T.check(t.text:gsub('%s+', ' ') == (NEAR .. ' ' .. FAR):gsub('%s+', ' '), 'wrapping only changes the whitespace')
+T.near(t.y, VH - m - nLines * FONT_PX, 1e-9, 'bottom-left: the wrapped block still sits on the bottom edge')
 VW = 1920
 ui_imgui = newImgui()
 -- a new message: measured again
 credits.onMessage({ type = 'credits', near = 'Imagery: EOX', far = '' })
-local before = #measured
+local before = credits.measures
 frame(true)
-T.check(#measured == before + 1 and textDraw().text == 'Imagery: EOX', 'a new text is measured once')
+T.check(credits.measures == before + 1 and textDraw().text == 'Imagery: EOX', 'a new text is measured once')
+
+-- an imgui error turns the overlay off once instead of failing every frame (in-game 2026-10-11:
+-- GetFont() threw every frame and flooded the log)
+do
+  local good = ui_imgui
+  local bad = newImgui()
+  bad.ImDrawList_AddText1 = function() error('imgui broke') end
+  ui_imgui = bad
+  local ok, r = pcall(frame, true)
+  T.check(ok and r == false and not credits.enabled and credits.failed:find('imgui broke', 1, true), 'an imgui error: off, no error raised')
+  T.check(not frame(true), '... and stays off')
+  ui_imgui = good
+  credits.setEnabled(true)
+  credits._reset()
+end
 
 ------------------------------------------------------------------------------------------
 -- hidden
@@ -186,12 +196,12 @@ local VP = { Pos = { x = 0, y = 0 }, Size = { x = 1920, y = 1080 } }
 local SIZE = { x = 100, y = 16 }
 local nDraw = 0
 ui_imgui = {
-  GetMainViewport = function() return VP end, GetFont = function() return 'font' end,
+  GetMainViewport = function() return VP end,
   GetFontSize = function() return FONT_PX end, CalcTextSize = function() return SIZE end,
   ImVec2 = function(x, y) return { x = x, y = y } end, ImVec4 = function() return 0 end,
   GetColorU322 = function() return 0 end, GetBackgroundDrawList1 = function() return 'bg' end,
   ImDrawList_AddRectFilled = function() end,
-  ImDrawList_AddText2 = function() nDraw = nDraw + 1 end,
+  ImDrawList_AddText1 = function() nDraw = nDraw + 1 end,
 }
 credits._reset()
 credits.onMessage({ type = 'credits', near = NEAR, far = FAR })
