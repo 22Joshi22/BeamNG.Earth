@@ -141,6 +141,7 @@ Physics geometry always comes from open data:
 - **Buildings and roads:** Overture and OpenStreetMap, from extracts the server
   holds itself. Never query the public Overpass API at runtime.
 - **Land cover and vegetation:** ESA WorldCover and Meta canopy height.
+- Both are read per global cell by the map-data pipeline (`server/mapdata.py`, "Map data" below).
 - **Gravity:** WGS84 normal gravity (Somigliana + free air) plus the EGM2008 anomalies (NGA,
   degree 2190, about 9 km; 74 MB once from GeographicLib's mirror of NGA's coefficients;
   45 ms a point): `server/gravity.py`, described in server/README.md "Gravity". Real g runs
@@ -882,3 +883,97 @@ three days of testing: dem 741 MB / 7.5k files, imagery 1.4 GB / 35k, deshadow 7
   `test_protocol_agreement.SessionsAgreementTest`, `test_modsim` (the guard's step and the
   farfield sessions, Lua against port), `test_server.SessionCleanupTest`; luajit `test_banner`,
   `test_edgeguard`, `test_core_robustness`.
+
+## Map data (`server/mapdata.py`; built offline 2026-10-11, branch feature/mapdata)
+The shared input of every content feature (roads, buildings, water, land use, trees, ground
+types), per docs/research/2026-10-10-world-data-sources.md. Not wired into earthd or the mod yet:
+`mapdata.MapData` is the integration surface. Modules (all new): `mapcells.py` (cell keys),
+`rangeread.py` (range reads + block cache + the fsspec filesystem DuckDB reads through), `cog.py`
+(minimal COG reader), `maprasters.py` (WorldCover, CHM), `mapgeom.py` (columnar features, WKB,
+clipping), `overture.py` (STAC index, fetch planning, DuckDB), `mapdata.py` (cache, provenance,
+CLI). The only change to an existing module: host policies in `netfetch.POLICIES`.
+- **Cells**: Web-Mercator z14 tiles `14/x/y` (2.4 km at the equator, 1.9 km at 39 N, 1.2 km at
+  60 N), keyed only by position. Chosen over a geodetic grid or S2 because the sources are cut in
+  it (a CHMv2 file is exactly 16 x 16 cells; the imagery and DEM tiles nest in it; vector tile
+  services stop at z14), its area varies with cos(lat) like a geodetic grid's, and S2's evenness
+  buys nothing for storage cells. v1.4 M6 tiles (S2) and the generators use
+  `mapcells.cells_for_bbox()` to find the cells under any footprint and merge by feature id (only
+  valid keys, each once; `MapData` refuses a key outside the grid). A whole feature spanning cells
+  is listed in each and `own`ed by the one containing its bbox centre; a water / land-use polygon
+  clipped to the cell is that cell's piece and owned there; so "build the owned features of every
+  cell" builds each feature exactly once and every polygon whole. Edges are exact: a point on an
+  edge belongs to the cell east / south of it, as `CellKey.bounds()` puts the edge (the tile
+  formula alone misplaced ~1 in 7 points on a north edge); a centre at exactly 180 E is owned by the
+  last column (the only one listing it). No cells beyond ±85.05° (as the imagery and the DEM).
+- **Content = f(cell key, release ids, VERSION)**: features sorted by GERS id (deduplicated by
+  highest version), rules in list order, polygons clipped in IEEE arithmetic with the "no area
+  left" test summed exactly (`math.fsum`: np.dot's rounded sum kept or dropped slivers depending on
+  the first vertex and on the CPU's BLAS kernel), rasters on the
+  sources' own pixel grids (WorldCover: the global 1/12000° grid window over the cell; CHM: the
+  cell's 2048² block of its quadkey-10 file), local metres from the cell's ENU tangent frame.
+  `CellData.digest()` hashes it; tests show the same digest cold and warm, layer by layer, after
+  the blocks were fetched in reverse order, with the rows shuffled inside the files, and from
+  concurrent calls.
+- **Overture fetch**: the release's STAC collection lists every file's bbox, so only the 1-4
+  intersecting files are opened (the whole-release glob cost 35 s per query in the research). Then
+  `overture.Reader._plan` fetches in parallel (4 at once): the footers; the bbox columns of the row
+  groups whose statistics touch the cell; the used columns of the row groups with a matching row.
+  DuckDB (no extensions installed or loaded; GEOMETRY and `ST_AsWKB` are core in 1.5; its own
+  sequential prefetching off) then reads from the block cache through `rangeread.NetfetchFS`, the
+  request kind being the protocol (`nfdemand://`, `nfprefetch://`, `nfbackground://`,
+  `nfpredownload://`). Measured on
+  the Monument Valley cell: DuckDB on its own 21 s / 49 MB; with prefetching off 13 s / 16 MB;
+  planned and parallel 2.9 s / 34 MB (the 8 layers of a cell run 4 at a time). Found on the way:
+  DuckDB 1.5 stopped skipping row groups by statistics when the scan and a `QUALIFY` window were
+  in one statement with many columns (read every row group between the matches: +12 MB, +9 s for a
+  city cell), so the scan and the dedup are two statements. The Azure mirror is asked when AWS
+  cannot deliver (same bytes, same block cache).
+- **Rasters**: COG range reads with `cog.py` (classic/BigTIFF, Deflate/PackBits/none, predictor
+  2, sparse tiles; no GDAL, no tifffile). A missing file (open ocean for WorldCover, no CHM
+  coverage) is a 404 remembered by a marker; the cell gets class 0 / no canopy layer. (Checked
+  2026-10-11: the WorldCover, CHM, Overture S3 and Azure hosts answer 404, not 403, for a missing
+  object.) No index gives a COG's size, so the size learned from the first Content-Range is kept
+  in `<block dir>/size` and every cached block's length is checked.
+- **Cache**: `<cache>/mapdata/v<VERSION>/<source>/<release>/<layer>/14/<x>/<y>.npz` per layer (no
+  pickles; written atomically; an empty layer is cached too), `<cache>/mapdata/raw/<source>/<release>/`
+  for 256 KiB range blocks of the source files and the STAC JSON (immutable, shared across
+  VERSIONs). The cache cap's LRU can evict any file: it is fetched again. A damaged file is a miss,
+  not an error: a layer file that does not load (truncated, a bad deflate stream, no provenance)
+  is rebuilt from the raw blocks, a block of the wrong length (a crash after `os.replace` without
+  fsync can leave it short or empty) is fetched again. Hot blocks are also kept in memory, in one
+  LRU for the process (`rangeread.MEM_BYTES`, 64 MiB; it was 32 MiB per COG and 8 MiB per parquet
+  file, up to ~0.75 GiB after a long drive). One dense city cell is
+  3.3 MB of layer files and ~66 MB of raw blocks (they serve the neighbours too: the next cells
+  cost 0-9 MB); a desert cell 60-90 KB and 35 MB.
+- **Release pinning**: `overture.RELEASE = "2026-09-23.1"`; `mapdata.py --latest` prints the newest;
+  bump the constant (cells are cached per release; a data update may change a place, a restart
+  never does). A pinned release Overture has deleted raises `ReleaseGone` for uncached cells (also
+  when its STAC index is cached and the files answer 404).
+- **Provenance**: per cell a list of records (Overture per theme with the source datasets and
+  licences of its features and the release, WorldCover with its files, CHM with its file), each
+  with the exact attribution and licence (CREDITS.md; Overture's per-theme texts whole, read
+  2026-10-11); `CellData.credits()` / `credit_line()` for the overlay (`mapdata.CREDIT_LINES`).
+  The overlay line is Overture's own; where a cell's features come from a CC BY dataset (Esri
+  Community Maps, Google Open Buildings, ...) its provenance names it, and the overlay wiring must
+  credit it too.
+- **What the data holds** (2026-10-11): Fells Point: 3,013 road segments (footway 1,609, service
+  523, residential 351, primary 147, secondary 133...; surface on 56 %, width on 2 %, no lane
+  counts), 12,458 buildings but heights on only 1.9 % (Microsoft ML 221, OSM 21) and floors on
+  3.3 %, so building height needs a model; WorldCover 84 % built-up; canopy up to 25 m. Monument
+  Valley: 10 roads (tertiary / track / unclassified), 1 building, 92.5 % bare. Kayenta: tracks,
+  11 buildings, the solar plant's polygon, substations, towers and lines in `infrastructure`; the
+  CHM shows the panel rows as 1-8 m "canopy", so tree placement must mask power plants and
+  built-up land.
+- **A dense city cell** (review, 2026-10-11, Midtown Manhattan 40.7549, -73.9840 = 14/4824/6157):
+  4.8 s cold (90 MB, 64 requests from S3; 2.5 MB of layer files), 2,975 road segments (incl. rail
+  and subway), 2,707 buildings with heights on 96.7 %, 4,420 infrastructure features; peak RSS
+  381 MB (DuckDB takes ~150-200 MB per layer query, 4 run at once). In memory one city cell is
+  ~37-40 MB, 16 MB of it the infrastructure `tags` column (fixed-width UTF-32 sized by the longest
+  JSON, 895 characters): a follow-up should store long text columns ragged (UTF-8 + offsets).
+- **Not yet** (ROADMAP "Shared map data"): wiring into earthd (one MapData on the server's Fetcher,
+  prefetch of the cells ahead along the velocity as kind `prefetch`), the credits overlay ids
+  (with the CC BY datasets of the provenance), building parts, places, OSM tags (lanes, width)
+  joined by `src_record`, NLCD, the cache cap. Offline, a cell with one layer never fetched raises
+  `Offline` as a whole; the earthd wiring may want the cached layers without it.
+- Tests: `server/tests/test_mapdata.py` with `tests/mapfixtures.py` (synthetic GeoParquet written by
+  DuckDB, synthetic COGs, a Range-serving fake transport; no network).

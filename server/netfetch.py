@@ -118,6 +118,16 @@ POLICIES = {
     # the EGM2008 coefficients (74 MB once; gravity.py resumes and checks the SHA-256 itself)
     "downloads.sourceforge.net": HostPolicy(rate=1.0, burst=1.0, max_conc=1, daily_budget=None,
                                             offline_ok=True, miss_ttl=None, max_attempts=1, timeout=30.0),
+    # map data (mapdata.py; §3.3 / §5.2 "Overture / WorldCover / CHM S3, Azure": 20/s, 40, 4 at once):
+    # range reads of immutable release files, kept forever; the STAC index is small JSON on CloudFront
+    "stac.overturemaps.org": HostPolicy(rate=5.0, burst=10.0, max_conc=2, daily_budget=5000,
+                                        allow_prefetch=True, offline_ok=True, timeout=20.0),
+    **{h: HostPolicy(rate=20.0, burst=40.0, max_conc=4, daily_budget=None, allow_prefetch=True,
+                     offline_ok=True, miss_ttl=None, binary=True, timeout=30.0)
+       for h in ("overturemaps-us-west-2.s3.us-west-2.amazonaws.com",
+                 "overturemapswestus2.blob.core.windows.net",
+                 "esa-worldcover.s3.eu-central-1.amazonaws.com",
+                 "dataforgood-fb-data.s3.amazonaws.com")},
     # never at runtime (OSM Overpass, OSMF vector tiles, Protomaps builds): §3.3
     "overpass-api.de": HostPolicy(denied=True, daily_hard=0),
     "vector.openstreetmap.org": HostPolicy(denied=True, daily_hard=0),
