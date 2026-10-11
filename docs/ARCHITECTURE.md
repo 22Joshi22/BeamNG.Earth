@@ -450,6 +450,62 @@ their chunk arrived.
   (no live texture swap message yet); regions are fitted separately, so two regions with different
   suns can show a step in slope shading at their border; z ≤ 11 source tiles stay raw.
 - In-game check still to run: the ravine at 08:00 and 16:00 game time, `--deshadow full` against off.
+## Colour seams of the USGS imagery (`--colormatch`; built offline 2026-10-10, behind a flag, default off)
+- Integration of docs/research/2026-10-10-imagery-colormatch.md §3 ("seam feather") per its §7 plan:
+  `server/colormatch.py` (pure numpy), hooked into `imagery.Imagery(..., colormatch=obj)` (`_mosaic`
+  corrects each USGS z12–z16 source tile into a second LRU keyed (source, z, x, y, "cm1", relit); the
+  raw `Tile` stays in `_lru`, so uniform / coverage-probe logic is untouched), into
+  `Imagery.prefetch` (`request`: queue the tile's region) and into `earthd.Server.new_anchor`
+  (`prepare`: the z12 regions within 8 km, nearest first). `--colormatch off` builds no object:
+  textures are byte-identical to the pre-hook code (`test_colormatch.FlagOffTest`, the same pinned
+  digests as `test_deshadow`). `hello.colormatch: "s2"` (settings page: "Imagery colour seams").
+- Two cached stages per z12 region, each a pure function of source tiles, so a place comes out the
+  same whatever order its regions were computed in and from whichever anchor (tested: fields and
+  rendered bytes equal for two region orders; fields are stored float16 and used as stored, so a
+  field read from disk gives the bytes of a freshly computed one):
+  1. seams (`<cache>/colormatch/v1/usgs/12/x/y.seams.npz`, `.seams.none`): z14 USGS and EOX S2 2023
+     (2016 per tile) over the region plus a 1-tile halo, reliability weights, IRLS, the oriented
+     step filter (15 m grid, 36 angles, 5 x 240 m segments, the S2 gate), NMS, hysteresis and the
+     component filter (>= 1.5 km, consistent step vector); per seam cell of the core: normal, local
+     step (cut blur at 300 m), sub-pixel line from the z16 profile (z16 tiles only along the seam;
+     the centroid re-centred twice, ≤ 0.2 px on synthetic slants with texture).
+  2. field (`.npz`, `.none`): from the seams of the 3 x 3 regions, on a 30 m grid: half-steps
+     scattered on each side, extended with the cut blur (300 m; 1500 m without support), faded with
+     a Gaussian of the distance (σ_f 1500 m, smoothstep taper to 0 at 6 km = one region at most),
+     clamped ±log 2; the band within 60 m of a seam keeps per cell its nearest seam cell, line and
+     both sides' gains. Adjacent regions' fields agree to 6e-5 (log) on their overlap.
+- Per tile (`Field.apply`): bilinear gain from the 30 m field (phase-sliced upsample); in the band
+  each pixel takes its side's gain from its signed distance to the line (2 z16 px ramp); at z15/z16
+  the |d| ≤ 1.5 px strip (the mosaic's blend row) is inpainted along the normal from d = ±2.5 px,
+  with MARGIN px of the neighbouring raw tiles where it nears the edge; z12/z13 average the band
+  gains over each pixel. No seam within reach: the input itself (~0 ms). Gain-1 pixels keep their
+  exact bytes.
+- Order with `--deshadow` (§6, tested): raw → de-shadow → colour gain → tone curve. Seams are
+  detected on the raw tiles (`Imagery.tiles`), the gain is applied to the relit tile, relit texels
+  keep alpha 254 and their own tone curve.
+- Region not ready: its tiles render raw; `render(pending=set())` collects the regions, `TileInfo`
+  keeps them (`cm_pending`). The ColorMatch worker calls the server's listener when a field is done;
+  on the event loop the far tiles waiting for it become `stale` if the field is not empty, and the
+  next `tile()` for them renders only the texture again (`retexture`) under `far_<aid>_<key>_r<rev>.dds`
+  (the engine caches textures by path; the mod's `satmat.ref` points an unused material at the new
+  file). A tile on screen keeps its raw texture until it is sent again: the live swap is V1_4_SPEC
+  M3a's `far_retex`. An evicted stale / re-rendered tile's next build continues the revision
+  (`tex_rev`); `prune` deletes every revision with the anchor's files.
+- Real data (offline, the research windows served from the prototype's cached tiles, no network):
+  Monument Valley's AZ/UT line ΔE 17.6 → 0.77 (200 m bands) and 17.9 → 0.56 (20 m), survey step
+  +62/+96/+50 % → +0.3/+1.8/+0.2 %, mean change 9.7 levels, log-HF ratio 1.005 (the prototype's
+  numbers); Central Valley and Baltimore: no seam, no byte changed.
+- Cost (16 cores, single worker thread): detection 20–25 s per region window (1536² cells), so the
+  first field of a cold place needs its 9 windows (~3.5 min; ~85 s for the research window, whose
+  edges have no data); a field from cached seams ~1 s. Per 256 px tile: 2.2 ms median / 4.2 ms max
+  on the real seam window (1.2–2.9 ms smooth, 4–6.7 ms band tiles on synthetic ones), ~0.02 ms
+  unchanged.
+- Limits / follow-ups: moderate seams in farmland and cities are not detected (research §5: a
+  geometric prior along candidate lines; a state-boundary prior only from a generic boundary dataset,
+  never hard-coded lines); z10–z11 source tiles (far rings) stay raw; the inpaint margin is the raw
+  neighbours even with `--deshadow` (a few px at tile edges); detection speed (30 m grid, candidate
+  prefilter); de-shadow could fit its sun per flight using these seams (§6); in-game check of a
+  handful of known state-line seams before default-on.
 ## Real weather, level parity, gravity (quick wins 1, 2, 4; built offline 2026-10-10, feature/weather)
 docs/research/2026-10-10-real-weather.md, 2026-10-10-game-feature-quick-wins.md §5.1-5.4, probe facts
 in 2026-10-10-weather-probe-results.md.

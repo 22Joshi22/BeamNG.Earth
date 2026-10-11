@@ -245,6 +245,9 @@ All are under the 10 ms target. The tile output matches the full-window result w
 
 ## 7. Integration plan (`server/imagery.py`, flag `--colormatch off|s2`, default off)
 
+Status: integrated offline (`server/colormatch.py`, `server/tests/test_colormatch.py`); what was built,
+the measured numbers and the deviations are in docs/ARCHITECTURE.md, "Colour seams of the USGS imagery".
+
 - **New module `server/colormatch.py`.** Port `colormatch.py` and the `Region` and `apply` code from `tile.py`. Pure numpy.
 - **Region unit: a USGS z12 tile.** About 7.8 km at 37° N, 1024² cells at z14.
   - Inputs:

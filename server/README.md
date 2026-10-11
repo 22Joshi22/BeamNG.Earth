@@ -38,6 +38,7 @@ python3 server/earthd.py --port 47613 --user-dir ~/.local/share/BeamNG/BeamNG.dr
 | `--tex-far` | `256` | 32 cells: texture edge (px) of every other level |
 | `--tone` | `1.0` | Strength of the imagery tone curve (0 = imagery as downloaded) |
 | `--deshadow` | `off` | Undo the capture sun's terrain shading in the USGS tiles (`deshadow.py`): `lambert` = slope shading only, `full` = slopes and the terrain's cast shadows (relit texels then get half the tone curve's shadow lift). `off` = textures byte-identical to before |
+| `--colormatch` | `off` | Remove the colour steps between survey flights in the USGS tiles, e.g. at state lines (`colormatch.py`, the "seam feather"): `s2` = detected seams only, against Sentinel-2 (EOX) as the reference, each side moved half way and faded out over ~1.5 km; gain exactly 1 elsewhere. `off` = textures byte-identical to before |
 | `--near-radii` | `150,400` | Mesh mode: everything within 150 m of the player is the exact level, within 400 m at least the next one (32 cells: L-2, L-1; 64 cells: L-1, L0) |
 | `--horizon` | off | The far field out to the line-of-sight horizon (docs/V1_4_SPEC.md §3.6 "Radius", M1h; mesh mode only). The eye's height above sea level comes from the pose's camera z; per anchor a coarse DEM pass (z6 block maxima on 16 km cells, its own worker) gives each L6-L10 node its highest terrain; the selection is a disc of radius clamp(sqrt(2R'h_eye) + sqrt(2R'zmax_region), 80 km, 1500 km), R' = 6371 km / 0.87, with L10 (262 km) roots, and beyond 80 km every node past sqrt(2R'h_eye) + sqrt(2R'zmax_node) is dropped. 256 px textures at L8/L9, 128 px at L10. Sends `hello.horizon` and `status.radius`. Off until the in-game probe P12 (extended) passes |
 | `--status-interval` | `0` | Re-send the last status with the current far-tile backlog every S s while it changes (0 = v1.3.1: on events only; `tools/drive.py` runs use 1) |
@@ -85,7 +86,7 @@ as JSON floats (`512.0`). All positions are in the ENU plane of the anchor named
 
 | Message | Notes |
 |---|---|
-| `{"type":"hello","protocol":4,"format":3,"serverVersion":"0.4.0","sessionId":"…","farFormat":"cdae"\|"dae","material":"bngEarthFar_v3","nearVisual":"mesh"\|"terrain","attribution":"…","cells":64,"blockSize":512,"horizon":true,"deshadow":"full"}` | `format`: 3 with `--cells 32` (v1.3.1), 4 with `--cells 64`; `cells` (v1.4 M1) only with format 4: the tiles' cells per edge (the mod's crossover fallback error and the exact level of its `exactMiss` metric; 32 without it). `blockSize` (v1.4 M4) only with `--block 512`: the terrain block's samples per edge; the mod configures its lattice, terrain-follow table, layer / flat maps and rebase staleness rule from it before anything else (1024 without it); every `terrain.size` of the session is this size. `horizon` (v1.4 M1h) only with `--horizon`: every `status` then carries `radius`; the mod sets the sky's planet radius to 6371 km and its view distance from the radius. `deshadow` only with `--deshadow lambert|full`: the mode (the mod's settings page shows it; it is server-side only). `farFormat` tells which shape type the tiles are; `material` is the static palette material (tiles without imagery). `nearVisual`: `mesh` = disable the TerrainBlock's rendering (physics only), the tiles draw all the ground; `terrain` = v1.2. `attribution`: the credit line for the sources in use, e.g. "Imagery: USGS The National Map (public domain); EOxCloudless https://cloudless.eox.at by EOX IT Services GmbH (Contains modified Copernicus Sentinel data 2023), CC BY-NC-SA 4.0; EOxCloudless https://cloudless.eox.at by EOX IT Services GmbH (Contains modified Copernicus Sentinel data 2016 & 2017), CC BY 4.0; Weather data by Open-Meteo.com; Elevation: Mapterhorn (see mapterhorn.com/attribution), AWS Terrain Tiles / Mapzen". |
+| `{"type":"hello","protocol":4,"format":3,"serverVersion":"0.4.0","sessionId":"…","farFormat":"cdae"\|"dae","material":"bngEarthFar_v3","nearVisual":"mesh"\|"terrain","attribution":"…","cells":64,"blockSize":512,"horizon":true,"deshadow":"full","colormatch":"s2"}` | `format`: 3 with `--cells 32` (v1.3.1), 4 with `--cells 64`; `cells` (v1.4 M1) only with format 4: the tiles' cells per edge (the mod's crossover fallback error and the exact level of its `exactMiss` metric; 32 without it). `blockSize` (v1.4 M4) only with `--block 512`: the terrain block's samples per edge; the mod configures its lattice, terrain-follow table, layer / flat maps and rebase staleness rule from it before anything else (1024 without it); every `terrain.size` of the session is this size. `horizon` (v1.4 M1h) only with `--horizon`: every `status` then carries `radius`; the mod sets the sky's planet radius to 6371 km and its view distance from the radius. `deshadow` only with `--deshadow lambert|full`: the mode (the mod's settings page shows it; it is server-side only). `colormatch` only with `--colormatch s2`: the same for the colour-seam removal. `farFormat` tells which shape type the tiles are; `material` is the static palette material (tiles without imagery). `nearVisual`: `mesh` = disable the TerrainBlock's rendering (physics only), the tiles draw all the ground; `terrain` = v1.2. `attribution`: the credit line for the sources in use (with `--colormatch s2` also the S2 reference layers when the chain lacks them), e.g. "Imagery: USGS The National Map (public domain); EOxCloudless https://cloudless.eox.at by EOX IT Services GmbH (Contains modified Copernicus Sentinel data 2023), CC BY-NC-SA 4.0; EOxCloudless https://cloudless.eox.at by EOX IT Services GmbH (Contains modified Copernicus Sentinel data 2016 & 2017), CC BY 4.0; Weather data by Open-Meteo.com; Elevation: Mapterhorn (see mapterhorn.com/attribution), AWS Terrain Tiles / Mapzen". |
 | `{"type":"status","text":"…","backlog":n,"radius":m}` | Progress text, and protocol/format mismatch warnings. `backlog` (v1.4 M0): desired far tiles of the current anchor not shown yet; with `--status-interval S` the last status is re-sent every S s while it changes. `radius` (v1.4 M1h, `--horizon` only): the far-field radius in m (80 km to 1500 km); the last status is re-sent when it moves by more than 2 %. The mod sets `LevelInfo.visibleDistance` = max(100 km, 1.1 × radius), with 10 % hysteresis. |
 | `{"type":"anchor_ready","requestId":N,"anchorId":A,"lat":d,"lon":d,"groundZ":m,"terrain":{"cx","cy","heightmap","size":1024,"squareSize":2.0,"zBase","maxHeight","q"}}` | `size`: 1024, or 512 with `--block 512` (`hello.blockSize`). `groundZ` = terrain height at (0, 0) of the new frame (bilinear on the quantised grid, i.e. what the game will report), or `null` if (0, 0) is outside the block. `q` = height quantum, `maxHeight = q·65536`, `zBase` a multiple of 64 m (so of `q`). No `anchorKey` yet (lattice anchors are phase 5). |
 | `{"type":"anchor_error","requestId":N,"error":"…"}` | |
@@ -256,6 +257,22 @@ Format decoded from engine-written files (golden pairs in `tests/fixtures/`):
   relights each USGS z12–z16 source tile with an 8 px margin from its neighbours; results live in a
   memory LRU and `<cache>/imagery/usgs-ds<ver>-<mode>/` (raw tiles untouched). Tiles of a region that
   is not ready stay raw (renders wait up to 30 s for the regions within 2 km of a new anchor).
+- **Colour seams** (`--colormatch s2`, default off; docs/research/2026-10-10-imagery-colormatch.md §3,
+  §7): USGS is a mosaic of NAIP flights flown per state and year, so flight boundaries are colour
+  steps (Monument Valley's AZ/UT line: ΔE 17.6). Per USGS z12 region (~8 km) one background thread
+  detects the survey seams on the z14 grid against EOX S2 2023 (2016 per tile where 2023 has
+  nothing): long, consistent steps of the USGS/S2 ratio that S2 does not have (a 1-tile halo of
+  neighbouring tiles; the sub-pixel line from z16 tiles fetched along the seam), then builds the
+  feather field from the seams of the region and its 8 neighbours: each side of a seam moves half
+  its local step, faded out with the distance (σ 1.5 km, 0 beyond 6 km), clamped to ×2; gain
+  exactly 1 elsewhere (S2's palette is never imported). Cached as
+  `<cache>/colormatch/v1/usgs/12/x/y.seams.npz` and `.npz` (a `.none` marker where there is nothing:
+  the common case). `Imagery._mosaic` then corrects each USGS z12–z16 source tile (after
+  de-shadowing, before the tone curve; the 3 px blend row on the line is inpainted from the
+  neighbours) into a second memory LRU; the raw tiles stay untouched. Until a region is ready its
+  tiles render raw and `render(pending=)` reports it; the server marks those far tiles stale when
+  the region turns out to change them and renders their texture again (only the texture, under a
+  new `_r<rev>` name) the next time the tile is sent. z10–11 source tiles stay raw.
 - **Texture format: DDS DXT1 (BC1) with a full mip chain** (512²: 10 levels, 174 904 B; 256²: 9 levels,
   43 832 B). Pillow 12 writes DXT1 but always `mipMapCount = 0`, so `imagery.encode_dds` box-reduces
   each level, BC1-encodes it with Pillow's encoder and writes its own header (`DDSD_MIPMAPCOUNT`,
@@ -433,7 +450,13 @@ UV0 / world-locked UV1, and the engine's UV2 convention (stock shape, if the gam
 cap, sun recovery, relit ratio, halo bound and 20 px misregistration on a synthetic ridge scene,
 the gates (flat DEM, low r², separation), the region cache (round trip, version bump, lambert reuse),
 the imagery hook, and `--deshadow off` byte-identical to the pre-hook renders (`DESHADOW_TIMING=1`:
-per-tile cost). `test_imagery.py`: a landmark lat/lon lands on its texel (within 0.2 m, two frames), orientation,
+per-tile cost). `test_colormatch.py`: the cut blur, seam detection at every angle (noise, natural
+edges and a 600 m crop-change patch rejected), the sub-pixel line, the feather end to end on a
+synthetic world (a +40 % flight seam: residual < 2 %, texture kept, blend row inpainted, gain 1 far
+away), per-tile == whole region, the no-seam identity, the disk cache, the same bytes whatever order
+the regions were computed in, the order with `--deshadow`, the field at the production scale (fade,
+clamp, z12–z15 against z16), the per-tile cost (< 10 ms), `--colormatch off` byte-identical and the
+server's stale-texture bookkeeping. `test_imagery.py`: a landmark lat/lon lands on its texel (within 0.2 m, two frames), orientation,
 zoom choice, the source chain (404, blank, last-source blank, unreachable, undecodable, coverage
 probes, min zoom), disk cache and remembered 404s, prefetch, tone curve, DDS mip chain (each level
 the BC1 of the box-reduced previous one, readable by Pillow); plus three real-network checks (USGS
