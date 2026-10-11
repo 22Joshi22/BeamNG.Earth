@@ -443,6 +443,7 @@ local function onMessage(msg)
     local w = rawget(_G, 'beamngEarth_weather')
     if w and w.clearGravity then w.clearGravity() end
     st.deshadow = msg.deshadow -- server-side imagery de-shadowing ('lambert' / 'full'; nil = off), shown on the settings page
+    st.colormatch = msg.colormatch -- server-side imagery colour-seam removal ('s2'; nil = off), likewise
     -- M4: the terrain block size first (everything below may use the lattice / follow table); a
     -- server without hello.blockSize has the v1.3.1 1024² block
     local size, okSize = M.setBlockSize(msg.blockSize or 1024)

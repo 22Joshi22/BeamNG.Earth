@@ -162,11 +162,16 @@ def as_tile(rgb):
     return Tile(rgb, is_uniform(rgb))
 
 
+_SAME = object()                    # colour-match LRU marker: the tile is unchanged
+
+
 class Imagery:
     def __init__(self, cache_dir, chain=DEFAULT_CHAIN, fetch_workers=FETCH_WORKERS, mem_tiles=MEM_TILES,
-                 tone=1.0, deshadow=None):
+                 tone=1.0, deshadow=None, colormatch=None):
         """deshadow: an optional deshadow.Deshadow (--deshadow lambert|full): _mosaic relights its
-        source's tiles; None = the imagery as served (byte-identical textures)."""
+        source's tiles; None = the imagery as served (byte-identical textures).
+        colormatch: an optional colormatch.ColorMatch (--colormatch s2): _mosaic removes the colour
+        seams of its source's tiles, after the relight and before the tone curve; None = off."""
         self.cache_dir = cache_dir
         self.chain = tuple(SOURCES[s] if isinstance(s, str) else s for s in chain)
         self.pool = ThreadPoolExecutor(min(fetch_workers, FETCH_WORKERS), thread_name_prefix="img-fetch")
@@ -177,6 +182,10 @@ class Imagery:
         if deshadow is not None:
             deshadow.bind(self)
             self.lut_ds = tone_lut(tone, deshadow.tone_lift)    # texels of relit source tiles
+        self.colormatch = colormatch
+        if colormatch is not None:
+            colormatch.bind(self)
+        self._cm_lru = OrderedDict()        # (source, z, x, y, "cm1", relit) -> corrected RGB, or the input
         self._lru = OrderedDict()           # (source, z, x, y) -> Tile, or None (404)
         self._inflight = {}
         self._lock = threading.RLock()     # RLock: a done future's callback runs at once
@@ -186,10 +195,13 @@ class Imagery:
         self._down = {}                     # source name -> monotonic time until it counts as unreachable
 
     def attribution(self):
-        """Attribution line for the sources in use."""
-        if [s.name for s in self.chain] == list(DEFAULT_CHAIN):
+        """Attribution line for the sources in use (with --colormatch, its reference layers too:
+        their data shape the USGS colours even where they are not in the chain)."""
+        names = [s.name for s in self.chain]
+        extra = [SOURCES[n] for n in getattr(self.colormatch, "refs", ()) if n not in names]
+        if names == list(DEFAULT_CHAIN) and not extra:
             return ATTRIBUTION
-        return "Imagery: " + "; ".join(s.attribution for s in self.chain)
+        return "Imagery: " + "; ".join(s.attribution for s in list(self.chain) + extra)
 
     def _count(self, what):
         with self._lock:
@@ -206,9 +218,8 @@ class Imagery:
             ms = sorted(self.fetch_ms)
             st = dict(sorted(self.stats.items()))
         lat = f"fetch {ms[len(ms) // 2]:.0f}/{ms[int(len(ms) * 0.95)]:.0f} ms (median/p95, n={len(ms)})" if ms else "no fetches"
-        if self.deshadow is not None:
-            return f"{lat}; {st}; {self.deshadow.summary()}"
-        return f"{lat}; {st}"
+        extra = [o.summary() for o in (self.deshadow, self.colormatch) if o is not None]
+        return "; ".join([lat, str(st)] + extra)
 
     def _paths(self, src, z, x, y):
         d = os.path.join(self.cache_dir, src.name, str(z), str(x))
@@ -404,6 +415,10 @@ class Imagery:
                             continue
                         missing = False
                         self._future(key)
+            if self.colormatch is not None:     # their regions' seams, in the background (not under
+                for ty in range(ty0, ty1 + 1):  # the lock: it may read the region's field from disk)
+                    for tx in range(tx0, tx1 + 1):
+                        self.colormatch.request((src, z, tx % n, ty))
             if not missing:
                 return
 
@@ -417,10 +432,11 @@ class Imagery:
                     self._lru.popitem(last=False)
 
     # --- sampling ----------------------------------------------------------------------------
-    def _mosaic(self, src, z, fx, fy, last):
+    def _mosaic(self, src, z, fx, fy, last, pending=None):
         """RGBA mosaic of src's tiles at zoom z covering global pixel coordinates fx, fy (A = 255
         where the source has data, 254 where a de-shadowed tile replaced it); returns (image,
-        origin x, origin y, any data) or None if it would take more than MAX_MOSAIC tiles."""
+        origin x, origin y, any data) or None if it would take more than MAX_MOSAIC tiles.
+        pending: a set that collects the colour-match regions not ready yet (tiles left raw)."""
         n = 2 ** z
         tx0, tx1 = int(math.floor(fx.min() - 1)) // TILE, int(math.floor(fx.max() + 1)) // TILE
         ty0 = max(0, int(math.floor(fy.min() - 1)) // TILE)
@@ -438,12 +454,36 @@ class Imagery:
                 continue                    # missing here: the next source fills it
             c, r = (tx - tx0) * TILE, (ty - ty0) * TILE
             relit = None if self.deshadow is None else self.deshadow.relight(k, a, self)
-            mosaic[r:r + TILE, c:c + TILE, :3] = a.rgb if relit is None else relit
+            rgb = a.rgb if relit is None else relit
+            if self.colormatch is not None and not a.uniform and self.colormatch.handles(k):
+                rgb = self._colormatched(k, rgb, relit is not None, pending)
+            mosaic[r:r + TILE, c:c + TILE, :3] = rgb
             mosaic[r:r + TILE, c:c + TILE, 3] = 255 if relit is None else 254
             any_data = True
         return Image.fromarray(mosaic, "RGBA"), tx0 * TILE, ty0 * TILE, any_data
 
-    def render(self, frame, x0, y0, size, px):
+    def _colormatched(self, key, rgb, relit, pending):
+        """The colour-seam corrected RGB of a source tile (raw or relit: raw -> de-shadow -> colour
+        gain -> tone curve), from a second LRU; the raw Tile in _lru stays as it is."""
+        ck = key + ("cm1", relit)
+        with self._lock:
+            v = self._cm_lru.get(ck)
+            if v is not None:
+                self._cm_lru.move_to_end(ck)
+                return rgb if v is _SAME else v
+        out, info = self.colormatch.apply(key, rgb, self)
+        if out is self.colormatch.PENDING:     # its region is not ready: raw this time
+            if pending is not None:
+                pending.add(info)
+            return rgb
+        if info:                            # cacheable (not a neighbour-fetch fallback)
+            with self._lock:
+                self._cm_lru[ck] = _SAME if out is None else out
+                while len(self._cm_lru) > self.mem_tiles:
+                    self._cm_lru.popitem(last=False)
+        return rgb if out is None else out
+
+    def render(self, frame, x0, y0, size, px, pending=None):
         """Texture of the ENU square [x0, x0+size] x [y0, y0+size] (anchor `frame`), px x px,
         row 0 = north edge, column 0 = west edge (texel centres at (i + 0.5) * size / px).
         Returns (uint8 [px, px, 3] after the tone curve, {source: texels}).
@@ -453,7 +493,8 @@ class Imagery:
         the mapping is smooth enough that this is exact to well under a texel (second-order
         error ~ R tan(lat) dphi² / 8 for a cell of dphi rad: ~4 m on a 131 km tile at 36 deg,
         0.01 of its 512 m texel; nothing measurable on near tiles). Each texel takes the first
-        source of the chain whose four bilinear taps all have data."""
+        source of the chain whose four bilinear taps all have data. pending: a set that collects the
+        colour-match regions (--colormatch) that were not ready, i.e. whose tiles stayed raw here."""
         cells = min(MESH_CELLS, px)
         cw = px // cells
         k = np.arange(cells + 1) * (size / cells)
@@ -474,7 +515,7 @@ class Imagery:
                 w = TILE * 2 ** z
                 fx = fx - w * np.round((fx - fx[0, 0]) / w)        # unwrap across the antimeridian
                 try:
-                    m = self._mosaic(src, z, fx, fy, i == len(self.chain) - 1)
+                    m = self._mosaic(src, z, fx, fy, i == len(self.chain) - 1, pending)
                 except ImageryError as e:   # this source is unreachable: the next one may do
                     error, m = e, False
                     break
@@ -524,6 +565,8 @@ class Imagery:
     def close(self):
         if self.deshadow is not None:
             self.deshadow.close()
+        if self.colormatch is not None:
+            self.colormatch.close()
         self.pool.shutdown(wait=False, cancel_futures=True)
 
 
