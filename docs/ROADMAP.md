@@ -135,7 +135,7 @@ Manhattan cell: 4.8 s cold, peak RSS 381 MB. Next:
   other ground models (server/surface.py, terrain.lua). OSM / Overture overrides (roads, parking,
   sand, lawns vs streets) come with the roads work. Tyre contact checked in-game (Fells Point
   ASPHALT, Serengeti GRASS, Everest Base Camp SNOW, Monument Valley DIRT_DUSTY); stock grass
-  GroundCover rides on the grass / dusty layers (groundcover.lua, +1.1 ms per frame).
+  GroundCover rides on the grass / dusty layers (groundcover.lua).
 - Tile material v1.5 (PBR): normal maps baked from the DEM, roughness from land cover (water glint).
 - **Real ground materials up close** (user, 2026-10-10: satellite photos are low-res near the car):
   - Material splatting on the near tiles (0-250 m full, blend out to ~1 km, photo only beyond, the
@@ -219,7 +219,8 @@ Manhattan cell: 4.8 s cold, peak RSS 381 MB. Next:
 - Sky: CloudLayer + wind, haze, per-biome cubemap, black night colours.
 - GroundCover grass: done with v1.5 surfaces (2026-10-11, groundcover.lua): green Hirochi Raceway grass
   with some dry West Coast tufts on the grass layer, West Coast scrub with sparse green grass between on
-  dusty ground (no hard grass / shrub line), +1.1 ms/frame before the shrubland grass.
+  dusty ground (no hard grass / shrub line). No flicker at block moves: CPU placement plus a same-tick
+  grass rebuild (docs/ARCHITECTURE.md "Ground surfaces"), at one ~25 ms frame per block move.
   Next: per-climate / per-season picks (dry savanna, green temperate, alpine), a settings toggle and
   density presets.
 

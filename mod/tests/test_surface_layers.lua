@@ -62,50 +62,59 @@ T.check(#tb.lastImport.mats == 1, 'masks and materials of different lengths: the
 terrain.load('/temp/beamngEarth/s1/hm_1_512_0.png', 2, 4096, 0, -512, 1000)
 T.check(#tb.lastImport.mats == 1 and tb.lastImport.mats[1] == 'beamngEarthDirt', 'no layers: the single dirt layer')
 
--- GroundCover layer refresh (terrain.layerRefresh): in mesh mode a layered import is followed by one
--- frame with the block drawn REFRESH_DROP lower, then back in place and hidden (no flush: the
--- restore's setPosition already makes GroundCover rebuild its cells)
+-- groundcover: objects from the stock definitions with CPU placement, and the same-tick rebuild after a
+-- block change (every import / move drops all the grass on the block, in-game 2026-10-11)
 do
+  _G.jsonNull = _G.jsonNull or setmetatable({}, { __tostring = function() return 'null' end })
+  local gc = require('beamngEarth/groundcover')
   local flushes = 0
   _G.flushGroundCoverGrids = function() flushes = flushes + 1 end
-  terrain.setRenderEnabled(false)
-  terrain.layerRefresh = false
-  terrain.load('/temp/beamngEarth/s1/hm_1_0_0.png', 2, 4096, -512, -512, 1000, { masks = masks, materials = MATS })
-  T.check(not terrain.refreshPending() and not terrain.tick(), 'no refresh unless asked for')
-  terrain.layerRefresh = true
-  terrain.load('/temp/beamngEarth/s1/hm_1_0_0.png', 2, 4096, -512, -512, 1000)
-  T.check(not terrain.refreshPending(), 'no refresh after a single-layer import')
-  terrain.load('/temp/beamngEarth/s1/hm_1_0_0.png', 2, 4096, -512, -512, 1000, { masks = masks, materials = MATS })
-  T.check(terrain.refreshPending() and tb.renderEnabled == false and tb.pos.z == 1000, 'armed; the import itself leaves the block hidden in place')
-  T.check(terrain.tick() == false, 'frame 1: not done yet')
-  T.check(tb.renderEnabled == true and tb.pos.z == 1000 - terrain.REFRESH_DROP and tb.pos.x == -512, 'frame 1: drawn, sunk')
-  T.check(terrain.tick() == true and flushes == 0, 'frame 2: done, no flush')
-  T.check(tb.renderEnabled == false and tb.pos.z == 1000 and not terrain.refreshPending(), 'frame 2: hidden, back in place')
-  T.check(terrain.tick() == false and flushes == 0, 'then nothing')
-  -- a new import between the two frames: the new position wins, the refresh starts over
-  terrain.load('/temp/beamngEarth/s1/hm_1_0_0.png', 2, 4096, -512, -512, 1000, { masks = masks, materials = MATS })
-  terrain.tick()
-  terrain.load('/temp/beamngEarth/s1/hm_1_128_0.png', 2, 4096, -384, -512, 1010, { masks = masks, materials = MATS })
-  T.check(tb.renderEnabled == false and tb.pos.z == 1010 and tb.pos.x == -384, 'a re-import mid-refresh: hidden, at its own place')
-  terrain.tick(); terrain.tick()
-  T.check(tb.pos.z == 1010 and tb.renderEnabled == false and not terrain.refreshPending(), '... and refreshed there')
-  -- terrain mode meanwhile (the block drawn anyway): no sinking, the block put back
-  terrain.load('/temp/beamngEarth/s1/hm_1_0_0.png', 2, 4096, -512, -512, 1000, { masks = masks, materials = MATS })
-  terrain.tick()
-  terrain.setRenderEnabled(true)
-  T.check(terrain.tick() == false and tb.pos.z == 1000 and not terrain.refreshPending(), 'terrain mode mid-refresh: back in place, dropped')
-  terrain.load('/temp/beamngEarth/s1/hm_1_0_0.png', 2, 4096, -512, -512, 1000, { masks = masks, materials = MATS })
-  T.check(not terrain.refreshPending(), 'terrain mode: never armed')
-  terrain.setRenderEnabled(false)
-  terrain.load('/temp/beamngEarth/s1/hm_1_0_0.png', 2, 4096, -512, -512, 1000, { masks = masks, materials = MATS })
-  terrain.onLevelChanged()
-  T.check(not terrain.refreshPending(), 'a level change drops it')
-  terrain.layerRefresh = false
+  T.check(gc.afterBlockChange() == false and flushes == 0, 'no grass objects: no rebuild')
+  -- one items-file line per stock definition; jsonDecode stubbed by line
+  local lines, byLine = {}, {}
+  for _, d in ipairs(gc.DEFS) do
+    local line = '{"class":"GroundCover","name":"' .. d.src .. '"}'
+    lines[#lines + 1] = line
+    byLine[line] = { name = d.src, class = 'GroundCover', material = 'm_' .. d.src, maxElements = 1000,
+      useNewPlacement = true, useNewPlacementGpu = true, Types = { { layer = 'Grass', billboardUVs = { 0, 0, 1, 1 } } } }
+  end
+  local realDecode = _G.jsonDecode
+  _G.jsonDecode = function(line) return byLine[line] end
+  local realRead = _G.readFile
+  _G.readFile = function(p)
+    for _, src in pairs(gc.SOURCES) do if p == src.items then return table.concat(lines, '\n') end end
+    return realRead and realRead(p)
+  end
+  T.check(gc.ensure() == true, 'ensure makes the objects')
+  local o = scenetree.findObject(gc.PREFIX .. gc.DEFS[1].src)
+  T.check(o and o.fields.useNewPlacement == '1' and o.fields.useNewPlacementGpu == '0', 'CPU placement over the stock GPU setting')
+  T.check(o.fields.layer == gc.DEFS[1].layer and o.canSave == false, 'on our layer, not saved')
+  for _, d in ipairs(gc.DEFS) do
+    if d.fields then
+      local od = scenetree.findObject(gc.PREFIX .. (d.name or d.src))
+      local same = od ~= nil
+      for k, v in pairs(d.fields) do same = same and od.fields[k] == tostring(v) end
+      T.check(same, (d.name or d.src) .. ': field overrides applied')
+    end
+  end
+  T.check(gc.status().objects == #gc.DEFS, 'one object per definition')
+  T.check(gc.afterBlockChange() == true and flushes == 1, 'a block change rebuilds the grass in the same tick')
+  -- a GE Lua reload: the module starts over, the level's objects stay (here with an old field)
+  o.fields.useNewPlacementGpu = '1'
+  gc.reset()
+  T.check(gc.ensure() == true, 'ensure after a module reload')
+  local o2 = scenetree.findObject(gc.PREFIX .. gc.DEFS[1].src)
+  T.check(o2 ~= o and o2.fields.useNewPlacementGpu == '0' and scenetree.findObjectById(o.id) == nil,
+    'a leftover object is made again from the current definition')
+  gc.setEnabled(false)
+  T.check(gc.status().objects == 0 and gc.afterBlockChange() == false and flushes == 1, 'disabled: objects gone, no rebuild')
+  gc.setEnabled(true)
+  gc.reset()
+  _G.readFile, _G.jsonDecode = realRead, realDecode
 end
 
 -- groundcover.fieldsFor: a stock definition re-pointed at our layer, its element count scaled
 do
-  _G.jsonNull = _G.jsonNull or setmetatable({}, { __tostring = function() return 'null' end })
   local gc = require('beamngEarth/groundcover')
   local def = { name = 'g', class = 'GroundCover', persistentId = 'x', __parent = 'veg', position = { 1, 2, 3 },
     material = 'm_grass', radius = 50, maxElements = 306000, shapesCastShadows = false, windGustLength = jsonNull,

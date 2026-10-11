@@ -909,19 +909,28 @@ three days of testing: dem 741 MB / 7.5k files, imagery 1.4 GB / 35k, deshadow 7
   and recreated with every plant type's `layer` set to ours (`bngEarthGroundGrass`,
   `bngEarthGroundDusty`) and `maxElements` scaled. Made once per level, on the first layered import.
   An empty `layer` places nothing (not "everywhere").
-- GroundCover does not read the layer map importMaps writes (getMaterialIdxWs and the tyres do) but
-  a copy the block refreshes only in a frame where it is drawn and in view. updateGridMaterials,
-  updateAllTextures and toggling the render flag within one call do not refresh it; a block never
-  drawn reads as layer 0 everywhere. So while ground cover exists, every layered import in mesh mode
-  is followed by `terrain.tick()` (end of core onUpdate, after the frame's commits and their
-  reloadCollision) drawing the block for that frame 100 m lower (in view, hidden under the mesh ground
-  by depth; collision not rebuilt, the vehicles do not notice), then putting it back hidden.
-  Every import and every setPosition of the block (even to the same place) makes GroundCover drop all
-  its cells and regrow them over ~10 frames: the engine's own blink at each block move (every 128 m
-  while driving). The refresh adds one more clear (the restore); the first cut (refresh one frame
-  later plus a flush) blanked the grass for 4 frames per move, this one 2 (in-game per-frame counts). A camera that cannot see the block's
-  box in that frame (high above it) leaves the previous layers until the next import.
-  Cost: +1.1 ms per frame at Serengeti grassland (A/B, 6 rounds, 6.15 -> 7.25 ms).
+- No grass flicker at block moves (2026-10-11; in-game per-frame counts plus a static analysis of the
+  0.39.4 binary). Every TerrainBlock import, setTransform / setPosition (even to the same place) and
+  onAdd fires the engine's terrain-update signal over the whole block (min (0,0), max INT_MAX), and
+  GroundCover's handler frees every cell in that box. It has no other condition: not the block, its
+  render / collision / hidden state, the GroundCover's hidden or lockFrustum, any pref. Neither a
+  second block nor a create-new / delete-old swap avoids it, and only patching the executable would.
+  Freed cells come back in the same frame's prepRender under a global budget (~24 cells per frame
+  for GPU placement, 3 for CPU placement), and `flushGroundCoverGrids()` lifts that budget for the
+  current frame only. So `core.loadBlock` calls `groundcover.afterBlockChange()` (the flush) in the
+  same tick as every import, and the GroundCovers use CPU placement (`useNewPlacementGpu 0`): those
+  cells are drawn in the frame they are generated, while GPU-placed ones draw a frame later (one
+  blank frame). GPU placement also reads a layer copy the hidden block never refreshes; CPU
+  placement reads the layer map directly, so no refresh is needed. Price: one slower frame per block
+  move (every ~128-192 m), growing with the element count. That is why the shares are low and the
+  long grass reaches 70 m instead of 120. Two drives at 30 m/s over 3 km on Serengeti grassland
+  (15 and 17 block moves) showed no blank grass frame at any move; the rebuild frame was ~43 ms with
+  the first shares and ~25 ms with the tuned ones, next to the import's ~28 ms frame.
+  The earlier cuts (GPU placement with a one-frame sunk-block refresh) blanked the grass for 2-4
+  frames and regrew it over ~10 frames per move. CPU placement's normal-driving cost is tracked by
+  the benchmark.
+- A second TerrainBlock (even 5 km away with disableCollision) drops the player's vehicle through the
+  ground at once (in-game, twice): never create one while a vehicle is in the world.
 
 ## Map data (`server/mapdata.py`; built offline 2026-10-11, branch feature/mapdata)
 The shared input of every content feature (roads, buildings, water, land use, trees, ground

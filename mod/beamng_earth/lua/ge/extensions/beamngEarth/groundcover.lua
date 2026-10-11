@@ -2,9 +2,16 @@
 -- the render-disabled physics block and honours its layer map (docs/research/2026-10-11-engine-probes.md
 -- §4), so binding stock GroundCover definitions to the surface layers (server/surface.py: grassland /
 -- forest floor -> bngEarthGroundGrass, shrubland -> bngEarthGroundDusty) puts grass where the land
--- cover says grass, nothing on asphalt, bare ground, rock, snow or mud. GroundCover reads the layers
--- from a copy the block refreshes only when drawn: terrain.lua does that after every layered import
--- while M.ensure has made the objects (terrain.layerRefresh).
+-- cover says grass, nothing on asphalt, bare ground, rock, snow or mud.
+--
+-- No flicker at block moves (in-game and binary analysis 2026-10-11, docs/ARCHITECTURE.md "Ground
+-- surfaces"): every import / move of the block makes the engine drop every GroundCover cell on it
+-- (no way around that from Lua), and the cells come back under a per-frame generation budget.
+-- core calls M.afterBlockChange() in the same tick as each block change: flushGroundCoverGrids()
+-- lifts the budget for that frame, so all the cells are regenerated before the frame is drawn. That
+-- needs CPU placement (useNewPlacementGpu 0): GPU-placed cells only draw one frame later (a blank
+-- frame), and GPU placement reads a layer copy the hidden block never refreshes. The price is one
+-- slower frame per block move, which grows with the element count (the shares below).
 --
 -- The definitions are stock ones, read at runtime from official levels' own files (nothing is copied
 -- into the mod; Polish Roads is not used, CREDITS.md): their materials are loaded first (a shape whose
@@ -13,8 +20,6 @@
 -- Raceway grass with a little of West Coast USA's dry grass on grassland, West Coast scrub with sparse
 -- green grass between on dusty ground. Generic: one rule for every place; per-biome / per-climate /
 -- per-season variants are a later step. Console: beamngEarth_groundcover.setEnabled(bool), .status()
-
-local terrain = require('beamngEarth/terrain')
 
 local M = {}
 
@@ -26,17 +31,23 @@ M.SOURCES = {
             items = WCUSA .. 'main/MissionGroup/vegetation/items.level.json' },
 }
 -- stock GroundCover (source, src name) -> our layer, element share; `name` (default src) names our
--- object, for a stock definition used on two layers
+-- object, for a stock definition used on two layers; `fields` override stock fields. The shares keep
+-- the block-move rebuild near +15 ms (in-game at Serengeti grassland 2026-10-11: stock-ish shares
+-- +30 ms; the dense near grass costs most, the long grass is kept close, radius 70 m instead of 120).
+local LONG_NEAR = { radius = 70, dissolveRadius = 45 }
 M.DEFS = {
-  { source = 'hirochi', src = 'small_grass_close', layer = 'bngEarthGroundGrass', share = 0.5 },
-  { source = 'hirochi', src = 'long_grass_distant', layer = 'bngEarthGroundGrass', share = 0.5 },
-  { source = 'wcusa', src = 'grass_dry_1', layer = 'bngEarthGroundGrass', share = 0.15 },
-  { source = 'wcusa', src = 'shrubs_near', layer = 'bngEarthGroundDusty', share = 0.25 },
+  { source = 'hirochi', src = 'small_grass_close', layer = 'bngEarthGroundGrass', share = 0.25 },
+  { source = 'hirochi', src = 'long_grass_distant', layer = 'bngEarthGroundGrass', share = 0.17, fields = LONG_NEAR },
+  { source = 'wcusa', src = 'grass_dry_1', layer = 'bngEarthGroundGrass', share = 0.05 },
+  { source = 'wcusa', src = 'shrubs_near', layer = 'bngEarthGroundDusty', share = 0.15 },
   -- sparse grass between the shrubs (user 2026-10-11: a hard line between grassland and shrubland)
-  { source = 'hirochi', src = 'small_grass_close', name = 'small_grass_close_scrub', layer = 'bngEarthGroundDusty', share = 0.2 },
-  { source = 'hirochi', src = 'long_grass_distant', name = 'long_grass_distant_scrub', layer = 'bngEarthGroundDusty', share = 0.15 },
+  { source = 'hirochi', src = 'small_grass_close', name = 'small_grass_close_scrub', layer = 'bngEarthGroundDusty', share = 0.08 },
+  { source = 'hirochi', src = 'long_grass_distant', name = 'long_grass_distant_scrub', layer = 'bngEarthGroundDusty', share = 0.05,
+    fields = LONG_NEAR },
 }
 M.PREFIX = 'bngEarthGC_'
+-- set on every object after the stock fields (see the header)
+M.PLACEMENT = { { 'useNewPlacement', '1' }, { 'useNewPlacementGpu', '0' } }
 M.enabled = true
 
 local created = {}        -- object names we made
@@ -107,10 +118,7 @@ end
 
 -- Create the GroundCovers (once per level; the surface layers exist). Returns true if made.
 function M.ensure()
-  if not M.enabled or #created > 0 then
-    terrain.layerRefresh = #created > 0
-    return #created > 0
-  end
+  if not M.enabled or #created > 0 then return #created > 0 end
   if not scenetree.MissionGroup then return false end
   local ok, err = pcall(function()
     local defs = {}
@@ -127,9 +135,15 @@ function M.ensure()
       local def = defs[d.source][d.src]
       if def then
         local name = M.PREFIX .. (d.name or d.src)
-        if not scenetree.findObject(name) then
+        -- one left by an earlier module instance (a GE Lua reload keeps the level's objects) may
+        -- have older fields, e.g. GPU placement: made again from the current definition
+        local old = scenetree.findObject(name)
+        if old then old:delete() end
+        do
           local gc = createObject('GroundCover')
           for _, c in ipairs(M.fieldsFor(def, d.layer, d.share)) do gc:setField(c[1], c[2], c[3]) end
+          for k, v in pairs(d.fields or {}) do gc:setField(k, 0, tostring(v)) end
+          for _, f in ipairs(M.PLACEMENT) do gc:setField(f[1], 0, f[2]) end
           gc.canSave = false
           gc:registerObject(name)
           scenetree.MissionGroup:addObject(gc)
@@ -146,24 +160,27 @@ function M.ensure()
     log('W', 'beamngEarth', 'ground cover: ' .. lastError)
     removeAll()
   end
-  terrain.layerRefresh = #created > 0
   return #created > 0
+end
+
+-- The physics block was just imported or moved (core, same tick): regenerate all the grass before
+-- this frame is drawn. Returns true if it asked for that.
+function M.afterBlockChange()
+  if #created == 0 or not flushGroundCoverGrids then return false end
+  flushGroundCoverGrids()
+  return true
 end
 
 function M.setEnabled(on)
   M.enabled = on and true or false
   if not M.enabled then
     removeAll()
-    terrain.layerRefresh = false
   end
   return M.enabled
 end
 
 -- The level ended (its objects are gone with it).
-function M.reset()
-  created = {}
-  terrain.layerRefresh = false
-end
+function M.reset() created = {} end
 
 function M.status()
   return { enabled = M.enabled, objects = #created, materialsLoaded = next(loadedMaterials) ~= nil, error = lastError }

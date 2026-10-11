@@ -300,7 +300,14 @@ serverSend({ type = 'far_swap', anchorId = 1, id = 2, add = col, remove = {}, dI
 T.check(pumpUntil(function() return farfield._tile('0_-4_0') ~= nil end, 300), 'covered L0 tiles swapped in')
 local colObj = objects[farfield._tile('0_-4_0').id]
 T.check(not colObj.hidden and colObj.pos.z == 1100 - 1.0, 'edge ring tile under the block: shown, sunk by its sink')
+-- every block import drops the grass on the block: loadBlock asks for its rebuild right after the
+-- import, in the same call (groundcover.lua, docs/ARCHITECTURE.md "Ground surfaces")
+local gcmod = require('beamngEarth/groundcover')
+local gcOrig, gcAt = gcmod.afterBlockChange, {}
+gcmod.afterBlockChange = function() gcAt[#gcAt + 1] = calls.importMaps; return gcOrig() end
 T.check(pumpUntil(function() return calls.importMaps == imports + 1 end, 100), 'terrain-follow commit once the strip is live')
+T.check(#gcAt == 1 and gcAt[1] == imports + 1, 'grass rebuild requested once, right after the import')
+gcmod.afterBlockChange = gcOrig
 T.check(core._governor():isHeavyFrame(), 'the commit ran in a governor heavy slot')
 T.check(colObj.pos.z == 1100 and not colObj.hidden, 'uncovered strip tile at true height in the commit frame')
 T.check(tb.lastImport.maxH == 1024, 'maxHeight = q * 65536')

@@ -34,25 +34,6 @@ local LAYER_MAPS = { [1024] = TERRAIN_DIR .. 'beamngEarth_layer_1024.png', [512]
 local FLAT_HEIGHTMAPS = { [1024] = TERRAIN_DIR .. 'beamngEarth_flat_1024.png', [512] = TERRAIN_DIR .. 'beamngEarth_flat_512.png' }
 local LAYER_MAP, FLAT_HEIGHTMAP = LAYER_MAPS[1024], FLAT_HEIGHTMAPS[1024]
 
--- Layer refresh for GroundCover (groundcover.lua): GroundCover does not read the layer map that
--- importMaps writes (getMaterialIdxWs and the tyres do) but a copy the block refreshes only in a
--- frame in which it is drawn and in view; updateGridMaterials, updateAllTextures and toggling the
--- render flag within one call do not refresh it (in-game 2026-10-11). Until then GroundCover sees
--- the previous import's layers, or layer 0 everywhere on a block never drawn. So with the block
--- hidden (mesh mode), each layered import is followed by one frame with the block drawn REFRESH_DROP
--- metres lower (under the mesh ground: in view but hidden by depth), then it goes back; collision
--- is not rebuilt for it (the vehicles never notice a render-only move, in-game). Only while
--- something asks for it (M.layerRefresh).
--- Every setPosition of the block (even to the same place) and every import makes GroundCover drop
--- all its cells and regrow them over ~10 frames (in-game 2026-10-11), so the refresh runs at the
--- end of the import's own frame (core calls tick after the commits and their reloadCollision): the
--- import and the sink share one clear, the restore costs one more, and no flush is needed (the
--- restore's clear already rebuilds the cells at the right height). The engine's own clear at each
--- block move (every 128 m while driving) remains.
-M.REFRESH_DROP = 100.0
-M.layerRefresh = false
-local refresh = nil       -- { x, y, z, drawn } of the block awaiting its refresh frame
-
 -- Surface materials (server --surface on, server/surface.py): runtime clones of M.MATERIAL with other
 -- ground models. The block is physics-only in mesh mode, so they only need a name and a ground model;
 -- their texture fields are copied so a rendered block (terrain mode, dev "show physics terrain") still
@@ -211,35 +192,8 @@ function M.load(path, squareSize, maxHeight, x, y, z, layers)
   end
   tb:setPosition(vec3(x, y, z))
   applyRender(tb) -- mesh mode: hidden again after every import
-  refresh = (layers and M.layerRefresh and not renderEnabled) and { x = x, y = y, z = z, drawn = false } or nil
   return true
 end
-
--- Once per frame (core onUpdate, after the frame's commits): the layer refresh after a layered
--- import, over two frames - the block drawn sunk in the import's frame, back in place and hidden in
--- the next. Returns true when a refresh finished this call.
-function M.tick()
-  local r = refresh
-  if not r then return false end
-  local tb = M.get()
-  if not tb or renderEnabled then -- the block went away, or is drawn anyway now (terrain mode)
-    if tb and r.drawn then tb:setPosition(vec3(r.x, r.y, r.z)) end
-    refresh = nil
-    return false
-  end
-  if not r.drawn then
-    tb:setPosition(vec3(r.x, r.y, r.z - M.REFRESH_DROP))
-    tb:setRenderEnabled(true)
-    r.drawn = true
-    return false
-  end
-  tb:setRenderEnabled(false)
-  tb:setPosition(vec3(r.x, r.y, r.z))
-  refresh = nil
-  return true
-end
-
-function M.refreshPending() return refresh ~= nil end
 
 -- Flat ground at z=0, centred on the origin, so the player has something to stand on before
 -- the first anchor (the session's block size: a 512² session imports the 512² flat map).
@@ -264,7 +218,6 @@ end
 
 function M.onLevelChanged()
   materialsChecked = false
-  refresh = nil
 end
 
 return M

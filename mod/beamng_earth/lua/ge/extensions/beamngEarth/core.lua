@@ -237,8 +237,11 @@ local function loadBlock(tr)
   if warn then warnOnce('height', 'terrain height scale: ' .. warn) end
   local layers = (type(tr.layers) == 'table' and type(tr.materials) == 'table')
     and { masks = tr.layers, materials = tr.materials } or nil -- server --surface on (surface.py)
-  if layers then groundcover.ensure() end -- before the import: it asks terrain for the layer refresh
-  return terrain.load(tr.heightmap, sq, maxH, x, y, tr.zBase, layers)
+  if layers then groundcover.ensure() end
+  local ok, err = terrain.load(tr.heightmap, sq, maxH, x, y, tr.zBase, layers)
+  -- every block import / move drops all the grass on it; rebuild it before this frame is drawn
+  groundcover.afterBlockChange()
+  return ok, err
 end
 
 -- M1h: in horizon mode LevelInfo.visibleDistance follows the server's radius (+10 %, with
@@ -914,9 +917,6 @@ local function onUpdate(dtReal, dtSim)
     farfield.update(gov, (gov.w1 or dtReal * 1000) / 1000, st.cam, st.player)
     updateSky(dtReal)
     updateGuard()
-    -- GroundCover's layer refresh (terrain.lua), after this frame's block commits and their
-    -- reloadCollision: a sunk block must never be what collision is rebuilt from
-    terrain.tick()
   end
   drawUi(dtReal)
 end

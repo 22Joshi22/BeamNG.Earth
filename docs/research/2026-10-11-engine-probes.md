@@ -346,11 +346,12 @@ local fd = f:getData()                       -- ForestData: createNewItem/update
   - A GroundCover on layer 4 (`bngProbeL4`) shows grass only on that 128 m stripe (`gc12_fresh_layer4_no_postapply.jpg`),
     and one on layer 3 only on its stripe (`gc6_layer3_postapply.jpg`).
   - Rendering the block on (`tbRender`) changes nothing for GroundCover.
-- **Correction (2026-10-11, later in-game):** it does *not* follow re-imports by itself. GroundCover
-  reads a layer copy that the block refreshes only in a frame where it is drawn and in view (the probe's
+- **Correction (2026-10-11, later in-game):** it does *not* follow re-imports by itself. GPU-placed
+  GroundCover (useNewPlacementGpu, the stock setting) reads a layer copy that the block refreshes only in a frame where it is drawn and in view (the probe's
   stripes were refreshed by the `tbRender` step; the re-imports below brought back the same stripes and
   material names). A block never drawn reads as layer 0 everywhere. See ARCHITECTURE.md "Ground
-  surfaces" for the one-frame sunk refresh the mod does. Original observation:
+  surfaces" for how the mod avoids it now (CPU placement, which reads the layers directly, plus a
+  same-tick rebuild). Original observation:
 - **It follows re-imports by itself:**
   - Re-importing the block with 1 layer made the layer-3 grass disappear (`gc10_after_import_1layer.jpg`).
   - Re-importing 8 layers brought it back with no flush and no `postApply` (`gc11_after_import_8layer_no_postapply.jpg`).
