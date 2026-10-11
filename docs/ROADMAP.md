@@ -444,6 +444,16 @@ World
 - **Seasons and snow**: real snow cover (satellite snow maps), autumn/winter vegetation colour.
 - **Night lights**: street lights and lit windows where cities are (OSM lamps + night-lights
   satellite data), so cities glow at night.
+- **Light pollution in the night sky** (user, 2026-10-10): today the stars and the Milky Way are
+  the same everywhere (ScatterSky starVisibility 1, milkyWayBrightnessEV 2, nightColor black), so
+  Baltimore gets a desert sky. Plan: the server works out the zenith sky brightness at the player
+  (mag/arcsec²) from satellite night lights (NASA Black Marble / VIIRS, open data: radiance
+  summed over ~200 km with a distance falloff, Walker's law ~d^-2.5) or from the World Atlas of
+  Artificial Night Sky Brightness (Falchi et al. 2016; licence to verify) and sends it with the
+  weather; the mod maps it to the sky (Bortle 1 -> full Milky Way; city -> starVisibility and the
+  Milky Way down, starHaze up, an orange skyglow in nightColor / nightFogColor towards the
+  brightest direction). Clouds over a city glow orange and hide the stars; the moon washes out
+  faint stars too. Generic: one rule from the brightness value, no per-city tuning.
 - **Airports and runways** (for plane mods): flattened, paved runways with markings from OSM,
   taxiways, the airport as a spawn point.
 - **Railways, power lines, fences, guardrails** from OSM as cheap repeated props.
