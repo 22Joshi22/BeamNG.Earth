@@ -34,6 +34,63 @@ local LAYER_MAPS = { [1024] = TERRAIN_DIR .. 'beamngEarth_layer_1024.png', [512]
 local FLAT_HEIGHTMAPS = { [1024] = TERRAIN_DIR .. 'beamngEarth_flat_1024.png', [512] = TERRAIN_DIR .. 'beamngEarth_flat_512.png' }
 local LAYER_MAP, FLAT_HEIGHTMAP = LAYER_MAPS[1024], FLAT_HEIGHTMAPS[1024]
 
+-- Layer refresh for GroundCover (groundcover.lua): GroundCover does not read the layer map that
+-- importMaps writes (getMaterialIdxWs and the tyres do) but a copy the block refreshes only in a
+-- frame in which it is drawn and in view; updateGridMaterials, updateAllTextures and toggling the
+-- render flag within one call do not refresh it (in-game 2026-10-11). Until then GroundCover sees
+-- the previous import's layers, or layer 0 everywhere on a block never drawn. So with the block
+-- hidden (mesh mode), each layered import is followed by one frame with the block drawn REFRESH_DROP
+-- metres lower (under the mesh ground: in view but hidden by depth), then it goes back; collision
+-- is not rebuilt for it (the vehicles never notice a render-only move, in-game). Only while
+-- something asks for it (M.layerRefresh).
+M.REFRESH_DROP = 100.0
+M.layerRefresh = false
+local refresh = nil       -- { x, y, z, drawn } of the block awaiting its refresh frame
+
+-- Surface materials (server --surface on, server/surface.py): runtime clones of M.MATERIAL with other
+-- ground models. The block is physics-only in mesh mode, so they only need a name and a ground model;
+-- their texture fields are copied so a rendered block (terrain mode, dev "show physics terrain") still
+-- draws. They join the TerrainMaterialSet by themselves (in-game probe 2026-10-11).
+local TEX_FIELDS = { 'aoBaseTex', 'aoBaseTexSize', 'aoDetailStrength', 'aoDetailTex', 'aoMacroTex', 'aoMacroTexSize',
+  'baseColorBaseTex', 'baseColorBaseTexSize', 'baseColorDetailStrength', 'baseColorDetailTex', 'baseColorMacroStrength',
+  'baseColorMacroTex', 'baseColorMacroTexSize', 'detailDistances', 'macroDistances', 'heightBaseTex', 'heightBaseTexSize',
+  'heightDetailTex', 'heightMacroTex', 'heightMacroTexSize', 'normalBaseTex', 'normalBaseTexSize', 'normalDetailStrength',
+  'normalDetailTex', 'normalMacroStrength', 'normalMacroTex', 'normalMacroTexSize', 'roughnessBaseTex', 'roughnessBaseTexSize',
+  'roughnessDetailStrength', 'roughnessDetailTex', 'roughnessMacroStrength', 'roughnessMacroTex', 'roughnessMacroTexSize' }
+
+-- Make sure every { name, groundmodel } exists as a TerrainMaterial (M.MATERIAL is the level's own).
+-- Returns false if one could not be made.
+local function ensureSurfaceMaterials(materials)
+  local src = scenetree.findObject(M.MATERIAL)
+  for _, nm in ipairs(materials) do
+    local name, gm = nm[1], nm[2]
+    local existing = scenetree.findObject(name)
+    if existing then
+      -- another object of that name (a weather Precipitation was once called like a material): the
+      -- import would bind the layer to nothing and the engine would make it asphalt
+      local okc, cls = pcall(function() return existing:getClassName() end)
+      if okc and cls and cls ~= 'TerrainMaterial' then return false end
+    end
+    if name ~= M.MATERIAL and not existing then
+      local ok = pcall(function()
+        local m = createObject('TerrainMaterial')
+        if src then
+          for _, f in ipairs(TEX_FIELDS) do
+            local okf, v = pcall(function() return src:getField(f, 0) end)
+            if okf and v and v ~= '' then m:setField(f, 0, v) end
+          end
+        end
+        m:setField('internalName', 0, name)
+        m:setField('groundmodelName', 0, gm)
+        m.canSave = false
+        m:registerObject(name)
+      end)
+      if not ok or not scenetree.findObject(name) then return false end
+    end
+  end
+  return true
+end
+
 local materialsChecked = false
 local renderEnabled = true -- false in mesh mode; survives levels (a server setting)
 
@@ -99,9 +156,16 @@ end
 
 function M.isRenderEnabled() return renderEnabled end
 
-local function importMaps(tb, path, squareSize, maxHeight, withMaterial)
+-- layers (optional): { masks = { path, ... }, materials = { { name, groundmodel }, ... } } (same order):
+-- one 0/255 mask per material instead of the single layer map
+local function importMaps(tb, path, squareSize, maxHeight, withMaterial, layers)
   local materials, textureMaps = {}, {}
-  if withMaterial then
+  if withMaterial and layers then
+    for i, nm in ipairs(layers.materials) do
+      materials[i] = nm[1]
+      textureMaps[i] = { path = layers.masks[i], selected = false, material = nm[1], materialId = i - 1, channel = 'R', channelId = 0 }
+    end
+  elseif withMaterial then
     -- same table layout as terrainGenerator.lua:183-185 getTextureMap()
     materials = { M.MATERIAL }
     textureMaps = { { path = LAYER_MAP, selected = false, material = M.MATERIAL, materialId = 0, channel = 'R', channelId = 0 } }
@@ -117,10 +181,22 @@ end
 -- Load a heightmap PNG and place the block's SW corner at (x, y, z).
 -- PNG row 0 is the north edge with flipY=false (V1_SPEC "Why terrain-based ground").
 -- The caller rebuilds collision (be:reloadCollision) once all world edits of the frame are done.
-function M.load(path, squareSize, maxHeight, x, y, z)
+-- layers (optional, server --surface on): { masks = { path, ... }, materials = { { name, gm }, ... } }
+function M.load(path, squareSize, maxHeight, x, y, z, layers)
   if not FS:fileExists(path) then return false, 'heightmap not found: ' .. tostring(path) end
   local tb = getOrCreate()
-  local ok, err = importMaps(tb, path, squareSize, maxHeight, true)
+  if layers then
+    local okL = type(layers.masks) == 'table' and type(layers.materials) == 'table' and #layers.masks == #layers.materials
+      and #layers.masks > 0 and ensureSurfaceMaterials(layers.materials)
+    if okL then
+      for _, m in ipairs(layers.masks) do if not FS:fileExists(m) then okL = false; break end end
+    end
+    if not okL then
+      log('W', 'beamngEarth', 'surface layers unusable, importing the single dirt layer')
+      layers = nil
+    end
+  end
+  local ok, err = importMaps(tb, path, squareSize, maxHeight, true, layers)
   if not ok then
     -- Ground without a material still collides; it just renders as the placeholder.
     log('W', 'beamngEarth', 'importMaps with material failed (' .. tostring(err) .. '), retrying without')
@@ -129,8 +205,36 @@ function M.load(path, squareSize, maxHeight, x, y, z)
   end
   tb:setPosition(vec3(x, y, z))
   applyRender(tb) -- mesh mode: hidden again after every import
+  refresh = (layers and M.layerRefresh and not renderEnabled) and { x = x, y = y, z = z, drawn = false } or nil
   return true
 end
+
+-- Once per frame (core onUpdate): the layer refresh after a layered import, over two frames - the
+-- block drawn sunk in the first, back in place and hidden in the next, then the GroundCover cells
+-- rebuilt. Returns true when a refresh finished this call.
+function M.tick()
+  local r = refresh
+  if not r then return false end
+  local tb = M.get()
+  if not tb or renderEnabled then -- the block went away, or is drawn anyway now (terrain mode)
+    if tb and r.drawn then tb:setPosition(vec3(r.x, r.y, r.z)) end
+    refresh = nil
+    return false
+  end
+  if not r.drawn then
+    tb:setPosition(vec3(r.x, r.y, r.z - M.REFRESH_DROP))
+    tb:setRenderEnabled(true)
+    r.drawn = true
+    return false
+  end
+  tb:setRenderEnabled(false)
+  tb:setPosition(vec3(r.x, r.y, r.z))
+  refresh = nil
+  if flushGroundCoverGrids then flushGroundCoverGrids() end
+  return true
+end
+
+function M.refreshPending() return refresh ~= nil end
 
 -- Flat ground at z=0, centred on the origin, so the player has something to stand on before
 -- the first anchor (the session's block size: a 512² session imports the 512² flat map).
@@ -155,6 +259,7 @@ end
 
 function M.onLevelChanged()
   materialsChecked = false
+  refresh = nil
 end
 
 return M

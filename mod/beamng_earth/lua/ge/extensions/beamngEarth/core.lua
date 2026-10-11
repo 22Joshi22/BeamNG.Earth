@@ -48,6 +48,7 @@ local credits = require('beamngEarth/credits') -- the on-screen data credits (do
 local places = require('beamngEarth/places') -- saved and recent places (the settings page)
 local banner = require('beamngEarth/banner') -- the connection banner (docs/DEVTOOLS.md)
 local edgeguard = require('beamngEarth/edgeguard') -- never fall off the last block (docs/ROADMAP.md)
+local groundcover = require('beamngEarth/groundcover') -- grass on the surface layers (docs/ROADMAP.md v1.5)
 
 local LEVEL_ID = 'beamng_earth'
 local MOD_VERSION = '0.4.0'
@@ -234,7 +235,10 @@ local function loadBlock(tr)
   end
   local maxH, warn = lattice.heightParams(tr)
   if warn then warnOnce('height', 'terrain height scale: ' .. warn) end
-  return terrain.load(tr.heightmap, sq, maxH, x, y, tr.zBase)
+  local layers = (type(tr.layers) == 'table' and type(tr.materials) == 'table')
+    and { masks = tr.layers, materials = tr.materials } or nil -- server --surface on (surface.py)
+  if layers then groundcover.ensure() end -- before the import: it asks terrain for the layer refresh
+  return terrain.load(tr.heightmap, sq, maxH, x, y, tr.zBase, layers)
 end
 
 -- M1h: in horizon mode LevelInfo.visibleDistance follows the server's radius (+10 %, with
@@ -888,6 +892,7 @@ local function onUpdate(dtReal, dtSim)
   end
   if not scenetree.MissionGroup then return end -- no level loaded
   tickMotionBlur()
+  terrain.tick() -- GroundCover's layer refresh after a layered import (terrain.lua)
 
   st.paused = (dtSim or dtReal) <= 0
   local rb = st.rebasing
@@ -984,6 +989,7 @@ local function onClientEndMission()
   -- ourselves first, so their per-tile materials (not level objects) can go after them
   farfield.clear()
   horizon.restoreSky() -- M1h: the level's sky planet radius (its LevelInfo goes with the level)
+  groundcover.reset() -- its objects go with the level
   local sessionId, nextRequestId = st.sessionId, st.nextRequestId
   resetState()
   st.sessionId, st.nextRequestId = sessionId, nextRequestId

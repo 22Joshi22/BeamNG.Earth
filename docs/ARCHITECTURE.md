@@ -885,6 +885,39 @@ three days of testing: dem 741 MB / 7.5k files, imagery 1.4 GB / 35k, deshadow 7
   farfield sessions, Lua against port), `test_server.SessionCleanupTest`; luajit `test_banner`,
   `test_edgeguard`, `test_core_robustness`.
 
+## Ground surfaces under the physics block (`server/surface.py`, `earthd --surface on`; 2026-10-11)
+- The TerrainBlock is physics-only in mesh mode, so its layer map only decides the tyres' ground model
+  (and GroundCover, which binds to a layer). `make_heightmap` keeps the block's lat/lon/height grids
+  (`heightmap.generate(keep=)`), `Surface.classes` reads the WorldCover class under every 2 m sample from
+  the map-data cache (z14 cells, `mapdata.MapData` "landcover", no DuckDB needed) and `classify` maps
+  it to MATERIALS (§5.4 of docs/research/2026-10-10-world-data-sources.md: built-up asphalt, tree /
+  grass / moss grass, shrub dusty dirt, bare loose dirt, cropland dirt, snow, water / wetland mud) with
+  ROCK where the slope is above 35° (snow stays snow). One 0/255 mask per material
+  (`hm_<a>_<cx>_<cy>_m<i>.png`, rows as the heightmap's) goes next to the heightmap; the terrain message
+  names them (`layers`, `materials`) and terrain.lua imports 8 greyscale masks (+4-5 ms per 512²
+  import, docs/research/2026-10-11-engine-probes.md), making the 7 extra TerrainMaterials as runtime
+  clones of `beamngEarthDirt` with other `groundmodelName`s (they join the material set by themselves).
+  Any unusable layer list falls back to the single dirt layer.
+- Never waiting: a cell not cached yet reads as no data (dirt, as before) and is fetched in the
+  background (1 thread, netfetch kind "prefetch", 3 km around the player at most every 500 m); the
+  next blocks have it. `surfaceComplete` in the heightmap info says whether every cell was there.
+- Masks are evicted with their heightmap. Off by default until more in-game checks; the tyre contact
+  material per class was checked at Fells Point, Serengeti, Everest Base Camp and Monument Valley.
+- Ground cover (`groundcover.lua`): stock GroundCover definitions read at runtime from official levels
+  (Hirochi Raceway green grass, West Coast USA dry grass and scrub; their material files loaded first)
+  and recreated with every plant type's `layer` set to ours (`bngEarthGroundGrass`,
+  `bngEarthGroundDusty`) and `maxElements` scaled. Made once per level, on the first layered import.
+  An empty `layer` places nothing (not "everywhere").
+- GroundCover does not read the layer map importMaps writes (getMaterialIdxWs and the tyres do) but
+  a copy the block refreshes only in a frame where it is drawn and in view. updateGridMaterials,
+  updateAllTextures and toggling the render flag within one call do not refresh it; a block never
+  drawn reads as layer 0 everywhere. So while ground cover exists, every layered import in mesh mode
+  is followed by `terrain.tick()` (core onUpdate) drawing the block for one frame 100 m lower (in view,
+  hidden under the mesh ground by depth; collision not rebuilt, the vehicles do not notice), then
+  putting it back hidden and calling `flushGroundCoverGrids()`. A camera that cannot see the block's
+  box in that frame (high above it) leaves the previous layers until the next import.
+  Cost: +1.1 ms per frame at Serengeti grassland (A/B, 6 rounds, 6.15 -> 7.25 ms).
+
 ## Map data (`server/mapdata.py`; built offline 2026-10-11, branch feature/mapdata)
 The shared input of every content feature (roads, buildings, water, land use, trees, ground
 types), per docs/research/2026-10-10-world-data-sources.md. Not wired into earthd or the mod yet:

@@ -76,6 +76,8 @@ import cache as cachemod  # noqa: E402
 import cdae  # noqa: E402
 import colormatch as colormatchmod  # noqa: E402
 import credits as creditsmod  # noqa: E402
+import surface as surfacemod  # noqa: E402
+import mapdata as mapdatamod  # noqa: E402
 import dem as demmod  # noqa: E402
 import deshadow as deshadowmod  # noqa: E402
 import farfield  # noqa: E402
@@ -370,7 +372,7 @@ class Server:
                  imagery=imagerymod.DEFAULT_CHAIN, near_visual="mesh", tex_near=TEX_NEAR, tex_far=TEX_FAR,
                  tone=1.0, near_radii=None, status_interval=STATUS_INTERVAL, cells=CELLS_DEFAULT, tex=None,
                  block=BLOCK_DEFAULT, horizon=False, deshadow="off", weather=None, gravity=None, net=None,
-                 colormatch="off", credits=None, cache=None, retex_rate=RETEX_RATE):
+                 colormatch="off", credits=None, cache=None, retex_rate=RETEX_RATE, surface=None):
         """kfun: K(L) for every level (default: the layout's K table); near_radii: the min-level
         radii (default: the layout's); cells: 32 (v1.3.1) or 64 (M1, mesh mode only); tex: texture
         px per level from the finest (default: tex_near, tex_near, tex_far with 32 cells,
@@ -486,6 +488,7 @@ class Server:
         self.gravity = gravity
         # On-screen data credits (credits.py): a creditsmod.Credits, or None (--credits off; Server()'s default)
         self.credits = credits
+        self.surface = surface      # surface.Surface: ground models under the physics block (--surface on)
         # The download cache's bookkeeping (cache.py): every producer reports its disk hits and writes
         self.cache = cache
         if cache is not None:
@@ -691,10 +694,18 @@ class Server:
         """Worker thread: build and write one 1024² terrain."""
         t0 = time.perf_counter()
         q = self.anchor_q(anchor)
+        keep = {} if self.surface is not None else None
         info = heightmap.generate(anchor.frame,
                                   lambda la, lo: self.dem.sample(la, lo, anchor.hm_zoom, progress),
                                   os.path.join(self.out_dir, self.hm_name((anchor.id, cx, cy))), cx, cy, q=q,
-                                  size=self.layout.block)
+                                  size=self.layout.block, keep=keep)
+        if keep is not None:
+            # ground models per 2 m sample from the cached land cover and the slope (surface.py);
+            # rows flipped as the heightmap's (row 0 = north)
+            classes, complete = self.surface.classes(keep["lat"], keep["lon"])
+            idx = surfacemod.classify(classes, keep["u"], heightmap.SQUARE)
+            info["layers"] = surfacemod.write_masks(idx[::-1], self.out_dir, self.hm_name((anchor.id, cx, cy))[:-4])
+            info["surfaceComplete"] = complete
         info["seconds"] = time.perf_counter() - t0
         info["zoom"] = anchor.hm_zoom
         return info
@@ -745,6 +756,9 @@ class Server:
         for key in [k for k in self.hm if k not in keep][:max(0, len(self.hm) - HM_CACHE)]:
             del self.hm[key]
             self._remove(os.path.join(self.out_dir, self.hm_name(key)))
+            if self.surface is not None:        # its surface masks (only read at import)
+                for name in surfacemod.mask_names(self.hm_name(key)[:-4]):
+                    self._remove(os.path.join(self.out_dir, name))
 
     # --- far tiles -------------------------------------------------------
     def tile_name(self, aid, key):
@@ -1419,9 +1433,13 @@ class Connection:
         return progress
 
     def terrain_msg(self, key, info):
-        return {"cx": key[1], "cy": key[2], "heightmap": self.s.hm_vfs(key), "size": self.s.layout.block,
-                "squareSize": heightmap.SQUARE, "zBase": info["zBase"], "maxHeight": info["maxHeight"],
-                "q": info["q"]}
+        out = {"cx": key[1], "cy": key[2], "heightmap": self.s.hm_vfs(key), "size": self.s.layout.block,
+               "squareSize": heightmap.SQUARE, "zBase": info["zBase"], "maxHeight": info["maxHeight"],
+               "q": info["q"]}
+        if info.get("layers"):      # --surface on: one mask per material, MATERIALS order
+            out["layers"] = [f"{self.s.vfs_dir}/{n}" for n in info["layers"]]
+            out["materials"] = [[name, gm] for name, gm in surfacemod.MATERIALS]
+        return out
 
     async def prepare_anchor(self, msg):
         req = msg.get("requestId")
@@ -1439,6 +1457,10 @@ class Connection:
         anchor = self.s.new_anchor(lat, lon)
         self.status(f"Building terrain at {lat:.5f}, {lon:.5f}...")
         t0 = time.perf_counter()
+        if self.s.surface is not None:
+            # the anchor's first block is built once and kept while the player stands still: give the
+            # land cover around it a moment to arrive (blocks built while driving never wait)
+            await asyncio.get_running_loop().run_in_executor(None, self.s.surface.ready, lat, lon)
         try:
             info = await self.s.terrain(anchor, cx, cy, self._progress())
         except Exception as e:
@@ -1563,6 +1585,8 @@ class Connection:
             self.held = {int(a) for a in held if isinstance(a, (int, float)) and not isinstance(a, bool)}
         self.s.claim_sessions(self, msg.get("sessions"))   # earlier runs' folders still in use (or released)
         self.weather.on_pose(self, msg.get("lat"), msg.get("lon"))
+        if self.s.surface is not None and isinstance(msg.get("lat"), (int, float)) and isinstance(msg.get("lon"), (int, float)):
+            self.s.surface.prefetch(float(msg["lat"]), float(msg["lon"]))
         aid = msg.get("anchorId")
         # The latest committed anchor is the one the mod reports in its pose
         # (ids only grow, so never switch back to an older one).
@@ -1908,7 +1932,9 @@ async def main_async(args):
                     gravity=(gravitymod.Provider(os.path.join(args.cache_dir, "gravity"), net=net)
                              if args.gravity == "on" else None), net=net,
                     credits=creditsmod.Credits() if args.credits == "on" else None, cache=disk,
-                    retex_rate=args.retex_rate)
+                    retex_rate=args.retex_rate,
+                    surface=(surfacemod.Surface(mapdatamod.MapData(args.cache_dir, fetcher=net))
+                             if args.surface == "on" else None))
 
     async def net_log():
         while True:
@@ -2055,6 +2081,10 @@ def main():
     ap.add_argument("--offline", action="store_true",
                     help="no network: serve elevation and imagery from the disk cache only (uncached tiles get "
                          "the palette, uncached terrain fails); the status says 'Offline - using cached data'")
+    ap.add_argument("--surface", choices=("on", "off"), default="off",
+                    help="ground models under the physics block from ESA WorldCover land cover and the slope "
+                         "(surface.py: asphalt, grass, dusty / loose dirt, rock, snow, mud, dirt), imported as 8 "
+                         "terrain layers with each block; off = dirt everywhere (default until its in-game check)")
     ap.add_argument("--credits", choices=("on", "off"), default="on",
                     help="'credits' messages: the imagery / elevation / weather sources of the tiles within 2 km "
                          "of the player and of the far field, for the mod's on-screen data credits (on change, "

@@ -89,8 +89,9 @@ def surface_u(frame, elev_fn, xs, ys):
     return surface(frame, elev_fn, xs, ys)[1]
 
 
-def surface(frame, elev_fn, xs, ys):
-    """(DEM elevation, ENU z of the surface point) under every plane point, indexed [j, i]."""
+def surface(frame, elev_fn, xs, ys, keep=None):
+    """(DEM elevation, ENU z of the surface point) under every plane point, indexed [j, i].
+    keep (a dict, optional) receives the points' "lat" and "lon" (surface.py's land cover)."""
     ny, nx = len(ys), len(xs)
     lat = np.empty((ny, nx))
     lon = np.empty((ny, nx))
@@ -98,6 +99,8 @@ def surface(frame, elev_fn, xs, ys):
         e, n = np.meshgrid(xs, ys[r0:r0 + CHUNK_ROWS])
         lat[r0:r0 + CHUNK_ROWS], lon[r0:r0 + CHUNK_ROWS], _ = frame.enu_to_geodetic(e, n, 0.0)
     elev = elev_fn(lat, lon)
+    if keep is not None:
+        keep["lat"], keep["lon"] = lat, lon
     u = np.empty((ny, nx))
     for r0 in range(0, ny, CHUNK_ROWS):
         s = slice(r0, r0 + CHUNK_ROWS)
@@ -106,10 +109,11 @@ def surface(frame, elev_fn, xs, ys):
     return elev, u
 
 
-def grid_u(frame, elev_fn, cx=0.0, cy=0.0, size=SIZE):
-    """ENU z for every grid sample, indexed [gy, gx] (gy = north), all from real data."""
+def grid_u(frame, elev_fn, cx=0.0, cy=0.0, size=SIZE, keep=None):
+    """ENU z for every grid sample, indexed [gy, gx] (gy = north), all from real data. keep: as
+    surface()."""
     xs, ys = sample_coords(cx, cy, size)
-    return surface_u(frame, elev_fn, xs, ys)
+    return surface(frame, elev_fn, xs, ys, keep)[1]
 
 
 def quantise(u, q):
@@ -177,10 +181,13 @@ def height_at(qgrid, z_base, max_height, cx, cy, x, y, square=SQUARE):
     return float((h[0, 0] * (1 - wx) + h[0, 1] * wx) * (1 - wy) + (h[1, 0] * (1 - wx) + h[1, 1] * wx) * wy)
 
 
-def generate(frame, elev_fn, path, cx=0.0, cy=0.0, ground_at=(0.0, 0.0), q=Q_DEFAULT, size=SIZE):
+def generate(frame, elev_fn, path, cx=0.0, cy=0.0, ground_at=(0.0, 0.0), q=Q_DEFAULT, size=SIZE, keep=None):
     """Build the size² block centred at (cx, cy) with height quantum q and write it to path.
-    groundZ is the terrain height at ground_at (None if that point is outside the block)."""
-    u = grid_u(frame, elev_fn, cx, cy, size)
+    groundZ is the terrain height at ground_at (None if that point is outside the block). keep (a
+    dict, optional) receives "lat", "lon" and "u" of the grid ([gy, gx], gy = north)."""
+    u = grid_u(frame, elev_fn, cx, cy, size, keep)
+    if keep is not None:
+        keep["u"] = u
     q, z_base, max_height, qgrid = write_png(path, u, q)
     gz = height_at(qgrid, z_base, max_height, cx, cy, *ground_at) if ground_at else None
     return {"cx": cx, "cy": cy, "zBase": z_base, "maxHeight": max_height, "q": q,
