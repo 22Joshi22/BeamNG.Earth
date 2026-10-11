@@ -222,6 +222,15 @@ IMAGERY_PREFETCH = 12       # queued tiles whose imagery is fetched ahead of the
 # while the backlog changed, so tools/drive.py can sample it (M0 harness runs use 1).
 STATUS_INTERVAL = 0.0
 NET_TICK_S = 60.0           # the network summary line in the log and the netstats file
+# Live retexture (--colormatch / --deshadow): when a region a shown tile was rendered without becomes
+# ready, the tile's texture is rendered again under its next revision's name and the mod is told
+# (far_retex) to point the tile's material at it. At most RETEX_INFLIGHT such renders on the tile pool
+# at once (the other workers keep building), started at most RETEX_RATE per second, nearest the player
+# first; a tile is re-rendered live at most RETEX_MAX times (a guard: past that it waits to be re-sent).
+# --retex-rate 0: no live swap (a stale tile is re-rendered when it is sent again, as before).
+RETEX_RATE = 5.0
+RETEX_INFLIGHT = 1
+RETEX_MAX = 8
 # Shown in the mod's UI (V1_3_SPEC §C), after the imagery credits.
 ELEVATION_CREDIT = "Elevation: Mapterhorn (see mapterhorn.com/attribution), AWS Terrain Tiles / Mapzen"
 
@@ -255,9 +264,10 @@ class TileInfo:
     texture: str | None = None      # file name of its texture (next to the shape)
     tex_bytes: int = 0
     tex_seconds: float = 0.0
-    # --colormatch: regions whose correction was not ready when the texture was rendered (left raw
-    # there), whether one of them has turned out to change it (the texture is then rendered again
-    # the next time the tile is sent, under a new file name), and the texture's revision
+    # --colormatch / --deshadow: regions whose correction was not ready when the texture was rendered
+    # (left raw there; de-shadow ones as (imagery.DS_PENDING, rx, ry)), whether one of them has turned
+    # out to change it (the texture is then rendered again under a new file name: live for a tile on
+    # screen, far_retex, else the next time the tile is sent), and the texture's revision
     cm_pending: frozenset = frozenset()
     stale: bool = False
     rev: int = 0
@@ -322,7 +332,7 @@ class Server:
                  imagery=imagerymod.DEFAULT_CHAIN, near_visual="mesh", tex_near=TEX_NEAR, tex_far=TEX_FAR,
                  tone=1.0, near_radii=None, status_interval=STATUS_INTERVAL, cells=CELLS_DEFAULT, tex=None,
                  block=BLOCK_DEFAULT, horizon=False, deshadow="off", weather=None, gravity=None, net=None,
-                 colormatch="off", credits=None):
+                 colormatch="off", credits=None, retex_rate=RETEX_RATE):
         """kfun: K(L) for every level (default: the layout's K table); near_radii: the min-level
         radii (default: the layout's); cells: 32 (v1.3.1) or 64 (M1, mesh mode only); tex: texture
         px per level from the finest (default: tex_near, tex_near, tex_far with 32 cells,
@@ -331,7 +341,7 @@ class Server:
         far field out to the line-of-sight horizon (mesh mode only; `radius` is then unused); net:
         the netfetch.Fetcher every download goes through (main_async passes the command line's; None =
         one of its own, no statistics file); colormatch: --colormatch (off, or s2: the colour-seam
-        feather on the USGS tiles)."""
+        feather on the USGS tiles); retex_rate: --retex-rate (live retextures per second, 0 = none)."""
         self.sid = time.strftime("%Y%m%d-%H%M%S-") + secrets.token_hex(2)
         root = os.path.join(user_dir, "temp", "beamngEarth")
         self._clean_old_sessions(root, os.path.join(user_dir, *CDAE_ROOT))
@@ -362,6 +372,7 @@ class Server:
         self.deshadow = None
         if deshadow != "off" and imagery and deshadowmod.SOURCE in [getattr(s, "name", s) for s in imagery]:
             self.deshadow = deshadowmod.Deshadow(cache_dir, self.dem, deshadow)
+            self.deshadow.add_listener(self._ds_listener)
         # Colour seams of the USGS mosaic (--colormatch s2; off = no object, textures as before).
         self.colormatch = None
         if colormatch != "off" and imagery and colormatchmod.SOURCE in [getattr(s, "name", s) for s in imagery]:
@@ -370,6 +381,15 @@ class Server:
         self.loop = None                    # the event loop (set by tile()), for the colormatch listener
         self.cm_waiting = {}                # region -> {(anchorId, key)} rendered without its correction
         self.tex_rev = {}                   # (anchorId, key) -> texture revision of its next build
+        # live retexture (far_retex): stale tiles to re-render while shown, the renders running, the
+        # earliest start of the next one, its timer, and the counts for the log / tests
+        self.retex_rate = retex_rate
+        self.retex_inflight = RETEX_INFLIGHT
+        self.retex_todo = set()
+        self.retex_busy = 0
+        self._retex_next = 0.0
+        self._retex_timer = None
+        self.retex_stats = {"started": 0, "sent": 0, "dropped": 0}
         self.imagery = (imagerymod.Imagery(os.path.join(cache_dir, "imagery"), imagery, tone=tone,
                                            deshadow=self.deshadow, colormatch=self.colormatch, fetcher=self.net)
                         if imagery else None)
@@ -608,10 +628,13 @@ class Server:
         caches textures by path, and the mod points the tile's material at the new file."""
         return f"far_{aid}_{key}.dds" if rev == 0 else f"far_{aid}_{key}_r{rev}.dds"
 
-    def tile_files(self, name, texture=None):
-        """A far tile's files: the shape, its texture (`texture`: a re-rendered one's name) and the
+    def tile_files(self, name, texture=None, rev=0):
+        """A far tile's files: the shape, its texture (`texture`: a re-rendered one's name), every
+        earlier revision's texture up to `rev` (a tile retextured live left them behind) and the
         engine's .cdae cache of it (DAE tiles)."""
-        out = [os.path.join(self.out_dir, name), os.path.join(self.out_dir, os.path.splitext(name)[0] + ".dds")]
+        stem = os.path.splitext(name)[0]
+        out = [os.path.join(self.out_dir, name), os.path.join(self.out_dir, stem + ".dds")]
+        out += [os.path.join(self.out_dir, f"{stem}_r{r}.dds") for r in range(1, rev + 1)]
         if texture is not None and os.path.join(self.out_dir, texture) not in out:
             out.append(os.path.join(self.out_dir, texture))
         if name.endswith(".dae"):
@@ -702,7 +725,7 @@ class Server:
         material = texture = used = None
         tex_bytes = 0
         ck = (anchor.id, tile.key)
-        pending = set() if self.colormatch is not None else None
+        pending = set() if self.colormatch is not None or self.deshadow is not None else None
         if self.imagery is not None:
             x0, y0, _, _ = tile.bbox
             try:
@@ -810,9 +833,12 @@ class Server:
         self.tile_inflight.pop(ck, None)
         if fut.cancelled() or fut.exception() is not None:
             return
+        before = self.tiles.get(ck)
         info = self.tiles[ck] = fut.result()
-        for rk in sorted(info.cm_pending):  # --colormatch: regions it was rendered without
-            st = self.colormatch.status(rk)
+        if before is not None and info.texture != before.texture:
+            self._send_retex(ck, info)      # a re-rendered texture: the mods showing the tile switch to it
+        for rk in sorted(info.cm_pending, key=str):     # regions it was rendered without
+            st = self._region_status(rk)
             if st is None:
                 self.cm_waiting.setdefault(rk, set()).add(ck)
             else:                           # ready meanwhile (while the texture was being rendered)
@@ -830,7 +856,7 @@ class Server:
         if info.stale or info.rev or info.cm_pending:
             self.tex_rev[ck] = info.rev + 1
         # through the rate-limited queue: the mod loaded most of these files once (P9)
-        files = self.tile_files(self.tile_name(*ck), info.texture if info.rev else None)
+        files = self.tile_files(self.tile_name(*ck), info.texture if info.rev else None, info.rev)
         self.queue_delete((p for p in files if os.path.exists(p)), ck)
 
     def _cm_listener(self, rk, changed):
@@ -839,21 +865,104 @@ class Server:
         if loop is not None and not loop.is_closed():
             loop.call_soon_threadsafe(self._cm_ready, rk, changed)
 
-    def _cm_ready(self, rk, changed):
-        """The far tiles whose textures were rendered without the region's correction: if it changes
-        them they are stale, and tile() renders the texture again (only the texture, under the next
-        revision's name) whenever the tile is sent again. Swapping the texture of a tile the mod
-        shows needs its far_retex message (V1_4_SPEC M3a)."""
-        for ck in sorted(self.cm_waiting.pop(rk, ())):
-            self._cm_settle(ck, rk, changed)
+    def _ds_listener(self, rk, changed):
+        """Deshadow worker thread: a region's relight values are ready (changed: it relights)."""
+        self._cm_listener((imagerymod.DS_PENDING,) + tuple(rk), changed)
 
-    def _cm_settle(self, ck, rk, changed):
+    def _region_status(self, rk):
+        """None (not ready), False (ready, changes nothing) or True of a pending region: a colour-match
+        (rx, ry) or a de-shadow (DS_PENDING, rx, ry) one (event loop: memory and stat calls only)."""
+        if len(rk) == 3 and rk[0] == imagerymod.DS_PENDING:
+            return None if self.deshadow is None else self.deshadow.status(tuple(rk[1:]))
+        return None if self.colormatch is None else self.colormatch.status(rk)
+
+    def _cm_ready(self, rk, changed):
+        """The far tiles whose textures were rendered without the region's correction (colour match or
+        de-shadow): if it changes them they are stale. tile() renders the texture again (only the
+        texture, under the next revision's name) whenever the tile is sent again, and a tile some mod
+        shows (or holds, sent) is re-rendered live and swapped with far_retex (_retex_pump)."""
+        for ck in sorted(self.cm_waiting.pop(rk, ())):
+            self._cm_settle(ck, rk, changed, pump=False)
+        self._retex_pump()                  # once all are queued: the nearest goes first
+
+    def _cm_settle(self, ck, rk, changed, pump=True):
         info = self.tiles.get(ck)
         if info is None or rk not in info.cm_pending:
             return
         info.cm_pending = info.cm_pending - {rk}
         if changed:
             info.stale = True
+            self.retex_request(ck, pump)
+
+    # --- live retexture (far_retex) ---------------------------------------------------------
+    def _retex_viewers(self, ck):
+        """The connections that show the tile, or hold it (sent, not swapped in yet), under their
+        active anchor (a previous anchor's tiles are on their way out)."""
+        aid, key = ck
+        return [c for c in self.connections if c.active == aid and (ck in c.shown or key in c.sent)]
+
+    def retex_request(self, ck, pump=True):
+        """A stale tile to re-render live if some mod shows it (event loop)."""
+        if self.retex_rate <= 0 or self.imagery is None:
+            return
+        self.retex_todo.add(ck)
+        if pump:
+            self._retex_pump()
+
+    def _retex_pick(self):
+        """The stale tile to re-render next: shown (or held) by a connection, nearest its player
+        first. Drops the ones nobody shows (re-rendered when sent again), already re-rendering, or
+        past RETEX_MAX."""
+        best, bd = None, math.inf
+        for ck in list(self.retex_todo):
+            info = self.tiles.get(ck)
+            viewers = self._retex_viewers(ck) if info is not None and info.stale else []
+            if not viewers or ck in self.tile_inflight or ck[0] not in self.anchors or info.rev >= RETEX_MAX:
+                self.retex_todo.discard(ck)
+                if info is not None and info.stale and ck not in self.tile_inflight:
+                    self.retex_stats["dropped"] += 1
+                continue
+            t = farfield.tile_of(ck[1])
+            d = min(t.distance(*c.focus) for c in viewers)
+            if best is None or (d, ck) < (bd, best):
+                best, bd = ck, d
+        return best
+
+    def _retex_pump(self):
+        """Start live re-renders within the rate and in-flight bounds (event loop; never waits)."""
+        if self._retex_timer is not None or self.loop is None or self.loop.is_closed():
+            return
+        while self.retex_todo and self.retex_busy < self.retex_inflight:
+            wait = self._retex_next - time.monotonic()
+            if wait > 0:
+                self._retex_timer = self.loop.call_later(wait, self._retex_wake)
+                return
+            ck = self._retex_pick()
+            if ck is None:
+                return
+            self.retex_todo.discard(ck)
+            self._retex_next = time.monotonic() + 1.0 / self.retex_rate
+            anchor, tile, prev = self.anchors[ck[0]], farfield.tile_of(ck[1]), self.tiles[ck]
+            fut = self.tile_inflight[ck] = self.loop.run_in_executor(self.tile_pool, self.make_tile, anchor, tile, prev)
+            fut.add_done_callback(lambda f, ck=ck: self._tile_done(ck, f))
+            fut.add_done_callback(self._retex_done)
+            self.retex_busy += 1
+            self.retex_stats["started"] += 1
+
+    def _retex_wake(self):
+        self._retex_timer = None
+        self._retex_pump()
+
+    def _retex_done(self, fut):
+        self.retex_busy -= 1
+        self._retex_pump()
+
+    def _send_retex(self, ck, info):
+        """far_retex to every connection showing (or holding) the tile: its new texture."""
+        for c in self._retex_viewers(ck):
+            c.send({"type": "far_retex", "anchorId": ck[0], "key": ck[1], "texture": f"{self.vfs_dir}/{info.texture}"})
+            self.retex_stats["sent"] += 1
+            c.credits.poke(c)               # the new texture's sources (the corrected one names S2 too)
 
     def schedule_prune(self, keep_from):
         """prune(keep_from) after prune_delay seconds (once per keep_from)."""
@@ -886,6 +995,7 @@ class Server:
                 self.degraded.discard(ck)
             for ck in [k for k in self.tex_rev if k[0] == aid]:
                 del self.tex_rev[ck]
+            self.retex_todo = {ck for ck in self.retex_todo if ck[0] != aid}
             for fut in [f for k, f in self.tile_inflight.items() if k[0] == aid]:
                 fut.cancel()
             for key in [k for k in self.hm if k[0] == aid]:
@@ -1524,6 +1634,8 @@ class Connection:
                          self.s.level_summary())
                 if self.s.imagery is not None:
                     log.info("imagery: %s", self.s.imagery.summary())
+                if self.s.retex_stats["started"]:
+                    log.info("live retexture: %s, %d waiting", self.s.retex_stats, len(self.s.retex_todo))
                 if not any(ck[0] != anchor.id for ck in self.shown):
                     self.s.schedule_prune(anchor.id)
             await self.writer.drain()
@@ -1543,8 +1655,11 @@ class Connection:
                     continue
                 if ck[0] != self.active or t.key not in self.desired or ck in self.shown or t.key in self.sent:
                     continue            # superseded meanwhile; the file stays cached
-                info = fut.result()
+                # the server's latest record: a live retexture may have finished since this build
+                info = self.s.tiles.get(ck, fut.result())
                 self.sent[t.key] = t
+                if info.stale:          # a region turned ready since: re-rendered live, then far_retex
+                    self.s.retex_request(ck)
                 self.batch[1] += 1
                 m = {"type": "far_tile", "anchorId": ck[0], "key": t.key, "level": t.level,
                      "shape": f"{self.s.vfs_dir}/{self.s.tile_name(*ck)}",
@@ -1588,7 +1703,7 @@ async def main_async(args):
                              if args.weather == "on" else None),
                     gravity=(gravitymod.Provider(os.path.join(args.cache_dir, "gravity"), net=net)
                              if args.gravity == "on" else None), net=net,
-                    credits=creditsmod.Credits() if args.credits == "on" else None)
+                    credits=creditsmod.Credits() if args.credits == "on" else None, retex_rate=args.retex_rate)
 
     async def net_log():
         while True:
@@ -1694,6 +1809,11 @@ def main():
                     help="remove the colour seams between NAIP flights in the USGS imagery (docs/research/"
                          "2026-10-10-imagery-colormatch.md): s2 = the seam feather against Sentinel-2 (EOX), "
                          "only near detected survey seams; off = the imagery as served (default)")
+    ap.add_argument("--retex-rate", type=float, default=RETEX_RATE,
+                    help="--colormatch / --deshadow: textures of tiles on screen rendered again (and swapped in the "
+                         "game with far_retex) per second at most once a region they were rendered without is ready, "
+                         "nearest first, one at a time on the tile pool (0 = none: such a tile keeps its texture until "
+                         "it is sent again)")
     ap.add_argument("--near-radii", type=parse_radii, default=None,
                     help="mesh mode: radii in m around the player of the exact level and the next one "
                          "(L-2, L-1 with 32 cells; L-1, L0 with 64; default 150,400)")

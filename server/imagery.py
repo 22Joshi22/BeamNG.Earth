@@ -168,6 +168,9 @@ def as_tile(rgb):
 
 
 _SAME = object()                    # colour-match LRU marker: the tile is unchanged
+# render(pending=) entries: a colour-match region is (rx, ry); a de-shadow region still to come is
+# (DS_PENDING, rx, ry) (both z12, so the tag keeps them apart; earthd asks the matching object)
+DS_PENDING = "ds"
 
 
 class Imagery:
@@ -447,7 +450,8 @@ class Imagery:
         """RGBA mosaic of src's tiles at zoom z covering global pixel coordinates fx, fy (A = 255
         where the source has data, 254 where a de-shadowed tile replaced it); returns (image,
         origin x, origin y, any data) or None if it would take more than MAX_MOSAIC tiles.
-        pending: a set that collects the colour-match regions not ready yet (tiles left raw);
+        pending: a set that collects the colour-match regions not ready yet (tiles left raw) and
+        the de-shadow regions still to come, as (DS_PENDING, rx, ry);
         corrected: a set that collects the keys of the tiles the colour match changed."""
         n = 2 ** z
         tx0, tx1 = int(math.floor(fx.min() - 1)) // TILE, int(math.floor(fx.max() + 1)) // TILE
@@ -465,7 +469,12 @@ class Imagery:
             if a is None or (not last and a.uniform):
                 continue                    # missing here: the next source fills it
             c, r = (tx - tx0) * TILE, (ty - ty0) * TILE
+            # --deshadow: a region still to come is asked before relight() (see pending_region)
+            ds_wait = (self.deshadow.pending_region(k, a)
+                       if pending is not None and hasattr(self.deshadow, "pending_region") else None)
             relit = None if self.deshadow is None else self.deshadow.relight(k, a, self)
+            if relit is None and ds_wait is not None:
+                pending.add((DS_PENDING,) + tuple(ds_wait))
             rgb = a.rgb if relit is None else relit
             if self.colormatch is not None and not a.uniform and self.colormatch.handles(k):
                 cm = self._colormatched(k, rgb, relit is not None, pending)
@@ -509,7 +518,8 @@ class Imagery:
         error ~ R tan(lat) dphi² / 8 for a cell of dphi rad: ~4 m on a 131 km tile at 36 deg,
         0.01 of its 512 m texel; nothing measurable on near tiles). Each texel takes the first
         source of the chain whose four bilinear taps all have data. pending: a set that collects the
-        colour-match regions (--colormatch) that were not ready, i.e. whose tiles stayed raw here.
+        colour-match regions (--colormatch) that were not ready, i.e. whose tiles stayed raw here, and
+        the de-shadow regions (--deshadow) still to come, as (DS_PENDING, rx, ry).
         The counts also carry "none" (fallback colour), "deshadow" (relit texels) and, with
         --colormatch, "colormatch": the texels of the sources whose mosaic had tiles the colour match
         changed (their colours then come partly from its S2 references: the data credits name them)."""

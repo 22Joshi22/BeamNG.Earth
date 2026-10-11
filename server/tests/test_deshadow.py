@@ -560,6 +560,58 @@ class DeshadowObjectTest(unittest.TestCase):
         self.assertGreater(d.stats.get("off", 0), 0)
         self.assertTrue((rgb == self.raw).all())
 
+    def test_pending_region_reported_and_listener(self):
+        """render(pending=) names a region still to come as (DS_PENDING, rx, ry); its status is None
+        until the worker is done, then the listener gets (rk, relights) and the next render is relit
+        with nothing pending (earthd re-renders the shown tiles: far_retex)."""
+        gate = threading.Event()
+        root = self.copy_cache()
+        for f in os.listdir(os.path.join(root, "deshadow", "usgs", "12", str(RK[0]))):
+            os.remove(os.path.join(root, "deshadow", "usgs", "12", str(RK[0]), f))     # the region again
+        shutil.rmtree(os.path.join(root, "imagery", f"usgs-ds{ds.VERSION}-full"))
+        d = ds.Deshadow(root, FakeDem(block=gate), "full", wait_s=0)
+        heard, done = [], threading.Event()
+        d.add_listener(lambda rk, changed: (heard.append((rk, changed, threading.current_thread().name)), done.set()))
+        im = RegionImagery(os.path.join(root, "imagery"), deshadow=d, tone=0.0)
+        d.prepare(*region_xy(1800, -4000))
+        pending = set()
+        rgb, used = im.render(self.frame, *self.square, pending=pending)
+        self.assertEqual(pending, {(imagery.DS_PENDING,) + RK})
+        self.assertTrue((rgb == self.raw).all())
+        self.assertIsNone(d.status(RK))
+        gate.set()
+        self.assertTrue(done.wait(120))
+        self.assertEqual(heard, [(RK, True, "deshadow")])
+        self.assertIs(d.status(RK), True)
+        pending = set()
+        rgb, used = im.render(self.frame, *self.square, pending=pending)
+        im.close()
+        self.assertEqual(pending, set())
+        self.assertTrue((rgb == self.relit).all())
+        # without pending= (or beyond REQUEST_M) nothing is reported
+        self.assertIsNone(d.pending_region((im.chain[0], 9, 0, 0), None))
+        far = ds.Deshadow(root, FakeDem(fail=True), "full", wait_s=0)
+        far._center = (0.0, 0.0)            # an anchor far away: the test region is beyond REQUEST_M
+        key = (im.chain[0], 14, RK[0] * 4, RK[1] * 4)
+        self.assertIsNone(far.pending_region(key, imagery.as_tile(np.zeros((256, 256, 3), np.uint8) + 7)))
+        far.close()
+
+    def test_gated_region_unchanged_status(self):
+        root = tempfile.mkdtemp(dir=self.tmp.name)
+        d = ds.Deshadow(root, FakeDem(flat=True), "full", wait_s=120)
+        heard = []
+        d.add_listener(lambda rk, changed: heard.append((rk, changed)))
+        im = RegionImagery(os.path.join(root, "imagery"), deshadow=d, tone=0.0)
+        self.addCleanup(im.close)
+        d.prepare(*region_xy(1800, -4000))
+        self.assertFalse(d.region(RK).params["ok"])     # waits for the worker
+        for _ in range(200):
+            if heard:
+                break
+            time.sleep(0.01)
+        self.assertEqual(heard, [(RK, False)])          # gated off: tiles rendered raw stay right
+        self.assertIs(d.status(RK), False)
+
 
 # --- --deshadow off: the imagery as before ----------------------------------------------------
 class SeededImagery(imagery.Imagery):
