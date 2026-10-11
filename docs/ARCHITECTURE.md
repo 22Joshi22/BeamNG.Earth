@@ -419,6 +419,14 @@ their chunk arrived.
   10 km: fps / p50 / p95 and perfmon with the distant tiles shown, objects, the L8-L10 import costs;
   screenshots of the horizon (the silhouette meets the sky's horizon band, no sky gap); read back
   atmoPlanetRadius and visibleDistance; no depth / shadow artefacts at 500-650 km; tune the haze.
+- **Known engine issue, not patched: clouds over far terrain** (in-game 2026-10-11). From altitude
+  (a plane at ~3 km) cloud fragments show on the terrain between its silhouette and the sky's
+  horizon line, smearing as the camera tilts (like a Source-engine "hall of mirrors"). The volumetric
+  cloud shaders (shaders/common/clouds) take reversed-Z depth <= 1e-6 for sky (beyond 100 km with the
+  0.1 m near plane) and carry last frame's clouds forward where the scene depth does not reject them.
+  Patching the threshold and the depth read (in the mod folder, then the user folder, with game
+  restarts) did not remove it, so it was reverted: a BeamNG bug to report, not ours to work around.
+
 ## De-shadowing of the USGS imagery (`--deshadow`; built offline 2026-10-10, behind a flag, default off)
 - Integration of docs/research/2026-10-10-deshadow-prototype.md, method A (method B dropped):
   `server/deshadow.py`, hooked into `imagery.Imagery(..., deshadow=obj)` (`_mosaic` swaps each USGS
