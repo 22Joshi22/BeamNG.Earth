@@ -59,6 +59,14 @@
 -- as exact. stats() reports exactMiss / exactFrames / underLevel; exactState() is for the per-frame
 -- driver (tools/drive_driver.lua).
 --
+-- Server sessions (docs/ROADMAP.md "Robustness" 3): a restarted server numbers its anchors from 1
+-- again and writes into a new session folder. Every instance remembers its session (switchAnchor's
+-- `session`, the server's hello.sessionId), previous anchors' tiles are keyed by session and anchor,
+-- so an old session's anchor 1 never meets the new one's, and heldAnchors() names only the current
+-- session's anchors. heldSessions() lists the session folders whose files objects here still use
+-- (shapes, and textures of the imagery materials): sent in hello and every pose, the server keeps
+-- those folders until they are released.
+--
 -- Dev tools (dev.lua, docs/DEVTOOLS.md): setWatcher(w) makes this module call w.onAdd(inst) when a
 -- tile's object is created, w.onRemove(id) when an object is deleted and w.onReset() when every
 -- footprint moved (rebase) or the field was forgotten; eachTile / queuedTiles / counters are
@@ -101,10 +109,13 @@ local removals, rH, rT = {}, 1, 0
 local doomed = {}       -- object ids to delete
 local matOf = {}        -- doomed object id -> name of the per-tile material it holds (released at delete)
 local doomedAnchor = {} -- doomed object id -> anchorId of its shape file (heldAnchors)
+local doomedSession = {} -- doomed object id -> session of its instance (heldAnchors) ...
+local doomedFolder = {}  -- ... and the session folder of its shape file (heldSessions)
 local moving = {}       -- instance -> true while its z offset changes over time
 local lossy = {}        -- anchorId -> true: one of its adds was dropped, ignore its removes
 local block = nil       -- committed terrain block { cx, cy, x0, y0, x1, y1 } (cover box)
 local anchorId = nil    -- current (committed) anchor
+local session = nil     -- server session of the current anchor (switchAnchor; nil = not told)
 local doneReceived = false
 local seqN = 0          -- arrival counter of far_tile messages
 local serial = 0        -- object name counter
@@ -122,7 +133,13 @@ local lastFrame = { units = 0, moving = 0 }
 local watcher = nil     -- dev tools observer (setWatcher), nil = none
 local frozen = false    -- dev tools: swap groups wait (setFrozen)
 
-local function oldKey(a, key) return tostring(a) .. '/' .. key end
+-- A previous anchor's tile: session and anchor qualify the key (a restarted server reuses ids).
+local function oldKey(s, a, key) return tostring(s) .. ':' .. tostring(a) .. '/' .. key end
+
+-- The session folder of a VFS path written by the server ('/temp/beamngEarth/<session>/...'), or nil.
+function M.folderOf(path)
+  return type(path) == 'string' and path:match('^/temp/beamngEarth/([^/]+)/') or nil
+end
 
 local function deleteById(id)
   local o = scenetree.findObjectById(id)
@@ -297,6 +314,8 @@ local function doom(inst, hideNow)
   if inst.id then
     doomed[#doomed + 1] = inst.id
     doomedAnchor[inst.id] = inst.anchor
+    doomedSession[inst.id] = inst.session or false
+    doomedFolder[inst.id] = M.folderOf(inst.shape) or false
     if inst.mat then matOf[inst.id], inst.mat = inst.mat, nil end -- released once the object is deleted
   else
     releaseMat(inst)
@@ -540,6 +559,7 @@ function M.onTile(msg)
   if prev then doom(prev, true) end -- re-sent before it was shown: the newer one wins
   seqN = seqN + 1
   local inst = newInst(msg, seqN)
+  inst.session = session
   if inst.material then counters.textured = counters.textured + 1 end
   pending[key] = inst
   nQueued = nQueued + 1
@@ -570,7 +590,7 @@ function M.onRemove(msg)
   local key = tostring(msg.key)
   if msg.anchorId ~= anchorId then
     -- a previous anchor's tile, swapped out now that its area is covered in the new frame
-    local ok = oldKey(msg.anchorId, key)
+    local ok = oldKey(session, msg.anchorId, key)
     local inst = old[ok]
     if inst and not inst.removing and not lossy[msg.anchorId] then
       inst.removing = true
@@ -687,7 +707,7 @@ function M.transform(xf)
   if xf.inverse then
     local inv = xf:inverse()
     for _, f in ipairs(oldFrames) do table.insert(f.invs, 1, inv) end
-    table.insert(oldFrames, 1, { anchor = anchorId, invs = { inv } })
+    table.insert(oldFrames, 1, { anchor = anchorId, session = session, invs = { inv } })
     oldFrames[5] = nil -- a tile older than four rebases is long gone
   end
   local bx, by, bz, bw = xf:beamngQuat()
@@ -714,7 +734,10 @@ end
 -- New committed anchor. keepOld=true (rebase): current tiles stay until the server removes them or
 -- the new far_done. keepOld=false (teleport): everything is hidden at once and deleted progressively.
 -- blk: the new anchor's terrain block {cx, cy}; the kept tiles' cover state follows it at once.
-function M.switchAnchor(newAnchorId, keepOld, blk)
+-- newSession: the server session the new anchor belongs to (hello.sessionId; nil = unchanged). A
+-- resync with a restarted server keeps the old session's tiles like a rebase; its far_removes never
+-- come (the new server does not know them), so they go when covered (mesh) or at the new far_done.
+function M.switchAnchor(newAnchorId, keepOld, blk, newSession)
   finishAll()
   ensureMaterial()
   local keep = {}
@@ -724,7 +747,7 @@ function M.switchAnchor(newAnchorId, keepOld, blk)
     for i = rH, rT do
       local r = removals[i]
       if r.seq < due and not r.inst.doomed then
-        keep[#keep + 1] = { inst = r.inst, seq = 0, oldKey = r.oldKey or oldKey(anchorId, r.inst.key) }
+        keep[#keep + 1] = { inst = r.inst, seq = 0, oldKey = r.oldKey or oldKey(session, anchorId, r.inst.key) }
       end
     end
     local dropped = false
@@ -734,7 +757,7 @@ function M.switchAnchor(newAnchorId, keepOld, blk)
     end
     if dropped and anchorId ~= nil then lossy[anchorId] = true end
     for key, inst in pairs(live) do
-      old[oldKey(anchorId, key)] = inst
+      old[oldKey(session, anchorId, key)] = inst
       oldCount = oldCount + 1
     end
   else
@@ -748,6 +771,10 @@ function M.switchAnchor(newAnchorId, keepOld, blk)
   groups, activeGroups, moving = {}, 0, {}
   removals, rH, rT = keep, 1, #keep
   anchorId = newAnchorId
+  if newSession ~= nil and newSession ~= session then
+    lossy = {} -- anchor ids of the previous session mean nothing to the new server
+    session = newSession
+  end
   doneReceived = false
   if blk then
     setBlock(blk.cx, blk.cy)
@@ -811,11 +838,11 @@ end
 
 -- The shown tile containing (x, y) in `set` (live, or old with anchor a: keys 'a/L_i_j'), finest
 -- level first, from the exact level up: at most MAX_LEVEL - exactLevel + 1 table lookups.
-local function shownAt(set, a, x, y)
+local function shownAt(set, sess, a, x, y)
   for l = exactLevel, M.MAX_LEVEL do
     local s = lattice.L0 * 2 ^ l
     local k = l .. '_' .. floor(x / s) .. '_' .. floor(y / s)
-    local inst = set[a ~= nil and oldKey(a, k) or k]
+    local inst = set[a ~= nil and oldKey(sess, a, k) or k]
     if inst and inst.shown and not inst.failed and not inst.doomed then return inst end
   end
 end
@@ -824,12 +851,12 @@ end
 local function updateUnder(player)
   local px, py, pz = tonumber(player.x), tonumber(player.y), tonumber(player.z) or 0
   if not px or not py or anchorId == nil then return end
-  local inst, isOld = shownAt(live, nil, px, py), false
+  local inst, isOld = shownAt(live, nil, nil, px, py), false
   if not inst then
     for _, f in ipairs(oldFrames) do
       local x, y, z = px, py, pz
       for _, inv in ipairs(f.invs) do x, y, z = inv:apply(x, y, z) end
-      inst = shownAt(old, f.anchor, x, y)
+      inst = shownAt(old, f.session, f.anchor, x, y)
       if inst then isOld = true; break end
     end
   end
@@ -984,7 +1011,7 @@ function M.update(gov, dt, cam, player)
       local t1 = now()
       local id = table.remove(doomed)
       deleteById(id)
-      doomedAnchor[id] = nil
+      doomedAnchor[id], doomedSession[id], doomedFolder[id] = nil, nil, nil
       local mat = matOf[id]
       if mat then
         matOf[id] = nil
@@ -1038,8 +1065,8 @@ function M.forget()
   oldFrames, under.level, under.old, under.miss = {}, nil, false, false
   mainQ, mH, mT, preQ, pH, pT, nQueued = {}, 1, 0, {}, 1, 0, 0
   groups, activeGroups, removals, rH, rT = {}, 0, {}, 1, 0
-  anchorId, doneReceived, block = nil, false, nil
-  matOf, doomedAnchor = {}, {}
+  anchorId, doneReceived, block, session = nil, false, nil, nil
+  matOf, doomedAnchor, doomedSession, doomedFolder = {}, {}, {}, {}
   satmat.clearAll()
   materialChecked = false
   if watcher then watcher.onReset() end
@@ -1050,15 +1077,46 @@ end
 -- files until they are gone. A file deleted under a live TSStatic makes the engine's file watcher
 -- reload it ("Could not open '...far_<a>_....cdae'", seen in-game after a rebase whose reload
 -- outlasted the server's fixed 30 s prune delay).
+-- Only the current session's anchors: another session's numbers would name the new server's anchors.
 function M.heldAnchors()
   local set = {}
-  for _, inst in pairs(old) do if inst.anchor ~= nil and inst.anchor ~= anchorId then set[inst.anchor] = true end end
-  for _, a in pairs(doomedAnchor) do if a ~= anchorId then set[a] = true end end
+  for _, inst in pairs(old) do
+    if inst.anchor ~= nil and inst.anchor ~= anchorId and inst.session == session then set[inst.anchor] = true end
+  end
+  for id, a in pairs(doomedAnchor) do
+    if a ~= anchorId and (doomedSession[id] or nil) == session then set[a] = true end
+  end
   local out = {}
   for a in pairs(set) do out[#out + 1] = a end
   table.sort(out)
   return out
 end
+
+-- Session folders whose files objects here still use, sorted: the shapes of every tile object
+-- (shown, kept, loaded hidden or waiting for deletion) and the textures of the imagery materials
+-- (satmat, until each is deleted). Sent in hello and every pose (docs/ROADMAP.md "Robustness" 3): a
+-- restarted server keeps these folders, and deletes one once no pose names it any more.
+function M.heldSessions()
+  local set = {}
+  for _, tbl in ipairs({ pending, live, old }) do
+    for _, inst in pairs(tbl) do
+      local f = inst.id and M.folderOf(inst.shape)
+      if f then set[f] = true end
+    end
+  end
+  for _, f in pairs(doomedFolder) do if f then set[f] = true end end
+  satmat.eachTexture(function(tex)
+    local f = M.folderOf(tex)
+    if f then set[f] = true end
+  end)
+  local out = {}
+  for f in pairs(set) do out[#out + 1] = f end
+  table.sort(out)
+  return out
+end
+
+-- The server session of the current anchor (switchAnchor's newSession), or nil.
+function M.session() return session end
 
 function M.stats()
   local n, covered, hiddenLoaded = 0, 0, 0
@@ -1113,8 +1171,8 @@ end
 -- for tests
 function M._tile(key) return live[key] end
 function M._pending(key) return pending[key] end
-function M._oldId(a, key) local inst = old[oldKey(a, key)]; return inst and inst.id end
-function M._old(a, key) return old[oldKey(a, key)] end
+function M._oldId(a, key, s) local inst = old[oldKey(s or session, a, key)]; return inst and inst.id end
+function M._old(a, key, s) return old[oldKey(s or session, a, key)] end
 function M._clock() return clock end
 
 return M

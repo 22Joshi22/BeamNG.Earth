@@ -99,6 +99,36 @@ player right now, e.g.:
   background draw list sits above the 3D view and below the game's own HTML UI as expected, the
   UI state names of the 0.39 pause menu (`menu*` assumed from the stock Lua) and the big map.
 
+## Connection banner (docs/ROADMAP.md "Robustness" 1; built offline 2026-10-11, branch feature/robustness)
+One or two lines at the top centre of the screen (`beamngEarth/banner.lua`, drawn by core.lua) that
+say what is wrong with the world server and what the player can do; hidden while all is well, in the
+pause menu and the big map (like the credits overlay), and outside our world (our level, or another
+level after a console teleport).
+- States: `starting` ("looking for the world server", the first 6 s, or connected and waiting for the
+  hello), `noserver` ("World server not running. Start it with:  python3 server/earthd.py   (it will
+  start automatically in a later version)", red), `lost` ("Connection to the world server lost -
+  reconnecting (attempt n)", amber; n = connection attempts since the loss, net.lua), `offline`
+  ("Offline - using cached data (areas never visited have no terrain)", from the server's status
+  note), `degraded` ("World server degraded: <the server's note>"), `recovered` ("World server
+  connected", green, 4 s after a lost or missing server came back; not after a normal start), `ok`
+  (hidden).
+- The edge guard (`edgeguard.lua`, "Robustness" 2) adds a second line and raises the level: "Near the
+  edge of the loaded ground: the car will be held there until the world server is back" (amber),
+  "Held at the edge of the loaded ground until the world server is back" (red); "... answers terrain
+  requests again" when the server is connected but does not answer them.
+- Cost: no window; while nothing changes, no allocation (the text is rebuilt only when an input
+  changed: field-by-field compare), one background draw-list rectangle and one `AddText1` (the UI
+  font: `GetFont()` throws in 0.39), measured only when the text or the viewport width changes. An
+  imgui error turns it off once (logged), never every frame.
+- Settings page: the same line in a bar under the header (`status.banner` = `core.banner()`:
+  `{ id, level, text, guard }`; text "World server connected" while all is well), coloured by level
+  with a left border (a plain div, nothing focusable; no glyphs).
+- Tests: `mod/tests/test_banner.lua` (states, the note parser, the "connected" line, drawing,
+  hiding, the error path, no per-frame allocation), `mod/tests/test_core_robustness.lua` (the whole
+  path in core with a server that is down, comes, dies and restarts).
+- In-game check pending: readability and placement at 1080p / 4K, hidden in the pause menu and the
+  big map, the settings page bar.
+
 ## Entry point
 - A **"Dev"** collapsible section / tab in the existing BeamNG.Earth window (ui.lua), plus a console
   API `beamngEarth_dev.set('<overlay>', true|false)` and `beamngEarth_dev.preset('lod'|'loading'|'off')`.

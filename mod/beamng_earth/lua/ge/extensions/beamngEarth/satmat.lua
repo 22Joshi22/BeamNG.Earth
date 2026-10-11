@@ -169,6 +169,12 @@ function M.clearAll()
 end
 
 function M.count() return nMats end
+
+-- Call fn(texture) for the texture of every material we hold (in use or waiting for deletion):
+-- farfield.heldSessions (the server keeps those files while the material exists).
+function M.eachTexture(fn)
+  for _, e in pairs(mats) do if e.texture then fn(e.texture) end end
+end
 function M.refs(name) local e = mats[name]; return e and e.refs or 0 end -- for tests
 
 return M

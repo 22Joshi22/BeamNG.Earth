@@ -1013,6 +1013,9 @@ class LayoutServerTest(unittest.TestCase):
 
 
 class SessionCleanupTest(unittest.TestCase):
+    """A stale session (marker untouched for SESSION_STALE_S) goes at start; a younger one waits for a
+    game to claim it (test_restart.SessionAdoptionTest)."""
+
     def test_old_sessions_and_engine_caches_removed(self):
         with tempfile.TemporaryDirectory() as tmp:
             old = os.path.join(tmp, "temp", "beamngEarth", "20200101-000000-abcd")
@@ -1020,7 +1023,10 @@ class SessionCleanupTest(unittest.TestCase):
             foreign = os.path.join(tmp, *earthd.CDAE_ROOT, "someone-else")
             for d in (old, cache, foreign):
                 os.makedirs(d)
-            open(os.path.join(old, earthd.SESSION_MARKER), "w").close()
+            marker = os.path.join(old, earthd.SESSION_MARKER)
+            open(marker, "w").close()
+            stale = time.time() - earthd.SESSION_STALE_S - 60
+            os.utime(marker, (stale, stale))
             open(os.path.join(cache, "far_1_0_0_0.cdae"), "w").close()
             server = earthd.Server(tmp, os.path.join(tmp, "cache"))
             try:

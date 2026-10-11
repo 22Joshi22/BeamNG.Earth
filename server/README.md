@@ -55,7 +55,18 @@ The v1.2 behaviour is `--near-visual terrain --imagery off` (the integration dri
 run that way).
 
 On startup the server prints `earthd listening on 127.0.0.1:<port> session <sessionId> -> <dir> (far tiles: cdae, near visual: mesh, imagery: usgs,eox2023,eox2016)`.
-It deletes session folders left by earlier runs (only folders that contain its `.earthd-session` marker).
+Session folders left by earlier runs (only folders that contain its `.earthd-session` marker) are
+deleted at start when their marker is more than a day old (`SESSION_STALE_S`). A younger one may still
+be on the game's screen (a crashed or restarted server: the game watches loaded files, and a shape
+deleted under a live tile renders as nothing), so it is kept until the game says (`sessions` in its
+`hello` / `pose`) whether its tiles still use it: named ones are **adopted** (kept, their markers
+touched) and deleted, through the rate-limited delete queue with the folder last, once no pose names
+them any more; one nobody claims goes `SESSION_ORPHAN_S` (10 min) after the server found it and after
+its marker was last touched (a live server touches its own marker every `SESSION_HEARTBEAT_S`, 60 s,
+so a second server never deletes a running one's folder). A connection that closes makes its claims
+orphans again, with a fresh grace. The mod resyncs at its current origin meanwhile (a new session:
+anchor ids start at 1 again; the mod keys the old session's tiles by session), so nothing on screen
+loses its files and no level reload is needed (docs/ROADMAP.md "Robustness" 3).
 CPU (§4.5, phase 1c): `main()` lowers the process priority with `os.nice(10)`, and
 `OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1` are set before numpy is imported. Threads: 2 heightmap
 workers, `--workers` (3) tile workers, 8 I/O-bound DEM fetchers, 6 imagery fetchers. The in-memory
@@ -77,12 +88,12 @@ as JSON floats (`512.0`). All positions are in the ENU plane of the anchor named
 
 | Message | Notes |
 |---|---|
-| `{"type":"hello","protocol":4,"format":4,"modVersion":"…"}` | `format` = the newest tile format the mod reads (the v1.4 mod reads 3 and 4; a v1.3.1 mod sends 3). A different `protocol`, or a `format` below the server's, gets a `status` warning. |
+| `{"type":"hello","protocol":4,"format":4,"modVersion":"…","sessions":["…"]}` | `format` = the newest tile format the mod reads (the v1.4 mod reads 3 and 4; a v1.3.1 mod sends 3). A different `protocol`, or a `format` below the server's, gets a `status` warning. `sessions` (optional; a list, or `{}` for an empty Lua table): the session folders whose files the mod's objects still use (shapes of every tile object, textures of its imagery materials; `farfield.heldSessions`). An earlier run's folder named here is adopted (see "Run"); the server's own id and unknown names are ignored. The server's `hello` is unchanged. |
 | `{"type":"prepare_anchor","requestId":N,"lat":d,"lon":d,"cx":m,"cy":m}` | `cx`,`cy` optional (default 0): centre of the anchor's first terrain in the **new** anchor's frame, snapped to 256 m (`--block 512`: 128 m; clamped to ±21 km). |
 | `{"type":"commit_anchor","anchorId":A}` | Switches the far field to A and commits A's first terrain (from `anchor_ready`). Tiles of the previous anchor that were sent but never swapped in are forgotten: the mod drops them. |
 | `{"type":"prepare_terrain","requestId":N,"anchorId":A,"cx":m,"cy":m}` | `cx`,`cy` multiples of 256 (`--block 512`: 128; other values are snapped). For the active anchor this block becomes the **pending** block: in terrain mode the far field is refined to L0 over it at once and its 64 L0 tiles are built first (mesh mode: no tile depends on a block). |
 | `{"type":"commit_terrain","anchorId":A,"cx":m,"cy":m}` | The committed block. **No far-tile key changes**; in terrain mode only the forced-L0 area moves, in mesh mode nothing at all changes. For a newer known anchor it implies `commit_anchor`. |
-| `{"type":"pose","anchorId":A,"x","y","z","vx","vy","lat","lon","speed","cam":{"x","y","z","fx","fy","fz","fovDeg"}}` | ~2 Hz. Drives LOD selection, the predicted block and the terrain prefetch. `cam` is optional and only stored for now (the camera-weighted priority is phase 4). A pose with a newer known anchor implies `commit_anchor`; a late pose of the previous anchor is transformed into the active frame. |
+| `{"type":"pose","anchorId":A,"x","y","z","vx","vy","lat","lon","speed","cam":{"x","y","z","fx","fy","fz","fovDeg"},"held":[a,…],"sessions":["…"]}` | ~2 Hz. Drives LOD selection, the predicted block and the terrain prefetch. `cam` is optional and only stored for now (the camera-weighted priority is phase 4). A pose with a newer known anchor implies `commit_anchor`; a late pose of the previous anchor is transformed into the active frame. `held` (optional): previous anchors of this session whose tile objects the mod still has (their files stay; the mod sends none while its tiles belong to another server's session). `sessions` (optional): as in `hello`; an adopted folder this connection named before and names no longer is released (deleted through the delete queue) unless another connection still names it. |
 
 ### server → mod
 
@@ -610,7 +621,8 @@ Cross-component (server ↔ mod):
   north), UV1 = tile-local metres / `DETAIL_M` (world-locked), and the mod's Material fields
   (`mapTo`, `colorMap`, detail map on UV1 at `detailScale 1 1`, a stock detail texture).
 - `modsim.py`: the mod's runtime rules in Python, every threshold read from the Lua: `follow.lua`,
-  `rebase.lua`, `governor.lua`, `crossover.lua` and the `farfield.lua` state machine.
+  `rebase.lua`, `governor.lua`, `crossover.lua`, the `farfield.lua` state machine (with server
+  sessions: `heldSessions`, `heldAnchors`), `edgeguard.lua`'s step and core.lua's `serverHealthy`.
   `test_modsim.py` runs the Lua itself under luajit (with `mod/tests/stubs.lua`) on the same
   schedules (`tests/lua/*.lua`) and requires identical traces, frame by frame.
 - `test_integration_drive.py`: the real server and the modelled mod at 60 fps over a 10 km drive with
@@ -628,6 +640,16 @@ Cross-component (server ↔ mod):
   `BNGE_DRIVE_SPEEDUP` (4), `BNGE_DRIVE_REBASE_M` (10000), `BNGE_DRIVE_IMPORT_MS` (2.0),
   `BNGE_DRIVE_TEX_IMPORT_MS` (3.0), `BNGE_DRIVE_MODES` (`terrain,mesh`),
   `BNGE_DRIVE_KEEP_LOG=file` (`file.<mode>`), `BNGE_SKIP_DRIVE=1`.
+- `test_restart.py` (docs/ROADMAP.md "Robustness"): the session folders (stale ones deleted at start,
+  younger ones adopted from `hello` / released by `pose`, rate-limited deletes with the folder last,
+  the sweep of unclaimed orphans and the heartbeat, a closed connection's claims) and a fault-injection
+  drive: in-process 64-cell / 512² servers (synthetic DEM and imagery), the modelled mod drives east,
+  the server is killed (a crash: nothing cleaned up), the mod keeps driving and the edge guard holds the
+  car `STOP_M` inside the block, a new server adopts the dead session and the mod resyncs at the same
+  origin; on every frame no hole within 512 m and no vanished file, the guard only between the kill and
+  the first terrain after the restart, and the old folder deleted once the mod lets go of it.
+  `test_protocol_agreement.SessionsAgreementTest`: `sessions` on both sides (the mod's constructors,
+  `farfield.folderOf` against the server's paths, adoption and release over the protocol).
 
 ## Attribution
 

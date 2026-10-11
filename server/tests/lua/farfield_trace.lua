@@ -3,7 +3,8 @@
 -- server/tests/test_modsim.py, which runs the Python port (modsim.FarField) on the same script.
 --   luajit farfield_trace.lua <mod lua/ge/extensions dir> <mod tests dir> <script file>
 -- Script lines (space separated):
---   A aid keepOld cx cy        switchAnchor(aid, keepOld == 1, {cx, cy})
+--   A aid keepOld cx cy [s]    switchAnchor(aid, keepOld == 1, {cx, cy}, s): s, the server session, also
+--                              names the folder of the following tiles' files (/temp/beamngEarth/<s>/; 'x')
 --   B cx cy                    onBlockCommit(cx, cy)
 --   C x y z fx fy fz fov       camera for the next frames
 --   T aid key level x y z err sink|- [material|- [tex]]   far_tile (shape <key>.cdae, state 'group'; with
@@ -13,6 +14,7 @@
 --   U ocx ocy ncx ncy          print uncoverReady
 --   N mesh|terrain             setNearVisual
 --   F                          one frame: governor beginFrame + farfield.update
+--   H                          print heldSessions and heldAnchors
 -- Cost model: registerObject (a TSStatic or a per-tile Material) costs IMPORT_MS, a delete DELETE_MS
 -- (the governor measures them with its clock); everything else is free.
 local dir, testsDir, script = arg[1], arg[2], arg[3]
@@ -43,13 +45,15 @@ local keys, keyList, dirty = {}, {}, false
 local cam, wall = nil, nil
 local frame = 0
 local function num(v) if v == '-' then return nil end return tonumber(v) end
+local folder = 'x'
 
 for line in io.lines(script) do
   local w = {}
   for t in line:gmatch('%S+') do w[#w + 1] = t end
   local c = w[1]
   if c == 'A' then
-    farfield.switchAnchor(tonumber(w[2]), w[3] == '1', { cx = tonumber(w[4]), cy = tonumber(w[5]) })
+    farfield.switchAnchor(tonumber(w[2]), w[3] == '1', { cx = tonumber(w[4]), cy = tonumber(w[5]) }, w[6])
+    if w[6] then folder = w[6] end
   elseif c == 'B' then
     farfield.onBlockCommit(tonumber(w[2]), tonumber(w[3]))
   elseif c == 'C' then
@@ -60,9 +64,10 @@ for line in io.lines(script) do
     if not keys[key] then keys[key] = true; keyList[#keyList + 1] = key; dirty = true end
     local mat = (w[10] and w[10] ~= '-') and w[10] or nil
     farfield.onTile({ type = 'far_tile', anchorId = tonumber(w[2]), key = key, level = tonumber(w[4]),
-      shape = '/temp/x/far_' .. key .. '.cdae', pos = { tonumber(w[5]), tonumber(w[6]), tonumber(w[7]) },
+      shape = '/temp/beamngEarth/' .. folder .. '/far_' .. key .. '.cdae', pos = { tonumber(w[5]), tonumber(w[6]), tonumber(w[7]) },
       err = tonumber(w[8]), sink = num(w[9]), state = 'group', material = mat,
-      texture = mat and ('/temp/x/far_' .. key .. '.dds') or nil, detail = mat ~= nil, tex = num(w[11] or '-') })
+      texture = mat and ('/temp/beamngEarth/' .. folder .. '/far_' .. key .. '.dds') or nil, detail = mat ~= nil,
+      tex = num(w[11] or '-') })
   elseif c == 'S' then
     local i, add, rem = 6, {}, {}
     for _ = 1, tonumber(w[i]) do i = i + 1; add[#add + 1] = w[i] end
@@ -76,6 +81,8 @@ for line in io.lines(script) do
     farfield.onDone({ type = 'far_done', anchorId = tonumber(w[2]), count = 0 })
   elseif c == 'N' then
     farfield.setNearVisual(w[2])
+  elseif c == 'H' then
+    print('H ' .. table.concat(farfield.heldSessions(), ',') .. ' ' .. table.concat(farfield.heldAnchors(), ','))
   elseif c == 'U' then
     print('U ' .. tostring(farfield.uncoverReady(tonumber(w[2]), tonumber(w[3]), tonumber(w[4]), tonumber(w[5]))))
   elseif c == 'F' then

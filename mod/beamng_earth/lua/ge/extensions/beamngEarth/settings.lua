@@ -276,6 +276,8 @@ function M.uiState()
     status = st and st.status or '', inOurLevel = st and st.inOurLevel or false,
     attribution = core and core.attribution and core.attribution() or '',
     credits = core and core.credits and core.credits() or nil, -- the on-screen data credits now
+    -- the connection banner's state line { id, level, text, guard } (docs/ROADMAP.md "Robustness" 1)
+    banner = core and core.banner and core.banner() or nil,
   }
   -- server features (status only): weather, gravity, imagery de-shadowing and colour seams
   local w = ext('beamngEarth_weather')

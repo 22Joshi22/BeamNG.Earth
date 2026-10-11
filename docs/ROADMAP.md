@@ -328,7 +328,7 @@ undecodable DEM tile leaves the cache; docs/ARCHITECTURE.md "Network"). Follow-u
   replace swap in the protocol, so it waits for the retex / rebuild swap of item 4.
 - The coarse global offline DEM (item 4) at `dem.DemUnavailable`; until then an uncached area's
   terrain request fails (`terrain_error`) when neither Mapterhorn nor AWS can be reached.
-- Per-host state (breakers, budgets) in `status` for the dev tools window; the mod's banner (item 1).
+- Per-host state (breakers, budgets) in `status` for the dev tools window (the mod's banner, item 1, shows the status note: built 2026-10-11, below).
 - Mapterhorn revalidation after 180 days (`If-Modified-Since`); Cache-Control for OSM-type hosts
   (`HostPolicy.honor_cache_headers`, unused until such a host exists).
 - The near-terrain heightmap prefetch (`Connection.maybe_prefetch`) still asks the DEM as demand;
@@ -336,6 +336,34 @@ undecodable DEM tile leaves the cache; docs/ARCHITECTURE.md "Network"). Follow-u
 - Select fine levels by 3D distance in flight (rate-limit report §2.2), which removes most of the
   21 req/s to USGS at 10 km altitude (the limiter caps it at 15/s meanwhile). The steady 30 / 134
   m/s demand per host is a test now (`test_demand.NetDemandTest`, below each policy rate).
+
+Status (2026-10-11, built offline on branch feature/robustness; docs/ARCHITECTURE.md "Robustness"):
+items 1, 2, 3 and 7 (offline parts).
+- 1: the connection banner (`banner.lua`, docs/DEVTOOLS.md "Connection banner"): starting / not running
+  (with `python3 server/earthd.py` and the auto-start hint) / connection lost - reconnecting (attempt n)
+  / offline / degraded (the server's note) / connected, top centre, hidden when all is well, in the
+  pause menu and the big map; the settings page shows the same line.
+- 2: the edge guard (`edgeguard.lua`): only while the server cannot move the block (not connected, no
+  hello yet, a terrain request unanswered for 5 s or a terrain_error within 10 s) the last block is
+  kept and, for a vehicle on the ground (ray within 6 m), a soft wall caps the speed towards an edge at
+  sqrt(2 * 6 m/s^2 * (d - 15 m)) (warned from 150 m or the braking distance + 30 m), so the car comes
+  to rest 15 m inside; a car that left the block anyway and dropped 3 m below its last ground is set
+  down inside (spawn.safeTeleport without a reset). Aircraft (off the ground) are never touched; the
+  level-start flat block is guarded too (no server at all).
+- 3: a restarted server keeps an earlier run's session folder (younger than a day) until the game's
+  hello / pose `sessions` (the folders whose files its objects use) stop naming it, then deletes it
+  rate-limited; unclaimed ones go after 10 min (a live server's marker is touched every minute). The
+  mod keys previous anchors' tiles by session (a new server's anchor 1 never meets the old one's) and
+  resyncs at the same origin (no level reload).
+- 7: `server/tests/test_restart.py` (session adoption, and a drive whose server is killed and
+  restarted: no hole, no vanished file, the guard only without a server, the old folder deleted once
+  released), the modsim ports of the guard and of the farfield sessions checked against the Lua
+  (`test_modsim`), luajit `test_banner`, `test_edgeguard`, `test_core_robustness`.
+Still open: 4's coarse offline DEM and the retexture of degraded tiles; 5 (auto-start); 6; 7's
+network-drop with a fake fetcher in the integration drive and the in-game probes. In-game checks:
+banner readability / hiding, the soft wall with real vehicles (velocity set with scale 0 every frame
+while held: wheel spin and yaw reset each time; trailers are not guarded), the rescue placement, a
+real server kill and restart mid-drive (tiles stay visible, the old folder deleted later).
 
 ## Caching (user, 2026-10-10: "save and cache stuff so we don't need to redownload it")
 Today: raw downloads are already kept on disk forever (~/.cache/beamng-earth: elevation 537 MB,

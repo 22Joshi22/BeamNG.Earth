@@ -706,3 +706,42 @@ over to AWS, a 400 wrote a permanent `.404` marker, and the User-Agent lived in 
   first message. No allocation per frame; the text is measured only when it changes.
 - Tests: `server/tests/test_credits.py`, `test_protocol_agreement.py`, `mod/tests/test_credits.lua`,
   `test_core_stubbed.lua`. Still to check in-game: readability, the pause-menu / big-map hiding.
+
+## Robustness: no server, lost server (docs/ROADMAP.md "Robustness" 1-3; built offline 2026-10-11, feature/robustness)
+- **Banner** (`banner.lua`, docs/DEVTOOLS.md "Connection banner"): a pure state machine fed once per
+  frame by core.lua from net.lua (state, `attempts()`, `everConnected()`), the server's hello and the
+  network note of its last status (`banner.noteOf`: "Offline - using cached data" / "Degraded: ...",
+  server `net_note`), and the edge guard's mode. Drawn on the background draw list at the top centre,
+  hidden in the pause menu / big map (`credits.hiddenByUi`), in our world only. `core.banner()` feeds
+  the settings page.
+- **Edge guard** (`edgeguard.lua`): core.lua's `serverHealthy()` = connected, the hello arrived, no
+  terrain request unanswered for `STUCK_S` (5 s) and no terrain_error within `ERROR_HOLD_S` (10 s).
+  Only when it is false (and physics runs, the player is placed) does `updateGuard` run, after the
+  frame's world update (a block commit has already moved the block), against the collidable area of
+  the committed block (`lattice.groundBox`; before any anchor, the level-start flat block). Far inside
+  it returns without a call; near an edge one `castRayStatic` down from the vehicle decides "on the
+  ground" (within 6 m); on the ground the velocity towards each edge is capped at
+  sqrt(2 DECEL (d - STOP_M)) by setting the velocity (`applyClusterVelocityScaleAdd(-1, 0, vx, vy,
+  vz)`, idempotent if the reading lags a frame; an add would brake twice); off the block and 3 m below
+  the ground it last stood on (within 10 s), the car is set down `STOP_M` inside
+  (`spawn.safeTeleport(..., false)`: no reset, as the game's own upright recovery) once per second.
+  Off the ground (jumps, aircraft) nothing is touched. Any error turns it off once (logged).
+  Offline: 30 m/s rests 15 m inside, braking <= 6.6 m/s^2; 134 m/s on a 512 block stays on it (cut to
+  the profile when it engages); an aircraft at 500 m flies off untouched.
+- **Session adoption** (server `Server._scan_sessions / claim_sessions / release_session /
+  sweep_sessions`, mod `farfield.heldSessions`): see server/README.md "Run" and the protocol table
+  (`hello.sessions`, `pose.sessions`; the server's own messages are unchanged, so a default session is
+  byte-for-byte as before). farfield.lua keys previous anchors' tiles by (session, anchor, key),
+  `heldAnchors` names only the current session's anchors, and core sends `pose.held` only while the
+  tiles' session is the server's (before the resync commits they are the old server's numbers).
+  Known limit: a material name (`bngEarthSat_<anchor>_<key>`) the new session repeats while the old
+  tile still uses it keeps the old texture (satmat: a material in use keeps its file); the new tile
+  then holds the old folder until it goes (same anchor id = same origin and key = same imagery, so
+  nothing looks different; only the deletion waits).
+- **Tests**: `server/tests/test_restart.py` (the fault-injection drive: a 64-cell / 512² session
+  killed mid-drive and restarted in the same folder; 4127 coverage checks within 512 m without a hole,
+  no vanished file, the guard warned and held the car 14.5 m inside the edge during the 25 s gap and
+  never ran while the server was healthy, the old folder held for 3734 frames and deleted after the
+  mod let go), `test_protocol_agreement.SessionsAgreementTest`, `test_modsim` (the guard's step and the
+  farfield sessions, Lua against port), `test_server.SessionCleanupTest`; luajit `test_banner`,
+  `test_edgeguard`, `test_core_robustness`.

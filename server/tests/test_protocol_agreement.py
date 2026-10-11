@@ -43,6 +43,7 @@ import shutil
 import subprocess
 import zipfile
 import sys
+import time
 import types
 import unittest
 from pathlib import Path
@@ -77,7 +78,9 @@ def F(types, *flags):
 
 # message type -> {field: F(types, flags)}; "type" itself is implied.
 MOD_TO_SERVER = {
-    "hello": {"protocol": F(int), "format": F(int), "modVersion": F(str)},
+    # sessions: the session folders whose files the mod's objects still use (farfield.heldSessions; a
+    # restarted server keeps an earlier run's folder named here, docs/ROADMAP.md "Robustness" 3)
+    "hello": {"protocol": F(int), "format": F(int), "modVersion": F(str), "sessions": F((list, dict), OPT)},
     "prepare_anchor": {"requestId": F(int), "lat": F(NUM), "lon": F(NUM), "cx": F(NUM, OPT), "cy": F(NUM, OPT)},
     "commit_anchor": {"anchorId": F(int)},
     "prepare_terrain": {"requestId": F(int), "anchorId": F(int), "cx": F(NUM), "cy": F(NUM)},
@@ -85,7 +88,9 @@ MOD_TO_SERVER = {
     "pose": {"anchorId": F(int), "x": F(NUM), "y": F(NUM), "z": F(NUM), "vx": F(NUM), "vy": F(NUM), "lat": F(NUM),
              "lon": F(NUM), "speed": F(NUM), "cam": F(dict, OPT),
              # previous anchors whose tile objects the mod still has (an empty Lua table may encode as {})
-             "held": F((list, dict), OPT)},
+             "held": F((list, dict), OPT),
+             # the session folders in use, as in hello: an earlier run's one no longer named is released
+             "sessions": F((list, dict), OPT)},
 }
 CAM = {"x", "y", "z", "fx", "fy", "fz", "fovDeg"}
 TERRAIN = {"cx": F(NUM), "cy": F(NUM), "heightmap": F(str), "size": F(int), "squareSize": F(NUM),
@@ -228,6 +233,51 @@ class AgreementTableTest(unittest.TestCase):
         sent |= {"terrain." + f for f in TERRAIN}
         unknown = mod_reads() - sent
         self.assertFalse(unknown, f"the mod reads fields no server message has: {sorted(unknown)}")
+
+
+class SessionsAgreementTest(test_server.ServerHarness):
+    """hello / pose `sessions` (docs/ROADMAP.md "Robustness" 3): the mod names the session folders its
+    objects use, parsed from the server's paths by farfield.folderOf (the same pattern as the server's
+    vfs_dir and modsim.folder_of); core.lua sends them in hello and every pose; the server adopts an
+    earlier run's folder named in hello and releases it when a pose no longer names it."""
+
+    def test_mod_side(self):
+        core = (LUA / "core.lua").read_text()
+        far = (LUA / "farfield.lua").read_text()
+        for kind in ("hello", "pose"):
+            t = next(lua_tables(core, m.end() - 1) for m in re.finditer(r"net\.send\(\{", core)
+                     if f"type = '{kind}'" in lua_tables(core, m.end() - 1))
+            self.assertIn("sessions = farfield.heldSessions()", t, kind)
+        self.assertIn("'^/temp/beamngEarth/([^/]+)/'", far)
+        self.assertEqual(self.server.vfs_dir, f"/temp/beamngEarth/{self.server.sid}")
+        self.assertEqual(modsim.folder_of(self.server.vfs_dir + "/far_1_0_0_0.cdae"), self.server.sid)
+        self.assertEqual(modsim.folder_of(self.server.hm_vfs((1, 0, 0))), self.server.sid)
+        self.assertIsNone(modsim.folder_of("/levels/beamng_earth/x.cdae"))
+        self.assertIn("sessions", server_reads())
+
+    def test_adopt_and_release(self):
+        old = "20261010-120000-abcd"
+        d = os.path.join(self.tmp.name, "temp", "beamngEarth", old)
+        os.makedirs(d)
+        for name in (earthd.SESSION_MARKER, "far_1_0_0_0.cdae"):
+            open(os.path.join(d, name), "w").close()
+        self.server.orphans[old] = 0.0                   # as found at start (Server._scan_sessions)
+        self.c.send({"type": "hello", "protocol": 4, "format": self.MOD_FORMAT, "modVersion": "0.4.0",
+                     "sessions": [old, self.server.sid]})
+        m, _ = self.c.until(lambda m: m["type"] == "hello", 10)
+        self.assertNotIn("sessions", m, "the server's hello is unchanged")
+        self.assertEqual(self.conn().sessions, {old})
+        self.c.send({"type": "pose", "anchorId": 99, "x": 0, "y": 0, "z": 0, "vx": 0, "vy": 0, "lat": test_server.LAT,
+                     "lon": test_server.LON, "speed": 0, "held": [], "sessions": [old]})
+        time.sleep(0.2)
+        self.assertTrue(os.path.isdir(d), "still named: kept")
+        self.c.send({"type": "pose", "anchorId": 99, "x": 0, "y": 0, "z": 0, "vx": 0, "vy": 0, "lat": test_server.LAT,
+                     "lon": test_server.LON, "speed": 0, "held": [], "sessions": {}})
+        end = time.monotonic() + 10
+        while os.path.isdir(d) and time.monotonic() < end:
+            time.sleep(0.02)
+        self.assertFalse(os.path.isdir(d), "no longer named: released and deleted")
+        self.assertNotIn(old, self.server.orphans)
 
 
 class CreditsAgreementTest(unittest.TestCase):

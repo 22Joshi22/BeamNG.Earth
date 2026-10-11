@@ -36,6 +36,12 @@ netfetch.Fetcher (per-host rate limits, priorities, retries, circuit breakers wi
 the source chains, daily budgets in <cache-dir>/netstats/, one summary line a minute in the log).
 --offline serves the disk caches only. While a host is unreachable, or tiles fell back to the
 palette, every status text carries a note ("Offline - using cached data", "Degraded: ...").
+
+Sessions (docs/ROADMAP.md "Robustness" 3): a restarted server keeps the folders of earlier runs that
+are less than a day old until the game says (hello / pose `sessions`) which ones its far tiles still
+use: those are adopted and deleted (rate-limited) once no pose names them any more; the others go
+SESSION_ORPHAN_S after nobody claimed them. The mod resyncs at its current origin meanwhile, so the
+tiles on screen never lose their files.
 """
 import os
 
@@ -222,6 +228,16 @@ IMAGERY_PREFETCH = 12       # queued tiles whose imagery is fetched ahead of the
 # while the backlog changed, so tools/drive.py can sample it (M0 harness runs use 1).
 STATUS_INTERVAL = 0.0
 NET_TICK_S = 60.0           # the network summary line in the log and the netstats file
+# Session folders of earlier runs (docs/ROADMAP.md "Robustness" 3). The game may still show a dead
+# server's tiles (the engine watches loaded files: a deleted shape under a live TSStatic renders as
+# nothing), so a restarted server deletes at start only folders whose marker is untouched for
+# SESSION_STALE_S; younger ones wait for a game to claim them (hello / pose `sessions`). Unclaimed,
+# one goes once SESSION_ORPHAN_S passed since the server found it AND since its marker was last
+# touched (a live server touches its own, and its adopted ones, every SESSION_HEARTBEAT_S).
+SESSION_STALE_S = 86400.0
+SESSION_ORPHAN_S = 600.0
+SESSION_HEARTBEAT_S = 60.0
+SESSION_SWEEP_S = 30.0      # main_async: how often sweep_sessions runs
 # Shown in the mod's UI (V1_3_SPEC §C), after the imagery credits.
 ELEVATION_CREDIT = "Elevation: Mapterhorn (see mapterhorn.com/attribution), AWS Terrain Tiles / Mapzen"
 
@@ -333,8 +349,14 @@ class Server:
         one of its own, no statistics file); colormatch: --colormatch (off, or s2: the colour-seam
         feather on the USGS tiles)."""
         self.sid = time.strftime("%Y%m%d-%H%M%S-") + secrets.token_hex(2)
-        root = os.path.join(user_dir, "temp", "beamngEarth")
-        self._clean_old_sessions(root, os.path.join(user_dir, *CDAE_ROOT))
+        root = self.root = os.path.join(user_dir, "temp", "beamngEarth")
+        self.cdae_root = os.path.join(user_dir, *CDAE_ROOT)
+        # earlier runs' session folders a game may still show: sid -> monotonic time found / released
+        # by a connection (docs/ROADMAP.md "Robustness" 3; claim_sessions, sweep_sessions)
+        self.orphans = {}
+        self.orphan_s = SESSION_ORPHAN_S
+        self.heartbeat_at = time.monotonic()
+        self._scan_sessions()
         self.out_dir = os.path.join(root, self.sid)
         self.cdae_dir = os.path.join(user_dir, *CDAE_ROOT, self.sid.lower())
         self.vfs_dir = f"/temp/beamngEarth/{self.sid}"
@@ -421,14 +443,108 @@ class Server:
         # On-screen data credits (credits.py): a creditsmod.Credits, or None (--credits off; Server()'s default)
         self.credits = credits
 
-    @staticmethod
-    def _clean_old_sessions(root, cdae_root):
-        """Remove session folders left by earlier runs (only ones we marked),
-        and the engine's .cdae caches of their shapes."""
-        for d in glob.glob(os.path.join(root, "*", SESSION_MARKER)):
+    def _scan_sessions(self):
+        """Session folders left by earlier runs (only ones we marked): one whose marker is untouched
+        for SESSION_STALE_S goes now, with the engine's .cdae caches of its shapes; a younger one is
+        kept as an orphan until a game claims it or sweep_sessions deletes it."""
+        wall, now = time.time(), time.monotonic()
+        for d in glob.glob(os.path.join(self.root, "*", SESSION_MARKER)):
             sid = os.path.basename(os.path.dirname(d))
-            shutil.rmtree(os.path.dirname(d), ignore_errors=True)
-            shutil.rmtree(os.path.join(cdae_root, sid.lower()), ignore_errors=True)
+            try:
+                age = wall - os.path.getmtime(d)
+            except OSError:
+                continue
+            if age > SESSION_STALE_S:
+                self._rmtree_session(sid)
+            else:
+                self.orphans[sid] = now
+                log.info("session %s of an earlier run (%.0f min old) kept until the game says whether it still "
+                         "shows its tiles", sid, age / 60)
+
+    def _rmtree_session(self, sid):
+        shutil.rmtree(os.path.join(self.root, sid), ignore_errors=True)
+        shutil.rmtree(os.path.join(self.cdae_root, sid.lower()), ignore_errors=True)
+
+    def _touch(self, sid):
+        try:
+            os.utime(os.path.join(self.root, sid, SESSION_MARKER))
+        except OSError:
+            pass
+
+    def claimed_sessions(self):
+        """Earlier runs' sessions some connected game says its objects still use."""
+        out = set()
+        for c in self.connections:
+            out |= c.sessions
+        return out
+
+    def claim_sessions(self, conn, sessions):
+        """hello / pose `sessions` of a connection: the session folders whose files the game's objects
+        still use. Earlier runs' folders among them are adopted (kept, their markers touched); one this
+        game named before and names no longer is released (release_session) unless another game
+        claims it. Our own session and unknown names are ignored."""
+        if isinstance(sessions, dict):      # an empty Lua table may encode as {}
+            sessions = list(sessions.values())
+        if not isinstance(sessions, list):
+            return
+        mine = {sid for sid in sessions if isinstance(sid, str) and sid in self.orphans}
+        for sid in sorted(mine - conn.sessions):
+            log.info("adopting session %s: the game still shows its tiles, its files stay until it lets go", sid)
+            self._touch(sid)
+        released = conn.sessions - mine
+        conn.sessions = mine
+        others = self.claimed_sessions()
+        for sid in sorted(released - others):
+            self.release_session(sid)
+
+    def drop_claims(self, conn):
+        """A connection closed: the sessions it claimed are orphans again (the game may come back,
+        perhaps to yet another server), their grace starting now. Called once the connection left
+        self.connections."""
+        others = self.claimed_sessions()
+        now = time.monotonic()
+        for sid in conn.sessions - others:
+            if sid in self.orphans:
+                self.orphans[sid] = now
+        conn.sessions = set()
+
+    def release_session(self, sid):
+        """An adopted session the game no longer uses: its files go through the rate-limited delete
+        queue (the game loaded them, P9), the marker and the folders last."""
+        if self.orphans.pop(sid, None) is None:
+            return
+        d = os.path.join(self.root, sid)
+        cd = os.path.join(self.cdae_root, sid.lower())
+        files = sorted(glob.glob(os.path.join(d, "*")) + glob.glob(os.path.join(cd, "*")))
+        log.info("session %s released by the game: deleting its %d files", sid, len(files))
+        self.queue_delete(files + [os.path.join(d, SESSION_MARKER), d, cd])
+
+    def sweep_sessions(self):
+        """Every SESSION_SWEEP_S (main_async): touch our own marker and the claimed sessions' every
+        SESSION_HEARTBEAT_S (a later server sees them in use), and delete the orphans nobody claimed
+        for orphan_s whose markers are as old (one a live server touches is in use). Returns the
+        deleted session ids."""
+        now, wall = time.monotonic(), time.time()
+        claimed = self.claimed_sessions()
+        if now - self.heartbeat_at >= SESSION_HEARTBEAT_S:
+            self.heartbeat_at = now
+            for sid in [self.sid, *sorted(claimed)]:
+                self._touch(sid)
+        gone = []
+        for sid, since in sorted(self.orphans.items()):
+            if sid in claimed or now - since < self.orphan_s:
+                continue
+            try:
+                idle = wall - os.path.getmtime(os.path.join(self.root, sid, SESSION_MARKER))
+            except OSError:
+                idle = math.inf
+            if idle < self.orphan_s:
+                continue
+            del self.orphans[sid]
+            log.info("session %s of an earlier run: no game claimed it, deleted", sid)
+            self._rmtree_session(sid)
+            gone.append(sid)
+        return gone
 
     def snap(self, v):
         """Nearest block centre coordinate on the layout's grid (256 m; M4 512²: 128 m)."""
@@ -472,7 +588,10 @@ class Server:
         path, ck = self.delete_queue.popleft()
         # an evicted tile built again since (same file name) keeps its new file
         if ck is None or (ck not in self.tiles and ck not in self.tile_inflight):
-            self._remove(path)
+            if os.path.isdir(path):     # a released session's folder, queued after its files
+                shutil.rmtree(path, ignore_errors=True)
+            else:
+                self._remove(path)
 
     def queue_delete(self, paths, ck=None):
         """Delete files gradually (one at a time, delete_gap() apart) so the game's file watcher
@@ -956,6 +1075,7 @@ class Connection:
         self.sent = {}                  # key -> Tile (active anchor)
         self.retired = {}               # (anchorId, key) -> monotonic time it left shown / sent
         self.held = set()               # pose.held: previous anchors whose tile objects the mod still has
+        self.sessions = set()           # hello / pose `sessions`: earlier runs' folders the mod still uses
         self.groups = []                # [(adds, removes)] still to emit
         self.queue = []                 # tiles to build, by priority
         self.qi = 0
@@ -1037,6 +1157,7 @@ class Connection:
             log.warning("client %s: %s", self.peer, e)
         finally:
             self.s.connections.discard(self)
+            self.s.drop_claims(self)
             self.streamer.cancel()
             self.credits.close()
             for t in list(self.tasks):
@@ -1073,6 +1194,8 @@ class Connection:
                 m["deshadow"] = self.s.deshadow.mode
             if self.s.colormatch is not None:   # --colormatch s2: likewise
                 m["colormatch"] = self.s.colormatch.mode
+            # a game that outlived its server: keep the session folders its tiles still use
+            self.s.claim_sessions(self, msg.get("sessions"))
             self.send(m)
             if self.weather.msg is not None:        # a reconnected mod gets the weather again
                 self.send(self.weather.msg)
@@ -1249,6 +1372,7 @@ class Connection:
             held = list(held.values())
         if isinstance(held, list):
             self.held = {int(a) for a in held if isinstance(a, (int, float)) and not isinstance(a, bool)}
+        self.s.claim_sessions(self, msg.get("sessions"))   # earlier runs' folders still in use (or released)
         self.weather.on_pose(self, msg.get("lat"), msg.get("lon"))
         aid = msg.get("anchorId")
         # The latest committed anchor is the one the mod reports in its pose
@@ -1599,6 +1723,15 @@ async def main_async(args):
             for c in list(server.connections):     # a host that came back while nobody posed
                 c.refresh_status()
     ticker = asyncio.create_task(net_log())
+
+    async def sessions():
+        while True:
+            await asyncio.sleep(SESSION_SWEEP_S)
+            try:
+                server.sweep_sessions()
+            except Exception:           # a file-system error must not stop the sweeps (or the server)
+                log.exception("session sweep failed")
+    sweeper = asyncio.create_task(sessions())
     srv = await asyncio.start_server(
         lambda r, w: Connection(server, r, w).run(), "127.0.0.1", args.port)
     port = srv.sockets[0].getsockname()[1]
@@ -1617,6 +1750,7 @@ async def main_async(args):
             await srv.serve_forever()
     finally:
         ticker.cancel()
+        sweeper.cancel()
         net.close()                 # today's request counters
 
 
