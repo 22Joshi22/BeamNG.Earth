@@ -310,6 +310,8 @@ local function commitTeleport(msg)
   local sw = stopwatch.new()
   local ok
   if tr then ok, err = loadBlock(tr) end
+  -- a new place: grass made fresh (with tools/gcpatch the engine keeps it across block moves)
+  if ok then groundcover.rebuild() end
   if not ok then
     setStatus('Terrain import failed: ' .. tostring(err))
     st.retryAt = st.clock + rebase.RETRY_S -- don't re-request every frame
@@ -350,6 +352,8 @@ local function finishRebase()
   local sw = stopwatch.new()
   local msg, tr, xf = rb.msg, rb.terrain, rb.xf
   local ok, err = loadBlock(tr)
+  -- the world shifts under the grass: made fresh (with tools/gcpatch the engine would keep it)
+  groundcover.rebuild()
   if not ok then log('E', 'beamngEarth', 'rebase terrain import failed: ' .. tostring(err)) end
   farfield.transform(xf)
   -- a resync with a restarted server keeps the previous session's tiles the same way (st.sessionId

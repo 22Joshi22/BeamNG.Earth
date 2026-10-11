@@ -106,8 +106,15 @@ do
   local o2 = scenetree.findObject(gc.PREFIX .. gc.DEFS[1].src)
   T.check(o2 ~= o and o2.fields.useNewPlacementGpu == '0' and scenetree.findObjectById(o.id) == nil,
     'a leftover object is made again from the current definition')
+  -- teleport / rebase: the objects made again (fresh cells whatever the engine kept), generated now
+  local before = scenetree.findObject(gc.PREFIX .. gc.DEFS[1].src)
+  local fl = flushes
+  T.check(gc.rebuild() == true and flushes == fl + 1, 'rebuild: generated in the same tick')
+  local after = scenetree.findObject(gc.PREFIX .. gc.DEFS[1].src)
+  T.check(after ~= nil and after ~= before and gc.status().objects == #gc.DEFS, 'rebuild: new objects, one per definition')
   gc.setEnabled(false)
-  T.check(gc.status().objects == 0 and gc.afterBlockChange() == false and flushes == 1, 'disabled: objects gone, no rebuild')
+  T.check(gc.rebuild() == false, 'rebuild without grass: nothing')
+  T.check(gc.status().objects == 0 and gc.afterBlockChange() == false, 'disabled: objects gone, no rebuild')
   gc.setEnabled(true)
   gc.reset()
   _G.readFile, _G.jsonDecode = realRead, realDecode

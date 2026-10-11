@@ -11,7 +11,10 @@
 -- lifts the budget for that frame, so all the cells are regenerated before the frame is drawn. That
 -- needs CPU placement (useNewPlacementGpu 0): GPU-placed cells only draw one frame later (a blank
 -- frame), and GPU placement reads a layer copy the hidden block never refreshes. The price is one
--- slower frame per block move, which grows with the element count (the shares below).
+-- slower frame per block move, which grows with the element count (the shares below). With the
+-- optional tools/gcpatch preload library (this exact game build) the engine keeps the grass across
+-- block moves and that frame goes away; where the world really moves (teleport, rebase) core calls
+-- M.rebuild(), which works with or without it.
 --
 -- The definitions are stock ones, read at runtime from official levels' own files (nothing is copied
 -- into the mod; Polish Roads is not used, CREDITS.md): their materials are loaded first (a shape whose
@@ -51,6 +54,7 @@ M.PLACEMENT = { { 'useNewPlacement', '1' }, { 'useNewPlacementGpu', '0' } }
 M.enabled = true
 
 local created = {}        -- object names we made
+local defsCache = {}      -- source -> stock definitions by name (read once per level)
 local loadedMaterials = {} -- source -> true
 local lastError = nil
 
@@ -121,7 +125,7 @@ function M.ensure()
   if not M.enabled or #created > 0 then return #created > 0 end
   if not scenetree.MissionGroup then return false end
   local ok, err = pcall(function()
-    local defs = {}
+    local defs = defsCache
     for _, d in ipairs(M.DEFS) do
       if not defs[d.source] then
         if not loadedMaterials[d.source] then
@@ -180,7 +184,19 @@ function M.setEnabled(on)
 end
 
 -- The level ended (its objects are gone with it).
-function M.reset() created = {} end
+function M.reset()
+  created = {}
+  defsCache = {}
+end
+
+-- A teleport or a floating-origin rebase moved the world under the grass: make the objects again
+-- (their cells then start from nothing whatever the engine kept) and generate them this frame.
+function M.rebuild()
+  if #created == 0 then return false end
+  removeAll()
+  M.ensure()
+  return M.afterBlockChange()
+end
 
 function M.status()
   return { enabled = M.enabled, objects = #created, materialsLoaded = next(loadedMaterials) ~= nil, error = lastError }

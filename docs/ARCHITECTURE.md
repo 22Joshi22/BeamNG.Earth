@@ -929,6 +929,14 @@ three days of testing: dem 741 MB / 7.5k files, imagery 1.4 GB / 35k, deshadow 7
   The earlier cuts (GPU placement with a one-frame sunk-block refresh) blanked the grass for 2-4
   frames and regrew it over ~10 frames per move. CPU placement's normal-driving cost is tracked by
   the benchmark.
+- Optional preload library `tools/gcpatch` (Linux, 0.39.4 only, README there): at game start it
+  changes the handler's `and esi, 0x0E` to `and esi, 0` in memory (after checking its first 54
+  bytes), so block imports and moves free no grass at all. BeamNG's Lua FFI refuses C function
+  declarations, so the mod's Lua cannot do this itself. Teleports and rebases still need fresh
+  grass, so core calls `groundcover.rebuild()` (recreate the objects, then the same-tick flush),
+  which works with or without the library. Measured: a 3 km drive at 30 m/s, 10 block moves, zero
+  blank-grass frames, no rebuild frame (each move only the import's ~25 ms frame), median 7.6 ms
+  per frame versus 10.0 ms without it.
 - A second TerrainBlock (even 5 km away with disableCollision) drops the player's vehicle through the
   ground at once (in-game, twice): never create one while a vehicle is in the world.
 
