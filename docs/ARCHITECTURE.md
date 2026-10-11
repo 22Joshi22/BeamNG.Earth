@@ -524,8 +524,9 @@ in 2026-10-10-weather-probe-results.md.
 ## Data credits overlay (docs/DEVTOOLS.md; built offline 2026-10-10, feature/credits)
 - Server `credits.py`: each built tile records its imagery sources (from `Imagery.render`'s texel
   counts) and DEM providers (`dem.Dem.served`); per connection a `credits` message (sources within
-  2 km of the player + the far field's other sources + Open-Meteo) on change, at most once a second,
-  re-sent on hello (`--credits on`, the command line's default; `Server()` sends none).
+  2 km of the player, kept up to 2.2 km against flip-flopping, + the far field's other sources +
+  Open-Meteo; none before a tile's sources are known) on change, at most once a second, re-sent on
+  hello (`--credits on`, the command line's default; `Server()` sends none).
 - Mod `credits.lua`: one background-draw-list text per frame in a screen corner (settings: on,
   corner, size), hidden in the pause menu and big map; the session's attribution line before the
   first message. No allocation per frame; the text is measured only when it changes.

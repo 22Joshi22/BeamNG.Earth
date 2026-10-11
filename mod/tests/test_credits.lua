@@ -71,7 +71,7 @@ T.check(frame(true, fallback) and textDraw().text == 'Imagery: everything; Eleva
   'no credits yet: the attribution line')
 T.check(fbCalls == 1, 'the fallback is asked for once per frame while there is no message')
 
-local NEAR = 'Imagery: USGS The National Map | Elevation: Mapterhorn (mapterhorn.com/attribution) | Weather data by Open-Meteo.com'
+local NEAR = 'Imagery: USGS The National Map | Elevation: Mapterhorn (see mapterhorn.com/attribution) | Weather data by Open-Meteo.com'
 local FAR = 'Far imagery: EOxCloudless https://cloudless.eox.at by EOX IT Services GmbH (Contains modified Copernicus Sentinel data 2023)'
 T.check(credits.onMessage({ type = 'credits', v = 1, near = NEAR, far = FAR, ids = {}, farIds = {} }), 'credits message taken')
 T.check(credits.serverText() == NEAR .. '\n' .. FAR, 'near and far on two lines')

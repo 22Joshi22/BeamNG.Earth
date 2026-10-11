@@ -47,10 +47,13 @@ player right now, e.g.:
   `TileInfo.credits` (`img:<source>` for each imagery source with texels in its texture, from
   `Imagery.render`'s counts - imagery.py is unchanged; `dem:<provider>` for each DEM tile under the
   footprint at the tile's DEM zoom); `Connection` has a `credits.Tracker`. The near set = sources of
-  the shown tiles (previous anchors' included) whose footprint is within 2 km of the player, plus
-  Open-Meteo once weather went to the mod; the far set = the other shown tiles' sources not already
-  near. Message `{"type":"credits","v":1,"near","far","ids","farIds"}`, e.g. near "Imagery: USGS
-  The National Map | Elevation: Mapterhorn (mapterhorn.com/attribution) | Weather data by
+  the shown tiles (previous anchors' included) whose footprint is within 2 km of the player (a near
+  source stays near while one of its tiles is within 2.2 km: no flip-flopping when the player rocks
+  across the radius), plus Open-Meteo once weather went to the mod; the far set = the other shown
+  tiles' sources not already near. Nothing is sent before some shown tile's sources are known (the
+  weather alone, e.g. while the first tiles load or after a server restart, would replace the mod's
+  full attribution line with one name). The wording is CREDITS.md's, word for word (tested). Message `{"type":"credits","v":1,"near","far","ids","farIds"}`, e.g. near "Imagery: USGS
+  The National Map | Elevation: Mapterhorn (see mapterhorn.com/attribution) | Weather data by
   Open-Meteo.com", far "Far imagery: EOxCloudless https://cloudless.eox.at by EOX IT Services GmbH
   (Contains modified Copernicus Sentinel data 2023)". Checked after poses and swaps at most once a
   second, sent only on change, re-sent on hello. `earthd --credits on|off` (default on);

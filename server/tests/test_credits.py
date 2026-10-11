@@ -70,14 +70,28 @@ class WordingTest(unittest.TestCase):
                                                 "wx:open-meteo"])
         text = credits.line(ids)
         self.assertEqual(text, "Imagery: USGS The National Map; " + credits.IMAGERY["eox2023"]
-                         + " | Elevation: Mapterhorn (mapterhorn.com/attribution); AWS Terrain Tiles / Mapzen"
+                         + " | Elevation: Mapterhorn (see mapterhorn.com/attribution); AWS Terrain Tiles / Mapzen"
                          + " | Weather data by Open-Meteo.com")
         self.assertEqual(credits.line({"img:eox2016"}, far=True), "Far imagery: " + credits.IMAGERY["eox2016"])
-        self.assertEqual(credits.line({"dem:mapterhorn"}, far=True), "Far elevation: Mapterhorn (mapterhorn.com/attribution)")
+        self.assertEqual(credits.line({"dem:mapterhorn"}, far=True), "Far elevation: Mapterhorn (see mapterhorn.com/attribution)")
         self.assertEqual(credits.line(set()), "")
         # a source outside the catalogue (a custom chain) is named, after the known ones
         self.assertEqual(credits.ordered({"img:zz", "img:usgs"}), ["img:usgs", "img:zz"])
         self.assertEqual(credits.line({"img:zz"}), "Imagery: zz")
+
+    def test_wording_matches_credits_md(self):
+        """The overlay names every source with the attribution CREDITS.md lists for it (and the
+        settings page's line, earthd.ELEVATION_CREDIT, uses): word for word, so the licences'
+        required wording is not paraphrased on screen."""
+        text = (Path(__file__).resolve().parents[2] / "CREDITS.md").read_text()
+        for i in ("img:usgs", "dem:mapterhorn"):
+            kind = "Imagery: " if i.startswith("img:") else "Elevation: "
+            self.assertIn(f'"{kind}{credits.label(i)}"', text, i)
+        self.assertIn(f'"{credits.IMAGERY["eox2023"]}"', text)
+        self.assertIn(f'"{credits.label("dem:aws-terrarium")}"', text)
+        self.assertIn(f'"{weather.CREDIT}"', text)
+        for name in (demmod.MAPTERHORN["name"], demmod.AWS["name"]):
+            self.assertIn(credits.ELEVATION[name], earthd.ELEVATION_CREDIT, name)
 
     def test_ascii_only(self):
         """The game's UI font lacks most non-ASCII glyphs (the settings page found it): the overlay
@@ -238,7 +252,7 @@ class MessageTest(unittest.TestCase):
         self.assertEqual(m["ids"], ["img:usgs", "img:eox2023", "dem:mapterhorn"])
         self.assertEqual(m["farIds"], ["img:eox2016", "dem:aws-terrarium"])     # near sources not repeated
         self.assertEqual(m["near"], "Imagery: USGS The National Map; " + credits.IMAGERY["eox2023"]
-                         + " | Elevation: Mapterhorn (mapterhorn.com/attribution)")
+                         + " | Elevation: Mapterhorn (see mapterhorn.com/attribution)")
         self.assertEqual(m["far"], "Far imagery: " + credits.IMAGERY["eox2016"]
                          + " | Far elevation: AWS Terrain Tiles / Mapzen")
         self.assertEqual((m["type"], m["v"]), ("credits", credits.VERSION))
@@ -256,11 +270,44 @@ class MessageTest(unittest.TestCase):
     def test_weather_and_nothing(self):
         c = conn_stub({}, {})
         self.assertIsNone(credits.Credits().message(c))         # nothing known yet: no message
+        # the weather alone (it usually arrives before the first tiles are shown, and again before
+        # them after a server restart, while the old session's tiles are still on screen): no
+        # message, so the mod keeps the full attribution line instead of naming only Open-Meteo
         c.weather.msg = {"type": "weather"}
+        self.assertIsNone(credits.Credits().message(c))
+        c.shown[(1, "a")] = (0, 0, 10, 10)
+        c.s.tiles[(1, "a")] = self.info("dem:mapterhorn")
         m = credits.Credits().message(c)
-        self.assertEqual((m["near"], m["far"], m["ids"], m["farIds"]), (weather.CREDIT, "", ["wx:open-meteo"], []))
+        self.assertEqual((m["near"], m["far"], m["ids"], m["farIds"]),
+                         ("Elevation: " + credits.ELEVATION["mapterhorn"] + " | " + weather.CREDIT, "",
+                          ["dem:mapterhorn", "wx:open-meteo"], []))
         c.active = None
         self.assertIsNone(credits.Credits().message(c))
+
+    def test_no_flapping_at_the_near_radius(self):
+        """A tile just beyond the near radius and a player rocking back and forth across it (a
+        parked car's jitter, a slow U-turn): its source joins the near line once and stays there
+        until its tiles are NEAR_HYST_M beyond the radius, instead of one message per check."""
+        now = [100.0]
+        cred = credits.Credits(clock=lambda: now[0])
+        tiles = {(1, "a"): self.info("img:usgs"), (1, "b"): self.info("img:eox2023")}
+        c = conn_stub({(1, "a"): (0, 0, 10, 10), (1, "b"): (2010.5, 0, 2100, 100)}, tiles, cred=cred)
+        c.loop = FakeLoop()
+        c.send = c.sent.append
+        t = credits.Tracker()
+        for i in range(10):
+            c.focus = (10.0 + (i % 2), 0.0)                   # b at 2000.5 / 1999.5 m
+            now[0] += 1.0
+            t.poke(c)
+            c.loop.run()
+        self.assertEqual([m["farIds"] for m in c.sent], [["img:eox2023"], []])
+        # well beyond the radius + the hysteresis: far again
+        c.focus = (10.0 - credits.NEAR_HYST_M - 1, 0.0)
+        now[0] += 1.0
+        t.poke(c)
+        c.loop.run()
+        self.assertEqual(c.sent[-1]["farIds"], ["img:eox2023"])
+        self.assertEqual(len(c.sent), 3)
 
 
 class FakeLoop:
@@ -385,7 +432,7 @@ class SessionCreditsTest(test_server.ServerHarness):
         # the far field (80 km): USGS and AWS east of their limits
         self.assertEqual(last["farIds"], ["img:usgs", "dem:aws-terrarium"])
         self.assertEqual(last["near"], "Imagery: " + credits.IMAGERY["eox2023"]
-                         + " | Elevation: Mapterhorn (mapterhorn.com/attribution) | Weather data by Open-Meteo.com")
+                         + " | Elevation: Mapterhorn (see mapterhorn.com/attribution) | Weather data by Open-Meteo.com")
         self.assertEqual(last["far"], "Far imagery: USGS The National Map | Far elevation: AWS Terrain Tiles / Mapzen")
         # only on change: every message differs from the one before
         for prev, m in zip(got, got[1:]):

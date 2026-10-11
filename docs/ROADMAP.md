@@ -295,7 +295,8 @@ Plan (with the netfetch / rate-limit work):
 5. **Data credits overlay** (user, 2026-10-10; docs/DEVTOOLS.md): small text in a screen corner naming
    the imagery / elevation / weather sources around the player. Built offline on branch
    feature/credits (2026-10-10): server `credits` message (on change, at most 1/s), mod
-   `credits.lua`, settings on / corner / size; waiting for its in-game check.
+   `credits.lua`, settings on / corner / size; reviewed adversarially (overlay wording now CREDITS.md's
+   word for word, no weather-only message, hysteresis at the 2 km radius); waiting for its in-game check.
 All other candidates below are approved too ("all these look good") and get scheduled after these.
 
 ## Seasons, snow and weather events (user, 2026-10-10)

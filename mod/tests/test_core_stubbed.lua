@@ -712,12 +712,12 @@ ui_imgui.ImVec2 = function(x, y) return { x = x, y = y } end
 ui_imgui.ImDrawList_AddText2 = function(dl, font, px, pos, col, text) drawnCredits[#drawnCredits + 1] = text end
 frames(1)
 T.check(#drawnCredits == 1 and drawnCredits[1] == core.attribution(), 'credits: the attribution line before any credits message')
-serverSend({ type = 'credits', v = 1, near = 'Imagery: USGS The National Map | Elevation: Mapterhorn (mapterhorn.com/attribution)',
+serverSend({ type = 'credits', v = 1, near = 'Imagery: USGS The National Map | Elevation: Mapterhorn (see mapterhorn.com/attribution)',
   far = 'Far imagery: EOX', ids = { 'img:usgs', 'dem:mapterhorn' }, farIds = { 'img:eox2023' } })
 drawnCredits = {}
 frames(3)
 T.check(#drawnCredits == 3, 'credits: one text draw per frame')
-T.check(drawnCredits[3] == 'Imagery: USGS The National Map | Elevation: Mapterhorn (mapterhorn.com/attribution)\nFar imagery: EOX',
+T.check(drawnCredits[3] == 'Imagery: USGS The National Map | Elevation: Mapterhorn (see mapterhorn.com/attribution)\nFar imagery: EOX',
   'credits: the server\'s near and far lines')
 T.check(core.credits() == drawnCredits[3], 'core.credits(): the text on screen (the settings page)')
 core.onUiChangedState('menu', 'play')

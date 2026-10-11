@@ -15,7 +15,10 @@ them per tile:
   - weather: Open-Meteo once a weather message went to the mod (weather.CREDIT).
 
 Credits.message() splits the shown tiles (the connection's `shown`, previous anchors' tiles
-included) into those within NEAR_M of the player and the rest, and builds the 'credits' message:
+included) into those within NEAR_M of the player and the rest (a source already near stays near
+while one of its tiles is within NEAR_M + NEAR_HYST_M: a player rocking across the radius does not
+flip it every check), and builds the 'credits' message, once some tile's sources are known (the
+weather alone would replace the mod's full attribution line with one name):
 `near` (the line the overlay shows first), `far` (the sources only the far field uses, short),
 `ids` / `farIds` (source ids, for tests and tools). Tracker sends it only when it changed, after
 at most one check per INTERVAL_S (pokes from poses and swaps), and again on a hello.
@@ -37,13 +40,14 @@ log = logging.getLogger("earthd.credits")
 
 VERSION = 1
 NEAR_M = 2000.0                 # m from the player: tiles this close are "near"
+NEAR_HYST_M = 200.0             # ... and a near source stays near until its tiles are this much further
 INTERVAL_S = 1.0                # at most one check (and so one message) per second
 MAX_DEM_KEYS = 64               # DEM tiles looked up per far tile (a footprint needs 1-4)
 
-# Overlay wording per source id. EOX's is their prescribed attribution (docs/research/
-# 2026-10-10-rate-limits.md, imagery.SOURCES without the licence name); the others are the short
-# forms of imagery.SOURCES / earthd.ELEVATION_CREDIT. The full credits stay in hello.attribution
-# (the settings page) and CREDITS.md.
+# Overlay wording per source id, word for word the attribution CREDITS.md lists (test_credits checks
+# it): EOX's is their prescribed attribution (docs/research/2026-10-10-rate-limits.md, imagery.SOURCES
+# without the licence name); the others as in imagery.SOURCES / earthd.ELEVATION_CREDIT. The full
+# credits stay in hello.attribution (the settings page) and CREDITS.md.
 IMAGERY = {
     "usgs": "USGS The National Map",
     "eox2023": "EOxCloudless https://cloudless.eox.at by EOX IT Services GmbH "
@@ -52,7 +56,7 @@ IMAGERY = {
                "(Contains modified Copernicus Sentinel data 2016 & 2017)",
 }
 ELEVATION = {
-    demmod.MAPTERHORN["name"]: "Mapterhorn (mapterhorn.com/attribution)",
+    demmod.MAPTERHORN["name"]: "Mapterhorn (see mapterhorn.com/attribution)",
     demmod.AWS["name"]: "AWS Terrain Tiles / Mapzen",
 }
 WEATHER_ID = "wx:open-meteo"
@@ -138,34 +142,40 @@ def bbox_distance(bb, x, y):
 
 
 class Credits:
-    """The server's credits setting (earthd --credits on): the near radius, the throttle and the
-    clock (injectable for tests)."""
+    """The server's credits setting (earthd --credits on): the near radius and its hysteresis, the
+    throttle and the clock (injectable for tests)."""
 
-    def __init__(self, near_m=NEAR_M, interval=INTERVAL_S, clock=time.monotonic):
-        self.near_m, self.interval, self.clock = near_m, interval, clock
+    def __init__(self, near_m=NEAR_M, interval=INTERVAL_S, clock=time.monotonic, hyst_m=NEAR_HYST_M):
+        self.near_m, self.interval, self.clock, self.hyst_m = near_m, interval, clock, hyst_m
 
-    def message(self, conn):
+    def message(self, conn, near_before=()):
         """The 'credits' message for a connection's shown tiles around its player, or None before
-        anything is known (no anchor, no tile with sources, no weather)."""
+        anything is known (no anchor, no tile with sources). near_before: the ids near in the
+        last message (they stay near within the hysteresis band)."""
         if conn.active is None:
             return None
         fx, fy = conn.focus
         tiles = conn.s.tiles
-        near, far = set(), set()
+        near, far, kept = set(), set(), set()
+        keep = frozenset(near_before)
         for ck, bb in list(conn.shown.items()):
             info = tiles.get(ck)
             ids = getattr(info, "credits", None)
             if not ids:
                 continue
-            if bbox_distance(bb, fx, fy) <= self.near_m:
+            d = bbox_distance(bb, fx, fy)
+            if d <= self.near_m:
                 near |= ids
             else:
                 far |= ids
+                if keep and d <= self.near_m + self.hyst_m:
+                    kept |= ids & keep
+        near |= kept
+        if not near and not far:
+            return None
         if conn.weather.msg is not None:
             near.add(WEATHER_ID)
         far -= near
-        if not near and not far:
-            return None
         return {"type": "credits", "v": VERSION, "near": line(near), "far": line(far, far=True),
                 "ids": ordered(near), "farIds": ordered(far)}
 
@@ -197,7 +207,7 @@ class Tracker:
         self.last_check = cr.clock()
         self.checks += 1
         try:
-            msg = cr.message(conn)
+            msg = cr.message(conn, self.msg["ids"] if self.msg else ())
         except Exception:               # a bug must not stop the connection
             log.exception("credits failed")
             return
