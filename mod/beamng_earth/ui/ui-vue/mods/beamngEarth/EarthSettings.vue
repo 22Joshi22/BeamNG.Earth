@@ -328,7 +328,7 @@ const settingsSchema = [
     name: "World",
     items: [
       { id: "rebaseDistance", type: "float", min: 2000, max: 16000, step: 100, default: 15000, name: "Rebase distance (m)", desc: "How far from the anchor origin the world moves under the player (origin rebase). 15 km keeps float precision at ~1 mm; beyond 16 km precision halves." },
-      { id: "viewDistanceMode", type: "select", default: "fixed", name: "View distance", desc: "Fixed: the renderer's view distance below. Real horizon: the far field reaches the true line-of-sight horizon (coming with v1.4 M1h; until then the fixed distance stays).",
+      { id: "viewDistanceMode", type: "select", default: "horizon", name: "View distance", desc: "Real horizon (the default): the far field reaches the true line-of-sight horizon and the view distance follows it (the server's --horizon, on by default in mesh mode). Fixed: the renderer's view distance below.",
         options: [ { label: "Fixed distance", value: "fixed" }, { label: "Real horizon (v1.4 M1h)", value: "horizon" } ] },
       { id: "viewDistanceKm", type: "float", min: 20, max: 1000, step: 10, default: 100, name: "Fixed view distance (km)", desc: "The renderer's view distance in km (LevelInfo visibleDistance) in fixed mode. The far field itself extends 80 km today." },
       { id: "hazeStrength", type: "float", min: 0, max: 1, step: 0.05, default: 0, name: "Distance haze (placeholder)", desc: "Strength of the distance haze. Placeholder: the haze comes with the real-horizon far field (v1.4 M1h); this value is saved but has no effect yet.", disabled: true },

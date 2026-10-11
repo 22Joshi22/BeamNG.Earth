@@ -299,6 +299,28 @@ ui.compact, drawnText = false, {}
 okDraw = pcall(ui.draw, view, { teleport = function() end, setRebaseDistance = function(m) return m end })
 T.check(okDraw and table.concat(drawnText, '\n'):match('Anchor: #2'), 'full window still draws')
 
+------------------------------------------------------------------------------------------
+-- the page's own copy of the defaults (EarthSettings.vue settingsSchema: its reset buttons and
+-- "default" labels) agrees with SCHEMA for every persisted setting it lists
+
+do
+  local f = io.open(dir .. '/../beamng_earth/ui/ui-vue/mods/beamngEarth/EarthSettings.vue', 'r')
+  local page = f and f:read('*a') or ''
+  if f then f:close() end
+  local defs, seen = settings.defaults(), 0
+  for id, val in page:gmatch('{ id: "(%w+)", type: "%w+",[^\n]-default: ([^,]+),') do
+    if settings.SCHEMA[id] then
+      seen = seen + 1
+      local v = val:match('^"(.*)"$')
+      if v == nil then
+        if val == 'true' then v = true elseif val == 'false' then v = false else v = tonumber(val) end
+      end
+      T.check(v == defs[id], 'page default of ' .. id .. ' (' .. tostring(val) .. ') = settings.lua\'s (' .. tostring(defs[id]) .. ')')
+    end
+  end
+  T.check(seen >= 10, 'page defaults compared (' .. seen .. ')')
+end
+
 -- leave the shared modules as found
 rebase.distance, ui.visible, ui.compact, ui.hudHidden = dist0, vis0, compact0, false
 T.done('test_settings')
