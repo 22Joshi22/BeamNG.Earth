@@ -20,3 +20,4 @@ docs/research/*.jsonl
 # agent worktrees
 .claude/
 tools/gcpatch/build/
+docs/research/streetview/

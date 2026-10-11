@@ -64,6 +64,10 @@ only, nothing redistributed. Licence notes marked *(verify)* must be re-checked 
 
 ## References and inspiration (consulted, nothing redistributed)
 
+- Mapillary street-level photos (© Mapillary contributors, CC BY-SA 4.0), through the Mapillary API with
+  the user's own token, as references for street-level comparison (tools/streetview.py; kept local, not
+  redistributed).
+
 - BeamNG's official levels (West Coast USA, Johnson Valley, Utah, Italy, East Coast USA, Jungle Rock
   Island, Hirochi Raceway) as look references and stock-asset sources per biome (docs/ROADMAP.md). The
   ground cover uses Hirochi Raceway's and West Coast USA's grass and scrub definitions and materials,
