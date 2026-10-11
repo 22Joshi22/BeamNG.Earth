@@ -74,6 +74,28 @@ end
 
 T.near(edgeguard.cap(edgeguard.STOP_M), 0, 1e-12, 'cap: zero at the stop line')
 T.near(edgeguard.cap(edgeguard.STOP_M + 75), 30, 1e-9, 'cap: 30 m/s at 75 m before it (6 m/s^2)')
+T.check(edgeguard.cap(edgeguard.STOP_M - 4) < 0 and edgeguard.cap(0) == -edgeguard.PULL_MAX, 'cap: inside the stop line a pull back, at most PULL_MAX')
+-- creeping under throttle (in-game 2026-10-11: 4.6 m in 50 s): inside the stop line even a slow
+-- outward speed is replaced by a pull back
+do
+  local g = edgeguard.new()
+  local box = { -512, -512, 510, 510 }
+  local x = 510 - edgeguard.STOP_M + 3            -- 3 m past the stop line
+  local mode, setV = edgeguard.step(g, { clock = 1, x = x, y = 0, z = 100, vx = 0.04, vy = 1, box = box, ground = 0.5 })
+  T.check(mode == 'hold' and setV and setV[1] < -1 and setV[2] == 1, 'creep: pulled back inwards, along the edge free')
+  -- back at the stop line moving inwards: nothing to do
+  mode, setV = edgeguard.step(g, { clock = 2, x = 510 - edgeguard.STOP_M - 0.5, y = 0, z = 100, vx = -0.3, vy = 0, box = box, ground = 0.5 })
+  T.check(setV == nil, 'at the stop line moving inwards: left alone')
+  -- simulate a car pushing outwards at 3 m/s^2 for 60 s at 60 GE frames/s: it stays inside the stop zone
+  local px, vx2 = 400, 8
+  for i = 1, 3600 do
+    vx2 = vx2 + 3 / 60
+    local m2, sv = edgeguard.step(g, { clock = 2 + i / 60, x = px, y = 0, z = 100, vx = vx2, vy = 0, box = box, ground = 0.5 })
+    if sv then vx2 = sv[1] end
+    px = px + vx2 / 60
+  end
+  T.check(px < 510 - edgeguard.STOP_M + 1, 'sustained throttle for 60 s: held at the stop line (x ' .. string.format('%.2f', px) .. ')')
+end
 T.check(edgeguard.warnDistance(0) == edgeguard.WARN_M and edgeguard.warnDistance(60) > 300, 'warn distance grows with speed')
 
 local veh = newVeh(0, 0, GROUND_Z + 0.5, 30, 0)
