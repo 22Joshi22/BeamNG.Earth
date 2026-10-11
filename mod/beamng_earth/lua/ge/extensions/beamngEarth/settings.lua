@@ -48,6 +48,8 @@ M.SCHEMA = {
   -- grass and shrubs on the surface layers (groundcover.lua; needs the server's --surface on)
   groundCover = { kind = 'bool', default = true, label = 'Grass and shrubs' },
   groundCoverDensity = { kind = 'enum', default = 'normal', values = { 'low', 'normal', 'high' }, label = 'Grass density' },
+  -- roads near the player (roads.lua; the server's --roads on)
+  roads = { kind = 'bool', default = true, label = 'Roads' },
   hudVisible = { kind = 'bool', default = false, label = 'Status HUD at level start' },
   -- the on-screen data credits (credits.lua): on by default, CC BY licences ask for visible attribution
   creditsVisible = { kind = 'bool', default = true, label = 'Data credits on screen' },
@@ -60,7 +62,7 @@ M.SCHEMA = {
   devMapKm = { kind = 'number', default = 10, min = 1, max = 80, label = 'Dev mini-map radius (km)' },
 }
 M.ORDER = { 'rebaseDistance', 'viewDistanceMode', 'viewDistanceKm', 'hazeStrength', 'skyMode', 'clouds',
-  'weatherMode', 'realGravity', 'groundCover', 'groundCoverDensity', 'hudVisible', 'creditsVisible',
+  'weatherMode', 'realGravity', 'groundCover', 'groundCoverDensity', 'roads', 'hudVisible', 'creditsVisible',
   'creditsCorner', 'creditsSize', 'cacheCapGb', 'devOutlineKm', 'devMapKm' }
 
 -- Old values that still load (and set) as their replacement, without a warning: 'auto' weather
@@ -224,6 +226,10 @@ M.APPLY = {
   end,
   groundCover = function(v) require('beamngEarth/groundcover').setEnabled(v) end,
   groundCoverDensity = function(v) require('beamngEarth/groundcover').setDensity(v) end,
+  roads = function(v)
+    local core = ext('beamngEarth_core')
+    if core and core.setRoadsEnabled then core.setRoadsEnabled(v) else require('beamngEarth/roads').setEnabled(v) end
+  end,
   hudVisible = function(v)
     if M.pageExists() then ui.visible = v end
   end,

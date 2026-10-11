@@ -77,6 +77,7 @@ import cdae  # noqa: E402
 import colormatch as colormatchmod  # noqa: E402
 import credits as creditsmod  # noqa: E402
 import surface as surfacemod  # noqa: E402
+import roads as roadsmod  # noqa: E402
 import mapdata as mapdatamod  # noqa: E402
 import dem as demmod  # noqa: E402
 import deshadow as deshadowmod  # noqa: E402
@@ -372,7 +373,8 @@ class Server:
                  imagery=imagerymod.DEFAULT_CHAIN, near_visual="mesh", tex_near=TEX_NEAR, tex_far=TEX_FAR,
                  tone=1.0, near_radii=None, status_interval=STATUS_INTERVAL, cells=CELLS_DEFAULT, tex=None,
                  block=BLOCK_DEFAULT, horizon=False, deshadow="off", weather=None, gravity=None, net=None,
-                 colormatch="off", credits=None, cache=None, retex_rate=RETEX_RATE, surface=None):
+                 colormatch="off", credits=None, cache=None, retex_rate=RETEX_RATE, surface=None,
+                 mapdata=None):
         """kfun: K(L) for every level (default: the layout's K table); near_radii: the min-level
         radii (default: the layout's); cells: 32 (v1.3.1) or 64 (M1, mesh mode only); tex: texture
         px per level from the finest (default: tex_near, tex_near, tex_far with 32 cells,
@@ -489,6 +491,7 @@ class Server:
         # On-screen data credits (credits.py): a creditsmod.Credits, or None (--credits off; Server()'s default)
         self.credits = credits
         self.surface = surface      # surface.Surface: ground models under the physics block (--surface on)
+        self.mapdata = mapdata      # mapdata.MapData for the roads (--roads on), else None
         # The download cache's bookkeeping (cache.py): every producer reports its disk hits and writes
         self.cache = cache
         if cache is not None:
@@ -690,6 +693,18 @@ class Server:
     def hm_vfs(self, key):
         return f"{self.vfs_dir}/{self.hm_name(key)}"
 
+    def build_roads_tile(self, aid, tx, ty):
+        """roads.py: one road tile of anchor aid, written to the session folder. Returns (vfs path,
+        chunks) or None if the anchor is gone. Worker threads (fetches the map cells it lacks)."""
+        anchor = self.anchors.get(aid)
+        if anchor is None or self.mapdata is None:
+            return None
+        cells = [self.mapdata.cell(k, layers=("roads",), kind="demand").layers.get("roads")
+                 for k in roadsmod.cells_of_tile(anchor.frame, tx, ty)]
+        zoom = anchor.zooms[0]
+        chunks = roadsmod.build_tile(anchor.frame, tx, ty, cells, lambda la, lo: self.dem.sample(la, lo, zoom))
+        return roadsmod.write_tile(self.out_dir, self.vfs_dir, aid, tx, ty, chunks)
+
     def make_heightmap(self, anchor, cx, cy, progress):
         """Worker thread: build and write one 1024² terrain."""
         t0 = time.perf_counter()
@@ -704,6 +719,10 @@ class Server:
             # rows flipped as the heightmap's (row 0 = north)
             classes, complete = self.surface.classes(keep["lat"], keep["lon"])
             idx = surfacemod.classify(classes, keep["u"], heightmap.SQUARE)
+            road_feats, roads_complete = self.surface.roads(keep["lat"], keep["lon"])
+            if road_feats:
+                idx = surfacemod.paint_roads(idx, keep["lat"], keep["lon"], road_feats, heightmap.SQUARE)
+            complete = complete and roads_complete
             info["layers"] = surfacemod.write_masks(idx[::-1], self.out_dir, self.hm_name((anchor.id, cx, cy))[:-4])
             info["surfaceComplete"] = complete
         info["seconds"] = time.perf_counter() - t0
@@ -1276,6 +1295,7 @@ class Connection:
         self.radius_sent = None
         self.zmax_region = None
         self.weather = weathermod.Tracker()     # real weather: fetch rule, last message sent
+        self.roads = roadsmod.Tracker()         # road tiles sent to the mod (--roads on)
         self.gravity = gravitymod.Tracker()     # real gravity: recompute rule, last message sent
         self.credits = creditsmod.Tracker()     # data credits: throttle, last message sent (--credits on)
 
@@ -1397,6 +1417,8 @@ class Connection:
             self.on_pose(msg)
         elif kind == "cache":
             self.on_cache(msg)
+        elif kind == "roads_reset":             # the mod dropped its roads (settings): send them all again
+            self.roads = roadsmod.Tracker()
         else:
             log.debug("ignoring message type %r", kind)
 
@@ -1626,6 +1648,8 @@ class Connection:
                     self.predicted_block = self.s.layout.block_at(*c)
         self.update_far()
         self.maybe_prefetch()
+        if self.s.mapdata is not None and aid == self.active:
+            self.roads.on_pose(self, aid, *self.focus, asyncio.get_running_loop(), self.s.build_roads_tile)
         self.refresh_status()
         self.credits.poke(self)             # the player moved: the near / far credits may change
 
@@ -1922,6 +1946,9 @@ async def main_async(args):
         radii = {ml: args.near_radii[0], ml + 1: args.near_radii[1]}
     net = netfetch.Fetcher(stats_dir=os.path.join(args.cache_dir, "netstats"), offline=args.offline)
     disk = cachemod.Cache(args.cache_dir, args.cache_cap)
+    # map data (mapdata.py): land cover for the surfaces, roads; one instance shares its cache locks
+    mapdata = (mapdatamod.MapData(args.cache_dir, fetcher=net)
+               if "on" in (args.surface, args.roads) else None)
     server = Server(args.user_dir, args.cache_dir, args.workers, kfun, args.hysteresis, args.far_radius, fmt,
                     imagery=args.imagery, near_visual=args.near_visual, tex_near=args.tex_near,
                     tex_far=args.tex_far, tone=args.tone, near_radii=radii,
@@ -1933,8 +1960,8 @@ async def main_async(args):
                              if args.gravity == "on" else None), net=net,
                     credits=creditsmod.Credits() if args.credits == "on" else None, cache=disk,
                     retex_rate=args.retex_rate,
-                    surface=(surfacemod.Surface(mapdatamod.MapData(args.cache_dir, fetcher=net))
-                             if args.surface == "on" else None))
+                    surface=(surfacemod.Surface(mapdata) if args.surface == "on" else None),
+                    mapdata=mapdata if args.roads == "on" else None)
 
     async def net_log():
         while True:
@@ -2081,6 +2108,9 @@ def main():
     ap.add_argument("--offline", action="store_true",
                     help="no network: serve elevation and imagery from the disk cache only (uncached tiles get "
                          "the palette, uncached terrain fails); the status says 'Offline - using cached data'")
+    ap.add_argument("--roads", choices=("on", "off"), default="on",
+                    help="Overture roads near the player (roads.py): DecalRoads in the mod (paved asphalt, "
+                         "gravel / dirt tracks) within ~640 m, in 256 m tiles; off = none")
     ap.add_argument("--surface", choices=("on", "off"), default="on",
                     help="ground models under the physics block from ESA WorldCover land cover and the slope "
                          "(surface.py: asphalt, grass, dusty / loose dirt, rock, snow, mud, dirt), imported as 8 "

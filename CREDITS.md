@@ -67,7 +67,8 @@ only, nothing redistributed. Licence notes marked *(verify)* must be re-checked 
 - BeamNG's official levels (West Coast USA, Johnson Valley, Utah, Italy, East Coast USA, Jungle Rock
   Island, Hirochi Raceway) as look references and stock-asset sources per biome (docs/ROADMAP.md). The
   ground cover uses Hirochi Raceway's and West Coast USA's grass and scrub definitions and materials,
-  read from the player's own game install at runtime (nothing copied into the mod).
+  read from the player's own game install at runtime (nothing copied into the mod), and so are the road
+  materials (West Coast USA's asphalt strip, Johnson Valley's dirt road tracks).
 - Torque3D (open-source engine BeamNG derives from) source code and docs, for engine behaviour.
 - Sebastien Hillaire, "A Scalable and Production Ready Sky and Atmosphere Rendering Technique" (2020),
   the model behind the game's 0.39 sky (for the horizon matching work).

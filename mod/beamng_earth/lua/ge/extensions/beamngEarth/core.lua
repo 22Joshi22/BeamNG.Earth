@@ -49,6 +49,7 @@ local places = require('beamngEarth/places') -- saved and recent places (the set
 local banner = require('beamngEarth/banner') -- the connection banner (docs/DEVTOOLS.md)
 local edgeguard = require('beamngEarth/edgeguard') -- never fall off the last block (docs/ROADMAP.md)
 local groundcover = require('beamngEarth/groundcover') -- grass on the surface layers (docs/ROADMAP.md v1.5)
+local roads = require('beamngEarth/roads') -- DecalRoads from the server's road tiles (docs/ROADMAP.md v1.6)
 
 local LEVEL_ID = 'beamng_earth'
 local MOD_VERSION = '0.4.0'
@@ -590,6 +591,10 @@ local function onMessage(msg)
     st.terrainPending, st.terrainRetryAt = nil, st.clock + follow.RETRY_S
     st.terrainErrorAt = st.clock -- the edge guard holds the car meanwhile
     setStatus('Terrain request failed: ' .. tostring(msg.error))
+  elseif t == 'roads_tile' then
+    roads.onTile(msg, st.anchorId)
+  elseif t == 'roads_drop' then
+    roads.onDrop(msg)
   elseif t == 'far_tile' then
     farfield.onTile(msg)
   elseif t == 'far_swap' then
@@ -892,7 +897,7 @@ local function onUpdate(dtReal, dtSim)
   st.clock = st.clock + dtReal
   -- the governor's frame opens first: its clock is the wall time since the last onUpdate (hptimer)
   gov:setLoading(st.placeFrames ~= nil or st.clock < st.loadingUntil or st.slowFor > SLOW_S)
-  gov:beginFrame(farfield.hasWork())
+  gov:beginFrame(farfield.hasWork() or roads.hasWork())
   for _, msg in ipairs(net.update(dtReal)) do
     local ok, err = pcall(onMessage, msg)
     if not ok then log('E', 'beamngEarth', 'message ' .. tostring(msg.type) .. ' failed: ' .. tostring(err)) end
@@ -919,6 +924,7 @@ local function onUpdate(dtReal, dtSim)
   if st.active then
     updateWorld(dtReal)
     farfield.update(gov, (gov.w1 or dtReal * 1000) / 1000, st.cam, st.player)
+    roads.update(gov, st.anchorId)
     updateSky(dtReal)
     updateGuard()
   end
@@ -996,6 +1002,7 @@ local function onClientEndMission()
   farfield.clear()
   horizon.restoreSky() -- M1h: the level's sky planet radius (its LevelInfo goes with the level)
   groundcover.reset() -- its objects go with the level
+  roads.reset()
   local sessionId, nextRequestId = st.sessionId, st.nextRequestId
   resetState()
   st.sessionId, st.nextRequestId = sessionId, nextRequestId
@@ -1010,6 +1017,7 @@ end
 local function onExtensionUnloaded()
   net.close()
   farfield.clear()
+  roads.clear()
   terrain.delete()
   -- M1h: the level stays loaded; give it back its sky and view distance
   horizon.restoreSky()
@@ -1159,6 +1167,11 @@ end
 function M._state() return st end -- read-only: the dev tools and the settings page
 function M._rebaseLag() return rebaseLag end -- for tests
 function M._governor() return gov end
+
+-- The Roads setting: off removes them; on again asks the server to send the tiles once more.
+function M.setRoadsEnabled(on)
+  if roads.setEnabled(on) then net.send({ type = 'roads_reset' }) end
+end
 
 M.onUpdate = onUpdate
 M.onPreRender = onPreRender

@@ -273,6 +273,14 @@ Popular trails are where players will test the terrain hardest, and they are wel
 - Credits for every reference go into CREDITS.md.
 
 ## v1.6 "Roads"
+- Status (2026-10-11, first cut, `earthd --roads on` by default): Overture road segments from the
+  map-data cache, 256 m tiles within ~640 m of the player (server/roads.py), drawn by the mod as
+  DecalRoads (roads.lua): paved -> West Coast USA's asphalt strip, gravel / dirt / tracks -> Johnson
+  Valley's dirt tracks, width by class or the width rule. The same roads are painted into the
+  surface masks (asphalt / loose gravel / dirt under the tyres). Bridges, tunnels and segments off
+  ground level are left out. 809 roads around Fells Point cost +0.08 ms per frame. Settings page:
+  "Roads" on / off. Next: grading the ground under roads, lane / edge markings, junction shapes,
+  bridges, the navgraph.
 - Overture transportation (GeoParquet via the STAC per-file index; 2.6-3.7 s per 30 km box cold).
 - Near roads: meshes on the 2 m lattice, ground graded under them on the server so physics and
   visuals agree; markings; bridges as collidable decks. Far roads painted into the imagery.

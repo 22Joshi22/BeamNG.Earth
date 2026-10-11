@@ -23,10 +23,11 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageDraw
 
 import mapcells
 import mapdata as mapdatamod
+import roads as roadsmod
 
 log = logging.getLogger("earthd.surface")
 
@@ -124,6 +125,67 @@ def warp(lat, lon):
     return lat + dy / M_PER_DEG, lon + dx / np.maximum(m_lon, 1e-6)
 
 
+# road surface kind (roads.py) -> material; drawn in this order (paved last: it wins at junctions)
+ROAD_MATERIAL = {"dirt": DIRT, "gravel": LOOSE, "paved": ASPHALT}
+ROAD_ORDER = ("dirt", "gravel", "paved")
+
+
+def grid_affine(lat, lon):
+    """Least-squares affine map (lon, lat) -> (col, row) of a sample grid given by its lat / lon arrays
+    (a 1 km block is affine to well under a centimetre). Returns a function (lon, lat) -> (col, row)."""
+    lat = np.asarray(lat, np.float64)
+    lon = np.asarray(lon, np.float64)
+    h, w = lat.shape
+    step = max(1, min(h, w) // 16)
+    rr, cc = np.mgrid[0:h:step, 0:w:step]
+    la, lo = lat[rr, cc].ravel(), lon[rr, cc].ravel()
+    lo0, la0 = float(lo.mean()), float(la.mean())
+    A = np.stack([lo - lo0, la - la0, np.ones_like(lo)], axis=1)
+    coef, *_ = np.linalg.lstsq(A, np.stack([cc.ravel(), rr.ravel()], axis=1).astype(np.float64), rcond=None)
+
+    def f(lon_, lat_):
+        B = np.stack([np.asarray(lon_, np.float64) - lo0, np.asarray(lat_, np.float64) - la0,
+                      np.ones(np.shape(lon_))], axis=-1)
+        cr = B @ coef
+        return cr[..., 0], cr[..., 1]
+    return f
+
+
+def paint_roads(idx, lat, lon, feats_list, square):
+    """idx (material per sample, [row, col], as classify gives it) with the roads of feats_list (the
+    "roads" Features of the cells around) drawn in at their width: ROAD_MATERIAL by surface kind.
+    lat / lon: the samples' positions; square: m between samples. Pure (a new array)."""
+    h, w = idx.shape
+    to_px = grid_affine(lat, lon)
+    layers = {k: Image.new("L", (w, h), 0) for k in ROAD_ORDER}
+    draws = {k: ImageDraw.Draw(im) for k, im in layers.items()}
+    seen = set()
+    for feats in feats_list:
+        if feats is None or len(feats) == 0:
+            continue
+        specs = roadsmod.road_specs(feats)
+        for i in range(len(feats)):
+            fid = str(feats.ids[i])
+            if specs[i] is None or fid in seen:
+                continue
+            seen.add(fid)
+            width, kind = specs[i]
+            px = max(1, int(round(width / square)))
+            for part in feats.parts(i):
+                for ring in part:
+                    if len(ring) < 2:
+                        continue
+                    c, r = to_px(ring[:, 0], ring[:, 1])
+                    if c.max() < -px or c.min() > w + px or r.max() < -px or r.min() > h + px:
+                        continue
+                    draws[kind].line(list(zip(c.tolist(), r.tolist())), fill=255, width=px, joint="curve")
+    out = idx.copy()
+    for k in ROAD_ORDER:
+        m = np.asarray(layers[k]) > 0
+        out[m] = ROAD_MATERIAL[k]
+    return out
+
+
 def mask_names(stem):
     return [f"{stem}_m{i}.png" for i in range(len(MATERIALS))]
 
@@ -148,6 +210,7 @@ class Surface:
         self.pool = ThreadPoolExecutor(1, thread_name_prefix="surface-prefetch")
         self._lock = threading.Lock()
         self._pending = set()
+        self._pending_layers = set()    # (key, layers) queued
         self._last = None           # (lat, lon) of the last prefetch
 
     def close(self):
@@ -166,20 +229,23 @@ class Surface:
             return None
         return mapdatamod._raster_from(arrays)
 
-    def _queue(self, key):
+    def _queue(self, key, layers=("landcover",)):
         with self._lock:
-            if key in self._pending:
+            if (key, layers) in self._pending_layers:
                 return
+            self._pending_layers.add((key, layers))
             self._pending.add(key)
 
         def run():
             try:
-                self.md.prefetch(key, ("landcover",))
+                self.md.prefetch(key, layers)
             except Exception as e:      # network trouble: asked again by the next block / prefetch
                 log.debug("surface: land cover of %s: %s: %s", key, type(e).__name__, e)
             finally:
                 with self._lock:
-                    self._pending.discard(key)
+                    self._pending_layers.discard((key, layers))
+                    if not any(k == key for k, _ in self._pending_layers):
+                        self._pending.discard(key)
         self.pool.submit(run)
 
     def prefetch(self, lat, lon, radius_m=PREFETCH_M):
@@ -195,6 +261,8 @@ class Surface:
         for key in mapcells.cells_for_bbox(lat - dlat, lon - dlon, lat + dlat, lon + dlon):
             if self.md._load(self.md.path(key, "landcover")) is None:
                 self._queue(key)
+            if self.md._load(self.md.path(key, "roads")) is None:
+                self._queue(key, ("roads",))
 
     def ready(self, lat, lon, radius_m=1000.0, timeout_s=2.0):
         """Fetch the land cover within radius_m now and wait for it, at most timeout_s (a teleport's
@@ -212,6 +280,24 @@ class Surface:
                 return True
             time.sleep(0.05)
         return False
+
+    def roads(self, lat, lon):
+        """(the "roads" Features of the cells around the points that are cached, complete). Never waits:
+        missing cells are fetched in the background."""
+        lat = np.asarray(lat, np.float64)
+        lon = np.asarray(lon, np.float64)
+        out, complete = [], True
+        for key in mapcells.cells_for_bbox(float(lat.min()), float(lon.min()), float(lat.max()), float(lon.max())):
+            if self.md._load(self.md.path(key, "roads")) is None:
+                self._queue(key, ("roads",))
+                complete = False
+                continue
+            try:
+                out.append(self.md.cell(key, layers=("roads",), kind="background").layers.get("roads"))
+            except Exception as e:      # an unreadable cache file: like a missing one
+                log.debug("surface: roads of %s: %s: %s", key, type(e).__name__, e)
+                complete = False
+        return out, complete
 
     def classes(self, lat, lon):
         """(WorldCover class per point, complete): 0 (no data) where the cell is not cached yet. The

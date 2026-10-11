@@ -946,6 +946,32 @@ three days of testing: dem 741 MB / 7.5k files, imagery 1.4 GB / 35k, deshadow 7
 - A second TerrainBlock (even 5 km away with disableCollision) drops the player's vehicle through the
   ground at once (in-game, twice): never create one while a vehicle is in the world.
 
+## Roads (`server/roads.py`, `roads.lua`; `earthd --roads on`, 2026-10-11)
+- Tiles: 256 m squares of the anchor's ENU frame. The connection's `roads.Tracker` keeps the tiles
+  within 640 m of the player sent and drops those beyond 960 m. A worker builds each tile from the
+  "roads" layer of every map cell touching it (taken once per feature id), and an anchor change
+  re-sends everything. The tile is written as `roads_<a>_<tx>_<ty>.json` in the session folder and
+  announced as `roads_tile` {anchorId, key, path, n}, then `roads_drop` {anchorId, key}. The mod
+  sends `roads_reset` after the Roads setting is switched back on.
+- Build: class and rules give the width (STYLE, or the width rule) and the surface kind (paved /
+  gravel / dirt). Footways, paths and steps are left out, and so are segments flagged as bridge or
+  tunnel or off ground level. Each road is clipped to the tile plus 2 m, simplified (RDP 0.25 m),
+  given nodes at least every 12 m, and split into chunks of at most 100 nodes sharing their ends. The
+  nodes are in the anchor frame, with z on the DEM (the DecalRoad snaps them to the physics ground
+  anyway). Deterministic: sorted by feature id.
+- Mod: each chunk is one DecalRoad (insertNodeNoRegen + regenerate, `overObjects` false,
+  drivability -1, distance fade 450 / 150 m), made and deleted under the governor (kinds roadChunk
+  0.5 ms, roadDelete 0.05 ms). The look uses stock materials loaded from the player's install:
+  `road_asphalt_2lane` (West Coast USA) for paved, `m_dirt_road` (Johnson Valley) for gravel and dirt.
+  A DecalRoad draws only where the physics block is (~500 m around the player) and re-clips by
+  itself when the block moves.
+- Under the tyres: `surface.paint_roads` draws the same roads into the material grid at their width
+  (PIL lines through a least-squares lon/lat -> pixel affine of the block's samples). Dirt, then
+  gravel, then paved on top, as DIRT / LOOSE / ASPHALT. The cells' roads are read from the cache
+  without waiting (fetched in the background like the land cover). ~130 ms per 512² block in a city.
+- Measured at Fells Point: 809 DecalRoads, +0.08 ms per frame (A/B, 5 rounds); every sampled road
+  node within 250 m is asphalt under the tyres.
+
 ## Map data (`server/mapdata.py`; built offline 2026-10-11, branch feature/mapdata)
 The shared input of every content feature (roads, buildings, water, land use, trees, ground
 types), per docs/research/2026-10-10-world-data-sources.md. Not wired into earthd or the mod yet:

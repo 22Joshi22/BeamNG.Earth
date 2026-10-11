@@ -103,6 +103,8 @@ MOD_TO_SERVER = {
     # the download cache (cache.py; additive): the page's size cap (GB, 0 = unlimited), a clear, or
     # neither (fresh usage numbers); always answered with a 'cache'
     "cache": {"capGb": F(NUM, OPT), "clear": F(bool, OPT)},
+    # roads (roads.py; additive): the mod removed its roads (switched off and on again): send them again
+    "roads_reset": {},
 }
 CAM = {"x", "y", "z", "fx", "fy", "fz", "fovDeg"}
 TERRAIN = {"cx": F(NUM), "cy": F(NUM), "heightmap": F(str), "size": F(int), "squareSize": F(NUM),
@@ -148,6 +150,9 @@ SERVER_TO_MOD = {
     "gravity": {"v": F(int), "g": F(NUM), "lat": F(NUM), "lon": F(NUM), "h": F(NUM), "source": F(str)},
     # data credits for the tiles around the player (credits.py; additive, protocol 4, --credits on)
     "credits": {"v": F(int), "near": F(str), "far": F(str), "ids": F(list), "farIds": F(list)},
+    # road tiles near the player (roads.py; additive, with map data only): a JSON file of DecalRoad chunks
+    "roads_tile": {"anchorId": F(int), "key": F(str), "path": F(str), "n": F(int)},
+    "roads_drop": {"anchorId": F(int), "key": F(str)},
     # the download cache's usage (cache.py; additive, with a Cache only): after hello and every mod 'cache'
     "cache": {"v": F(int), "usedBytes": F(int), "capBytes": F(int), "files": F(int), "ready": F(bool),
               "managed": F(bool), "clearedBytes": F(int, OPT)},
@@ -155,7 +160,7 @@ SERVER_TO_MOD = {
 WEATHER_NESTED = {"cover": {"total", "low", "mid", "high"}, "wind": {"ms", "fromDeg", "gustMs"},
                   "aloft": {"ms", "fromDeg"}}
 # message types the plain session cannot produce (each has its own session test below)
-EXERCISED_ELSEWHERE = {"far_retex"}
+EXERCISED_ELSEWHERE = {"far_retex", "roads_tile", "roads_drop"}  # roads: needs map data (roads tests)
 # events the mod's net.lua makes up itself (not on the wire)
 MOD_INTERNAL = {"_connected": set(), "_disconnected": {"error"}}
 
@@ -211,7 +216,7 @@ def mod_sends():
 def mod_reads():
     """Fields the mod reads from server messages: msg.X / p.msg.X / tr.X (terrain) in its Lua."""
     out = set()
-    for name in ("core.lua", "farfield.lua", "lattice.lua", "weather.lua", "credits.lua"):
+    for name in ("core.lua", "farfield.lua", "lattice.lua", "weather.lua", "credits.lua", "roads.lua"):
         text = (LUA / name).read_text()
         out |= set(re.findall(r"\bmsg\.(\w+)", text))
         out |= {"terrain." + f for f in re.findall(r"\btr\.(\w+)", text)}

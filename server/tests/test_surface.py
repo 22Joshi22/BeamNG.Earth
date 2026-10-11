@@ -197,6 +197,9 @@ class ServerSurfaceTest(unittest.TestCase):
             lat = np.asarray(lat)
             return np.where(lat > LAT, 30, 40).astype(np.uint8), True
 
+        def roads(self, lat, lon):
+            return [], True
+
     class Dem:
         def sample(self, lat, lon, zoom, progress=None):
             return np.full(np.shape(lat), 1500.0)

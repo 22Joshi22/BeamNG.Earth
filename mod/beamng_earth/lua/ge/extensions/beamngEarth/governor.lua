@@ -56,7 +56,9 @@ M.EST_ALPHA = 0.2          -- cost EMA gain
 -- (scaled from 256 by the shape's share, ~3.9).
 -- 'retex' (far_retex: a material's colorMap switched, flush + reload, the new texture loaded) is not
 -- measured yet: a guess between a material (0.3) and a textured import (4).
-M.PRIOR = { cdae = 3.0, dae = 8.0, reveal = 0.05, delete = 0.3, cdaeTex = 3.0, material = 0.3, matDelete = 0.2, cdaeTex128 = 3.9, cdaeTex256 = 4.0, cdaeTex512 = 4.2, retex = 1.0 }
+-- 'roadChunk' (roads.lua: one DecalRoad of <= 100 nodes, insertNodeNoRegen + regenerate) ~0.45 ms in
+-- probe P3; 'roadDelete' 0.02-0.04 ms (P3).
+M.PRIOR = { cdae = 3.0, dae = 8.0, reveal = 0.05, delete = 0.3, cdaeTex = 3.0, material = 0.3, matDelete = 0.2, cdaeTex128 = 3.9, cdaeTex256 = 4.0, cdaeTex512 = 4.2, retex = 1.0, roadChunk = 0.5, roadDelete = 0.05 }
 
 -- Unit kind of a textured .cdae import from its far_tile.tex (px): cdaeTex<px> for a size with a
 -- prior, else (FORMAT 3 tiles have no tex) 'cdaeTex'.
