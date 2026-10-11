@@ -993,10 +993,17 @@ class FlagOffTest(unittest.TestCase):
             self.assertEqual(s5.imagery.attribution(), "Imagery: " + imagery.SOURCES["usgs"].attribution)
             s5.imagery.close()
 
-    def test_cli_flag_defaults_off(self):
-        src = Path(earthd.__file__).read_text()
-        self.assertIn('ap.add_argument("--colormatch", choices=colormatchmod.MODES, default="off"', src)
+    def test_cli_flag_defaults(self):
+        """The command line turns s2 on when the imagery chain has USGS (in-game checks 2026-10-11);
+        an explicit flag wins; no USGS / no imagery: off. Server() itself keeps off."""
         self.assertEqual(cm.MODES[0], "off")
+        chain = imagery.parse_chain("usgs,eox2023,eox2016")
+        self.assertEqual(earthd.resolve_colormatch(None, chain), "s2")
+        self.assertEqual(earthd.resolve_colormatch("off", chain), "off")
+        self.assertEqual(earthd.resolve_colormatch(None, imagery.parse_chain("eox2023")), "off")
+        self.assertEqual(earthd.resolve_colormatch(None, imagery.parse_chain("off")), "off")
+        import inspect
+        self.assertEqual(inspect.signature(earthd.Server).parameters["colormatch"].default, "off")
 
 
 # --- §6: the order with --deshadow ---------------------------------------------------------------

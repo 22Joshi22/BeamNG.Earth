@@ -108,6 +108,15 @@ def resolve_block(block, near_visual):
     return CLI_BLOCK_MESH if near_visual == "mesh" else heightmap.SIZE
 
 
+def resolve_colormatch(mode, chain):
+    """--colormatch, else s2 when the imagery chain has USGS (the only source it corrects) and off
+    otherwise. Server() keeps "off" (the golden message streams)."""
+    if mode is not None:
+        return mode
+    names = [getattr(s, "name", s) for s in (chain or ())] if chain not in (None, "off") else []
+    return "s2" if "usgs" in names else "off"
+
+
 def resolve_horizon(horizon, near_visual):
     """--horizon / --no-horizon, else on in mesh mode (the owner's choice, 2026-10-11) and off in
     terrain mode. Server() keeps horizon=False (test_v131_default / test_cli_default)."""
@@ -2022,10 +2031,11 @@ def main():
                     help="undo the capture sun's shading in the USGS imagery (docs/research/"
                          "2026-10-10-deshadow-prototype.md): lambert = slopes only, full = slopes and cast "
                          "shadows of the terrain; off = the imagery as served (default)")
-    ap.add_argument("--colormatch", choices=colormatchmod.MODES, default="off",
+    ap.add_argument("--colormatch", choices=colormatchmod.MODES, default=None,
                     help="remove the colour seams between NAIP flights in the USGS imagery (docs/research/"
                          "2026-10-10-imagery-colormatch.md): s2 = the seam feather against Sentinel-2 (EOX), "
-                         "only near detected survey seams; off = the imagery as served (default)")
+                         "only near detected survey seams (the default when the imagery chain has USGS, since "
+                         "the in-game checks of 2026-10-11); off = the imagery as served")
     ap.add_argument("--retex-rate", type=float, default=RETEX_RATE,
                     help="--colormatch / --deshadow: textures of tiles on screen rendered again (and swapped in the "
                          "game with far_retex) per second at most once a region they were rendered without is ready, "
@@ -2058,6 +2068,7 @@ def main():
     args.cells = resolve_cells(args.cells, args.near_visual)
     args.block = resolve_block(args.block, args.near_visual)
     args.horizon = resolve_horizon(args.horizon, args.near_visual)
+    args.colormatch = resolve_colormatch(args.colormatch, args.imagery)
     if args.cells != 32 and args.near_visual != "mesh":
         ap.error("--cells 64 needs --near-visual mesh (terrain mode is frozen at the v1.3.1 layout)")
     if args.block != heightmap.SIZE and args.near_visual != "mesh":
