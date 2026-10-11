@@ -1,0 +1,603 @@
+"""The shared map-data pipeline: roads, buildings, water, land use, infrastructure, land cover and
+canopy height per global cell, for every content feature to read (docs/ARCHITECTURE.md "Map data";
+design: docs/research/2026-10-10-world-data-sources.md).
+
+    md = mapdata.MapData(cache_dir, fetcher)            # the server's netfetch.Fetcher
+    cell = md.cell(mapcells.cell_of(lat, lon))          # or md.cell_at(lat, lon)
+    roads = cell.layers["roads"]                        # mapgeom.Features
+    roads.attrs["class"], roads.rules["surface"], roads.parts(i, roads.en)
+    lc = cell.layers["landcover"]                       # maprasters.Raster (WorldCover classes)
+    cell.provenance                                     # sources + licences, for the credits
+
+Cells (mapcells.py): Web-Mercator z14 tiles, keyed (z, x, y) independently of the anchor, the
+player and the load order. A cell's content is a pure function of (cell key, source release ids,
+VERSION): features sorted by their Overture GERS id, rules in their list order, rasters on the
+sources' own pixel grids, nothing from timing, threads or fetch order. CellData.digest() hashes
+it (the golden-hash tests and the deterministic generators can rely on it).
+
+Layers (LAYERS):
+  roads, connectors, buildings, water, land_use, infrastructure   Overture (overture.py)
+  landcover                                                       ESA WorldCover 10 m (maprasters.py)
+  canopy                                                          Meta/WRI CHMv2 1.2 m (maprasters.py)
+Vector features carry lon/lat (float64) and `en`, metres in the cell's local ENU frame (the
+tangent plane at the cell's centre, geodesy.EnuFrame(lat_c, lon_c, 0)), plus `own` (the cell
+contains the feature's bbox centre: build each feature only in its own cell) and `clipped` (water
+and land-use polygons are cut to the cell).
+
+Network: every request goes through the netfetch.Fetcher (host policies for stac.overturemaps.org,
+the Overture S3 bucket and its Azure mirror, WorldCover and the canopy bucket), with the request
+kind given to cell() ("demand", "prefetch", "background"). Nothing is fetched twice:
+
+  <cache>/mapdata/v<VERSION>/<source>/<release>/<layer>/<z>/<x>/<y>.npz   one cell's layer
+  <cache>/mapdata/raw/<source>/<release>/...                            range blocks of the source
+                                                                         files, STAC JSON (immutable,
+                                                                         shared by all VERSIONs)
+
+A layer file is written once (atomically) and read back with allow_pickle=False. Writing a new
+VERSION (or release) leaves the old directories for the cache cap's LRU to evict.
+
+Not here (documented API for later): building meshes, road ribbons, ground layers, trees, sending
+anything to the mod. Generators take CellData and key their choices on feature ids and global
+positions (docs/ROADMAP.md "Principle: deterministic generation").
+
+CLI (development):  python3 server/mapdata.py --cell 39.2834,-76.5934 --dump --png out.png
+                    python3 server/mapdata.py --latest
+"""
+import argparse
+import hashlib
+import json
+import logging
+import os
+import sys
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass, field
+
+import numpy as np
+
+import geodesy
+import mapcells
+import mapgeom
+import maprasters
+import netfetch
+import overture
+import rangeread
+
+log = logging.getLogger("earthd.mapdata")
+
+LAYER_THREADS = 4               # layers of a cell built at once (each fetches through the shared limits)
+VERSION = 1                     # pipeline version: bump when what a cell's layers contain changes
+VECTOR_LAYERS = ("roads", "connectors", "buildings", "water", "land_use", "infrastructure")
+RASTER_LAYERS = ("landcover", "canopy")
+LAYERS = VECTOR_LAYERS + RASTER_LAYERS
+DEFAULT_CACHE = os.path.expanduser("~/.cache/beamng-earth")
+# A request that the limiter or a policy refused for a non-demand kind (prefetch() returns False)
+DEFERRED = (netfetch.Deferred, netfetch.PolicyDenied, netfetch.BudgetExceeded, netfetch.HostUnavailable,
+            netfetch.RateLimited)
+
+# Provenance per source (sources + licences for the credits overlay; exact wordings in CREDITS.md).
+WORLDCOVER = {
+    "id": "esa-worldcover", "name": "ESA WorldCover 10 m 2021 v200", "release": maprasters.WORLDCOVER_RELEASE,
+    "attribution": "© ESA WorldCover project 2021 / Contains modified Copernicus Sentinel data (2021) "
+                   "processed by ESA WorldCover consortium",
+    "licence": "CC BY 4.0 (https://creativecommons.org/licenses/by/4.0/)", "url": "https://esa-worldcover.org",
+}
+CANOPY = {
+    "id": "meta-wri-chm", "name": "Meta and WRI High Resolution Canopy Height Maps v2",
+    "release": maprasters.CHM_RELEASE,
+    "attribution": "Canopy height: Meta and World Resources Institute (WRI), High Resolution Canopy Height Maps",
+    "licence": "CC BY 4.0 (https://creativecommons.org/licenses/by/4.0/)",
+    "url": "https://registry.opendata.aws/dataforgood-fb-forests/",
+}
+# Short overlay wordings per provenance id (credits.py can take them when the map data is shown)
+CREDIT_LINES = {
+    "overture": overture.ATTRIBUTION,
+    "esa-worldcover": "© ESA WorldCover project 2021 / Contains modified Copernicus Sentinel data (2021) "
+                      "processed by ESA WorldCover consortium",
+    "meta-wri-chm": "Canopy height: Meta & WRI",
+}
+THEME_OF = {name: spec["theme"] for name, spec in overture.LAYERS.items()}
+
+
+def _source(layer, release):
+    if layer in VECTOR_LAYERS:
+        return "overture", release
+    if layer == "landcover":
+        return "worldcover", maprasters.WORLDCOVER_RELEASE
+    return "chm", maprasters.CHM_RELEASE
+
+
+def digest_arrays(arrays):
+    """sha256 of named arrays (names, dtypes, shapes and bytes, in sorted name order)."""
+    h = hashlib.sha256()
+    for k in sorted(arrays):
+        a = np.ascontiguousarray(arrays[k])
+        h.update(k.encode())
+        h.update(a.dtype.str.encode())
+        h.update(repr(a.shape).encode())
+        h.update(a.tobytes())
+    return h.hexdigest()
+
+
+@dataclass
+class CellData:
+    key: mapcells.CellKey
+    bounds: tuple                       # (lon0, lat0, lon1, lat1)
+    center: tuple                       # (lat, lon): the local frame's origin
+    frame: geodesy.EnuFrame
+    versions: dict                      # {"pipeline": VERSION, "overture": release, ...}
+    layers: dict = field(default_factory=dict)     # name -> Features | Raster | None (no data source)
+    provenance: list = field(default_factory=list)
+    stats: dict = field(default_factory=dict)      # per layer: seconds, cache hit (not content)
+
+    def digest(self):
+        """A hash of the cell's content (every layer present, the versions): equal for equal content."""
+        arrays = {"versions": np.array(json.dumps(self.versions, sort_keys=True))}
+        for name in sorted(self.layers):
+            arrays.update({f"{name}/{k}": v for k, v in _layer_arrays(self.layers[name]).items()})
+        return digest_arrays(arrays)
+
+    def credits(self):
+        """The provenance ids of the cell's sources, in a fixed order (for credits.py)."""
+        ids = []
+        for p in self.provenance:
+            i = "overture" if p["id"].startswith("overture:") else p["id"]
+            if i not in ids:
+                ids.append(i)
+        return ids
+
+    def credit_line(self):
+        return " | ".join(CREDIT_LINES[i] for i in self.credits())
+
+
+def _layer_arrays(obj):
+    """The content arrays of a layer (what the cache stores, minus derived `en`)."""
+    if obj is None:
+        return {"missing": np.array(True)}
+    if isinstance(obj, maprasters.Raster):
+        meta = {"crs": obj.crs, "x0": obj.x0, "y0": obj.y0, "dx": obj.dx, "dy": obj.dy,
+                "nodata": obj.nodata, "files": obj.files}
+        return {"data": obj.data, "meta": np.array(json.dumps(meta, sort_keys=True))}
+    a = obj.to_arrays("")
+    a.pop("en", None)
+    return a
+
+
+def _raster_from(arrays):
+    meta = json.loads(str(arrays["meta"]))
+    return maprasters.Raster(arrays["data"], meta["crs"], meta["x0"], meta["y0"], meta["dx"], meta["dy"],
+                             meta["nodata"], list(meta["files"]))
+
+
+class MapData:
+    """See the module docstring. fetcher: the server's netfetch.Fetcher (None: one of its own);
+    release: the Overture release (overture.RELEASE)."""
+
+    def __init__(self, cache_dir=DEFAULT_CACHE, fetcher=None, release=overture.RELEASE,
+                 threads=overture.DUCKDB_THREADS):
+        self.cache_dir = cache_dir
+        self.fetcher = fetcher if fetcher is not None else netfetch.Fetcher()
+        self.release = release
+        self.raw_dir = os.path.join(cache_dir, "mapdata", "raw")
+        self.overture = overture.Reader(self.raw_dir, self.fetcher, release, threads)
+        self.rasters = maprasters.Rasters(self.raw_dir, self.fetcher)
+        self._locks = {}
+        self._lock = threading.Lock()
+        self.pool = ThreadPoolExecutor(LAYER_THREADS, thread_name_prefix="mapdata-layer")
+
+    def close(self):
+        self.pool.shutdown(wait=False)
+        self.overture.close()
+
+    def versions(self):
+        return {"pipeline": VERSION, "overture": self.release, "worldcover": maprasters.WORLDCOVER_RELEASE,
+                "canopy": maprasters.CHM_RELEASE}
+
+    def path(self, key, layer):
+        source, release = _source(layer, self.release)
+        return os.path.join(self.cache_dir, "mapdata", f"v{VERSION}", source, release, layer,
+                            str(key.z), str(key.x), f"{key.y}.npz")
+
+    def _key_lock(self, key, layer):
+        with self._lock:
+            return self._locks.setdefault((key, layer), threading.Lock())
+
+    # --- one layer -------------------------------------------------------------------------------
+    def _load(self, path):
+        try:
+            with np.load(path, allow_pickle=False) as z:
+                return {k: z[k] for k in z.files}
+        except (OSError, ValueError, EOFError):
+            return None
+
+    def _store(self, path, arrays):
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        tmp = f"{path}.{threading.get_ident()}.tmp.npz"
+        np.savez_compressed(tmp, **arrays)
+        os.replace(tmp, path)
+
+    def _build(self, key, layer, kind):
+        """(content arrays, provenance record or None) of one layer, from the sources."""
+        if layer in VECTOR_LAYERS:
+            feats, sources = self.overture.query(layer, key, kind)
+            ox, oy = mapcells.owner(feats.attrs.get("cx", np.zeros(0)), feats.attrs.get("cy", np.zeros(0)), key.z)
+            feats.own = (ox == key.x) & (oy == key.y)
+            arrays = _layer_arrays(feats)
+            prov = overture.sources_provenance(THEME_OF[layer], self.release, sources) if len(feats) else None
+        elif layer == "landcover":
+            r = self.rasters.worldcover(key, kind)
+            arrays = _layer_arrays(r)
+            prov = dict(WORLDCOVER, files=r.files) if r.files else None
+        else:
+            r = self.rasters.canopy(key, kind)
+            arrays = _layer_arrays(r)
+            prov = dict(CANOPY, files=r.files) if r is not None else None
+        arrays["provenance"] = np.array(json.dumps(prov, sort_keys=True))
+        return arrays
+
+    def layer_arrays(self, key, layer, kind="demand"):
+        """(arrays, hit) of one cell's layer: from the cache, or built and cached."""
+        if layer not in LAYERS:
+            raise ValueError(f"unknown map layer {layer!r}; choose from {', '.join(LAYERS)}")
+        path = self.path(key, layer)
+        arrays = self._load(path)
+        if arrays is not None:
+            return arrays, True
+        with self._key_lock(key, layer):
+            arrays = self._load(path)           # another thread built it meanwhile
+            if arrays is not None:
+                return arrays, True
+            arrays = self._build(key, layer, kind)
+            self._store(path, arrays)
+            return arrays, False
+
+    # --- cells -----------------------------------------------------------------------------------
+    def cell(self, key, layers=LAYERS, kind="demand"):
+        """CellData of one cell with the given layers (fetched / built / cached as needed)."""
+        if isinstance(key, str):
+            key = mapcells.parse(key)
+        lat_c, lon_c = key.center()
+        frame = geodesy.EnuFrame(lat_c, lon_c, 0.0)
+        cd = CellData(key, key.bounds(), (lat_c, lon_c), frame, self.versions())
+        provs = {}
+
+        def timed(layer):
+            t0 = time.perf_counter()
+            arrays, hit = self.layer_arrays(key, layer, kind)
+            return arrays, hit, time.perf_counter() - t0
+        futs = [(layer, self.pool.submit(timed, layer)) for layer in layers]
+        results = {}
+        err = None
+        for layer, fut in futs:             # all finish before an error is raised (no stray fetches)
+            try:
+                results[layer] = fut.result()
+            except Exception as e:
+                err = err or e
+        if err is not None:
+            raise err
+        for layer in layers:                # assembled in the caller's order, whatever finished first
+            arrays, hit, dt = results[layer]
+            arrays = dict(arrays)
+            prov = json.loads(str(arrays.pop("provenance")))
+            if layer in VECTOR_LAYERS:
+                f = mapgeom.Features.from_arrays(layer, arrays, "")
+                cd.layers[layer] = f.localize(frame)
+            elif "missing" in arrays:
+                cd.layers[layer] = None
+            else:
+                cd.layers[layer] = _raster_from(arrays)
+            if prov:
+                pid = prov["id"]
+                if pid in provs:            # roads + connectors: one transportation record
+                    merged = {(d["dataset"], d["license"]): d["features"] for d in provs[pid]["datasets"]}
+                    for d in prov.get("datasets", ()):
+                        k = (d["dataset"], d["license"])
+                        merged[k] = merged.get(k, 0) + d["features"]
+                    provs[pid]["datasets"] = [{"dataset": a, "license": b, "features": n}
+                                              for (a, b), n in sorted(merged.items())]
+                else:
+                    provs[pid] = prov
+            cd.stats[layer] = {"s": dt, "hit": hit}
+        cd.provenance = [provs[k] for k in sorted(provs)]
+        return cd
+
+    def cell_at(self, lat, lon, layers=LAYERS, kind="demand"):
+        return self.cell(mapcells.cell_of(lat, lon), layers, kind)
+
+    def prefetch(self, key, layers=LAYERS, kind="prefetch"):
+        """Build and cache a cell ahead of need; False when the limiter or a policy refused (the
+        layer is then built on demand later)."""
+        try:
+            for layer in layers:
+                self.layer_arrays(key, layer, kind)
+            return True
+        except DEFERRED:
+            return False
+
+
+# --- CLI ------------------------------------------------------------------------------------------
+LANDCOVER_RGB = {0: (255, 255, 255), 10: (0, 100, 0), 20: (255, 187, 34), 30: (255, 255, 76), 40: (240, 150, 255),
+                 50: (250, 0, 0), 60: (180, 180, 180), 70: (240, 240, 240), 80: (0, 100, 200), 90: (0, 150, 160),
+                 95: (0, 207, 117), 100: (250, 230, 160)}   # the WorldCover legend's colours
+ROAD_STYLE = {  # class -> (width px, rgb)
+    "motorway": (6, (200, 60, 40)), "trunk": (5, (220, 110, 40)), "primary": (4, (240, 150, 40)),
+    "secondary": (4, (240, 200, 60)), "tertiary": (3, (250, 240, 120)), "residential": (2, (255, 255, 255)),
+    "unclassified": (2, (240, 240, 240)), "living_street": (2, (240, 240, 240)), "service": (1, (230, 230, 230)),
+    "track": (2, (150, 100, 40)), "unknown": (1, (200, 200, 200))}
+PATH_STYLE = (1, (120, 120, 120))
+RAIL_STYLE = (2, (60, 60, 60))
+
+
+def _hist(values, top=12):
+    """'a 12, b 3, ...': the most common values (ties by value)."""
+    vals, counts = np.unique(np.asarray(values), return_counts=True)
+    order = np.lexsort((vals.astype(str), -counts))
+    more = f", ... ({len(vals) - top} more)" if len(vals) > top else ""
+    return ", ".join(f"{str(vals[i]) or '(none)'} {int(counts[i])}" for i in order[:top]) + more
+
+
+def summarize(cd):
+    """A JSON-able summary of a cell (the --dump output)."""
+    out = {"key": str(cd.key), "quadkey": cd.key.quadkey(), "bounds": [round(v, 7) for v in cd.bounds],
+           "size_m": [round(v) for v in cd.key.size_m()], "versions": cd.versions, "digest": cd.digest(),
+           "layers": {}, "provenance": cd.provenance, "credits": cd.credit_line()}
+    for name, obj in cd.layers.items():
+        s = {"s": round(cd.stats[name]["s"], 3), "cached": cd.stats[name]["hit"]}
+        if obj is None:
+            s["missing"] = True
+        elif isinstance(obj, maprasters.Raster):
+            d = obj.data
+            s["shape"] = list(d.shape)
+            if name == "landcover":
+                tot = d.size
+                s["classes_pct"] = {f"{int(v)} {maprasters.CLASSES.get(int(v), '?')}": round(100.0 * c / tot, 1)
+                                    for v, c in zip(*np.unique(d, return_counts=True))}
+            else:
+                valid = d[d != obj.nodata] if obj.nodata is not None else d.ravel()
+                s["max_m"] = int(valid.max()) if valid.size else None
+                s["pct_over_3m"] = round(100.0 * float((valid > 3).mean()), 1) if valid.size else None
+                s["pct_over_10m"] = round(100.0 * float((valid > 10).mean()), 1) if valid.size else None
+                s["nodata_px"] = int((d == obj.nodata).sum()) if obj.nodata is not None else 0
+        else:
+            s["features"] = len(obj)
+            s["owned"] = int(obj.own.sum()) if obj.own is not None else None
+            s["coords"] = obj.n_coords
+            a = obj.attrs
+            if name == "roads":
+                s["subtype"] = _hist(a["subtype"])
+                s["class"] = _hist(a["class"], 20)
+                s["subclass"] = _hist(a["subclass"])
+                for r in ("surface", "flags", "width", "level", "max_speed_kmh"):
+                    rt = obj.rules[r]
+                    s[f"rule_{r}"] = {"rows": len(rt), "features": int(len(np.unique(rt.feature)))}
+                s["surface_values"] = _hist(obj.rules["surface"].value)
+                s["flag_values"] = _hist(obj.rules["flags"].value)
+            elif name == "buildings":
+                h, nf = ~np.isnan(a["height"]), ~np.isnan(a["num_floors"])
+                n = max(1, len(obj))
+                s["height_pct"] = round(100.0 * h.sum() / n, 1)
+                s["num_floors_pct"] = round(100.0 * nf.sum() / n, 1)
+                s["height_or_floors_pct"] = round(100.0 * (h | nf).sum() / n, 1)
+                s["roof_shape_pct"] = round(100.0 * (a["roof_shape"] != "").sum() / n, 1)
+                s["height_m_median"] = round(float(np.median(a["height"][h])), 1) if h.any() else None
+                s["height_m_max"] = round(float(a["height"][h].max()), 1) if h.any() else None
+                s["class"] = _hist(a["class"])
+                s["source"] = _hist(a["src_dataset"])
+                s["height_source"] = _hist(a["height_src"][h]) if h.any() else ""
+            elif name in ("water", "land_use", "infrastructure"):
+                s["subtype_class"] = _hist(np.char.add(np.char.add(a["subtype"], "/"), a["class"]), 20)
+                if obj.clipped is not None:
+                    s["clipped"] = int(obj.clipped.sum())
+        out["layers"][name] = s
+    return out
+
+
+def _px(lonlat, x0, y0, scale, z):
+    x, y = mapcells.tile_xy(lonlat[:, 1], lonlat[:, 0], z)
+    return np.stack([(x - x0) * scale, (y - y0) * scale], axis=1)
+
+
+def preview(cells, path, px_per_cell=1024):
+    """A PNG of the cells (a square block, row-major): left land cover + water + land use +
+    infrastructure + buildings + roads, right canopy height + building outlines."""
+    from PIL import Image, ImageDraw
+    xs = sorted({c.key.x for c in cells})
+    ys = sorted({c.key.y for c in cells})
+    z = cells[0].key.z
+    nx, ny = len(xs), len(ys)
+    W, H = nx * px_per_cell, ny * px_per_cell
+    x0, y0 = xs[0], ys[0]
+    scale = px_per_cell
+    # pixel centres -> lat/lon / mercator metres
+    jj, ii = np.mgrid[0:H, 0:W]
+    tx = x0 + (ii + 0.5) / scale
+    ty = y0 + (jj + 0.5) / scale
+    n = 2.0 ** z
+    lon = tx / n * 360.0 - 180.0
+    lat = np.degrees(np.arctan(np.sinh(np.pi * (1 - 2 * ty / n))))
+    mx = (tx / n - 0.5) * 2 * maprasters.MERC_HALF
+    my = (0.5 - ty / n) * 2 * maprasters.MERC_HALF
+    lc_img = np.full((H, W, 3), 255, np.uint8)
+    chm_img = np.zeros((H, W), np.float32)
+    lut = np.zeros((256, 3), np.uint8)
+    for k, rgb in LANDCOVER_RGB.items():
+        lut[k] = rgb
+    for c in cells:
+        cx, cy = (c.key.x - x0) * scale, (c.key.y - y0) * scale
+        sl = (slice(cy, cy + scale), slice(cx, cx + scale))
+        lc = c.layers.get("landcover")
+        if lc is not None:
+            lc_img[sl] = lut[lc.sample(lon[sl], lat[sl])]
+        ch = c.layers.get("canopy")
+        if ch is not None:
+            v = ch.sample(mx[sl], my[sl]).astype(np.float32)
+            v[v == ch.nodata] = 0
+            chm_img[sl] = v
+    base = (0.45 * lc_img + 0.55 * 255).astype(np.uint8)          # muted land cover
+    left = Image.fromarray(base, "RGB")
+    g = np.clip(chm_img / 30.0, 0, 1)
+    right_arr = np.stack([(1 - g) * 245, 245 - g * 120, (1 - g) * 235], -1).astype(np.uint8)
+    right = Image.fromarray(right_arr, "RGB")
+    dl, dr = ImageDraw.Draw(left), ImageDraw.Draw(right)
+
+    def rings_of(f):
+        xy = _px(f.lonlat, x0, y0, scale, z)
+        return lambda i: f.parts(i, xy)
+
+    for c in cells:
+        f = c.layers.get("land_use")
+        if f is not None:
+            rings = rings_of(f)
+            for i in range(len(f)):
+                for part in rings(i):
+                    dl.line([tuple(p) for p in part[0]], fill=(130, 110, 60), width=1)
+        f = c.layers.get("water")
+        if f is not None:
+            rings = rings_of(f)
+            for i in range(len(f)):
+                for part in rings(i):
+                    if f.kind[i] == mapgeom.POLYGON:
+                        dl.polygon([tuple(p) for p in part[0]], fill=(120, 170, 230))
+                        for hole in part[1:]:
+                            dl.polygon([tuple(p) for p in hole], fill=(240, 240, 240))
+                    else:
+                        dl.line([tuple(p) for p in part[0]], fill=(60, 120, 220), width=2)
+        f = c.layers.get("infrastructure")
+        if f is not None:
+            rings = rings_of(f)
+            for i in range(len(f)):
+                for part in rings(i):
+                    pts = [tuple(p) for p in part[0]]
+                    if f.kind[i] == mapgeom.POINT:
+                        x, y = pts[0]
+                        dl.rectangle([x - 1, y - 1, x + 1, y + 1], fill=(120, 0, 160))
+                    else:
+                        dl.line(pts + ([pts[0]] if f.kind[i] == mapgeom.POLYGON else []), fill=(120, 0, 160), width=1)
+        f = c.layers.get("buildings")
+        if f is not None:
+            rings = rings_of(f)
+            hgt = f.attrs["height"]
+            for i in range(len(f)):
+                if not f.own[i]:
+                    continue
+                h = hgt[i]
+                fill = (110, 110, 110) if np.isnan(h) else (int(min(255, 150 + 4 * h)), 90, 40)
+                for part in rings(i):
+                    pts = [tuple(p) for p in part[0]]
+                    if len(pts) >= 3:
+                        dl.polygon(pts, fill=fill, outline=(40, 40, 40))
+                        dr.polygon(pts, outline=(90, 90, 90))
+        f = c.layers.get("roads")
+        if f is not None:
+            rings = rings_of(f)
+            cls, sub = f.attrs["class"], f.attrs["subtype"]
+            order = sorted(range(len(f)), key=lambda i: ROAD_STYLE.get(cls[i], PATH_STYLE)[0])
+            for i in order:
+                if not f.own[i]:
+                    continue
+                w, rgb = RAIL_STYLE if sub[i] == "rail" else ROAD_STYLE.get(cls[i], PATH_STYLE)
+                for part in rings(i):
+                    pts = [tuple(p) for p in part[0]]
+                    dl.line(pts, fill=(60, 60, 60), width=w + 2)
+                    dl.line(pts, fill=rgb, width=w)
+                    dr.line(pts, fill=(80, 80, 80), width=1)
+    img = Image.new("RGB", (2 * W + 8, H), (0, 0, 0))
+    img.paste(left, (0, 0))
+    img.paste(right, (W + 8, 0))
+    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+    img.save(path)
+    return path
+
+
+def _net_delta(before, after):
+    out = {}
+    for host, a in after.items():
+        b = before.get(host, {})
+        req = a.get("requests", 0) - b.get("requests", 0)
+        if req:
+            out[host] = {"requests": req, "MB": round((a.get("bytes", 0) - b.get("bytes", 0)) / 1e6, 2)}
+    return out
+
+
+def _dir_size(path):
+    total = files = 0
+    for root, _, names in os.walk(path):
+        for n in names:
+            try:
+                total += os.path.getsize(os.path.join(root, n))
+                files += 1
+            except OSError:
+                pass
+    return total, files
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(description="BeamNG.Earth map data per cell (development tool)")
+    ap.add_argument("--cell", help="lat,lon: the z14 cell containing this point")
+    ap.add_argument("--key", help="z/x/y: a cell key")
+    ap.add_argument("--around", type=int, default=0, help="also the cells within this many cells (a square block)")
+    ap.add_argument("--layers", default=",".join(LAYERS), help=f"comma-separated, from {', '.join(LAYERS)}")
+    ap.add_argument("--dump", action="store_true", help="print counts, timings and sizes (JSON)")
+    ap.add_argument("--png", help="write a preview PNG of the cell(s) here")
+    ap.add_argument("--cache-dir", default=DEFAULT_CACHE)
+    ap.add_argument("--release", default=overture.RELEASE, help="Overture release (default: the pinned one)")
+    ap.add_argument("--offline", action="store_true", help="disk cache only")
+    ap.add_argument("--latest", action="store_true", help="print the newest Overture release and exit")
+    ap.add_argument("-v", action="store_true")
+    a = ap.parse_args(argv)
+    logging.basicConfig(level=logging.DEBUG if a.v else logging.INFO, format="%(levelname)s %(name)s: %(message)s")
+    fetcher = netfetch.Fetcher(offline=a.offline, stats_dir=os.path.join(a.cache_dir, "netstats"))
+    md = None
+    try:
+        if a.latest:
+            latest = overture.latest_release(fetcher)
+            print(json.dumps({"pinned": overture.RELEASE, "latest": latest,
+                              "update": "set overture.RELEASE (server/overture.py) to the latest id; cells "
+                                        "are cached per release, so nothing else changes"}))
+            return 0
+        if a.key:
+            center = mapcells.parse(a.key)
+        elif a.cell:
+            lat, lon = (float(v) for v in a.cell.split(","))
+            center = mapcells.cell_of(lat, lon)
+        else:
+            ap.error("--cell or --key is needed")
+        layers = tuple(s.strip() for s in a.layers.split(",") if s.strip())
+        md = MapData(a.cache_dir, fetcher, a.release)
+        r = a.around
+        keys = [mapcells.CellKey(center.z, (center.x + dx) % center.n, center.y + dy)
+                for dy in range(-r, r + 1) for dx in range(-r, r + 1) if 0 <= center.y + dy < center.n]
+        cells, report = [], []
+        for k in keys:
+            before = fetcher.snapshot()
+            t0 = time.perf_counter()
+            cd = md.cell(k, layers)
+            dt = time.perf_counter() - t0
+            cells.append(cd)
+            if a.dump:
+                s = summarize(cd)
+                s["seconds"] = round(dt, 2)
+                s["net"] = _net_delta(before, fetcher.snapshot())
+                s["cache_bytes"] = {layer: os.path.getsize(md.path(k, layer)) for layer in layers}
+                report.append(s)
+        if a.dump:
+            raw, nraw = _dir_size(md.raw_dir)
+            print(json.dumps({"cells": report, "raw_cache": {"MB": round(raw / 1e6, 1), "files": nraw}},
+                             indent=1, ensure_ascii=False))
+        if a.png:
+            t0 = time.perf_counter()
+            preview(cells, a.png)
+            print(f"preview: {a.png} ({time.perf_counter() - t0:.1f} s)", file=sys.stderr)
+        return 0
+    except (overture.OvertureError, rangeread.RangeError, netfetch.FetchError) as e:
+        print(f"mapdata: {e}", file=sys.stderr)
+        return 1
+    finally:
+        if md is not None:
+            md.close()
+        fetcher.close()
+
+
+if __name__ == "__main__":
+    sys.exit(main())
