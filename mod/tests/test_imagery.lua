@@ -247,6 +247,14 @@ do
     'unused material re-pointed at the new texture')
   T.check(satmat.ref(name, '/temp/beamngEarth/new/b.dds') and matNamed(name).fields.colorMap == '/temp/beamngEarth/new/a.dds',
     'material in use keeps its texture')
+  -- the texture the material keeps is the one heldSessions names (the server keeps its folder)
+  local function held(tex)
+    local n = 0
+    satmat.eachTexture(function(t) if t == tex then n = n + 1 end end)
+    return n
+  end
+  T.check(held('/temp/beamngEarth/new/a.dds') == 1 and held('/temp/beamngEarth/new/b.dds') == 0,
+    'kept texture: eachTexture names the file in use, not the re-sent one')
   -- ... unless its file is gone (a restarted server deleted the old session): the new one, reloaded
   local realExists = FS.fileExists
   FS.fileExists = function(_, p) return p ~= '/temp/beamngEarth/new/a.dds' end
@@ -256,6 +264,8 @@ do
   m.reload = function() reloads = reloads + 1 end
   T.check(satmat.ref(name, '/temp/beamngEarth/new/c.dds') and m.fields.colorMap == '/temp/beamngEarth/new/c.dds' and reloads == 1,
     'material in use whose file is gone: re-pointed and reloaded')
+  T.check(held('/temp/beamngEarth/new/c.dds') == 1 and held('/temp/beamngEarth/new/a.dds') == 0,
+    're-pointed: eachTexture (heldSessions) names the new file, no longer the gone one')
   FS.fileExists = realExists
   satmat.unref(name)
   satmat.unref(name) -- back to the one reference the pending tile holds
