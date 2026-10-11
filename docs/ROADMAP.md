@@ -145,6 +145,7 @@ Target: 300 mph sustained with the near ground always detailed, and a rebase tha
     maps' detail band), which hides most baked shadow close up.
   - Prefer imagery captured near noon / in summer where sources offer a choice.
   - Status: de-shadowing built offline behind `--deshadow lambert|full` (default off; docs/ARCHITECTURE.md).
+    A tile shown before its region was ready is re-rendered and swapped live (`far_retex`, 2026-10-11).
 - **Colour seams in the imagery** (user, 2026-10-10: Monument Valley sits on a colour border that
   stretches for miles): USGS is a mosaic of NAIP flights per state and year, so flight boundaries
   are colour steps. Status: the "seam feather" (docs/research/2026-10-10-imagery-colormatch.md) is
@@ -160,6 +161,12 @@ Target: 300 mph sustained with the near ground always detailed, and a rebase tha
   dropped background fetches). Seen meanwhile: a restarted server deleted the running game's
   textures (orange "no texture" until a teleport; satmat now re-points; the robustness branch keeps
   the files). The far-ring switch from USGS to EOX needs a regional palette mapping (separate item).
+  Live swap (2026-10-11, feature/cm-retex, built offline): a tile built while its region was not ready
+  used to keep the raw texture until it was sent again (a teleport); now the server re-renders the
+  shown tiles of a region that turns ready (nearest first, `--retex-rate` 5/s, one render at a time)
+  under a new file name and sends `far_retex`; the mod switches the material's colour map, at most
+  2 a frame through the governor. To check in-game: the seam fading out on screen without a
+  teleport, no hitch per switch (governor `retex` cost; prior 1 ms guessed), no orange textures.
 - Sky: CloudLayer + wind, haze, per-biome cubemap, black night colours.
 - GroundCover grass if probes show it renders on a hidden terrain.
 
@@ -331,7 +338,9 @@ Retry-After makes waiting demand fail over, no doubled timeouts, prefetch past a
 undecodable DEM tile leaves the cache; docs/ARCHITECTURE.md "Network"). Follow-ups:
 - Re-texture the degraded (palette-fallback) tiles once the breaker closes: `Server.degraded` lists
   them, but a rebuilt tile needs a new file name (the engine caches by path) and a same-footprint
-  replace swap in the protocol, so it waits for the retex / rebuild swap of item 4.
+  replace swap in the protocol, so it waits for the retex / rebuild swap of item 4. (`far_retex`
+  exists now for colour seams / de-shadow, but a palette tile's shape names the static material, not
+  a per-tile one, so it cannot be retextured in place: it needs the rebuild swap.)
 - The coarse global offline DEM (item 4) at `dem.DemUnavailable`; until then an uncached area's
   terrain request fails (`terrain_error`) when neither Mapterhorn nor AWS can be reached.
 - Per-host state (breakers, budgets) in `status` for the dev tools window; the mod's banner (item 1).

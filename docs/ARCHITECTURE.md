@@ -454,9 +454,14 @@ their chunk arrived.
   than the sunlit side (the prototype's known limits: no sky-view / bounce light, LAM_CAP on the
   steep shadowed wall). Central Valley flat 35.40,-119.20: gated off (r² 0.00). Kern Plateau
   36.20,-118.30: gated off (r² 0.08 over the whole region).
-- Limits: a texture built before its region was ready keeps raw imagery until the tile is rebuilt
-  (no live texture swap message yet); regions are fitted separately, so two regions with different
-  suns can show a step in slope shading at their border; z ≤ 11 source tiles stay raw.
+- Region not ready: as with the colour seams below (same mechanism): `render(pending=)` names the
+  region as `(imagery.DS_PENDING, rx, ry)` (`Deshadow.pending_region`, asked before `relight` so a
+  region finishing in between costs one extra render rather than a raw texture for good), the worker
+  calls the server's listener (`add_listener`; changed = the region relights), `Deshadow.status` answers
+  from memory / one stat call, and a tile on screen is re-rendered live (`far_retex`).
+- Limits: regions are fitted separately, so two regions with different suns can show a step in slope
+  shading at their border; z ≤ 11 source tiles stay raw; a region whose fit failed (network) is retried
+  only when a render asks for it again, so its tiles stay raw until then.
 - In-game check still to run: the ravine at 08:00 and 16:00 game time, `--deshadow full` against off.
 ## Colour seams of the USGS imagery (`--colormatch`; built offline 2026-10-10, behind a flag, default off)
 - Integration of docs/research/2026-10-10-imagery-colormatch.md §3 ("seam feather") per its §7 plan:
@@ -502,14 +507,36 @@ their chunk arrived.
   keep alpha 254 and their own tone curve.
 - Region not ready: its tiles render raw; `render(pending=set())` collects the regions, `TileInfo`
   keeps them (`cm_pending`). The ColorMatch worker calls the server's listener when a field is done;
-  on the event loop the far tiles waiting for it become `stale` if the field is not empty, and the
-  next `tile()` for them renders only the texture again (`retexture`) under `far_<aid>_<key>_r<rev>.dds`
-  (the engine caches textures by path; the mod's `satmat.ref` points an unused material at the new
-  file). A tile on screen keeps its raw texture until it is sent again: the live swap is V1_4_SPEC
-  M3a's `far_retex`. An evicted stale / re-rendered tile's next build continues the revision
-  (`tex_rev`), and so does one evicted while a region was still pending (the listener cannot mark
-  it any more, and its next build may render the corrected texture); `prune` deletes every
-  revision with the anchor's files.
+  on the event loop the far tiles waiting for it become `stale` if the field is not empty. A stale
+  tile's texture (only the texture: `retexture`) is rendered again under `far_<aid>_<key>_r<rev>.dds`
+  (the engine caches textures by path): live if a mod shows it, else by the next `tile()` when it is
+  sent again. An evicted stale / re-rendered tile's next build continues the revision (`tex_rev`),
+  and so does one evicted while a region was still pending (the listener cannot mark it any more, and
+  its next build may render the corrected texture); eviction deletes every revision's texture with
+  the tile (in-use / held / `RETIRED_KEEP` rules as for every tile file), `prune` with the anchor's files.
+- Live retexture (`far_retex`, 2026-10-11; before it the corrected look appeared only after a
+  teleport): a tile turning stale is queued (`retex_todo`); the pump on the event loop starts the
+  re-render on the tile pool (`make_tile(prev)` → `retexture`, never on the loop) for the queued
+  tile a connection shows, or holds sent but not swapped in, under its active anchor, nearest that
+  connection's player first; at most `RETEX_INFLIGHT` = 1 at once (the other two workers keep
+  building) and `--retex-rate` (`RETEX_RATE` = 5) starts per second; tiles nobody shows are dropped
+  from the queue (re-rendered when sent again); at most `RETEX_MAX` = 8 live re-renders per tile (a
+  loop guard). When a re-rendered texture lands (`_tile_done`, also for the send path), every
+  connection showing / holding the tile gets `far_retex {anchorId, key, texture}`; a far_tile sent from
+  a build that finished before a live re-render carries the newest record's texture, and a stale one
+  being sent is queued at once. All regions of one ready event are queued before the first start, so
+  the nearest goes first. Mod: `farfield.onRetex` sets the new file on the shown and the loading
+  instance of the key (a material not created yet takes it from there) and `satmat.requestRetex`
+  queues the switch; `update` runs at most `RETEX_PER_FRAME` = 2 switches a frame as governor unit
+  `retex` (prior 1.0 ms, not measured yet; never in a heavy or quiet frame): `colorMap` + `flush` +
+  `reload` (as dev.lua's tint), the fallback tint cleared if the material was created without its
+  file, pcall'd and counted (`retexFailed`) so a bad switch never throws every frame. Stale messages
+  (another anchor, a key neither shown nor loading, an older revision, a missing file) change nothing.
+  `satmat.ref` follows the same rule for a re-sent key: a later revision of the same tile's texture
+  (same folder, same stem) is switched in for the in-use material (time-sliced) instead of kept;
+  another session's file under the same name keeps the old rule. Offline (`test_retex.py`, synthetic
+  imagery, 64 cells): 110 shown tiles of one region re-rendered and sent in 1.96 s at rate 200 (render
+  median 10.6 ms, max 40 ms; real colour-matched tiles cost more), i.e. ~22 s at the default 5/s.
 - Threads: the region worker computes; tile workers read fields from disk (`field`, without holding
   the ColorMatch lock); the calls made on earthd's event loop (`prepare` at an anchor, `request`
   from prefetch, `status` when a tile is done) look at memory, the queue and the files' existence
