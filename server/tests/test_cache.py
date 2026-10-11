@@ -335,6 +335,29 @@ class ClearTest(Base):
         self.assertEqual(m["clearedBytes"], 3 * MB + 100)
         self.assertTrue(os.path.exists(os.path.join(self.root, cachemod.INDEX_FILE)), "saved after a clear")
 
+    def test_mapdata_is_managed(self):
+        """mapdata/ (mapdata.py: layer files, range blocks) is tracked, evicted LRU and cleared like the
+        other producers; its 404 markers stay through eviction, its files being written are not tracked."""
+        old = T0 - 3 * DAY
+        put(self.root, "mapdata/v1/overture/2026-09-23.1/roads/14/1/0.npz", MB, old - DAY)
+        put(self.root, "mapdata/raw/overture/2026-09-23.1/part-0/0.blk", MB, old)
+        put(self.root, "mapdata/raw/overture/2026-09-23.1/part-1/404", 0, old - 2 * DAY)
+        put(self.root, "mapdata/v1/overture/2026-09-23.1/roads/14/1/1.npz.1.2.tmp.npz", MB, T0)
+        put(self.root, "mapdata/raw/worldcover/v200/x/0.blk.1.2.tmp", MB, T0)
+        put(self.root, "imagery/usgs/16/1/0.jpg", MB, T0 - DAY)
+        self.clock.t += 7200
+        c = self.make(cap_gb=0.0025)
+        self.assertEqual(c.usage(), (3 * MB, 4), "the two mapdata files, its 404 marker, the imagery tile")
+        n, b = c.evict()
+        self.assertEqual((n, b), (1, MB), "the least recently used goes first, the empty marker never")
+        self.assertFalse(exists(self.root, "mapdata/v1/overture/2026-09-23.1/roads/14/1/0.npz"))
+        self.assertTrue(exists(self.root, "mapdata/raw/overture/2026-09-23.1/part-1/404"))
+        self.assertTrue(exists(self.root, "mapdata/v1/overture/2026-09-23.1/roads/14/1/1.npz.1.2.tmp.npz"),
+                        "a file being written is not evicted")
+        c.clear()
+        self.assertFalse(exists(self.root, "mapdata/raw/overture/2026-09-23.1/part-0/0.blk"), "cleared")
+        self.assertFalse(exists(self.root, "mapdata/raw/overture/2026-09-23.1/part-1/404"), "markers too")
+
     def test_clear_keeps_everything_this_session_used(self):
         """Clear keeps the current session's files (ROADMAP "Caching": "everything except gravity/ and the
         current session's files"), also those used more than an hour ago, which eviction may take: a

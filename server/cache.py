@@ -8,6 +8,9 @@ Layout of the cache root (~/.cache/beamng-earth by default):
   index.tsv           the last use of every tracked file ("<unix s>\t<bytes>\t<path>"), saved by the
                       background thread every SAVE_S when something changed, and on close()
   dem/ imagery/ colormatch/ deshadow/     MANAGED: tracked, evicted, cleared
+  mapdata/            MANAGED too (mapdata.py: layer files and the sources' range blocks; a missing
+                      one is a miss, built or fetched again). Not used by earthd yet, so nothing
+                      there is protected as this session's: the walk's mtime is its last use
   gravity/            counted, never evicted or cleared (the 145 MB EGM2008 model, downloaded once)
   netstats/ (and anything else)           not tracked: the daily request budgets must survive a clear
 
@@ -45,7 +48,7 @@ LAYOUT_VERSION = 1
 VERSION_FILE = "VERSION"
 INDEX_FILE = "index.tsv"
 INDEX_HEADER = "# beamng-earth cache index 1"
-MANAGED = ("dem", "imagery", "colormatch", "deshadow")     # evicted and cleared
+MANAGED = ("dem", "imagery", "colormatch", "deshadow", "mapdata")     # evicted and cleared
 KEPT = ("gravity",)                                         # counted only
 DEFAULT_CAP_GB = 20.0
 MAX_CAP_GB = 1e6            # 1 PB: anything above is a mistake (and would overflow)
@@ -165,7 +168,8 @@ class Cache(NoCache):
         if os.sep != "/":
             key = key.replace(os.sep, "/")
         top = key.split("/", 1)[0]
-        if top not in MANAGED and top not in KEPT or key.endswith(".tmp"):
+        # a file being written: "<path>.<pid>.<thread>.tmp", or mapdata's "....tmp.npz" (numpy appends .npz)
+        if top not in MANAGED and top not in KEPT or key.endswith((".tmp", ".tmp.npz")):
             return None
         return key
 

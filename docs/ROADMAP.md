@@ -118,8 +118,9 @@ Manhattan cell: 4.8 s cold, peak RSS 381 MB. Next:
 - store long text columns (the `tags` JSON: 16 MB of a city cell's ~40 MB in memory) ragged;
 - key v1.4 M6 global tiles' content on `mapcells.cells_for_bbox()`;
 - building parts (`buildings/building_part`), places, OSM tags (lanes, width, surface detail) joined
-  by `src_record` from a cached regional extract, NLCD in the US; the cache cap's LRU over
-  `<cache>/mapdata/`;
+  by `src_record` from a cached regional extract, NLCD in the US; once earthd uses MapData, report
+  its disk hits and writes to `cache.Cache` (`<cache>/mapdata/` is under the cap's LRU since the
+  merge, 2026-10-11, but only by the files' mtimes: nothing there is protected as in use);
 - track Overture releases: the pinned one (`overture.RELEASE`) disappears from the buckets after
   some months (`mapdata.py --latest`).
 
@@ -440,7 +441,8 @@ Plan (with the netfetch / rate-limit work):
 
 Status (2026-10-11, built offline on branch feature/cache-cap; docs/ARCHITECTURE.md "Download cache"):
 1 is in place: `server/cache.py` tracks the last use of every file under `dem/`, `imagery/`,
-`colormatch/`, `deshadow/` (the server's own record of each disk hit and write, persisted in
+`colormatch/`, `deshadow/` and, since the map-data merge, `mapdata/` (by mtime only: earthd does not
+use it yet) (the server's own record of each disk hit and write, persisted in
 `<cache>/index.tsv`; a cache from before takes the files' mtimes), a cap (`--cache-cap GB`, default the
 page's last choice, else 20; 0 = unlimited) and evicts the least recently used down to 90 % in a
 background thread at most every 3 min, never what this server used within the hour, the gravity

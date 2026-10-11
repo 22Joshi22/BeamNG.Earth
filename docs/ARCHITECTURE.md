@@ -796,7 +796,8 @@ three days of testing: dem 741 MB / 7.5k files, imagery 1.4 GB / 35k, deshadow 7
   background walk takes sizes, and the mtime (download time) as the last use of files the index does
   not know (the existing cache is adopted as it is); nothing is evicted before it is done.
 - **Eviction**: over the cap (default 20 GB, `--cache-cap`, the page's choice persisted in the index),
-  the least recently used files of `dem/`, `imagery/`, `colormatch/`, `deshadow/` go, down to 90 % of
+  the least recently used files of `dem/`, `imagery/`, `colormatch/`, `deshadow/`, `mapdata/` (by
+  mtime: earthd does not use MapData yet, so nothing there is protected) go, down to 90 % of
   the cap, at most every 3 min. Never: files this server process used within the last hour (checked
   again under the lock per file, so a tile worker's read during a pass wins), `gravity/` (counted
   only), `netstats/` and unknown directories (not tracked), empty markers (cleared only). Directories
@@ -973,7 +974,8 @@ CLI). The only change to an existing module: host policies in `netfetch.POLICIES
 - **Not yet** (ROADMAP "Shared map data"): wiring into earthd (one MapData on the server's Fetcher,
   prefetch of the cells ahead along the velocity as kind `prefetch`), the credits overlay ids
   (with the CC BY datasets of the provenance), building parts, places, OSM tags (lanes, width)
-  joined by `src_record`, NLCD, the cache cap. Offline, a cell with one layer never fetched raises
+  joined by `src_record`, NLCD, recording MapData's disk hits / writes in `cache.Cache` (`mapdata/`
+  is under the cap since the merge, LRU by mtime; `.tmp.npz` files being written are not tracked). Offline, a cell with one layer never fetched raises
   `Offline` as a whole; the earthd wiring may want the cached layers without it.
 - Tests: `server/tests/test_mapdata.py` with `tests/mapfixtures.py` (synthetic GeoParquet written by
   DuckDB, synthetic COGs, a Range-serving fake transport; no network).
