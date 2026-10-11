@@ -276,10 +276,18 @@ end
 
 function M.count() return nMats end
 
--- Call fn(texture) for the texture of every material we hold (in use or waiting for deletion):
--- farfield.heldSessions (the server keeps those files while the material exists).
+-- Call fn(texture) for the texture of every material we hold (in use or waiting for deletion), and
+-- for the texture a queued switch (far_retex, requestRetex) will point it at: farfield.heldSessions
+-- (the server keeps those files while the material exists). The material shows e.texture until
+-- retexNext runs, so that one is named until then; the queued one is named too, so a server that
+-- adopted the folder it lies in (a game that outlived the server that sent far_retex) keeps it until
+-- the switch has run or been dropped (retexNext checks the file, then points the material at it).
 function M.eachTexture(fn)
-  for _, e in pairs(mats) do if e.texture then fn(e.texture) end end
+  for name, e in pairs(mats) do
+    if e.texture then fn(e.texture) end
+    local want = retexWant[name]
+    if want and want ~= e.texture then fn(want) end
+  end
 end
 function M.refs(name) local e = mats[name]; return e and e.refs or 0 end -- for tests
 

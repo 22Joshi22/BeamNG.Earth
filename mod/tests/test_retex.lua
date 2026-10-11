@@ -282,4 +282,35 @@ do
   T.check(mat(name).fields.colorMap == t2 and satmat.texture(name) == t2, 'the queued r1 switch does not go back to r1')
 end
 
+------------------------------------------------------------------------------------------
+-- merge (robustness x cm-retex): farfield.heldSessions (satmat.eachTexture) names the texture the
+-- material shows until the switch runs, the queued one meanwhile too (its folder must stay, e.g. an
+-- earlier server's session this game holds), and only the new one once the switch ran
+do
+  local name = 'bngEarthSat_9_1_0_0'
+  local cur, other = '/temp/beamngEarth/s1/far_9_1_0_0.dds', '/temp/beamngEarth/s2/far_9_1_0_0_r1.dds'
+  local function held(tex)
+    local n = 0
+    satmat.eachTexture(function(t) if t == tex then n = n + 1 end end)
+    return n
+  end
+  local function folders()
+    local set = {}
+    for _, f in ipairs(farfield.heldSessions()) do set[f] = true end
+    return set
+  end
+  T.check(satmat.create(name, cur, false) and satmat.ref(name, cur), 'material in use on s1')
+  T.check(held(cur) == 1 and held(other) == 0 and not folders().s2, 'nothing queued: only its texture named')
+  T.check(satmat.requestRetex(name, other) and satmat.hasRetex(), 'switch to another folder queued')
+  T.check(held(cur) == 1 and held(other) == 1, 'queued: both the shown texture and the queued one named')
+  T.check(folders().s1 and folders().s2, 'queued: heldSessions names both folders')
+  local guard = 0
+  while satmat.hasRetex() and guard < 10 do
+    satmat.retexNext()
+    guard = guard + 1
+  end
+  T.check(satmat.texture(name) == other and mat(name).fields.colorMap == other, 'switched')
+  T.check(held(cur) == 0 and held(other) == 1 and folders().s2, 'switched: only the texture in use named')
+end
+
 T.done('test_retex')
