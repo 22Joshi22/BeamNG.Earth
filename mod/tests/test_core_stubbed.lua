@@ -566,6 +566,9 @@ do
   T.check(core.teleport(91, 0) == false and #places.recentList() == n, 'recent places: a refused teleport is not recorded')
   core.teleport(46.5001, 7.9, 'Named')
   T.check(#places.recentList() == n and places.recentList()[1].name == 'Named', 'recent places: teleport(lat, lon, name) records the name')
+  local n2, top = #places.recentList(), places.recentList()[1]
+  T.check(core.teleport(10.5, 20.5, nil, { record = false }) == true and #places.recentList() == n2
+    and places.recentList()[1] == top, 'recent places: a tool teleport (record = false) is not recorded')
 end
 T.check(core.setFarBudget(3) == 3 and core.setFarBudget(10) == 4, 'far budget setter (governor target, 1-4 ms)')
 

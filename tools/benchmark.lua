@@ -184,7 +184,7 @@ function B.teleport(cfg)
   if not core or not core.teleport then return toJson({ ok = false, error = 'beamngEarth_core is not loaded' }) end
   local st = coreState()
   local before = st and st.anchorId or nil
-  local ok, r = pcall(core.teleport, cfg.lat, cfg.lon)
+  local ok, r = pcall(core.teleport, cfg.lat, cfg.lon, nil, { record = false }) -- not in the recent places
   return toJson({ ok = ok and r == true, anchorBefore = before, error = (not ok) and tostring(r) or nil,
     status = st and st.status or nil })
 end

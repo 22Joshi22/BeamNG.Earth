@@ -1007,7 +1007,8 @@ end
 ------------------------------------------------------------------------------------------
 -- public / console API
 
--- kind: 'teleport' (M.teleport) or 'start' (the level start's), for the recent places list
+-- kind: 'teleport' (M.teleport) or 'start' (the level start's), for the recent places list; 'tool'
+-- (M.teleport with opts.record == false: test tools like tools/benchmark.lua) is not recorded
 teleportTo = function(lat, lon, name, kind)
   lat, lon = tonumber(lat), tonumber(lon)
   if not lat or not lon or lat < -90 or lat > 90 or lon < -180 or lon > 180 then
@@ -1017,16 +1018,20 @@ teleportTo = function(lat, lon, name, kind)
   ui.setLatLon(lat, lon)
   if requestAnchor(lat, lon, 'teleport') then
     setStatus(string.format('Preparing terrain at %.5f, %.5f ...', lat, lon))
-    local ok, err = pcall(places.noteTeleport, lat, lon, name, kind)
-    if not ok then log('W', 'beamngEarth', 'recent places: ' .. tostring(err)) end
+    if kind ~= 'tool' then
+      local ok, err = pcall(places.noteTeleport, lat, lon, name, kind)
+      if not ok then log('W', 'beamngEarth', 'recent places: ' .. tostring(err)) end
+    end
     return true
   end
   return false
 end
 
--- name (optional): the place's name for the recent places (places.lua; the settings page's Go)
-function M.teleport(lat, lon, name)
-  return teleportTo(lat, lon, name, 'teleport')
+-- name (optional): the place's name for the recent places (places.lua; the settings page's Go);
+-- opts (optional): { record = false } keeps it out of the recent places (test tools)
+function M.teleport(lat, lon, name, opts)
+  local kind = (type(opts) == 'table' and opts.record == false) and 'tool' or 'teleport'
+  return teleportTo(lat, lon, name, kind)
 end
 
 function M.toggleUI() ui.visible = not ui.visible end
