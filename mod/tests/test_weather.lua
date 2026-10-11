@@ -68,6 +68,17 @@ near(W.gravityAt(36.58, 4400), W.gravityAt(36.58, 0) - 3.086e-6 * 4400, 1e-12, '
 local u = 0.8
 for _ = 1, 40 do u = W.gustStep(u, 0.5, W.GUST_TAU_S, 0) end
 check(math.abs(u) < 0.01, 'gust decays to 0 without noise, got ' .. u)
+-- gust speed: mean at 0, the gust at +1, a lull down to (1 - GUST_LULL) of the mean at -1
+near(W.gustSpeed(8, 16, 0), 8, 1e-12, 'gust 0: the mean')
+near(W.gustSpeed(8, 16, 1), 16, 1e-12, 'gust +1: the gust speed')
+near(W.gustSpeed(8, 16, -1), 8 * (1 - W.GUST_LULL), 1e-12, 'gust -1: the lull')
+near(W.gustSpeed(8, 5, 1), 8, 1e-12, 'a gust below the mean is ignored')
+check(W.gustSpeed(8, 16, -3) == W.gustSpeed(8, 16, -1), 'the lull clamps')
+-- direction spread: small for steady wind, larger when gusty, capped, none when calm
+near(W.dirStdDeg(10, 10), W.DIR_STD_MIN_DEG, 1e-12, 'steady wind: the minimum spread')
+check(W.dirStdDeg(8.6, 16.4) > 15 and W.dirStdDeg(8.6, 16.4) <= W.DIR_STD_MAX_DEG, 'gusty wind: wider spread ' .. W.dirStdDeg(8.6, 16.4))
+check(W.dirStdDeg(2, 20) == W.DIR_STD_MAX_DEG, 'spread capped')
+check(W.dirStdDeg(0.2, 3) == 0, 'calm: no swings')
 u = 0
 for i = 1, 2000 do
   u = W.gustStep(u, 1, W.GUST_TAU_S, (i % 2 == 0) and 1.7 or -1.6)
@@ -254,7 +265,25 @@ near(sky.above, wt.cloudAboveKm, 0.1, 'cloud base to sky')
 -- ground wind towards NE at about the mean speed (gusts on top)
 local gw = env.ground
 local speed = math.sqrt(gw.x ^ 2 + gw.y ^ 2)
-check(gw.x > 0 and gw.y > 0 and speed >= 8.81 * 0.9 and speed <= 13.2 + 0.5, 'ground wind NE, mean..gust: ' .. speed)
+check(gw.x > 0 and gw.y > 0 and speed >= 8.81 * (1 - W.GUST_LULL) - 0.2 and speed <= 13.2 + 0.2,
+  'ground wind NE, lull..gust: ' .. speed)
+-- over a few minutes the wind visits lulls and gusts and swings around its mean direction
+do
+  local lo, hi, amin, amax = math.huge, 0, math.huge, -math.huge
+  local mean = math.atan2(wt.windDirY, wt.windDirX)
+  for _ = 1, 1200 do
+    run(0.25)
+    local g = env.ground
+    local sp = math.sqrt(g.x ^ 2 + g.y ^ 2)
+    lo, hi = math.min(lo, sp), math.max(hi, sp)
+    local d = math.deg(math.atan2(g.y, g.x) - mean)
+    d = (d + 180) % 360 - 180
+    amin, amax = math.min(amin, d), math.max(amax, d)
+  end
+  check(lo < 8.81 * 0.9 and hi > 8.81 * 1.15, string.format('gusts and lulls: %.1f..%.1f m/s', lo, hi))
+  local lim = 2.5 * W.dirStdDeg(8.81, 13.2) + 1
+  check(amax - amin > 10 and amin >= -lim and amax <= lim, string.format('direction swings %.0f..%.0f deg', amin, amax))
+end
 -- temperature curve (table setter, editor-dirty for a few frames, then cleared)
 check(math.abs(li.curve[1][2] - 29.77) < 1 and li.curve[2][2] == li.curve[1][2], 'flat temperature curve near 29.8')
 check(li.dirty == false, 'editor-dirty cleared')

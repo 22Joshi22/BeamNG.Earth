@@ -369,6 +369,17 @@ clouds, fog and wind. On top of it:
 - Deterministic and global, like everything else: snow placement is a pure function of position,
   data and time.
 
+## Wind (user, 2026-10-10)
+Built: real 10 m wind + gusts from Open-Meteo at 4 Hz, lulls to half the mean, direction swings
+growing with gustiness (weather.lua). Still to do:
+- **Terrain effects**: speed-up on ridges and summits, shelter in canyons, valleys and behind
+  forests/buildings, channelling through gaps and passes (from the DEM and land cover around the
+  player; generic rules, no per-place tuning).
+- **Gust fronts that travel**: gusts moving across the land with the wind instead of the same wind
+  everywhere at once (matters with several vehicles and AI traffic).
+- **Visible wind**: grass, trees, dust and snow drift moving with the gusts (with v1.9 vegetation).
+- **Wind sound** (Sound design).
+
 ## Sound design (user, 2026-10-10: "definitely something we should work on at some point")
 First step is in the next build (ambient room tone by climate zone, from the game's own sounds).
 Later, as content arrives:

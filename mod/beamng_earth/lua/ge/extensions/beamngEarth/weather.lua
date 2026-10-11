@@ -8,7 +8,7 @@
 -- core_environment, so the pause menu's Time & Weather panel, missions and other mods see the real
 -- values: cloud cover (COVERAGE_CURVE, a calibration table), cirrus from high cloud, the clouds'
 -- drift from the wind aloft, fog from visibility (density compensated for the height of the ground:
--- the engine's fog thins with absolute z, shaders/common/sceneFog.h.hlsl), ground wind with gusts
+-- the engine's fog thins with absolute z, shaders/common/sceneFog.h.hlsl), ground wind with gusts, lulls and direction swings
 -- (core_environment.setGroundWind reaches every vehicle), rain and snow (the level's Precipitation
 -- objects; core_environment.setPrecipitation writes 'numOfDrops', a field the engine does not
 -- have), and the air temperature (LevelInfo temperatureCurveC, which core_environment turns into
@@ -39,7 +39,8 @@ local M = {}
 M.LEVEL_ID = 'beamng_earth'
 M.LERP_S = 60              -- a new target is 95 % reached after this long
 M.APPLY_S = 0.5            -- writes at 2 Hz, only of values that changed
-M.WIND_APPLY_S = 1.0       -- setGroundWind queues Lua into every vehicle: at most 1 Hz
+M.WIND_APPLY_S = 0.25      -- setGroundWind queues Lua into every vehicle: 4 Hz (a gust rises in 1-3 s),
+                           -- and only when the wind moved by WIND_EPS_MS
 M.GROUND_CHECK_S = 5       -- ground height under the player (fog compensation)
 M.GRACE_S = 20             -- after a level start: BWM_Weather's start transition, env's setState(init_env)
 M.USER_QUIET_S = 3         -- after someone else's change: core_environment lerps it over 1.15 s and
@@ -86,6 +87,16 @@ M.SNOW_NAME = 'bngEarthSnow'
 M.RAIN_POOL, M.SNOW_POOL = 4000, 3000                       -- drops (probe: 9000 cost +0.2 ms)
 M.GUSTS = true
 M.GUST_TAU_S, M.GUST_STD = 4, 0.4
+-- The gust signal u (-1..1): above 0 the speed rises towards the gust speed, below 0 it falls to a
+-- lull, at u = -1 to (1 - GUST_LULL) of the mean.
+M.GUST_LULL = 0.5
+-- The direction swings with its own slower signal; its spread grows with the gustiness
+-- (gust / mean): DIR_STD_MIN at steady wind, + DIR_GUSTINESS_DEG per unit of gust factor above 1,
+-- at most DIR_STD_MAX (real gusty wind veers 10-30 degrees). None below DIR_CALM_MS.
+M.DIR_TAU_S = 8
+M.DIR_STD_MIN_DEG, M.DIR_STD_MAX_DEG, M.DIR_GUSTINESS_DEG = 4, 25, 15
+M.DIR_CALM_MS = 0.5
+M.WIND_EPS_MS = 0.15
 -- Sun under the deck: brightness factor 1 - SUN_DIM_MAX * deck^SUN_DIM_EXP (a few clouds barely
 -- matter, overcast leaves 0.3; probe at noon: 0.35 made the car's shadow faint).
 M.SUN_DIM_MAX, M.SUN_DIM_EXP = 0.7, 1.5
@@ -199,6 +210,18 @@ function M.gustStep(u, dt, tau, n)
   return clamp(u - u * dt / tau + s * math.sqrt(dt) * n, -1, 1)
 end
 
+-- Wind speed for the gust signal u.
+function M.gustSpeed(ms, gustMs, u)
+  if u >= 0 then return ms + (math.max(ms, gustMs) - ms) * u end
+  return ms * (1 + M.GUST_LULL * math.max(u, -1))
+end
+
+-- Spread (1 sigma, degrees) of the direction swings.
+function M.dirStdDeg(ms, gustMs)
+  if ms < M.DIR_CALM_MS then return 0 end
+  return clamp(M.DIR_STD_MIN_DEG + M.DIR_GUSTINESS_DEG * (math.max(ms, gustMs) / ms - 1), M.DIR_STD_MIN_DEG, M.DIR_STD_MAX_DEG)
+end
+
 -- The weather message -> the targets every value moves towards.
 function M.targets(msg)
   local cover, wind = msg.cover or {}, msg.wind or {}
@@ -286,7 +309,7 @@ local function resetState()
     clock = 0, graceUntil = M.GRACE_S, quietUntil = 0, mission = false,
     override = {}, cur = nil, tgt = lastMsg and M.targets(lastMsg) or nil,
     applyTimer = 0, windTimer = 0, groundTimer = M.GROUND_CHECK_S, gravTimer = 0, bwmTimer = M.BWM_CHECK_S,
-    groundZ = nil, gust = 0, gravity = nil,
+    groundZ = nil, gust = 0, veer = 0, gravity = nil,
     temp = { at = -math.huge, value = nil, method = nil }, dirtyFrames = 0,
     precip = { [M.RAIN_NAME] = {}, [M.SNOW_NAME] = {} },
     notified = false, bwm = false, inOurLevel = false,
@@ -504,16 +527,20 @@ end
 local function applyWind(e, dt)
   if S.override.wind then return end
   local c = S.cur
-  local speed = c.windMs
+  local speed, dx, dy = c.windMs, c.windDirX, c.windDirY
   if M.GUSTS then
     S.gust = M.gustStep(S.gust, dt, M.GUST_TAU_S, (math.random() * 2 - 1) * math.sqrt(3))
-    speed = speed + (c.gustMs - c.windMs) * math.max(0, S.gust)
+    S.veer = M.gustStep(S.veer, dt, M.DIR_TAU_S, (math.random() * 2 - 1) * math.sqrt(3))
+    speed = M.gustSpeed(c.windMs, c.gustMs, S.gust)
+    local a = math.rad(S.veer / M.GUST_STD * M.dirStdDeg(c.windMs, c.gustMs))
+    local ca, sa = math.cos(a), math.sin(a)
+    dx, dy = c.windDirX * ca - c.windDirY * sa, c.windDirX * sa + c.windDirY * ca
   end
-  local l = math.sqrt(c.windDirX ^ 2 + c.windDirY ^ 2)
+  local l = math.sqrt(dx ^ 2 + dy ^ 2)
   local x, y = 0, 0
-  if l > 1e-3 then x, y = speed * c.windDirX / l, speed * c.windDirY / l end
+  if l > 1e-3 then x, y = speed * dx / l, speed * dy / l end
   local have = e.getGroundWind and e.getGroundWind()
-  if have and have.x and math.abs(have.x - x) < 0.3 and math.abs(have.y - y) < 0.3 then return end
+  if have and have.x and math.abs(have.x - x) < M.WIND_EPS_MS and math.abs(have.y - y) < M.WIND_EPS_MS then return end
   envCall(e.setGroundWind, x, y, 0)
 end
 
