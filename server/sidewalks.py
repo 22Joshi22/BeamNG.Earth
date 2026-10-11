@@ -224,7 +224,9 @@ class Builder:
         out[:, 2] = out[:, 2] + h + 2.5 * CROSS_SLOPE
         poly = np.vstack([inner, out])                      # arc from Ti to Tj, then Tj_out, O, Ti_out
         o_idx = k + 1                                       # O
-        UV = np.c_[(poly[:, 0] + poly[:, 1]) / SLAB_REPEAT_M, np.full(len(poly), V_SLAB_MID)]
+        # planar, at the runs' texel density (the sheet is 4096 x 1024: SLAB_REPEAT_M wide, a quarter
+        # of that high); a constant v stretched one texel row over the corner (the user, 2026-10-11)
+        UV = np.c_[poly[:, 0] / SLAB_REPEAT_M, poly[:, 1] / (SLAB_REPEAT_M / 4.0)]
         base = self._add(poly, UV)
         m = len(poly)
         fan = np.array([(o_idx, a, (a + 1) % m) for a in range(m) if a != o_idx and (a + 1) % m != o_idx])
@@ -233,7 +235,8 @@ class Builder:
         c = poly[:, :2].mean(axis=0)
         for a, b in ((out[0], out[1]), (out[1], out[2])):  # back faces down to the ground
             P = np.array([a, b, b - [0, 0, h + SINK + 2.5 * CROSS_SLOPE], a - [0, 0, h + SINK + 2.5 * CROSS_SLOPE]])
-            UV = np.array([[0, V_LIGHT_LOW], [1, V_LIGHT_LOW], [1, V_BAND_LOW], [0, V_BAND_LOW]])
+            L = float(np.hypot(*(b[:2] - a[:2]))) / CURB_REPEAT_M
+            UV = np.array([[0, V_LIGHT_LOW], [L, V_LIGHT_LOW], [L, V_BAND_LOW], [0, V_BAND_LOW]])
             mid = 0.5 * (a[:2] + b[:2])
             want = np.r_[mid - c, 0.0]
             base = self._add(P, UV)
