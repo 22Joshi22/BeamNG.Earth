@@ -45,6 +45,10 @@ function M.new()
   return { mode = 'off', lastGroundZ = nil, lastGroundT = nil, lastRescue = -math.huge, holds = 0, rescues = 0 }
 end
 
+-- The world frame changed (an anchor committed: teleport, rebase, resync): the ground height it
+-- remembers for the rescue is in the old frame's coordinates.
+function M.newFrame(g) g.lastGroundZ, g.lastGroundT = nil, nil end
+
 -- The highest speed towards an edge at distance d that can still stop STOP_M inside it.
 function M.cap(d) return sqrt(2 * M.DECEL * max(0, d - M.STOP_M)) end
 

@@ -177,6 +177,7 @@ T.check(#server.sent == 0, 'still nothing sent')
 ------------------------------------------------------------------------------------------
 -- 2. the server comes
 
+veh.pos, veh.vel = vec3(0, 0, 0.5), vec3(0, 0, 0) -- back from the flat block's edge (held there until an anchor commits)
 server.down = false
 T.check(pumpUntil(function() return #received('hello') == 1 end, 60), 'connected: hello sent')
 local h = received('hello')[1]
@@ -187,6 +188,13 @@ serverSend({ type = 'hello', protocol = 4, format = 4, serverVersion = '0.4.0', 
 T.check(pumpUntil(function() return #received('prepare_anchor') == 1 end, 10), 'auto-teleport requested')
 T.check(core.banner().id == 'recovered' and shown() == 'World server connected', 'the server came: "World server connected"')
 local req = received('prepare_anchor')[1]
+-- a healthy server, but the first anchor not built yet: terrain-follow cannot move the flat start
+-- block at all (it follows anchors only), so the car on it is still held at its edge
+veh.pos, veh.vel = vec3(950, 0, 0.5), vec3(20, 0, 0)
+for _ = 1, 60 * 5 do frame() end
+T.check(veh.pos.x <= 1022 - edgeguard.STOP_M + 0.5 and st().guard.mode == 'hold',
+  string.format('server up, no anchor yet: held on the flat block (x %.1f, guard %s)', veh.pos.x, st().guard.mode))
+veh.pos, veh.vel = vec3(0, 0, 0.5), vec3(0, 0, 0)
 serverSend({ type = 'anchor_ready', requestId = req.requestId, anchorId = 1, lat = req.lat, lon = req.lon, groundZ = 0,
   terrain = { cx = 0, cy = 0, heightmap = '/temp/beamngEarth/s1/hm_1_0_0.png', size = 1024, squareSize = 2,
     zBase = 0, maxHeight = 1024, q = 1 / 64 } })
@@ -256,10 +264,27 @@ serverSend({ type = 'hello', protocol = 4, format = 4, serverVersion = '0.4.0', 
 T.check(pumpUntil(function() return #received('prepare_anchor') == nA + 1 end, 10), 'resync requested')
 local rs = last('prepare_anchor')
 T.check(rs.lat == req.lat and rs.lon == req.lon, 'resync at the same origin')
+-- Until the resync commits, our anchor id is s1's: s2 numbers its own anchors from 1 too (its resync
+-- anchor is 1), so a pose / prepare_terrain / commit_terrain naming anchor 1 would make s2 switch to
+-- its anchor 1 and stream tiles the far field files under s1. Nothing names it, and the block cannot
+-- follow meanwhile: the guard keeps holding the car (it was at rest at the wall; now it pushes on).
 nPose = #received('pose')
-T.check(pumpUntil(function() return #received('pose') > nPose end, 30), 'poses before the resync commits')
-T.check(#last('pose').held == 0 and has(last('pose').sessions, 's1'),
-  'before the resync commits: pose.held empty (s1 anchor ids mean nothing to s2), sessions s1')
+local nPt0, nCt0 = #received('prepare_terrain'), #received('commit_terrain')
+veh.vel = vec3(25, 0, 0)
+for _ = 1, 60 * 4 do frame() end
+T.check(#received('pose') == nPose and #received('prepare_terrain') == nPt0 and #received('commit_terrain') == nCt0,
+  string.format('before the resync commits: no pose / prepare_terrain / commit_terrain with an s1 anchor id (%d %d %d)',
+    #received('pose') - nPose, #received('prepare_terrain') - nPt0, #received('commit_terrain') - nCt0))
+T.check(st().guard.mode == 'hold' and veh.pos.x <= x1 - edgeguard.STOP_M + 0.5,
+  string.format('the server is back but the block cannot follow until the resync commits: still held (x %.1f, %s)',
+    veh.pos.x, st().guard.mode))
+-- the restarted server cannot build the resync's terrain (offline, never visited): asked again
+serverSend({ type = 'anchor_error', requestId = rs.requestId, error = 'DemUnavailable' })
+T.check(pumpUntil(function() return #received('prepare_anchor') == nA + 2 end, 60 * 8), 'a failed resync is asked again')
+rs = last('prepare_anchor')
+T.check(rs.lat == req.lat and rs.lon == req.lon, 'the retry: the same origin')
+T.check(st().guard.mode == 'hold' and veh.pos.x <= x1 - edgeguard.STOP_M + 0.5, 'still held while the resync fails')
+veh.vel = vec3(0, 0, 0)
 serverSend({ type = 'anchor_ready', requestId = rs.requestId, anchorId = 1, lat = rs.lat, lon = rs.lon, groundZ = 0,
   terrain = { cx = rs.cx, cy = rs.cy, heightmap = '/temp/beamngEarth/s2/hm_1_r.png', size = 1024, squareSize = 2,
     zBase = 0, maxHeight = 1024, q = 1 / 64 } })

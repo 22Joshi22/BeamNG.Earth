@@ -115,7 +115,8 @@ level after a console teleport).
 - The edge guard (`edgeguard.lua`, "Robustness" 2) adds a second line and raises the level: "Near the
   edge of the loaded ground: the car will be held there until the world server is back" (amber),
   "Held at the edge of the loaded ground until the world server is back" (red); "... answers terrain
-  requests again" when the server is connected but does not answer them.
+  requests again" when the server is connected but cannot move the block yet (terrain requests
+  unanswered, the resync after a reconnect not committed, or only the level-start flat block).
 - Cost: no window; while nothing changes, no allocation (the text is rebuilt only when an input
   changed: field-by-field compare), one background draw-list rectangle and one `AddText1` (the UI
   font: `GetFont()` throws in 0.39), measured only when the text or the viewport width changes. An

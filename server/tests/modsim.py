@@ -502,6 +502,10 @@ class EdgeGuard:
         self.last_rescue = -math.inf
         self.holds = self.rescues = 0
 
+    def new_frame(self):
+        """edgeguard.lua newFrame: an anchor committed, the remembered ground height is the old frame's."""
+        self.last_ground_z = self.last_ground_t = None
+
     @staticmethod
     def cap(d):
         return math.sqrt(2 * EDGE["DECEL"] * max(0.0, d - EDGE["STOP_M"]))
@@ -547,12 +551,21 @@ class EdgeGuard:
         return "clear", None, None
 
 
-def server_healthy(connected, session, pending, clock, error_at):
-    """core.lua serverHealthy: connected, the hello arrived, and terrain requests answered (none pending
-    for more than STUCK_S, no terrain_error within ERROR_HOLD_S). pending: {"ready", "sent"} or None."""
+def server_healthy(connected, session, pending, clock, error_at, block=True, resync=False):
+    """core.lua serverHealthy: connected, the hello arrived, an anchor block committed (block: terrain-
+    follow never moves the level-start flat block), no resync pending (resync: a server said hello
+    while an anchor was committed, until its resync commits) and terrain requests answered (none
+    pending for more than STUCK_S, no terrain_error within ERROR_HOLD_S). pending: {"ready", "sent"}
+    or None."""
     stuck = pending is not None and not pending.get("ready") and clock - pending["sent"] > CORE["STUCK_S"]
     stuck = stuck or (error_at is not None and clock - error_at < CORE["ERROR_HOLD_S"])
-    return bool(connected and session) and not stuck
+    return bool(connected and session and block) and not resync and not stuck
+
+
+def anchor_known(anchor, anchor_session, session):
+    """core.lua anchorKnown: the connected server knows the committed anchor (its session's). Poses and
+    terrain requests wait for it (after a server restart, until the resync commits)."""
+    return anchor is not None and anchor_session == session
 
 
 # --- farfield.lua ----------------------------------------------------------------------

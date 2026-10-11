@@ -94,6 +94,9 @@ local function resetState()
     anchor = nil,            -- geodesy anchor of the committed frame
     anchorId = nil,
     anchorKey = nil,         -- server's opaque anchor key (protocol 3), for display
+    anchorSession = nil,     -- the server session (hello.sessionId) the committed anchor belongs to
+    resync = false,          -- a server said hello while an anchor is committed: the block cannot
+                             -- follow until the resync (same origin, that server's anchor) commits
     pending = nil,           -- anchor request { requestId, purpose = 'teleport'|'rebase'|'resync', ready, msg }
     nextRequestId = 1,
     retryAt = 0,
@@ -124,7 +127,7 @@ local function resetState()
     serverNote = nil,        -- the network note in the server's last status ('offline' / 'degraded', banner.noteOf)
     serverNoteDetail = nil,
     terrainErrorAt = nil,    -- clock of the last terrain_error since the last terrain arrived
-    guard = edgeguard.new(), -- the edge guard's state (mode 'off' while the server is healthy)
+    guard = edgeguard.new(), -- the edge guard's state (mode 'off' while the block can follow)
     guardBox = {},           -- the collidable area it guards (reused)
   }
 end
@@ -310,7 +313,9 @@ local function commitTeleport(msg)
   be:reloadCollision()
 
   st.anchor, st.anchorId, st.anchorKey = geodesy.newAnchor(msg.lat, msg.lon), msg.anchorId, msg.anchorKey
+  st.anchorSession, st.resync = st.sessionId, false
   st.block, st.terrainPending, st.terrainErrorAt = { cx = tr.cx, cy = tr.cy }, nil, nil
+  edgeguard.newFrame(st.guard)
   sendCommits(msg.anchorId, tr.cx, tr.cy)
   activateWorld()
   st.skyTimer, st.poseTimer = SKY_INTERVAL, POSE_INTERVAL -- refresh both right away
@@ -336,7 +341,9 @@ local function finishRebase()
   be:reloadCollision()
 
   st.anchor, st.anchorId, st.anchorKey = rb.newAnchor, msg.anchorId, msg.anchorKey
+  st.anchorSession, st.resync = st.sessionId, false
   st.block, st.terrainPending, st.terrainErrorAt = { cx = tr.cx, cy = tr.cy }, nil, nil
+  edgeguard.newFrame(st.guard)
   sendCommits(msg.anchorId, tr.cx, tr.cy)
   activateWorld()
   st.skyTimer, st.poseTimer = SKY_INTERVAL, POSE_INTERVAL
@@ -505,6 +512,9 @@ local function onMessage(msg)
       -- A (re)started server knows nothing of our anchor: re-register the SAME geodetic origin under
       -- a new anchorId. The transform is then the identity, so nothing in the world moves (a shift
       -- here could happen close to the origin, where camshift cannot tell positions from offsets).
+      -- Until it commits the block cannot follow (st.resync: the edge guard runs, a failed resync is
+      -- asked again in updateWorld).
+      st.resync = true
       requestAnchor(st.anchor.lat, st.anchor.lon, 'resync', resyncHint())
     elseif st.inOurLevel and not st.anchor and not st.autoTeleportDone then
       st.autoTeleportDone = true
@@ -617,6 +627,15 @@ local function updateSky(dt)
   end
 end
 
+-- Does the connected server know our anchor? After a server restart the committed anchor's id is
+-- the old session's, and the new server numbers its own anchors from 1 again: until the resync
+-- commits, a pose / prepare_terrain naming it would name one of the new server's anchors (its resync
+-- anchor 1 is the usual one), which it would switch to and stream tiles for that the far field files
+-- under the old session.
+local function anchorKnown()
+  return st.anchorId ~= nil and st.anchorSession == st.sessionId
+end
+
 local function updateWorld(dt)
   if st.placeFrames then
     st.placeFrames = st.placeFrames - 1
@@ -630,16 +649,23 @@ local function updateWorld(dt)
   if not pl then return end
 
   st.poseTimer = st.poseTimer + dt
-  if st.poseTimer >= POSE_INTERVAL and net.isConnected() then
+  -- no pose before the resync with a restarted server commits (anchorKnown; hello named the
+  -- session folders meanwhile)
+  if st.poseTimer >= POSE_INTERVAL and net.isConnected() and anchorKnown() then
     st.poseTimer = 0
     local c = st.cam
-    -- held: previous anchors of this server's session only (until the resync after a server restart
-    -- commits, the tiles' anchor ids are the old server's); sessions: every session folder in use
+    -- held: previous anchors of this server's session only (the far field's older sessions' anchor
+    -- ids are another server's); sessions: every session folder in use
     net.send({ type = 'pose', anchorId = st.anchorId, x = pl.x, y = pl.y, z = pl.z, vx = pl.vx, vy = pl.vy,
       lat = pl.lat, lon = pl.lon, speed = pl.speed,
       held = (farfield.session() == st.sessionId) and farfield.heldAnchors() or {},
       sessions = farfield.heldSessions(),
       cam = c and { x = c.x, y = c.y, z = c.z, fx = c.fx, fy = c.fy, fz = c.fz, fovDeg = c.fovDeg } or nil })
+  end
+
+  -- a resync the server could not build (anchor_error: offline, never visited) is asked again
+  if st.resync and not st.pending and st.sessionId and st.clock >= st.retryAt then
+    requestAnchor(st.anchor.lat, st.anchor.lon, 'resync', resyncHint())
   end
 
   -- origin rebase first: when it commits, the terrain-follow state belongs to the old frame
@@ -693,7 +719,7 @@ local function updateWorld(dt)
   local fa, tx, ty = follow.decide(pl.x, pl.y, pl.vx, pl.vy, b and b.cx, b and b.cy, st.terrainPending,
     st.clock, st.terrainRetryAt, gate, st.terrainLatency)
   if fa == 'prepare' then
-    if net.isConnected() then
+    if net.isConnected() and anchorKnown() then
       local id = nextId()
       st.terrainPending = { requestId = id, anchorId = st.anchorId, cx = tx, cy = ty, sentAt = st.clock }
       net.send({ type = 'prepare_terrain', requestId = id, anchorId = st.anchorId, cx = tx, cy = ty })
@@ -718,9 +744,11 @@ local function terrainStuck()
   return st.terrainErrorAt ~= nil and st.clock - st.terrainErrorAt < ERROR_HOLD_S
 end
 
--- Can the server move the physics block? (Connected, its hello arrived, terrain requests answered.)
+-- Can the server move the physics block? Connected, its hello arrived, an anchor block committed
+-- (terrain-follow never moves the level-start flat block), no resync pending (a server that came
+-- back: until it commits, nothing follows) and terrain requests answered.
 local function serverHealthy()
-  return net.isConnected() and st.sessionId ~= nil and not terrainStuck()
+  return net.isConnected() and st.sessionId ~= nil and st.block ~= nil and not st.resync and not terrainStuck()
 end
 
 -- The collidable area of the block in use (the anchor's, else the level-start flat block), or nil.
@@ -763,7 +791,8 @@ local function updateBanner(dt)
   i.note, i.noteDetail = st.serverNote, st.serverNoteDetail
   local m = st.guard.mode
   i.edge = (m == 'warn' or m == 'hold') and m or nil
-  i.stuck = (i.session and net.isConnected() and terrainStuck()) and true or false
+  -- connected and said hello, yet the guard runs: the server does not (yet) build the terrain
+  i.stuck = (i.session and net.isConnected()) and true or false
   banner.update(dt, i)
 end
 

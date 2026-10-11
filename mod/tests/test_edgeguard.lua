@@ -168,6 +168,14 @@ T.check(#teleports == 2, '... and repeated after it')
 veh.pos = vec3(BOX[3] + 8, 50, GROUND_Z - 8)
 edgeguard.update(g, veh, BOX, 1.2 + edgeguard.RESCUE_WINDOW_S + 5)
 T.check(#teleports == 2, 'long after it left the ground: not rescued (not ours to catch)')
+-- a new world frame (core: an anchor committed): the remembered ground height is the old frame's
+g = edgeguard.new()
+veh = newVeh(BOX[3] - 3, 50, GROUND_Z + 0.5, 0, 0)
+edgeguard.update(g, veh, BOX, 30)
+edgeguard.newFrame(g)
+veh.pos = vec3(BOX[3] + 6, 50, GROUND_Z - 40) -- e.g. the new anchor's origin 40 m higher, off the block
+T.check(edgeguard.update(g, veh, BOX, 30.5) == 'air' and #teleports == 2,
+  'after a frame change: no rescue from the old frame\'s ground height')
 
 ------------------------------------------------------------------------------------------
 -- the ground ray

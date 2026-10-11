@@ -450,6 +450,8 @@ class Server:
         wall, now = time.time(), time.monotonic()
         for d in glob.glob(os.path.join(self.root, "*", SESSION_MARKER)):
             sid = os.path.basename(os.path.dirname(d))
+            if sid == self.sid:     # a restart in the same second with the same suffix: ours now, never released
+                continue
             try:
                 age = wall - os.path.getmtime(d)
             except OSError:
@@ -519,11 +521,11 @@ class Server:
         log.info("session %s released by the game: deleting its %d files", sid, len(files))
         self.queue_delete(files + [os.path.join(d, SESSION_MARKER), d, cd])
 
-    def sweep_sessions(self):
-        """Every SESSION_SWEEP_S (main_async): touch our own marker and the claimed sessions' every
-        SESSION_HEARTBEAT_S (a later server sees them in use), and delete the orphans nobody claimed
-        for orphan_s whose markers are as old (one a live server touches is in use). Returns the
-        deleted session ids."""
+    def sweep_sessions(self, remove=True):
+        """Every SESSION_SWEEP_S (main_async, via sweep_sessions_async): touch our own marker and the
+        claimed sessions' every SESSION_HEARTBEAT_S (a later server sees them in use), and delete the
+        orphans nobody claimed for orphan_s whose markers are as old (one a live server touches is in
+        use). Returns the deleted session ids; remove=False leaves their folders to the caller."""
         now, wall = time.monotonic(), time.time()
         claimed = self.claimed_sessions()
         if now - self.heartbeat_at >= SESSION_HEARTBEAT_S:
@@ -542,8 +544,17 @@ class Server:
                 continue
             del self.orphans[sid]
             log.info("session %s of an earlier run: no game claimed it, deleted", sid)
-            self._rmtree_session(sid)
+            if remove:
+                self._rmtree_session(sid)
             gone.append(sid)
+        return gone
+
+    async def sweep_sessions_async(self):
+        """sweep_sessions on the event loop (its state is the loop's), the folders removed in a worker
+        thread: a whole session is thousands of files, the streaming must not wait for the rmtree."""
+        gone = self.sweep_sessions(remove=False)
+        if gone:
+            await asyncio.to_thread(lambda: [self._rmtree_session(sid) for sid in gone])
         return gone
 
     def snap(self, v):
@@ -1728,7 +1739,7 @@ async def main_async(args):
         while True:
             await asyncio.sleep(SESSION_SWEEP_S)
             try:
-                server.sweep_sessions()
+                await server.sweep_sessions_async()
             except Exception:           # a file-system error must not stop the sweeps (or the server)
                 log.exception("session sweep failed")
     sweeper = asyncio.create_task(sessions())

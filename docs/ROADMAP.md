@@ -344,7 +344,8 @@ items 1, 2, 3 and 7 (offline parts).
   / offline / degraded (the server's note) / connected, top centre, hidden when all is well, in the
   pause menu and the big map; the settings page shows the same line.
 - 2: the edge guard (`edgeguard.lua`): only while the server cannot move the block (not connected, no
-  hello yet, a terrain request unanswered for 5 s or a terrain_error within 10 s) the last block is
+  hello yet, only the level-start flat block, a resync after a reconnect not yet committed, a terrain
+  request unanswered for 5 s or a terrain_error within 10 s) the last block is
   kept and, for a vehicle on the ground (ray within 6 m), a soft wall caps the speed towards an edge at
   sqrt(2 * 6 m/s^2 * (d - 15 m)) (warned from 150 m or the braking distance + 30 m), so the car comes
   to rest 15 m inside; a car that left the block anyway and dropped 3 m below its last ground is set
@@ -354,7 +355,15 @@ items 1, 2, 3 and 7 (offline parts).
   hello / pose `sessions` (the folders whose files its objects use) stop naming it, then deletes it
   rate-limited; unclaimed ones go after 10 min (a live server's marker is touched every minute). The
   mod keys previous anchors' tiles by session (a new server's anchor 1 never meets the old one's) and
-  resyncs at the same origin (no level reload).
+  resyncs at the same origin (no level reload), sending no pose / terrain request naming the old
+  session's anchor id until then (a failed resync is asked again).
+- Adversarial review (2026-10-11, branch review-robust): a mod whose anchor was 1 sent poses naming
+  it to the restarted server before its resync committed, which made that server switch to its own
+  anchor 1 early (holes after the old tiles went); the guard turned off at the restarted server's
+  hello although nothing could move the block until the resync committed (the car parked at the wall
+  could drive off; a resync anchor_error was never retried); the flat start block was unguarded while
+  the server was up but the first anchor not built; the sweep's rmtree ran on the event loop. Fixed
+  with tests (test_core_robustness, test_edgeguard, test_restart).
 - 7: `server/tests/test_restart.py` (session adoption, and a drive whose server is killed and
   restarted: no hole, no vanished file, the guard only without a server, the old folder deleted once
   released), the modsim ports of the guard and of the farfield sessions checked against the Lua

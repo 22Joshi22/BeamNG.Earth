@@ -9,19 +9,23 @@ SessionAdoptionTest (earthd.Server's session folders, no streaming):
     last; a closed connection makes its claims orphans again with a fresh grace;
   - sweep_sessions deletes an orphan nobody claimed for orphan_s whose marker is as old, keeps a
     claimed one and one whose marker a live server keeps touching, and heartbeats the own marker;
-  - a default session (no `sessions` in hello) changes nothing.
+  - a default session (no `sessions` in hello) changes nothing;
+  - main_async's sweep removes the folders off the event loop; a folder with the new session's own id
+    is never an orphan.
 
 RestartDriveTest (fault injection with the mod simulator, modsim): a 64-cell, 512² mesh-mode session;
-the mod teleports twice (its anchor 2), drives east, then the server is killed (nothing cleaned up,
-as a crash). Without a server the mod keeps driving east at 30 m/s: the edge guard (modsim.EdgeGuard,
-the port of edgeguard.lua, run only while core.lua's serverHealthy rule says the server cannot move the
-block) warns, then holds the car STOP_M inside the block's collidable edge. A new server starts in the
-same user folder: the dead session's folder survives; the mod's hello names it, the server adopts it;
-the resync at the same origin (a new session, anchor 1 again) keeps the old session's tiles until the
-new ones cover them. Checked on every frame: no hole in the shown tiles within 512 m of the player,
-every file a tile object of the mod uses exists; the guard runs only between the kill and the first
-terrain committed after the restart (never while the server is healthy, so never against a block
-commit); once the mod no longer names the old session, the server deletes its folder.
+the mod teleports twice (its anchor 2) or once (its anchor 1: the new server's resync anchor id too, so
+no pose or terrain request may name it until the resync commits, core.lua anchorKnown; the resync
+commit waits the governor's CALM_TIMEOUT so poses go out meanwhile), drives east, then the server is
+killed (nothing cleaned up, as a crash). Without a server the mod keeps driving east at 30 m/s: the
+edge guard (modsim.EdgeGuard, the port of edgeguard.lua, run only while core.lua's serverHealthy rule
+says the server cannot move the block) warns, then holds the car STOP_M inside the block's collidable
+edge. A new server starts in the same user folder: the dead session's folder survives; the mod's hello
+names it, the server adopts it; the resync at the same origin (a new session, anchor 1 again) keeps the
+old session's tiles until the new ones cover them. Checked on every frame: no hole in the shown tiles within 512 m of the player,
+every file a tile object of the mod uses exists; the guard runs only between the kill and the resync
+commit (never while the server is healthy, so never against a block commit); once the mod no longer
+names the old session, the server deletes its folder (anchor 1: see the known limit at the end).
 """
 import asyncio
 import math
@@ -39,7 +43,7 @@ import earthd  # noqa: E402
 import geodesy  # noqa: E402
 import modsim  # noqa: E402
 import test_server  # noqa: E402
-from modsim import CORE, EDGE  # noqa: E402
+from modsim import CORE, EDGE, GOV  # noqa: E402
 from netclient import Client  # noqa: E402
 from test_integration_drive import near_holes  # noqa: E402
 
@@ -182,6 +186,55 @@ class SessionAdoptionTest(unittest.TestCase):
         self.s.sweep_sessions()
         self.assertLess(time.time() - os.path.getmtime(own), 5, "heartbeat: the own marker touched")
 
+    def test_sweep_deletes_off_the_event_loop(self):
+        """An unclaimed orphan is a whole session (~1 GB, thousands of files): main_async's sweep
+        (sweep_sessions_async) keeps the bookkeeping on the loop and removes the folders in a worker
+        thread, so the streaming never stalls behind an rmtree."""
+        self.s.orphan_s = 30.0
+        for sid in self.s.orphans:
+            self.s.orphans[sid] -= 1000
+        t = time.time() - 100
+        for d in (self.a[0], self.b[0]):
+            os.utime(os.path.join(d, earthd.SESSION_MARKER), (t, t))
+        threads = []
+        rm = self.s._rmtree_session
+        self.s._rmtree_session = lambda sid: (threads.append(threading.get_ident()), rm(sid))
+        loop = asyncio.new_event_loop()
+        self.addCleanup(loop.close)
+
+        async def run():
+            return threading.get_ident(), await self.s.sweep_sessions_async()
+        loop_thread, gone = loop.run_until_complete(run())
+        self.assertEqual(sorted(gone), ["20261010-120000-bbbb", "20261010-120500-cccc"])
+        self.assertEqual(len(threads), 2)
+        self.assertNotIn(loop_thread, threads, "the folders are removed off the event loop")
+        self.assertFalse(any(os.path.exists(p) for p in self.a + self.b))
+        self.assertEqual(self.s.orphans, {})
+
+    def test_own_sid_never_an_orphan(self):
+        """A folder that happens to carry the new session's id (a restart in the same second with the same
+        random suffix) is the server's own from now on: never an orphan, so never released or swept."""
+        own = "20261011-010203-eeee"
+        d, _ = make_session(self.root, own, 60)
+        strftime, token_hex = earthd.time.strftime, earthd.secrets.token_hex
+        earthd.time.strftime = lambda fmt, *a: "20261011-010203-"
+        earthd.secrets.token_hex = lambda n: "eeee"
+        try:
+            s = earthd.Server(self.root, os.path.join(self.root, "cache"), imagery=None)
+        finally:
+            earthd.time.strftime, earthd.secrets.token_hex = strftime, token_hex
+        self.addCleanup(s.tile_pool.shutdown)
+        self.addCleanup(s.hm_pool.shutdown)
+        self.assertEqual(s.sid, own)
+        self.assertNotIn(own, s.orphans)
+        c = _Conn()
+        s.connections.add(c)
+        s.claim_sessions(c, [own])
+        s.claim_sessions(c, [])
+        s.orphan_s = 0.0
+        s.sweep_sessions()
+        self.assertTrue(os.path.isfile(os.path.join(d, earthd.SESSION_MARKER)), "the own folder stays")
+
 
 class _Running:
     """An in-process server (mesh mode, 64 cells, 512² block, synthetic DEM and imagery) on its own loop."""
@@ -233,6 +286,16 @@ class _Running:
 
 class RestartDriveTest(unittest.TestCase):
     def test_kill_and_restart_mid_drive(self):
+        """The mod's anchor 2: none of the new server's anchor ids is the mod's until it rebases."""
+        self._drive(teleports=2)
+
+    def test_kill_and_restart_anchor_1(self):
+        """The mod's anchor 1 (one teleport, no rebase: the usual case), the new server's resync anchor is
+        1 too: until the resync commits nothing may name it (core.lua anchorKnown), or the new server
+        switches to it early and streams tiles the far field files under the old session."""
+        self._drive(teleports=1)
+
+    def _drive(self, teleports):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         user = tmp.name
@@ -246,7 +309,8 @@ class RestartDriveTest(unittest.TestCase):
         frame0 = geodesy.EnuFrame(LAT, LON)        # every anchor here has this origin (teleport / resync)
         frames = {}
         st = {"c": None, "session": None, "anchor": None, "block": None, "tp": None, "pending": None, "next": 1,
-              "clock": 0.0, "pose_t": 0.0, "error_at": None, "t_lat": None, "wall": None, "phase": "start"}
+              "clock": 0.0, "pose_t": 0.0, "error_at": None, "t_lat": None, "wall": None, "phase": "start",
+              "anchor_session": None, "resync": False}
         player = {"p": [0.0, 0.0, 0.0], "v": [0.0, 0.0], "want": 0.0}
         guard = modsim.EdgeGuard()
         stats = {"holes": [], "vanished": [], "unhealthy": {}, "guard_modes": {}, "edge_min": math.inf,
@@ -266,12 +330,13 @@ class RestartDriveTest(unittest.TestCase):
             t = m["type"]
             if t == "hello":
                 st["session"] = m["sessionId"]
+                st["resync"] = st["anchor"] is not None     # core.lua: the resync is requested at hello
                 self.assertEqual(m.get("blockSize"), SIZE)
                 far.set_near_visual(m["nearVisual"])
             elif t == "anchor_ready":
                 p = st["pending"]
                 if p and m["requestId"] == p["requestId"]:
-                    p["ready"], p["msg"] = True, m
+                    p["ready"], p["msg"], p["ready_at"] = True, m, st["clock"]
             elif t == "terrain_ready":
                 p = st["tp"]
                 if p and m["requestId"] == p["requestId"] and m["anchorId"] == st["anchor"]:
@@ -318,12 +383,18 @@ class RestartDriveTest(unittest.TestCase):
                 player["p"], player["v"] = [0.0, 0.0, 0.0], [0.0, 0.0]
             far.switch_anchor(m["anchorId"], keep, (tr["cx"], tr["cy"]), st["session"])
             st["anchor"], st["block"], st["tp"], st["pending"] = m["anchorId"], (tr["cx"], tr["cy"]), None, None
+            st["anchor_session"], st["resync"] = st["session"], False
+            guard.new_frame()
             send({"type": "commit_anchor", "anchorId": m["anchorId"]})
             send({"type": "commit_terrain", "anchorId": m["anchorId"], "cx": tr["cx"], "cy": tr["cy"]})
             st["pose_t"] = CORE["POSE_INTERVAL"]
 
         def healthy():
-            return modsim.server_healthy(st["c"] is not None, st["session"], st["tp"], st["clock"], st["error_at"])
+            return modsim.server_healthy(st["c"] is not None, st["session"], st["tp"], st["clock"], st["error_at"],
+                                         block=st["block"] is not None, resync=st["resync"])
+
+        def known():
+            return modsim.anchor_known(st["anchor"], st["anchor_session"], st["session"])
 
         def check_files():
             insts = list(far.live.values()) + list(far.old.values()) + list(far.pending.values()) + far.doomed
@@ -362,13 +433,14 @@ class RestartDriveTest(unittest.TestCase):
             if st["block"] is not None:
                 gx0, gy0, gx1, gy1 = modsim.ground_box(*st["block"], SIZE)
                 stats["edge_min"] = min(stats["edge_min"], x - gx0, gx1 - x, y - gy0, gy1 - y)
-            # core.lua updateWorld: the pose, the resync / teleport commit, terrain-follow
+            # core.lua: a teleport commits on its anchor_ready; updateWorld: the pose (only for an anchor
+            # the server knows), the resync commit in a heavy slot (governor), else terrain-follow
             p = st["pending"]
-            if p and p.get("ready"):
+            if p and p.get("ready") and p["purpose"] == "teleport":
                 commit_anchor(p["msg"])
             elif st["anchor"] is not None and st["c"] is not None:
                 st["pose_t"] += DT
-                if st["pose_t"] >= CORE["POSE_INTERVAL"]:
+                if st["pose_t"] >= CORE["POSE_INTERVAL"] and known():
                     st["pose_t"] = 0.0
                     lat, lon, _ = frame0.enu_to_geodetic(x, y, z)
                     held = far.held_anchors() if far.session == st["session"] else []
@@ -377,8 +449,18 @@ class RestartDriveTest(unittest.TestCase):
                           "held": held, "sessions": far.held_sessions()})
                     check_files()
                 b, tp = st["block"], st["tp"]
-                fa = modsim.follow_decide(x, y, *player["v"], b[0], b[1], tp, st["clock"], 0.0, None, st["t_lat"], SIZE)
-                if fa and fa[0] == "prepare":
+                fa = None
+                if p and p.get("ready"):
+                    # the heavy slot comes once streaming calmed down: at most CALM_TIMEOUT frames
+                    # later, the slowest case (poses go out meanwhile)
+                    if st["clock"] - p["ready_at"] >= GOV["CALM_TIMEOUT"] * DT and gov.request_heavy():
+                        commit_anchor(p["msg"])
+                else:
+                    fa = modsim.follow_decide(x, y, *player["v"], b[0], b[1], tp, st["clock"], 0.0, None, st["t_lat"],
+                                              SIZE)
+                if fa and fa[0] == "prepare" and not known():
+                    pass                                    # core.lua: no request naming an unknown anchor
+                elif fa and fa[0] == "prepare":
                     st["tp"] = {"requestId": rid(), "cx": fa[1], "cy": fa[2], "sent": st["clock"]}
                     send({"type": "prepare_terrain", "requestId": st["tp"]["requestId"], "anchorId": st["anchor"],
                           "cx": fa[1], "cy": fa[2]})
@@ -407,17 +489,19 @@ class RestartDriveTest(unittest.TestCase):
         def run_until(cond, max_wall, what, pace=True):
             end = time.monotonic() + max_wall
             while not cond():
-                self.assertLess(time.monotonic(), end, what)
+                self.assertLess(time.monotonic(), end, f"{what}: done {far.done}, old {len(far.old)} "
+                                f"{sorted(far.old)[:4]}, groups {len(far.groups)}, work {far.has_work()}, "
+                                f"pending {len(far.pending)}, held {far.held_sessions()}, anchor {st['anchor']}")
                 frame(pace)
 
         # --- 1. session 1: hello, two teleports (the mod's anchor 2), the far field settles ---------
         st["t0"] = time.monotonic()
         connect(srv1.port)
         run_until(lambda: st["session"] == sid1, 10, "hello 1")
-        for _ in range(2):
+        for _ in range(teleports):
             request_anchor("teleport")
             run_until(lambda: st["pending"] is None, 60, "teleport")
-        self.assertEqual(st["anchor"], 2)
+        self.assertEqual(st["anchor"], teleports)
         st["phase"] = "stand1"
         run_until(settled, 120, "the first far field")
         # --- 2. drive east, the server healthy ----------------------------------------------------
@@ -468,8 +552,18 @@ class RestartDriveTest(unittest.TestCase):
         run_until(lambda: player["p"][0] > start_x + 600, 120, "drive 2")
         player["want"], player["v"] = 0.0, [0.0, 0.0]
         st["phase"] = "settle"
-        run_until(lambda: settled() and sid1 not in far.held_sessions(), 120, "the old tiles go")
-        run_until(lambda: not os.path.isdir(sess1), 60, "the server deletes the released session")
+        if teleports > 1:
+            run_until(lambda: settled() and sid1 not in far.held_sessions(), 120, "the old tiles go")
+            run_until(lambda: not os.path.isdir(sess1), 60, "the server deletes the released session")
+        else:
+            # Known limit (docs/ARCHITECTURE.md "Robustness"): the new session's anchor 1 repeats the
+            # old one's imagery material names (bngEarthSat_<anchor>_<key>), and a material in use keeps
+            # its texture, so a new tile that took over such a material holds the old folder's texture
+            # until it goes. Every tile shape is the new session's; the old folder stays while named
+            # (stats["kept_while_held"], every frame).
+            run_until(settled, 120, "the old tiles go")
+            insts = list(far.live.values()) + list(far.pending.values()) + far.doomed
+            self.assertFalse([i.shape for i in insts if modsim.folder_of(i.shape) == sid1], "no old tile shape left")
 
         print(f"\n  restart drive: {stats['frames']} frames, {stats['commits']} commits, guard modes "
               f"{stats['guard_modes']}, unhealthy frames {stats['unhealthy']}, closest to an edge "
