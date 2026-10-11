@@ -207,6 +207,32 @@ class GeomTest(unittest.TestCase):
         self.assertTrue(changed)
         self.assertEqual(len(parts[0]), 2)                                      # the hole survives
 
+    def test_clip_zero_area_exactly(self):
+        """'No area left' is decided exactly, whatever the ring's first vertex (and so whatever order
+        a BLAS sums np.dot in on another CPU): a zero-area ring is dropped every time. With the
+        rounded shoelace sum, these rings were kept or dropped depending on where they started."""
+        spike = np.array([[-76.59081364689875, 39.28827667649361], [-76.59105676688144, 39.288451417794846],
+                          [-76.59333236668053, 39.290086994046526], [-76.59605575133413, 39.292044413477406],
+                          [-76.59668240807629, 39.29249481995302], [-76.59790428684283, 39.29337303935424],
+                          [-76.59873743534035, 39.29397186077144], [-76.59972683990883, 39.29468299047718]])
+        spike = np.concatenate([spike, spike[::-1][1:-1]])                   # out and back: no area
+        box = (-77.0, 39.0, -76.0, 40.0)
+        rng = np.random.default_rng(11)
+        # a polygon west of a cell that only touches its west edge: clipped, it collapses onto the edge
+        edge = np.array([[-76.6, 39.281], [-76.61, 39.283], [-76.62, 39.2875], [-76.6, 39.2911],
+                         [-76.63, 39.289]])
+        cell = (-76.6, 39.28, -76.58, 39.30)
+        for ring, bounds in ((spike, box), (edge, cell)):
+            for r in range(len(ring)):
+                q = np.roll(ring, r, axis=0)
+                self.assertIsNone(mg.clip_ring(np.concatenate([q, q[:1]]), bounds), r)
+        for _ in range(200):                                                 # a real ring stays, any start
+            pts = rng.uniform(0, 1, (int(rng.integers(3, 9)), 2))
+            pts = pts[np.argsort(np.arctan2(pts[:, 1] - 0.5, pts[:, 0] - 0.5))]
+            kept = {mg.clip_ring(np.concatenate([np.roll(pts, r, 0), np.roll(pts, r, 0)[:1]]), (0.0, 0.0, 1.0, 1.0))
+                    is not None for r in range(len(pts))}
+            self.assertEqual(len(kept), 1)
+
     def test_build_and_arrays(self):
         sq = np.array([(0, 0), (1, 0), (1, 1), (0, 0)], float)
         f = mg.build("x", mg.text_column(["a", "b"]), [(mg.POLYGON, [[sq, sq * 0.5]]), (mg.LINE, [[sq[:2]]])])

@@ -16,6 +16,7 @@ with start/end the fraction of the feature's length (0..1; a rule without `betwe
 Everything here is a pure function of its input: no dict-order, set-order or float-summation
 order dependence (features come sorted by id from the reader).
 """
+import math
 import struct
 from dataclasses import dataclass, field
 
@@ -284,8 +285,12 @@ def clip_ring(ring, bounds):
         p = p[:-1]
     if len(p) < 3:
         return None
+    # no area left (a sliver along the box edge, a spike out and back): twice the signed area summed
+    # exactly with math.fsum, so the answer does not depend on the order of the terms (the ring's
+    # first vertex, or the order a BLAS sums np.dot in on another CPU: a rounded sum kept or dropped
+    # such rings at random, and the cell's content with them)
     x, y = p[:, 0], p[:, 1]
-    if np.dot(x, np.roll(y, -1)) - np.dot(y, np.roll(x, -1)) == 0.0:
+    if math.fsum(np.concatenate([x * np.roll(y, -1), -(y * np.roll(x, -1))]).tolist()) == 0.0:
         return None
     return np.concatenate([p, p[:1]])
 
