@@ -65,7 +65,8 @@ LOOK = {
     "gravel": {"m": "m_dirt_road", "tl": 88.0, "p": 21},
     "dirt": {"m": "m_dirt_road", "tl": 88.0, "p": 21},
 }
-Spec = namedtuple("Spec", "width kind urban cls oneway", defaults=(False,))   # road_specs' result per feature
+Spec = namedtuple("Spec", "width kind urban cls oneway walk", defaults=(False, 2.5))   # road_specs' result per feature
+# (walk: the sidewalk width, measured from the buildings where known: roadwidth.py)
 # (width = carriageway). One-way driving widths (Overture's divided roads are two one-way segments, each
 # drawn before as a full two-way street: 2026-10-11 orthophoto of Broadway, 14-15 m drawn for 8-9 m)
 ONEWAY_STYLE = {"primary": 6.5, "secondary": 6.5, "tertiary": 4.0, "residential": 3.5, "living_street": 3.5,
@@ -83,6 +84,8 @@ DRAIN_IN, DRAIN_EVERY = 2.5, 90.0
 GUTTER = {"m": "gutter1", "tl": 8.0, "p": 14, "w": 0.5}                  # at the curb line
 CENTRE = {"tl": 12.0, "p": 6, "w": 0.12, "gap": 0.12}                    # a double line: two lines this far from the centre
 EDGE_LINE = {"m": "line_white", "tl": 6.4, "p": 2, "w": 0.15, "inset": 0.3}
+MEASURE_SKIP = {"service"}      # classes not measured between buildings (lots, alleys: far walls)
+MEASURE_MAX = 3.0               # a measured carriageway at most this times the class default
 SIDEWALK_CLASSES = {"residential", "tertiary", "secondary", "primary", "unclassified", "living_street"}
 CENTRE_CLASSES = {"primary", "secondary", "tertiary", "trunk"}
 EDGE_LINE_CLASSES = {"primary", "secondary", "tertiary", "trunk", "motorway"}
@@ -251,7 +254,7 @@ def carriageway(cls, kind, urban, rule_width=None, oneway=False):
     return w
 
 
-def road_specs(feats, urban_fn=None):
+def road_specs(feats, urban_fn=None, widths=None):
     """Per feature: None (left out) or (width m, surface kind). urban_fn(lat, lon) -> bool array (built-up
     land cover), None = rural everywhere; called once for every candidate's points (its cost is per
     call: 2026-10-11, one call per road made 4.4 of a physics block's 6 s). Pure given urban_fn."""
@@ -287,6 +290,18 @@ def road_specs(feats, urban_fn=None):
             urban = float(np.mean(u[k:k + (b - a)])) >= URBAN_SHARE
             k += b - a
             out[j] = Spec(carriageway(cls, kind, urban, None, ow), kind, urban, cls, ow)
+    if widths is not None:                      # measured between the buildings (roadwidth.py)
+        for j, sp in enumerate(out):
+            if sp is None or sp.kind not in BUILT or sp.cls not in SIDEWALK_CLASSES or sp.cls in MEASURE_SKIP:
+                continue
+            if _rule_value(rules.get("width"), j) is not None:
+                continue
+            a = feats.coord_off[feats.ring_off[feats.part_off[j]]]
+            b = feats.coord_off[feats.ring_off[feats.part_off[j + 1]]]
+            m = widths(str(feats.ids[j]), feats.lonlat[a:b]) if b > a else None
+            dflt = carriageway(sp.cls, sp.kind, True, None, sp.oneway)
+            if m is not None and 0.6 * dflt <= m[0] <= MEASURE_MAX * dflt:
+                out[j] = sp._replace(width=m[0], walk=m[1])
     return out
 
 
@@ -683,7 +698,7 @@ def sidewalk_stop(spec, fid, other, ofid):
     to the other's curb and the other's stops against its outer edge; with none on the other road, they
     run on to its curb. No gap and no overlap (two slabs at one height would z-fight). Pure."""
     if has_sidewalks(other) and (-other.width, ofid) < (-spec.width, fid):
-        return other.width / 2 + SIDEWALK["w"]
+        return other.width / 2 + other.walk
     return other.width / 2
 
 
@@ -696,8 +711,8 @@ def extras(spec, pts, lon):
         return out
     if has_sidewalks(spec):
         for side in (1, -1):
-            out.append(({**SIDEWALK, "side": side}, SIDEWALK["w"],
-                        offset_polyline(pts, side * (w / 2 + SIDEWALK["w"] / 2))))
+            out.append(({**SIDEWALK, "side": side}, spec.walk,
+                        offset_polyline(pts, side * (w / 2 + spec.walk / 2))))
             out.append(({**GUTTER, "side": side}, GUTTER["w"], offset_polyline(pts, side * (w / 2 - GUTTER["w"] / 2))))
     if kind == "paved" and cls in CENTRE_CLASSES and w >= 6.0 and not spec.oneway:   # no paint on cobbles
         look = {"m": centre_colour(lon), "tl": CENTRE["tl"], "p": CENTRE["p"]}
@@ -1085,11 +1100,11 @@ def _on_box(p, box, eps=1e-6):
     return abs(p[0] - x0) < eps or abs(p[0] - x1) < eps or abs(p[1] - y0) < eps or abs(p[1] - y1) < eps
 
 
-def drains(run, side, caps):
+def drains(run, side, caps, walk_w=None):
     """The storm drain chunks along a sidewalk run (k, 3) on `side` of its road: DRAIN_IN m before its
     end if that is a real end (caps: (start, end) real) and every DRAIN_EVERY m along it. Pure."""
     import sidewalks
-    curb, out = sidewalks.run_geometry(run, side, SIDEWALK["w"])
+    curb, out = sidewalks.run_geometry(run, side, walk_w or SIDEWALK["w"])
     s = np.r_[0.0, np.cumsum(np.hypot(*np.diff(curb[:, :2], axis=0).T))]
     L = s[-1]
     if L < 2 * DRAIN_IN:
@@ -1113,7 +1128,7 @@ def drains(run, side, caps):
     return res
 
 
-def build_tile(frame, tx, ty, cells, elev, urban_fn=None, walks=None, bridges=None):
+def build_tile(frame, tx, ty, cells, elev, urban_fn=None, walks=None, bridges=None, widths=None):
     """The chunks of one tile. cells: the mapgeom.Features of the "roads" layer of every cell touching
     the tile; elev(lat, lon) -> metres (the DEM); urban_fn: as road_specs. Features in several cells are
     taken once (by id). The carriageways, then each road's sidewalks / gutters / markings (extras), cut
@@ -1129,7 +1144,7 @@ def build_tile(frame, tx, ty, cells, elev, urban_fn=None, walks=None, bridges=No
     for feats in cells:
         if feats is None or len(feats) == 0:
             continue
-        specs = road_specs(feats, urban_fn)
+        specs = road_specs(feats, urban_fn, widths)
         bspecs = bridge_specs(feats)
         for i in range(len(feats)):
             if bspecs[i] is not None and str(feats.ids[i]) not in bseen:
@@ -1174,8 +1189,9 @@ def build_tile(frame, tx, ty, cells, elev, urban_fn=None, walks=None, bridges=No
     chunks.extend(_bridge_chunks(frame, bseen, elev, (x0, y0, x1, y1), bridges, cells))
     exact = (x0, y0, x1, y1)
     corners, jcuts, crosswalks, jramps, jlines, jinternal = ({}, {}, [], {}, {}, set()) if walks is None else \
-        junctions.find(roads, has_sidewalks, SIDEWALK["w"], PARKING_M,
-                       lambda sp: sp.urban and sp.cls in PARKING_CLASSES and sp.kind in BUILT and not sp.oneway)
+        junctions.find(roads, has_sidewalks, None, PARKING_M,
+                       lambda sp: sp.urban and sp.cls in PARKING_CLASSES and sp.kind in BUILT and not sp.oneway
+                       and sp.width >= STYLE.get(sp.cls, STYLE["unknown"])[0] + 2 * PARKING_M - 0.1)
     cornered = set()                            # road pairs whose sidewalks meet at a curb return
     if walks is not None:
         for (fid, side), cl in jcuts.items():
@@ -1216,8 +1232,8 @@ def build_tile(frame, tx, ty, cells, elev, urban_fn=None, walks=None, bridges=No
                             at_j1 = j1 and np.hypot(*(run[-1, :2] - cpiece[-1, :2])) < 0.6
                             caps = (not _on_box(run[0], exact) and not at_j0, not _on_box(run[-1], exact) and not at_j1)
                             ramps = junctions.ramp_ranges(run, jramps.get((fid, side), []))
-                            walks.append({"pts": run, "side": side, "caps": caps, "ramps": ramps})
-                            chunks.extend(drains(run, side, (caps[0] or at_j0, caps[1] or at_j1)))
+                            walks.append({"pts": run, "side": side, "caps": caps, "ramps": ramps, "w": w})
+                            chunks.extend(drains(run, side, (caps[0] or at_j0, caps[1] or at_j1), w))
                 continue
             if walks is not None and look["m"] == GUTTER["m"]:     # gutters end where their curb turns
                 gcuts = jcuts.get((fid, side), [])
@@ -1303,8 +1319,9 @@ def write_tile(out_dir, vfs_dir, aid, tx, ty, chunks, walks=None, road_mesh=None
                 c = wk["corner"]
                 b.add_corner(c["arc"], c["inward"], c["outer"], ramps=c.get("ramps", ()))
                 continue
-            curb, out = sidewalks.run_geometry(wk["pts"], wk["side"], SIDEWALK["w"])
-            b.add_run(curb, out, SIDEWALK["w"], caps=wk["caps"], ramps=wk.get("ramps", ()))
+            ww = wk.get("w", SIDEWALK["w"])
+            curb, out = sidewalks.run_geometry(wk["pts"], wk["side"], ww)
+            b.add_run(curb, out, ww, caps=wk["caps"], ramps=wk.get("ramps", ()))
         if not b.empty():
             shape = f"walks_{aid}_{tx}_{ty}.cdae"
             b.write(os.path.join(out_dir, shape))

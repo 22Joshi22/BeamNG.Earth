@@ -152,7 +152,7 @@ def grid_affine(lat, lon):
     return f
 
 
-def paint_roads(idx, lat, lon, feats_list, square, urban_fn=None):
+def paint_roads(idx, lat, lon, feats_list, square, urban_fn=None, widths=None):
     """idx (material per sample, [row, col], as classify gives it) with the roads of feats_list (the
     "roads" Features of the cells around) drawn in at their width: ROAD_MATERIAL by surface kind.
     lat / lon: the samples' positions; square: m between samples; urban_fn: as roads.road_specs (the
@@ -165,7 +165,7 @@ def paint_roads(idx, lat, lon, feats_list, square, urban_fn=None):
     for feats in feats_list:
         if feats is None or len(feats) == 0:
             continue
-        specs = roadsmod.road_specs(feats, urban_fn)
+        specs = roadsmod.road_specs(feats, urban_fn, widths)
         for i in range(len(feats)):
             fid = str(feats.ids[i])
             if specs[i] is None or fid in seen:

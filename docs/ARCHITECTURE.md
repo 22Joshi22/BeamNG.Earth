@@ -1083,6 +1083,23 @@ three days of testing: dem 741 MB / 7.5k files, imagery 1.4 GB / 35k, deshadow 7
       span the driving lanes only, and their curb ramps are on the corner piece
       (`Builder.add_corner(ramps=...)`). The junction checks treat the corner's own roads at their
       driving width.
+- Street widths from the buildings (`server/roadwidth.py`, `earthd --road-widths on`): Overture
+  has a width on ~2 % of segments, so every street of a class used to get the same default (Thames
+  St's 25-30 m square was drawn 10.6 m wide). In a built-up street the buildings stand at the back of
+  the sidewalks, so the distance between the building faces across it is the right-of-way:
+  - every 6 m along the road (10 m clear of each end), a ray each way, up to 25 m, to the first
+    Overture building wall (the road's cell and its neighbours, bucket-indexed);
+  - "walled" when both rays hit in >= 60 % of the cross-sections and the face-to-face distances
+    agree (IQR <= 30 % of the median); the median is the right-of-way;
+  - split into two sidewalks of 20 % of it (1.8-4.5 m) and the carriageway between (>= 5 m);
+  - used on the built classes that get sidewalks (not service roads, not with a width rule) when
+    the carriageway is 0.6-3x the class default; the sidewalk width follows. Elsewhere (front
+    yards, a quay, open land) the defaults stay.
+  - Memoised per road id for the server's life, so the physics grading, road meshes, sidewalks and
+    surface masks agree. Fells Point: Aliceanna and Fleet ~13 m curb to curb, sidewalks to the
+    building faces, matching the NAIP orthophoto (`tools/ortho_overlay.py`).
+  - Tried first from NAIP colour: asphalt, concrete and many roofs are the same light grey there,
+    so cross-sections of one street read 4-35 m.
 - Grading keeps the sidewalk band flat: on the classes that get sidewalks in towns, the flat
   shoulder is the sidewalk + 0.5 m instead of 1 m (everywhere, so it never depends on the land
   cover).

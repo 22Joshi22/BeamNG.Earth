@@ -250,7 +250,9 @@ def find(roads, has_walk, walk_w, parking_m=0.0, has_parking=lambda spec: False,
                 if debug is not None:
                     debug.append(('short branch', round(_branch_len(roads[ri][2], vi, si), 1), round(ci, 1), round(_branch_len(roads[rj][2], vj, sj), 1), round(cj, 1), X.round(1).tolist()))
                 continue
-            O = _line_x(Pi + ni * (wi + walk_w), ui, Pj - nj * (wj + walk_w), uj)
+            wki = spi.walk if walk_w is None else walk_w
+            wkj = spj.walk if walk_w is None else walk_w
+            O = _line_x(Pi + ni * (wi + wki), ui, Pj - nj * (wj + wkj), uj)
             if O is None:
                 continue
             a0 = math.atan2(*(Ti - Z)[::-1])
@@ -279,7 +281,7 @@ def find(roads, has_walk, walk_w, parking_m=0.0, has_parking=lambda spec: False,
             zo = 0.5 * (zi0 + zj0)
             zci = _z_along(roads[ri][2], vi, si, ci)
             zcj = _z_along(roads[rj][2], vj, sj, cj)
-            outer = [(*(Pj + uj * cj - nj * (wj + walk_w)), zcj), (*O, zo), (*(Pi + ui * ci + ni * (wi + walk_w)), zci)]
+            outer = [(*(Pj + uj * cj - nj * (wj + wkj)), zcj), (*O, zo), (*(Pi + ui * ci + ni * (wi + wki)), zci)]
             Cc = _line_x(Pi + ni * di, ui, Pj - nj * dj, uj)
             fill = np.vstack([[*Cc, zo]] + [np.r_[arc2[m], z[len(pre) + m]] for m in range(k)]) if Cc is not None else None
             if fill is not None and math.hypot(*(Cc - X)) > 20.0 + MERGE_M:

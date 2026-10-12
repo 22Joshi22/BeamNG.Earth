@@ -119,7 +119,8 @@ def _plan(xy, z, spec):
     # thin to VERTEX_STEP (the profile stays smooth between: linear in the grading pass)
     every = max(1, int(round(VERTEX_STEP / PROFILE_STEP)))
     keep = np.r_[np.arange(0, len(xy) - 1, every), len(xy) - 1]
-    width = roadsmod.carriageway(spec.cls, spec.kind, True, None, spec.oneway) if built else spec.width
+    # the carriageway as a city street would have it (never from the land cover), or the measured one
+    width = max(spec.width, roadsmod.carriageway(spec.cls, spec.kind, True, None, spec.oneway)) if built else spec.width
     return Plan(xy[keep], zs[keep], width / 2 + shoulder(spec))
 
 
@@ -129,7 +130,7 @@ def shoulder(spec):
     if spec.kind not in roadsmod.BUILT:
         return 0.0
     if spec.cls in roadsmod.SIDEWALK_CLASSES:
-        return roadsmod.SIDEWALK["w"] + SIDEWALK_MARGIN_M
+        return spec.walk + SIDEWALK_MARGIN_M
     return SHOULDER_M
 
 
@@ -137,8 +138,8 @@ class Grader:
     """The road plans of one anchor frame, per map cell, made once (worker threads; it fetches the road
     cells it lacks)."""
 
-    def __init__(self, frame, mapdata, elev):
-        self.frame, self.md, self.elev = frame, mapdata, elev
+    def __init__(self, frame, mapdata, elev, widths=None):
+        self.frame, self.md, self.elev, self.widths = frame, mapdata, elev, widths
         self.cells = {}
         self.failed = {}        # cell key -> monotonic time of the last failed fetch
         self.lock = threading.Lock()
@@ -160,7 +161,7 @@ class Grader:
             return []
         plans = []
         if feats is not None and len(feats):
-            specs = roadsmod.road_specs(feats)
+            specs = roadsmod.road_specs(feats, None, self.widths)
             parts, ids = [], []
             for i in range(len(feats)):
                 if specs[i] is None:

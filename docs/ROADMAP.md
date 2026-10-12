@@ -286,8 +286,9 @@ Popular trails are where players will test the terrain hardest, and they are wel
   per tile (no DecalRoads: they re-clipped on every block move, 140 ms at speed), the road lift, bridge
   decks (split from partial-bridge segments, collidable), smoother grading, batched builds.
   Intersections done (curb returns, crosswalks, curb ramps; ARCHITECTURE "Intersections").
+  Street widths measured between the building faces (ARCHITECTURE "Roads", `roadwidth.py`).
   Next: real deck heights from lidar (USGS 3DEP class 17), bridge parapets and piers, tunnels,
-  stop lines, painted curbs by rule.
+  painted curbs by rule.
 - Overture transportation (GeoParquet via the STAC per-file index; 2.6-3.7 s per 30 km box cold).
 - Near roads: meshes on the 2 m lattice, ground graded under them on the server so physics and
   visuals agree; markings; bridges as collidable decks. Far roads painted into the imagery.

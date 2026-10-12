@@ -8,15 +8,16 @@ import os, sys, math
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'server'))
 import numpy as np
 from PIL import Image, ImageDraw
-import geodesy, roads, grading, mapdata, dem, netfetch, surface, sidewalks
+import geodesy, roads, grading, mapdata, dem, netfetch, surface, sidewalks, roadwidth
 lat, lon, half, img, out = float(sys.argv[1]), float(sys.argv[2]), float(sys.argv[3]), sys.argv[4], sys.argv[5]
 cache = os.path.expanduser('~/.cache/beamng-earth')
 net = netfetch.Fetcher(stats_dir=os.path.join(cache, 'netstats'))
 md = mapdata.MapData(cache, fetcher=net); dm = dem.Dem(os.path.join(cache, 'dem'), fetcher=net)
 frame = geodesy.EnuFrame(lat, lon)
-g = grading.Grader(frame, md, lambda la, lo: dm.sample(la, lo, grading.PROFILE_ZOOM))
+g = grading.Grader(frame, md, lambda la, lo: dm.sample(la, lo, grading.PROFILE_ZOOM), None)
 elev = lambda la, lo: g.apply(la, lo, dm.sample(la, lo, 15), grading.ROAD_LIFT)
 sf = surface.Surface(md)
+rw = roadwidth.RoadWidths(lambda k: md.cell(k, layers=("buildings",), kind="demand").layers.get("buildings")).get
 dlat = half / 111320.0; dlon = half / (111320.0 * math.cos(math.radians(lat)))
 im = Image.open(img).convert('RGB'); W, H = im.size
 dr = ImageDraw.Draw(im, 'RGBA')
@@ -28,7 +29,7 @@ tiles = {(int(math.floor(x / 256)), int(math.floor(y / 256))) for x in np.linspa
 for tx, ty in sorted(tiles):
     cells = [md.cell(k, layers=("roads",), kind="demand").layers.get("roads") for k in roads.cells_of_tile(frame, tx, ty)]
     walks = []
-    chunks = roads.build_tile(frame, tx, ty, cells, elev, sf.urban, walks=walks)
+    chunks = roads.build_tile(frame, tx, ty, cells, elev, sf.urban, walks=walks, widths=rw)
     for c in chunks:
         if not c['n'] and not c.get('poly'):
             continue
@@ -47,8 +48,9 @@ for tx, ty in sorted(tiles):
         if 'corner' in wk:
             dr.line(px(wk['corner']['arc'][:, :2]), fill=(255, 255, 0, 255), width=3)
             continue
-        curb, o = sidewalks.run_geometry(wk['pts'], wk['side'], roads.SIDEWALK['w'])
+        ww = wk.get('w', roads.SIDEWALK['w'])
+        curb, o = sidewalks.run_geometry(wk['pts'], wk['side'], ww)
         dr.line(px(curb[:, :2]), fill=(255, 255, 0, 255), width=3)
-        dr.line(px(curb[:, :2] + o * roads.SIDEWALK['w']), fill=(0, 255, 0, 200), width=2)
+        dr.line(px(curb[:, :2] + o * ww), fill=(0, 255, 0, 200), width=2)
 im.resize((W, W)).save(out)
 print('tiles', sorted(tiles))

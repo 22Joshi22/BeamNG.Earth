@@ -80,6 +80,7 @@ import surface as surfacemod  # noqa: E402
 import roads as roadsmod  # noqa: E402
 import grading as gradingmod  # noqa: E402
 import roadmesh as roadmeshmod  # noqa: E402
+import roadwidth as roadwidthmod  # noqa: E402
 import mapdata as mapdatamod  # noqa: E402
 import dem as demmod  # noqa: E402
 import deshadow as deshadowmod  # noqa: E402
@@ -378,7 +379,7 @@ class Server:
                  tone=1.0, near_radii=None, status_interval=STATUS_INTERVAL, cells=CELLS_DEFAULT, tex=None,
                  block=BLOCK_DEFAULT, horizon=False, deshadow="off", weather=None, gravity=None, net=None,
                  colormatch="off", credits=None, cache=None, retex_rate=RETEX_RATE, surface=None,
-                 mapdata=None, grading=False):
+                 mapdata=None, grading=False, road_widths=False):
         """kfun: K(L) for every level (default: the layout's K table); near_radii: the min-level
         radii (default: the layout's); cells: 32 (v1.3.1) or 64 (M1, mesh mode only); tex: texture
         px per level from the finest (default: tex_near, tex_near, tex_far with 32 cells,
@@ -497,6 +498,10 @@ class Server:
         self.surface = surface      # surface.Surface: ground models under the physics block (--surface on)
         self.mapdata = mapdata      # mapdata.MapData for the roads (--roads on), else None
         self.grading = bool(grading) and mapdata is not None   # ground graded under roads (grading.py)
+        # street widths measured between the buildings (roadwidth.py), decided once per road per run
+        self.road_widths = (roadwidthmod.RoadWidths(
+            lambda key: mapdata.cell(key, layers=("buildings",), kind="demand").layers.get("buildings")).get
+            if road_widths and mapdata is not None else None)
         self.grader_lock = threading.Lock()
         # The download cache's bookkeeping (cache.py): every producer reports its disk hits and writes
         self.cache = cache
@@ -720,7 +725,8 @@ class Server:
                 anchor.bridges = roadsmod.BridgeProfiles(
                     anchor.frame, lambda key: self.mapdata.cell(key, layers=("roads",), kind="demand").layers.get("roads"),
                     elev)
-        chunks = roadsmod.build_tile(anchor.frame, tx, ty, cells, elev, urban, walks=walks, bridges=anchor.bridges)
+        chunks = roadsmod.build_tile(anchor.frame, tx, ty, cells, elev, urban, walks=walks, bridges=anchor.bridges,
+                                     widths=self.road_widths)
         x0, y0, _, _ = roadsmod.tile_bbox(tx, ty)
         mesh = roadmeshmod.build(anchor.frame, chunks, elev, (x0, y0, 0.0))
         dmesh = roadmeshmod.deck(chunks, (x0, y0, 0.0))
@@ -733,7 +739,8 @@ class Server:
         with self.grader_lock:
             if anchor.grader is None:
                 anchor.grader = gradingmod.Grader(anchor.frame, self.mapdata,
-                                                  lambda la, lo: self.dem.sample(la, lo, gradingmod.PROFILE_ZOOM))
+                                                  lambda la, lo: self.dem.sample(la, lo, gradingmod.PROFILE_ZOOM),
+                                                  self.road_widths)
             return anchor.grader
 
     def make_heightmap(self, anchor, cx, cy, progress):
@@ -757,7 +764,7 @@ class Server:
             road_feats, roads_complete = self.surface.roads(keep["lat"], keep["lon"])
             if road_feats:
                 idx = surfacemod.paint_roads(idx, keep["lat"], keep["lon"], road_feats, heightmap.SQUARE,
-                                             self.surface.urban)
+                                             self.surface.urban, self.road_widths)
             complete = complete and roads_complete
             info["layers"] = surfacemod.write_masks(idx[::-1], self.out_dir, self.hm_name((anchor.id, cx, cy))[:-4])
             info["surfaceComplete"] = complete
@@ -2000,7 +2007,8 @@ async def main_async(args):
                     retex_rate=args.retex_rate,
                     surface=(surfacemod.Surface(mapdata) if args.surface == "on" else None),
                     mapdata=mapdata if args.roads == "on" else None,
-                    grading=args.grading == "on" and args.roads == "on")
+                    grading=args.grading == "on" and args.roads == "on",
+                    road_widths=args.road_widths == "on" and args.roads == "on")
 
     async def net_log():
         while True:
@@ -2150,6 +2158,9 @@ def main():
     ap.add_argument("--roads", choices=("on", "off"), default="on",
                     help="Overture roads near the player (roads.py): DecalRoads in the mod (paved asphalt, "
                          "gravel / dirt tracks) within ~640 m, in 256 m tiles; off = none")
+    ap.add_argument("--road-widths", choices=("on", "off"), default="on",
+                    help="street widths measured between the buildings that line them (roadwidth.py; Overture "
+                         "buildings); off = class defaults")
     ap.add_argument("--grading", choices=("on", "off"), default="on",
                     help="grade the ground under roads (grading.py: smooth along, flat across, 1:2 slopes back "
                          "to the natural ground) in the physics block and the near mesh tiles; needs --roads on")
