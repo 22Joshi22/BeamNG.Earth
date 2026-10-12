@@ -1173,7 +1173,7 @@ def build_tile(frame, tx, ty, cells, elev, urban_fn=None, walks=None, bridges=No
                         chunks.append(_chunk(look, lw, c))
     chunks.extend(_bridge_chunks(frame, bseen, elev, (x0, y0, x1, y1), bridges, cells))
     exact = (x0, y0, x1, y1)
-    corners, jcuts, crosswalks, jramps, jlines = ({}, {}, [], {}, {}) if walks is None else \
+    corners, jcuts, crosswalks, jramps, jlines, jinternal = ({}, {}, [], {}, {}, set()) if walks is None else \
         junctions.find(roads, has_sidewalks, SIDEWALK["w"], PARKING_M,
                        lambda sp: sp.urban and sp.cls in PARKING_CLASSES and sp.kind in BUILT and not sp.oneway)
     cornered = set()                            # road pairs whose sidewalks meet at a curb return
@@ -1196,7 +1196,7 @@ def build_tile(frame, tx, ty, cells, elev, urban_fn=None, walks=None, bridges=No
                 look = junctions.STOP_LINE if cw.get("stop") else junctions.CROSSWALK
                 chunks.append(_chunk(look, cw["w"], np.array([cw["a"], cw["b"]])))
     for fid, spec, pts, lon in roads:
-        ex = extras(spec, pts, lon)
+        ex = extras(spec, pts, lon) if fid not in jinternal else []    # inside a junction: none
         if not ex:
             continue
         blockers = [(p2[:, :2], s2.width / 2 + CUT_MARGIN) for f2, s2, p2, _ in roads if f2 != fid]
