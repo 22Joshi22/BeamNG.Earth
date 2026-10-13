@@ -933,7 +933,7 @@ class DriveBase(unittest.TestCase):
                     st["phase"] = "stop"
                     player["v"] = [0.0, 0.0]
                     st["stop_wall"] = st["quiet_wall"] = time.monotonic()
-                    st["log_n"] = len(c.log)
+                    st["log_n"] = busy_msgs(c.log)
 
         def frame():
             clock["frame"] += 1
@@ -1008,8 +1008,8 @@ class DriveBase(unittest.TestCase):
         while not (far.done and not far.has_work() and time.monotonic() - st["quiet_wall"] > 1.0):
             self.assertLess(time.monotonic() - st["stop_wall"], 120, "no final far_done")
             frame()
-            if len(c.log) != st["log_n"]:
-                st["log_n"], st["quiet_wall"] = len(c.log), time.monotonic()
+            if busy_msgs(c.log) != st["log_n"]:
+                st["log_n"], st["quiet_wall"] = busy_msgs(c.log), time.monotonic()
         check_coverage()
         if transient["open"]:
             stats["transients"].append(transient["open"])
@@ -1309,14 +1309,23 @@ class _NoFarConnection(earthd.Connection):
         await super().prepare_anchor(msg)
 
 
+# Messages the server sends on every pose however settled it is (the altitude rule's ground_ahead,
+# twice a second): "quiet" means no other message for a second.
+PERIODIC = {"ground_ahead"}
+
+
+def busy_msgs(log):
+    return sum(1 for m in log if m.get("type") not in PERIODIC)
+
+
 class _SlowServer(earthd.Server):
     """make_heightmap takes `terrain_delay` s longer (a cold DEM: every request and prefetch)."""
     terrain_delay = 0.0
 
-    def make_heightmap(self, anchor, cx, cy, progress):
+    def make_heightmap(self, anchor, cx, cy, progress, *args):
         if self.terrain_delay:
             time.sleep(self.terrain_delay)
-        return super().make_heightmap(anchor, cx, cy, progress)
+        return super().make_heightmap(anchor, cx, cy, progress, *args)
 
 
 @unittest.skipIf(os.environ.get("BNGE_SKIP_DRIVE") == "1", "BNGE_SKIP_DRIVE=1")

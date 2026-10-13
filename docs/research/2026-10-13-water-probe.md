@@ -22,6 +22,7 @@ The roadmap's water item (docs/ROADMAP.md "Water") has nothing built yet: lakes,
   - Tried: the `scale` field or `setScale`; `postApply`; stock grid settings (gridSize / gridElementSize 1); 200 m and 2.4 km boxes.
   - No log errors.
   - The stock definition (West Coast USA's `WaterBlock_1`, all its fields) spawned the editor's way (`Sim.deserializeObjectFromText(json, true, true)`), surface at 1 m: not drawn either.
+  - The editor's own recipe (`editor/createObjectTool.lua` `buildWaterBlock`: its ripple / wave arrays, `/core/art/water/ripple_nm.normal.dds`, `depthcolor_ramp_b.color.png`, `foam_b.color.png`, `DefaultSkyCubemap`, then `reloadTextures()`): not drawn either.
   - So it is not our field values. Untested: a `WaterBlock` in our level's own items file, loaded with the level (a runtime-only problem?); a stock level with ours as the only change.
 
 ## Why a plane is not enough
