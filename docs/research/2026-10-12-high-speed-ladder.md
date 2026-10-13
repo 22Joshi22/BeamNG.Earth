@@ -144,6 +144,10 @@ but the block still falls behind there (~1 s per block answer).
     brighter), a one-frame flash in hills at low sun; a slow frame is the smaller evil.
   - Turning it off and on in the same frame keeps the spike. Re-setting `castShadows` to 1 before
     `postApply` once left the old terrain drawn: not safe.
+  - The Lua part (`commits[i].ter`, `terrain.lastSwap`; 16 commits, Columbus OH at 58 m/s): the `.ter`
+    load (`postApply`) is 10.8-12.6 ms of the 11.0-12.7 ms; the base photo (`setBase`, 9 materials) is
+    ~0.2 ms. What is left is the engine's parse and grid rebuild on the main thread (an engine patch
+    that loads it on a worker would be the next step).
 
 **NAIP for the near ground (2026-10-13, terrain quality).** The block's base photo came from USGS
 ImageryOnly at z16 (~1.9 m pixels, upscaled to the 1 m texels). The USGS NAIP ImageServer has the same

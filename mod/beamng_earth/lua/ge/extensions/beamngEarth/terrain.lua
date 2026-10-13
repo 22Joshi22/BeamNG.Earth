@@ -18,6 +18,7 @@
 -- the 1024² or 512² layer map and flat heightmap (the layer map must match the heightmap size).
 
 local lattice = require('beamngEarth/lattice')
+local stopwatch = require('beamngEarth/stopwatch')
 
 local M = {}
 
@@ -287,12 +288,14 @@ function M.swap(terPath, squareSize, maxHeight, x, y, z, layers, base, baseSize)
     slots = {}
     for i, nm in ipairs(layers.materials) do slots[i] = nm[1] end
   end
+  local sw = stopwatch.new()
   local ok, err = pcall(function()
     tb:setField('maxHeight', 0, tostring(maxHeight))
     tb:setPosition(vec3(x, y, z))
     tb:setField('terrainFile', 0, terPath)
     tb:postApply()
   end)
+  local tApply = sw()
   if not ok then
     log('W', 'beamngEarth', 'terrain .ter swap failed: ' .. tostring(err))
     return false
@@ -301,6 +304,8 @@ function M.swap(terPath, squareSize, maxHeight, x, y, z, layers, base, baseSize)
   M.swaps = (M.swaps or 0) + 1
   applyRender(tb)
   if base ~= nil then M.setBase(base or nil, baseSize) end
+  -- ms of the last swap: the .ter load (postApply) and the whole call (with the base photo)
+  M.lastSwap = { apply = tApply, total = sw() }
   return true
 end
 
