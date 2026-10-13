@@ -935,7 +935,9 @@ class Server:
         size = self.layout.block * heightmap.SQUARE
         x0, y0 = cx - size / 2, cy - size / 2
         try:
-            rgb, _ = self.imagery.render(anchor.frame, x0, y0, size, BASE_PX)
+            rgb, used = self.imagery.render(anchor.frame, x0, y0, size, BASE_PX)
+            log.debug("base photo %s r%d: %s", (anchor.id, cx, cy), rev,
+                      {k: round(v / BASE_PX ** 2, 3) for k, v in used.items()})
         except Exception as e:      # an imagery failure must not cost the terrain
             log.info("base photo %s: %s", (anchor.id, cx, cy), e)
             return None

@@ -107,7 +107,14 @@ SOURCES["naip"] = Source(
             "?bbox={bbox}&bboxSR=3857&imageSR=3857&size={size},{size}&format=jpg&f=image",
     18, "USDA NAIP via USGS The National Map (public domain)", probe_zooms=(10, 12), min_zoom=17,
     export=2, lazy=True, probe_source="usgs")
-DEFAULT_CHAIN = ("naip", "usgs", "eox2023", "eox2016")
+# The same NAIP from USDA's own service: newer flights (2024-25, some states 0.3 m) and 2-5x faster
+# (1.6-4 s per 1024² in-game 2026-10-13 vs ~10 s), but blank in places (Maryland, Denver: black, so
+# missing, and "naip" fills in).
+SOURCES["naipusda"] = Source(
+    "naipusda", "https://apps.geo.fpac.usda.gov/geo-imagery/rest/services/naip/conus_naip/ImageServer/exportImage"
+                "?bbox={bbox}&bboxSR=3857&imageSR=3857&size={size},{size}&format=jpg&f=image",
+    18, "USDA NAIP (public domain)", probe_zooms=(10, 12), min_zoom=17, export=2, lazy=True, probe_source="usgs")
+DEFAULT_CHAIN = ("naipusda", "naip", "usgs", "eox2023", "eox2016")
 # The line the mod shows (V1_3_SPEC §C), for the default chain: every source's own credit, EOX's in
 # its June 2026 wording (docs/research/2026-10-10-rate-limits.md: "EOxCloudless https://cloudless.eox.at
 # by EOX IT Services GmbH (Contains modified Copernicus Sentinel data 2023)", 2016: "... 2016 & 2017").
@@ -576,12 +583,12 @@ class Imagery:
         if np.abs(lat).max() > MAX_LAT:
             return
         want = []
-        for src in lazy:
-            z = min(zoom_for(float(lat[0]), texel_m), src.max_zoom)
-            if z < src.min_zoom:
-                continue
-            k = src.export
-            for la, lo in zip(np.atleast_1d(lat), np.atleast_1d(lon)):
+        for la, lo in zip(np.atleast_1d(lat), np.atleast_1d(lon)):
+            for src in lazy:                # per place, the lazy sources in chain order (_warm_done)
+                z = min(zoom_for(float(lat[0]), texel_m), src.max_zoom)
+                if z < src.min_zoom:
+                    continue
+                k = src.export
                 r_px = radius / ground_res(float(la), z)
                 fx, fy = mercator_px(np.array([la]), np.array([lo]), z)
                 for ty in range(int((fy[0] - r_px) // TILE), int((fy[0] + r_px) // TILE) + 1):
@@ -617,10 +624,17 @@ class Imagery:
                     self._warm_want = [k for k in self._warm_want if k != key]
 
     def _warm_done(self, key):
-        """The parent of key was fetched (its last child, the one written last, is on disk or known to be
-        missing), or its area is outside the coverage probes."""
+        """Nothing (more) to fetch for key's parent: it was fetched (its last child, the one written last, is
+        on disk or known to be missing), an earlier lazy source of the chain has data there (its last
+        child is on disk: this one is only the fallback where that one is black), or the area is outside
+        the coverage probes."""
         src, z, x, y = key
         last = (1 << src.export) - 1
+        for s in self.chain:
+            if s is src:
+                break
+            if s.lazy and s.export == src.export and os.path.exists(self._paths(s, z, x | last, y | last)[0]):
+                return True
         path, miss = self._paths(src, z, x | last, y | last)
         if os.path.exists(path) or os.path.exists(miss):
             return True
@@ -639,15 +653,17 @@ class Imagery:
         if np.abs(lat).max() > MAX_LAT:
             return True
         zw = zoom_for(float(lat[1, 1]), size / px)
-        for src in lazy:
-            z = min(zw, src.max_zoom)
-            if z < src.min_zoom:
-                continue
-            fx, fy = mercator_px(lat.ravel(), lon.ravel(), z)
-            for ty in range(int(math.floor(fy.min() - 1)) // TILE, int(math.floor(fy.max() + 1)) // TILE + 1):
-                for tx in range(int(math.floor(fx.min() - 1)) // TILE, int(math.floor(fx.max() + 1)) // TILE + 1):
+        z = min(zw, lazy[0].max_zoom)
+        if z < lazy[0].min_zoom:
+            return True
+        fx, fy = mercator_px(lat.ravel(), lon.ravel(), z)
+        for ty in range(int(math.floor(fy.min() - 1)) // TILE, int(math.floor(fy.max() + 1)) // TILE + 1):
+            for tx in range(int(math.floor(fx.min() - 1)) // TILE, int(math.floor(fx.max() + 1)) // TILE + 1):
+                for src in lazy:            # the first with data decides; a missing one passes to the next
                     path, miss = self._paths(src, z, tx, ty)
-                    if os.path.exists(path) or os.path.exists(miss):
+                    if os.path.exists(path):
+                        break
+                    if os.path.exists(miss):
                         continue
                     with self._lock:
                         if self._probe_status((src, z, tx, ty)) == "outside":

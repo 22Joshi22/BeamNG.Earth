@@ -168,7 +168,14 @@ flights at 0.3-0.6 m: `imagery.SOURCES["naip"]`, first in the default chain for 
   40 m (20 m left haloes round white roofs), gain clipped to [1/3, 3]: NAIP's detail, USGS's colours;
   the square is gone in-game (`naip_2026-10-13/annapolis_seam_before_after.jpg`, a faint edge left on
   water).
-- **Not yet.** At 10 s per ~0.9 km square, warm() keeps up with town driving, not with 130 mph.
+- **USDA's own NAIP service first** (`naipusda`, apps.geo.fpac.usda.gov): 2024-25 flights, 1.6-4 s per
+  1024² instead of ~10 s, but black over Maryland (and Denver). Chain naipusda, naip, usgs.
+  - warm() asks USGS's NAIP only where USDA's image was black; `lazy_ready` takes the first source
+    with data per tile.
+  - Columbus OH, 58 m/s for 10 km: all 43 blocks built with >= 99 % NAIP (none redone).
+  - p50 10.4 ms, p99 21.6 ms, worst commit frame 26 ms, 93 fps mean (the 142 ms frame is the
+    harness stopping in the last second).
+  - In Maryland, the slow USGS service still decides: town speeds only.
 
 **Shorter paced slices in the colour match (2026-10-13).** `pace()` wrapped to log the gaps between its
 calls, one Fells Point region run offline. Before: `detect_seams` ran 0.7 s per angle pass between two

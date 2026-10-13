@@ -449,7 +449,8 @@ class ChainTest(unittest.TestCase):
         eox = "EOxCloudless https://cloudless.eox.at by EOX IT Services GmbH (Contains modified Copernicus Sentinel data "
         self.assertEqual(imagery.SOURCES["eox2023"].attribution, eox + "2023), CC BY-NC-SA 4.0")
         self.assertEqual(imagery.SOURCES["eox2016"].attribution, eox + "2016 & 2017), CC BY 4.0")
-        self.assertEqual(imagery.ATTRIBUTION, "Imagery: USDA NAIP via USGS The National Map (public domain); "
+        self.assertEqual(imagery.ATTRIBUTION, "Imagery: USDA NAIP (public domain); "
+                         "USDA NAIP via USGS The National Map (public domain); "
                          "USGS The National Map (public domain); " + eox
                          + "2023), CC BY-NC-SA 4.0; " + eox + "2016 & 2017), CC BY 4.0")
         self.assertNotIn("Sentinel-2 cloudless", imagery.ATTRIBUTION)
@@ -460,8 +461,9 @@ class ExportTransport:
     serve_export(z, x, y, size) -> (status, body) for the parent tile the bbox is; XYZ as ServeTransport."""
     BBOX = re.compile(r"bbox=([-\d.]+),([-\d.]+),([-\d.]+),([-\d.]+).*size=(\d+),")
 
-    def __init__(self, serve_export, serve_xyz, requests):
+    def __init__(self, serve_export, serve_xyz, requests, by_name=False):
         self.serve_export, self.serve_xyz, self.requests = serve_export, serve_xyz, requests
+        self.by_name = by_name          # serve_export(z, x, y, size, source name)
 
     def request(self, url, headers, timeout):
         m = self.BBOX.search(url)
@@ -470,8 +472,10 @@ class ExportTransport:
             z = round(math.log2(imagery.EARTH_CIRC / (x1 - x0)))
             tile = imagery.EARTH_CIRC / 2 ** z
             x, y = round((x0 + imagery.EARTH_CIRC / 2) / tile), round((imagery.EARTH_CIRC / 2 - y1) / tile)
-            self.requests.append(("naip", z, x, y))
-            status, body = self.serve_export(z, x, y, int(size))
+            name = "naipusda" if "fpac.usda.gov" in url else "naip"
+            self.requests.append((name, z, x, y))
+            status, body = (self.serve_export(z, x, y, int(size), name) if self.by_name
+                            else self.serve_export(z, x, y, int(size)))
             return status, {}, body
         name = next(n for n, s in imagery.SOURCES.items() if url.startswith(s.url.split("{z}")[0]))
         z, a, b = (int(v) for v in URL.search(url).groups())
@@ -569,6 +573,38 @@ class ExportImageryTest(unittest.TestCase):
         im.render(self.frame, 0.0, 0.0, 256.0, 256)
         self.wait(im)
         self.assertEqual(len(self.requests), n)     # the missing children are remembered
+
+    def test_two_naip_services(self):
+        """naipusda first; where it is black (no flights there), naip; the look-ahead asks naip only there,
+        and lazy_ready counts the first source with data."""
+        def serve_export(z, x, y, size, name):
+            a = np.zeros((size, size, 3), np.uint8) + np.array((90, 120, 60) if name == "naip" else (60, 90, 120), np.uint8)
+            a[::2, ::2] += 3
+            if name == "naipusda" and x % 2:        # every other parent: USDA has nothing (black)
+                a[:] = 0
+            b = io.BytesIO()
+            Image.fromarray(a).save(b, "JPEG", quality=95)
+            return 200, b.getvalue()
+
+        def serve_xyz(name, z, x, y):
+            a = np.zeros((256, 256, 3), np.uint8) + np.array((200, 30, 30), np.uint8)
+            a[::2, ::2] += 6
+            return 200, png(a)
+        self.requests = []
+        net = netfetch.Fetcher(transport=ExportTransport(serve_export, serve_xyz, self.requests, by_name=True),
+                               sleep=lambda s: None, policies=FAST)
+        im = imagery.Imagery(self.tmp.name, ("naipusda", "naip", "usgs"), fetcher=net, tone=0.0)
+        self.assertEqual(self.warm(im, [(0.0, 0.0), (1500.0, 0.0)], radius=700.0), [])
+        usda = {r[2:] for r in self.requests if r[0] == "naipusda"}
+        usgs_naip = {r[2:] for r in self.requests if r[0] == "naip"}
+        self.assertTrue(usda and usgs_naip)
+        self.assertTrue(all(x % 2 for x, y in usgs_naip), "USGS NAIP only where USDA was black")
+        self.assertLessEqual(usgs_naip, usda)
+        self.assertTrue(im.lazy_ready(self.frame, -512.0, -512.0, 1024.0, 1024))
+        _, used = im._render(self.frame, -512.0, -512.0, 1024.0, 1024)
+        self.assertIn("naipusda", used)
+        # where a USDA tile meets a USGS-NAIP one, neither has all four bilinear taps: a texel line of USGS
+        self.assertLess(used.get("usgs", 0), 0.001 * 1024 * 1024)
 
     def test_colours_from_the_chain(self):
         """A rendered NAIP texture keeps its detail but takes the next source's large-scale colour (no seam
