@@ -526,9 +526,12 @@ built-tile cache (2) and pre-download within the cap (4).
    end coordinates), surfaces -> BeamNG ground models, a graded runway / shoulder / strip / blend height field
    under ICAO / FAA limits as a drop-in `elev_fn` for the heightmap and tiles (steep altiports and bush strips
    keep their shape: Courchevel 19 %, Lukla 15 %), FAA / ICAO marking geometry for DecalRoads, a CLI with
-   previews. Next: in-game check at KBWI (grade the live block, a plane mod on 10/28, markings as
-   DecalRoads), then the earthd wiring after v1.4 M6, water masks, OSM / Overture runways where OurAirports
-   has no ends, runway ground models in the v1.5 layers, spawn places at runway ends.
+   previews. Wired 2026-10-13 behind `earthd --airports on` (default off): the runways graded into the
+   block, the far tiles and the road tiles (`airportgrade.py`; KBWI 10/28 in-game 3x smoother than the
+   DEM, within 16 cm of it), the markings drawn as road-tile chunks (low contrast with the stock
+   `line_white`: a brighter runway paint material next). Next: a plane mod on 10/28, the paint material,
+   then default on; water masks, OSM / Overture runways where OurAirports has no ends, runway ground
+   models in the v1.5 layers, spawn places at runway ends.
 5. **Data credits overlay** (user, 2026-10-10; docs/DEVTOOLS.md): small text in a screen corner naming
    the imagery / elevation / weather sources around the player. Built offline (2026-10-10, merged
    to main with netfetch and colour seams): server `credits` message (on change, at most 1/s), mod
