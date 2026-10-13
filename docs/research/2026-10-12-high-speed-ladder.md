@@ -297,3 +297,23 @@ block's quantum: 1/16 m (6 cm steps).
   the survey now takes the largest relief inside any 1.5-block window (61 x 61 samples, 500 m apart).
 - Courchevel and Whitney 1/16 -> 1/32 m; Fells Point and KBWI 1/128 -> 1/256 m.
 - In-game at LFLJ: the centreline's 2nd-difference RMS (4 m steps) 10.2 -> 2.1 cm.
+
+**Intermittent physics blow-ups in test drives (2026-10-13, open).** Two of ~17 drives today ended with the
+vehicle's velocity NaN mid-block (guard clear, the block under the car):
+- Columbus OH at 1.8 km (near the Scioto river);
+- Fells Point east at 7.5 km (the harbour area), the first drive after a server restart.
+
+The same routes passed on reruns. Both were first passes over freshly built data.
+
+Hypothesis: a colliding mesh that arrived late becomes solid around the car.
+- The sidewalks and bridge decks (`roads.lua` `createWalk`, `collisionType` 'Visible Mesh') turn solid
+  at the next `reloadCollision` (every 3 s or at a terrain commit).
+- On a first pass their road tile can arrive after the car is already on them.
+- Or the harness (`tools/drive.py` follows the static-collision ground) lifts the car onto a deck that
+  just appeared above it.
+
+Next:
+- Log, at every road `reloadCollision`, the new colliders and the player's distance to their meshes,
+  and reproduce on fresh data.
+- If confirmed, create a collider that the car is touching without collision until it is clear: a
+  per-mesh check, since a sidewalk mesh spans its whole 256 m tile.
