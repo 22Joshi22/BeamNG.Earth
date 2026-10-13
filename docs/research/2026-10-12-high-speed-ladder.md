@@ -114,3 +114,23 @@ against 5.6 on the way out. Removed tiles now wait hidden as spares (120 s, at m
 **After tonight** (fresh game, monitors off): a 58 m/s drive through Fells Point at 101-103 fps mean,
 p99 17 ms; flights at 134 m/s (400 m) 86 fps with a flat far-tile backlog, 300 m/s 80 fps (it was 44)
 but the block still falls behind there (~1 s per block answer).
+
+**2026-10-13, with the user's OK:**
+- **`.ter` swap.** The server writes every block as a `.ter` (`heightmap.write_ter`, a new name per build:
+  the engine skips a name it already has). Terrain-follow moves load it with `terrainFile` + `postApply`
+  (`terrain.swap`) instead of `importMaps` + `reloadCollision`. Heights are identical to the import (9
+  points, in-game).
+  - Result, 58 m/s drive: every commit swapped, 11-14 ms of Lua, commit frames 32-42 ms (were 70-94),
+    p50 9.4 ms, p99 18.5 ms, 101 fps mean, no falls.
+  - Teleports, rebases and the first block still import.
+- **Altitude rule** (the user: stop following at high altitude, bring it back low).
+  - The far tiles do not collide, so the server answers each pose with the highest ground near the
+    straight path for the next 10 s (`groundahead.py`, `ground_ahead`).
+  - The block holds above 300 m over that ground and resumes below 150 m, counting 8 s of the current
+    descent. The server builds no block ahead while it holds (pose `follow`).
+  - 300 m/s at 400 m: passes (it failed before), 119 fps mean, worst frame 36 ms.
+  - Descent from 400 m at 200 m/s to 60 m at 90 m/s: resumed at ~320 m, block under the car by 234 m;
+    25 km pass, min edge margin afterwards 89 m.
+- **Terrain detail and altitude.** Nothing chooses detail from the height above sea level: far-tile
+  levels follow the horizontal distance only. The horizon radius uses the eye's height above sea level,
+  which is right for the curvature (the terrain heights it compares with are above sea level too).
