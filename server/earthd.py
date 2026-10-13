@@ -403,7 +403,7 @@ class Server:
                  tone=1.0, near_radii=None, status_interval=STATUS_INTERVAL, cells=CELLS_DEFAULT, tex=None,
                  block=BLOCK_DEFAULT, horizon=False, deshadow="off", weather=None, gravity=None, net=None,
                  colormatch="off", credits=None, cache=None, retex_rate=RETEX_RATE, surface=None,
-                 mapdata=None, grading=False, road_widths=False, block_pools=()):
+                 mapdata=None, grading=False, road_widths=False, block_pools=(), sidewalks=True):
         """kfun: K(L) for every level (default: the layout's K table); near_radii: the min-level
         radii (default: the layout's); cells: 32 (v1.3.1) or 64 (M1, mesh mode only); tex: texture
         px per level from the finest (default: tex_near, tex_near, tex_far with 32 cells,
@@ -541,6 +541,7 @@ class Server:
         self.mapdata = mapdata      # mapdata.MapData for the roads (--roads on), else None
         self.grading = bool(grading) and mapdata is not None   # ground graded under roads (grading.py)
         # street widths measured between the buildings (roadwidth.py), decided once per road per run
+        self.sidewalks = sidewalks  # raised sidewalk meshes with the road tiles (sidewalks.py)
         self.road_widths = (roadwidthmod.RoadWidths(
             lambda key: mapdata.cell(key, layers=("buildings",), kind="demand").layers.get("buildings")).get
             if road_widths and mapdata is not None else None)
@@ -773,7 +774,8 @@ class Server:
         mesh = roadmeshmod.build(anchor.frame, chunks, elev, (x0, y0, 0.0),
                                  DETAIL_ROAD_LIFT if self.near_visual == "detail" else 0.0)
         dmesh = roadmeshmod.deck(chunks, (x0, y0, 0.0))
-        return roadsmod.write_tile(self.out_dir, self.vfs_dir, aid, tx, ty, chunks, walks, mesh, dmesh)
+        return roadsmod.write_tile(self.out_dir, self.vfs_dir, aid, tx, ty, chunks, walks if self.sidewalks else None,
+                                   mesh, dmesh)
 
     def grader_for(self, anchor):
         """The anchor's grading.Grader (--grading on), else None."""
@@ -2216,6 +2218,7 @@ async def main_async(args):
                     mapdata=mapdata if args.roads == "on" else None,
                     grading=args.grading == "on" and args.roads == "on",
                     road_widths=args.road_widths == "on" and args.roads == "on",
+                    sidewalks=args.sidewalks == "on",
                     block_pools=block_pools)
 
     async def net_log():
@@ -2396,6 +2399,9 @@ def main():
     ap.add_argument("--roads", choices=("on", "off"), default="on",
                     help="Overture roads near the player (roads.py): DecalRoads in the mod (paved asphalt, "
                          "gravel / dirt tracks) within ~640 m, in 256 m tiles; off = none")
+    ap.add_argument("--sidewalks", choices=("on", "off"), default="on",
+                    help="raised sidewalks (curbs and slabs, sidewalks.py) with the road tiles; off = the roads "
+                         "without them")
     ap.add_argument("--road-widths", choices=("on", "off"), default="on",
                     help="street widths measured between the buildings that line them (roadwidth.py; Overture "
                          "buildings); off = class defaults")
