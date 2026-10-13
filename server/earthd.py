@@ -525,6 +525,8 @@ class Server:
         self.hm = OrderedDict()
         self.hm_inflight = {}
         self.ter_serial = itertools.count()
+        self.base_stale = set()         # blocks whose base photo lacks lazy imagery (NAIP) still to come
+        self.base_rev = itertools.count(1)
         self.hm_committed = deque(maxlen=HM_KEEP_COMMITTED)
         self.hm_sent = deque(maxlen=HM_KEEP_SENT)
         # Far tiles: (anchorId, key) -> TileInfo, LRU order; files are far_<anchorId>_<key>.<fmt>.
@@ -921,10 +923,10 @@ class Server:
         info["zoom"] = anchor.hm_zoom
         return info
 
-    def base_name(self, key):
-        return self.hm_name(key)[:-4] + "_base.png"
+    def base_name(self, key, rev=0):
+        return self.hm_name(key)[:-4] + ("_base.png" if not rev else f"_base_r{rev}.png")
 
-    def write_base(self, anchor, cx, cy, pool=None):
+    def write_base(self, anchor, cx, cy, pool=None, rev=0):
         """Detail mode: the block footprint's aerial photo (BASE_PX² PNG, row 0 = north, the same imagery
         chain and corrections as the far tiles), the drawn block's base colour. The game would pack it into
         BC7 on its main thread (1.5 s for a new 1024² photo); terraincache writes that packed texture into
@@ -937,9 +939,15 @@ class Server:
         except Exception as e:      # an imagery failure must not cost the terrain
             log.info("base photo %s: %s", (anchor.id, cx, cy), e)
             return None
-        name = self.base_name((anchor.id, cx, cy))
+        name = self.base_name((anchor.id, cx, cy), rev)
         path = os.path.join(self.out_dir, name)
         rgb = np.asarray(rgb, np.uint8)
+        # a lazy source (NAIP) not fetched yet for all of it: rendered again once it is (base_refresh)
+        key = (anchor.id, cx, cy)
+        if self.imagery.lazy_ready(anchor.frame, x0, y0, size, BASE_PX):
+            self.base_stale.discard(key)
+        else:
+            self.base_stale.add(key)
         Image.fromarray(rgb, "RGB").save(path + ".tmp", format="PNG", compress_level=1)
         os.replace(path + ".tmp", path)
         try:            # after the photo: the cache entry must be the newer file
@@ -1001,11 +1009,15 @@ class Server:
             info = self.hm.pop(key)
             self._remove(os.path.join(self.out_dir, self.hm_name(key)))
             self._remove(os.path.join(self.out_dir, self.base_name(key)))
+            self.base_stale.discard(key)
+            if info.get("base") and info["base"] != self.base_name(key):     # a refreshed photo
+                self._remove(os.path.join(self.out_dir, info["base"]))
             if info.get("ter"):
                 self._remove(os.path.join(self.out_dir, info["ter"]))
-            if self.near_visual == "detail":     # its packed copy in the game's terrain texture cache
-                self._remove(os.path.join(terraincache.cache_dir(self.user_dir),
-                                          terraincache.base_key(f"{self.vfs_dir}/{self.base_name(key)}", BASE_AO_VFS) + ".dds"))
+            if self.near_visual == "detail":     # its packed copies in the game's terrain texture cache
+                for name in {self.base_name(key), info.get("base") or self.base_name(key)}:
+                    self._remove(os.path.join(terraincache.cache_dir(self.user_dir),
+                                              terraincache.base_key(f"{self.vfs_dir}/{name}", BASE_AO_VFS) + ".dds"))
             if self.surface is not None:        # its surface masks (only read at import)
                 for name in surfacemod.mask_names(self.hm_name(key)[:-4]):
                     self._remove(os.path.join(self.out_dir, name))
@@ -1540,6 +1552,7 @@ class Connection:
         self.gravity = gravitymod.Tracker()     # real gravity: recompute rule, last message sent
         self.credits = creditsmod.Tracker()     # data credits: throttle, last message sent (--credits on)
         self.ground_busy = False                # a groundahead job is running (one at a time)
+        self.base_busy = False                  # a base photo refresh is running (base_refresh)
         self.following = True                   # the mod moves its block (pose "follow"; false high up)
 
     def send(self, msg):
@@ -1906,10 +1919,48 @@ class Connection:
         if aid == self.active and self.following:
             self.s.warm_roads(self.s.anchors[aid], *self.focus, *self.vel)
             self.s.warm_imagery(self.s.anchors[aid], *self.focus, *self.vel)
+            self.base_refresh(aid)
         if self.s.mapdata is not None and aid == self.active:
             self.roads.on_pose(self, aid, *self.focus, asyncio.get_running_loop(), self.s.build_roads_tile)
         self.refresh_status()
         self.credits.poke(self)             # the player moved: the near / far credits may change
+
+    def base_refresh(self, aid):
+        """Detail mode: the block in use and the one handed out last, if their base photo was rendered before
+        all its NAIP tiles were fetched (Server.base_stale) and they are all here now: rendered again (a new
+        file name) and sent as block_base. One at a time."""
+        s = self.s
+        if self.base_busy or not s.base_stale or s.imagery is None or s.near_visual != "detail":
+            return
+        anchor = s.anchors.get(aid)
+        cands = [k for k in list(s.hm_committed)[-1:] + list(s.hm_sent)[-1:] if k in s.base_stale and k[0] == aid]
+        size = s.layout.block * heightmap.SQUARE
+        key = next((k for k in cands if k in s.hm and s.imagery.lazy_ready(
+            anchor.frame, k[1] - size / 2, k[2] - size / 2, size, BASE_PX)), None)
+        if key is None:
+            return
+        self.base_busy = True
+
+        async def run():
+            try:
+                pool = s.block_pools[LANE_PREFETCH][0] if s.block_pools else None     # its BC7 encode
+                name = await self.loop.run_in_executor(s.hm_pool, s.write_base, anchor, key[1], key[2], pool,
+                                                       next(s.base_rev))
+                info = s.hm.get(key)
+                if name is None or info is None:
+                    return
+                old, info["base"] = info.get("base"), name
+                if old and old != name and old != s.base_name(key):
+                    s._remove(os.path.join(s.out_dir, old))
+                log.info("base photo of %s rendered again with its NAIP (%s)", key, name)
+                self.send({"type": "block_base", "anchorId": key[0], "cx": key[1], "cy": key[2],
+                           "base": f"{s.vfs_dir}/{name}", "baseSize": size})
+            except Exception:
+                log.exception("base photo refresh %s", key)
+                s.base_stale.discard(key)
+            finally:
+                self.base_busy = False
+        self.spawn(run())
 
     def ground_ahead(self, aid, x, y, vx, vy):
         """Send the mod the highest ground near its straight path (groundahead.py; its altitude rule), one

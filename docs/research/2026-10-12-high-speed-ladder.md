@@ -158,7 +158,14 @@ flights at 0.3-0.6 m: `imagery.SOURCES["naip"]`, first in the default chain for 
 - **Result.** Fells Point block photo, same 1 m texels: USGS vs NAIP vs NAIP at 0.5 m texels
   (`naip_2026-10-13/block_photo_usgs_naip_naip2048.jpg`). NAIP shows the houses, trees and parked cars;
   0.5 m texels add little over 1 m, so `BASE_PX` stays 1024.
-- **Not yet.**
-  - The colour match and de-shadow work on USGS only, so NAIP is drawn as served (greyer).
-  - A block built before its NAIP arrives keeps USGS until rebuilt.
-  - At 10 s per ~0.9 km square, warm() keeps up with town driving, not with 130 mph.
+- **Refresh.** A block built before its NAIP arrived (`Server.base_stale`) has its photo rendered again
+  once `Imagery.lazy_ready` says every tile is on disk, under a new name, and sent as `block_base`. The
+  mod sets it on the block in use (or on a ready one before its commit).
+  - Annapolis, 25 m/s for 6 km: 30 NAIP parents fetched, 7 photos redone (6 applied); 107 fps mean,
+    p99 16 ms, worst commit frame 23 ms.
+- **Colour.** The NAIP block was a darker, greener square against the far tiles (USGS, colour-matched
+  and de-shadowed), its water much darker. `match_colours`: NAIP x blur(USGS) / blur(NAIP), Gaussian
+  40 m (20 m left haloes round white roofs), gain clipped to [1/3, 3]: NAIP's detail, USGS's colours;
+  the square is gone in-game (`naip_2026-10-13/annapolis_seam_before_after.jpg`, a faint edge left on
+  water).
+- **Not yet.** At 10 s per ~0.9 km square, warm() keeps up with town driving, not with 130 mph.

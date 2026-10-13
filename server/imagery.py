@@ -39,7 +39,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageFilter
 
 import cache as cachemod
 import dem as demmod
@@ -174,6 +174,21 @@ def mercator_px(lat, lon, z):
 def is_uniform(a):
     """True for a one-colour (blank) tile: every channel varies by at most BLANK_RANGE."""
     return int((a.max(axis=(0, 1)).astype(int) - a.min(axis=(0, 1))).max()) <= BLANK_RANGE
+
+
+MATCH_SIGMA_M = 40.0     # m: match_colours keeps the detail below this scale, the colours above it (20: haloes)
+
+
+def match_colours(rgb, ref, sigma_px):
+    """rgb with the large-scale colour of ref (same size, uint8): rgb * blur(ref) / blur(rgb), per channel,
+    the gain clipped to [1/3, 3] (Gaussian blur of sigma_px texels). Where rgb already is ref, nothing
+    changes; elsewhere the detail is rgb's and everything coarser than ~sigma ref's."""
+    r = max(1.0, float(sigma_px))
+    a = Image.fromarray(rgb, "RGB").filter(ImageFilter.GaussianBlur(r))
+    b = Image.fromarray(ref, "RGB").filter(ImageFilter.GaussianBlur(r))
+    gain = (np.asarray(b, np.float32) + 4.0) / (np.asarray(a, np.float32) + 4.0)
+    out = rgb.astype(np.float32) * np.clip(gain, 1 / 3, 3)
+    return np.clip(np.rint(out), 0, 255).astype(np.uint8)
 
 
 def mercator_bbox(z, x, y):
@@ -612,6 +627,34 @@ class Imagery:
         with self._lock:
             return self._probe_status(key) == "outside"
 
+    def lazy_ready(self, frame, x0, y0, size, px):
+        """True when render(frame, x0, y0, size, px) would find every lazy-source tile it can use on disk
+        (or known missing, or outside the coverage probes): rendering again would not get any sharper."""
+        lazy = [s for s in self.chain if s.lazy]
+        if not lazy:
+            return True
+        c = np.array([0.0, 0.5, 1.0]) * size
+        E, N = np.meshgrid(x0 + c, y0 + c)
+        lat, lon, _ = frame.enu_to_geodetic(E, N, 0.0)
+        if np.abs(lat).max() > MAX_LAT:
+            return True
+        zw = zoom_for(float(lat[1, 1]), size / px)
+        for src in lazy:
+            z = min(zw, src.max_zoom)
+            if z < src.min_zoom:
+                continue
+            fx, fy = mercator_px(lat.ravel(), lon.ravel(), z)
+            for ty in range(int(math.floor(fy.min() - 1)) // TILE, int(math.floor(fy.max() + 1)) // TILE + 1):
+                for tx in range(int(math.floor(fx.min() - 1)) // TILE, int(math.floor(fx.max() + 1)) // TILE + 1):
+                    path, miss = self._paths(src, z, tx, ty)
+                    if os.path.exists(path) or os.path.exists(miss):
+                        continue
+                    with self._lock:
+                        if self._probe_status((src, z, tx, ty)) == "outside":
+                            continue
+                    return False
+        return True
+
     def _finish(self, key, fut):
         with self._lock:
             if self._inflight.get(key) is fut:
@@ -684,6 +727,20 @@ class Imagery:
         return rgb if out is None else out
 
     def render(self, frame, x0, y0, size, px, pending=None):
+        """_render(); texels from a lazy source (NAIP) then take their large-scale colour from the rest of
+        the chain (match_colours): NAIP's detail, USGS's colours, so the block's photo meets the far tiles
+        around it (USGS, colour-matched and de-shadowed) without a seam (in-game 2026-10-13, Annapolis: the
+        NAIP block was a darker, greener square, its water much darker)."""
+        rgb, used = self._render(frame, x0, y0, size, px, pending)
+        if not any(s.lazy and s.name in used for s in self.chain) or all(s.lazy for s in self.chain):
+            return rgb, used
+        try:
+            ref, _ = self._render(frame, x0, y0, size, px, None, skip_lazy=True)
+        except ImageryError:            # the reference is unreachable: NAIP as served
+            return rgb, used
+        return match_colours(rgb, ref, MATCH_SIGMA_M / (size / px)), used
+
+    def _render(self, frame, x0, y0, size, px, pending=None, skip_lazy=False):
         """Texture of the ENU square [x0, x0+size] x [y0, y0+size] (anchor `frame`), px x px,
         row 0 = north edge, column 0 = west edge (texel centres at (i + 0.5) * size / px).
         Returns (uint8 [px, px, 3] after the tone curve, {source: texels}).
@@ -713,7 +770,7 @@ class Imagery:
         for i, src in enumerate(self.chain):
             cm_keys = set() if self.colormatch is not None else None
             z = min(zw, src.max_zoom)
-            if z < src.min_zoom:
+            if z < src.min_zoom or (skip_lazy and src.lazy):
                 continue
             while True:
                 fx, fy = mercator_px(lat, lon, z)

@@ -654,6 +654,17 @@ local function onMessage(msg)
     -- real gravity at the player (server gravity.py): applied by beamngEarth_weather's setGravity path
     local w = rawget(_G, 'beamngEarth_weather')
     if w and w.onGravity then w.onGravity(msg) end
+  elseif t == 'block_base' then
+    -- detail mode: a block's base photo rendered again with its NAIP tiles (server base_refresh): the block
+    -- in use takes it now, a ready one not committed yet takes it at its commit
+    if nearVisual == 'detail' and msg.anchorId == st.anchorId and type(msg.base) == 'string' then
+      local b, tp = st.block, st.terrainPending
+      if b and b.cx == msg.cx and b.cy == msg.cy and FS:fileExists(msg.base) then
+        terrain.setBase(msg.base, tonumber(msg.baseSize))
+        st.baseRefreshes = (st.baseRefreshes or 0) + 1
+      end
+      if tp and tp.msg and tp.msg.cx == msg.cx and tp.msg.cy == msg.cy then tp.msg.base = msg.base end
+    end
   elseif t == 'ground_ahead' then
     -- the highest ground near the player's path (server groundahead.py): the altitude rule (follow.lua)
     if tonumber(msg.z) then st.groundAhead = { anchorId = msg.anchorId, z = tonumber(msg.z), at = st.clock } end
@@ -1212,6 +1223,7 @@ function M.status()
     block = st.block, terrainPending = st.terrainPending and { st.terrainPending.cx, st.terrainPending.cy },
     followWait = st.followWait, commits = st.commits,
     followHeld = st.followHeld, followHolds = st.followHolds, groundAhead = st.groundAhead and st.groundAhead.z,
+    baseRefreshes = st.baseRefreshes,
     rebaseDistance = rebase.distance, lastFollowMs = st.lastFollowMs, lastRebaseMs = st.lastRebaseMs,
     lastRebaseWaitFrames = st.lastRebaseWait, rebaseLag = rebaseLag, lastMoveLag = st.lastMoveLag, player = st.player, far = farfield.stats(), governor = gov:snapshot(), status = st.status,
     serverBacklog = st.serverBacklog, followCount = st.followCount, rebaseCount = st.rebaseCount,

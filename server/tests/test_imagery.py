@@ -570,6 +570,32 @@ class ExportImageryTest(unittest.TestCase):
         self.wait(im)
         self.assertEqual(len(self.requests), n)     # the missing children are remembered
 
+    def test_colours_from_the_chain(self):
+        """A rendered NAIP texture keeps its detail but takes the next source's large-scale colour (no seam
+        against far tiles in USGS colours)."""
+        im = self.make()
+        self.assertEqual(self.warm(im, [(128.0, 128.0)]), [])
+        rgb, used = im.render(self.frame, 0.0, 0.0, 256.0, 256)
+        raw, _ = im._render(self.frame, 0.0, 0.0, 256.0, 256)
+        ref, _ = im._render(self.frame, 0.0, 0.0, 256.0, 256, None, skip_lazy=True)
+        self.assertEqual(set(used), {"naip"})
+        far, near = np.abs(raw.mean((0, 1)) - ref.mean((0, 1))), np.abs(rgb.mean((0, 1)) - ref.mean((0, 1)))
+        self.assertGreater(far.max(), 50)
+        self.assertTrue((near < 0.35 * far + 2).all(), (near, far))                # USGS's colour (the gain clip
+        # stops the extreme fake blue short) ...
+        hi = lambda a: np.abs(np.diff(a.astype(float), axis=1)).mean()
+        self.assertGreater(hi(rgb), 0.5 * hi(raw))                                  # ... NAIP's detail
+        same = imagery.match_colours(raw, raw, 10)
+        self.assertTrue((same == raw).all(), "matching an image to itself changes nothing")
+
+    def test_lazy_ready(self):
+        im = self.make()
+        self.assertFalse(im.lazy_ready(self.frame, 0.0, 0.0, 256.0, 256))
+        self.assertTrue(im.lazy_ready(self.frame, 0.0, 0.0, 256.0, 64), "4 m texels: no NAIP zoom")
+        self.assertEqual(self.warm(im, [(128.0, 128.0)]), [])
+        self.assertTrue(im.lazy_ready(self.frame, 0.0, 0.0, 256.0, 256))
+        self.assertFalse(im.lazy_ready(self.frame, 5000.0, 0.0, 256.0, 256), "elsewhere: not fetched")
+
     def test_warm_fetches_ahead(self):
         im = self.make()
         self.assertEqual(self.warm(im, [(0.0, 0.0), (3000.0, 0.0)]), [])

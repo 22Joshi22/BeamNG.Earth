@@ -18,6 +18,7 @@ import earthd  # noqa: E402
 import terraincache  # noqa: E402
 import farfield as ff  # noqa: E402
 import geodesy  # noqa: E402
+import test_server  # noqa: E402
 from test_server import LAT, LON, FakeDem, ServerHarness  # noqa: E402
 from netclient import FarState  # noqa: E402
 
@@ -108,6 +109,48 @@ class DetailServerTest(ServerHarness):
         self.assertFalse(os.path.exists(path), "base photo removed with its heightmap")
         self.assertFalse(os.path.exists(cache), "and its terrain cache entry")
 
+
+
+class DetailBaseRefreshTest(ServerHarness):
+    """A block whose base photo was rendered before its NAIP tiles arrived (lazy source) is rendered again
+    once they are all on disk, under a new name, and the mod is told (block_base)."""
+    near_visual = "detail"
+    with_imagery = True
+    cells = 64
+    block = 512
+
+    def setUp(self):
+        super().setUp()
+        im = self.server.imagery
+        self.server.imagery = test_server.FakeImagery(im.cache_dir, chain=("naip", "usgs", "eox2023", "eox2016"))
+        self.server.imagery._probe_status = lambda key: "covered"
+        self.server.imagery.disk = im.disk
+
+    def test_refresh(self):
+        c = self.c
+        self.hello()
+        aid = self.prepare_anchor(1, LAT, LON)["anchorId"]
+        c.send({"type": "commit_anchor", "anchorId": aid})
+        c.send({"type": "commit_terrain", "anchorId": aid, "cx": 0, "cy": 0})
+        key = (aid, 0.0, 0.0)
+        self.assertIn(key, self.server.base_stale, "NAIP not on disk: the photo will be redone")
+        first = self.server.hm[key]["base"]
+        self.pose(aid, 0.0, 0.0)
+        quiet = c.drain(1.0)
+        self.assertFalse([m for m in quiet if m["type"] == "block_base"], "not before its NAIP is here")
+        self.server.imagery.lazy_ready = lambda *a: True        # every NAIP tile of the footprint arrived
+        self.pose(aid, 0.0, 0.0)
+        m, _ = c.until(lambda m: m["type"] == "block_base", timeout=30)
+        self.assertEqual((m["anchorId"], m["cx"], m["cy"], m["baseSize"]), (aid, 0.0, 0.0, 512 * 2.0))
+        path = self.fs(m["base"])
+        self.assertTrue(path.endswith("_base_r1.png") and os.path.exists(path))
+        self.assertEqual(self.server.hm[key]["base"], os.path.basename(path))
+        self.assertNotEqual(os.path.basename(path), first)
+        self.assertTrue(os.path.exists(os.path.join(self.tmp.name, "temp", "art", "terrainmaterialcache",
+                                                    terraincache.base_key(m["base"], earthd.BASE_AO_VFS) + ".dds")))
+        self.assertNotIn(key, self.server.base_stale)
+        self.pose(aid, 0.0, 0.0)
+        self.assertFalse([m for m in c.drain(1.0) if m["type"] == "block_base"], "once")
 
 
 class DetailNoImageryTest(ServerHarness):
