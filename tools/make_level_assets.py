@@ -102,7 +102,10 @@ lines(os.path.join(L, "main/MissionGroup/Weather/items.level.json"), [
 # here (means of template's t_terrain_base_dirt_*), so nothing depends on another level's zip.
 A = "/assets/materials/terrain/soil/"
 B = "/levels/beamng_earth/art/terrains/"
-BASE_TEX = 2048     # base texture slot (px): the shipped flat base maps and the server's photo (earthd.BASE_PX)
+BASE_TEX = 1024     # base texture slot (px): the shipped flat base maps and the server's photo (earthd.BASE_PX)
+# Every texture slot of every material is filled: an empty one makes the engine build a default texture at
+# every TerrainBlock:updateMaterial (~0.8 s per call with the surface materials, in-game 2026-10-12)
+FLAT_H = B + "bngEarth_flat_h_1024.png"     # neutral height for the detail / macro height slots
 # The server's surface materials (server/surface.py MATERIALS, the tyres' ground models), each with its
 # own stock detail / macro textures for the detail near-visual mode (terrain.lua LOOKS has the same
 # choices; in-game 2026-10-12: TerrainMaterials made at runtime cost ~1 s per updateMaterial, so they are
@@ -121,6 +124,9 @@ def surface(name, gm, pid, detail, dsize, macro, msize, strength=0.25):
         m[key + "DetailTex"], m[key + "DetailTexSize"] = T_ + detail + suf + ".png", dsize
         m[key + "MacroTex"], m[key + "MacroTexSize"] = T_ + macro + suf + ".png", msize
     m["heightBaseTex"], m["heightBaseTexSize"] = B + "bngEarth_base_h.png", 128
+    # flat (no height-blended borders: they swirled across whole blocks, in-game 2026-10-12), never empty
+    m["heightDetailTex"], m["heightDetailTexSize"] = FLAT_H, dsize
+    m["heightMacroTex"], m["heightMacroTexSize"] = FLAT_H, msize
     return {name: m}
 SURFACES = {}
 for i, args in enumerate((
@@ -178,6 +184,7 @@ Image.new("RGB", (BASE_TEX, BASE_TEX), (127, 127, 255)).save(os.path.join(T, "bn
 Image.new("L", (BASE_TEX, BASE_TEX), 206).save(os.path.join(T, "bngEarth_base_r.png"), optimize=True)
 Image.new("L", (BASE_TEX, BASE_TEX), 251).save(os.path.join(T, "bngEarth_base_ao.png"), optimize=True)
 Image.new("L", (BASE_TEX, BASE_TEX), 175).save(os.path.join(T, "bngEarth_base_h.png"), optimize=True)
+Image.new("L", (1024, 1024), 128).save(os.path.join(T, "bngEarth_flat_h_1024.png"), optimize=True)   # detail size
 # importMaps inputs, sized like the terrain block (N = 1024, docs/V1_1_SPEC.md 1a; and 512 for the
 # M4 block, docs/V1_4_SPEC.md 3.5: the layer map must match the heightmap size): one all-white
 # layer map (material 0 everywhere) and a flat 16-bit heightmap per size. The v1 2048-sample files

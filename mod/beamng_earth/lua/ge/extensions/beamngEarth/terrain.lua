@@ -26,10 +26,11 @@ M.SIZE = lattice.N              -- samples per side (configure); the layer map h
 M.SQUARE_SIZE = lattice.SQUARE  -- 2.0 m
 M.MATERIAL = 'beamngEarthDirt'
 M.TEXTURE_SET = 'beamngEarthTerrainMaterialTextureSet'
-M.BASE_TEX_SIZE = 2048   -- = the level texture set's base slot (tools/make_level_assets.py BASE_TEX)
+M.BASE_TEX_SIZE = 1024   -- = the level texture set's base slot (tools/make_level_assets.py BASE_TEX)
 
 local TERRAIN_DIR = '/levels/beamng_earth/art/terrains/'
 local TERRAIN_DIR_BASE = TERRAIN_DIR .. 'bngEarth_base_b.png'   -- the level's flat base colour
+local FLAT_H = TERRAIN_DIR .. 'bngEarth_flat_h_1024.png'          -- neutral height (detail / macro slots)
 local MATERIALS_FILE = TERRAIN_DIR .. 'main.materials.json'
 -- per block size (tools/make_level_assets.py): all white = material 0 everywhere; all zero, 16-bit
 local LAYER_MAPS = { [1024] = TERRAIN_DIR .. 'beamngEarth_layer_1024.png', [512] = TERRAIN_DIR .. 'beamngEarth_layer_512.png' }
@@ -62,9 +63,10 @@ local function look(detail, dsize, macro, msize, strength)
     l[k[1] .. 'DetailTex'] = T .. detail .. k[2] .. '.png'
     l[k[1] .. 'MacroTex'] = T .. macro .. k[2] .. '.png'
   end
-  -- no height textures: height-blended layer borders swirled across whole blocks between the land-cover
-  -- classes (in-game 2026-10-12); the borders follow the server's masks instead
-  l.heightDetailTex, l.heightMacroTex = '', ''
+  -- flat height textures: height-blended layer borders swirled across whole blocks between the land-cover
+  -- classes (in-game 2026-10-12), so the borders follow the server's masks; never '' (an empty slot makes
+  -- the engine build a default texture at every updateMaterial, ~0.8 s)
+  l.heightDetailTex, l.heightMacroTex = FLAT_H, FLAT_H
   l.baseColorDetailTexSize, l.normalDetailTexSize, l.roughnessDetailTexSize, l.aoDetailTexSize, l.heightDetailTexSize =
     dsize, dsize, dsize, dsize, dsize
   l.baseColorMacroTexSize, l.normalMacroTexSize, l.roughnessMacroTexSize, l.aoMacroTexSize, l.heightMacroTexSize =

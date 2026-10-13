@@ -86,6 +86,7 @@ import mapdata as mapdatamod  # noqa: E402
 import dem as demmod  # noqa: E402
 import deshadow as deshadowmod  # noqa: E402
 import farfield  # noqa: E402
+import terraincache  # noqa: E402
 import geodesy  # noqa: E402
 import gravity as gravitymod  # noqa: E402
 import heightmap  # noqa: E402
@@ -145,7 +146,9 @@ NEAR_VISUALS = ("mesh", "terrain", "detail")
 # as in terrain mode. MESH_LAYOUT: the modes on the mesh-mode tile layout; BLOCK_DRAWN: the block is seen.
 MESH_LAYOUT = ("mesh", "detail")
 BLOCK_DRAWN = ("terrain", "detail")
-BASE_PX = 2048                  # detail mode: the block's base photo (1 km -> 0.5 m per texel)
+BASE_PX = 1024                  # detail mode: the block's base photo (1 km -> 1 m per texel; USGS is ~1.9 m)
+BASE_AO_VFS = "/levels/beamng_earth/art/terrains/bngEarth_base_ao.png"   # every surface layer's aoBaseTex
+BASE_AO = 251                   # its flat value (tools/make_level_assets.py)
 DETAIL_ROAD_LIFT = 0.05         # detail mode: road surfaces over the drawn block (its 2 m triangles + slack)
 TEX_NEAR, TEX_FAR = 256, 256    # 32 cells: texture edge (px) of the two finest levels / of the others (512
                                  # near was 15x finer than USGS: no visible gain for 2x build time and VRAM);
@@ -410,6 +413,7 @@ class Server:
         self.heartbeat_at = time.monotonic()
         self._scan_sessions()
         self.out_dir = os.path.join(root, self.sid)
+        self.user_dir = user_dir           # the game's user folder (detail mode fills its terrain texture cache)
         self.cdae_dir = os.path.join(user_dir, *CDAE_ROOT, self.sid.lower())
         self.vfs_dir = f"/temp/beamngEarth/{self.sid}"
         os.makedirs(self.out_dir, exist_ok=True)
@@ -791,9 +795,11 @@ class Server:
         return self.hm_name(key)[:-4] + "_base.png"
 
     def write_base(self, anchor, cx, cy):
-        """Detail mode: the block footprint's aerial photo (BASE_PX², row 0 = north, the same imagery
-        chain and corrections as the far tiles), the drawn block's base colour. Returns the file name,
-        or None when no imagery could be rendered (the block keeps the level's neutral base)."""
+        """Detail mode: the block footprint's aerial photo (BASE_PX² PNG, row 0 = north, the same imagery
+        chain and corrections as the far tiles), the drawn block's base colour. The game would pack it into
+        BC7 on its main thread (1.5 s for a new 1024² photo); terraincache writes that packed texture into
+        the game's cache first (~0.4 s here), so the game takes it as it is. Returns the file name, or None
+        when no imagery could be rendered (the block keeps the level's neutral base)."""
         size = self.layout.block * heightmap.SQUARE
         x0, y0 = cx - size / 2, cy - size / 2
         try:
@@ -803,8 +809,13 @@ class Server:
             return None
         name = self.base_name((anchor.id, cx, cy))
         path = os.path.join(self.out_dir, name)
-        Image.fromarray(np.asarray(rgb, np.uint8), "RGB").save(path + ".tmp", format="PNG", compress_level=1)
+        rgb = np.asarray(rgb, np.uint8)
+        Image.fromarray(rgb, "RGB").save(path + ".tmp", format="PNG", compress_level=1)
         os.replace(path + ".tmp", path)
+        try:            # after the photo: the cache entry must be the newer file
+            terraincache.base_entry(self.user_dir, f"{self.vfs_dir}/{name}", BASE_AO_VFS, rgb, BASE_AO)
+        except OSError as e:
+            log.info("terrain cache for %s: %s", name, e)
         return name
 
     def terrain_cached(self, key):
@@ -854,6 +865,9 @@ class Server:
             del self.hm[key]
             self._remove(os.path.join(self.out_dir, self.hm_name(key)))
             self._remove(os.path.join(self.out_dir, self.base_name(key)))
+            if self.near_visual == "detail":     # its packed copy in the game's terrain texture cache
+                self._remove(os.path.join(terraincache.cache_dir(self.user_dir),
+                                          terraincache.base_key(f"{self.vfs_dir}/{self.base_name(key)}", BASE_AO_VFS) + ".dds"))
             if self.surface is not None:        # its surface masks (only read at import)
                 for name in surfacemod.mask_names(self.hm_name(key)[:-4]):
                     self._remove(os.path.join(self.out_dir, name))

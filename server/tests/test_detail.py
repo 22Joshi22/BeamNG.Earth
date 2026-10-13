@@ -7,11 +7,15 @@ import sys
 import time
 import unittest
 
+import struct
+
 import numpy as np
 from PIL import Image
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+import bc7  # noqa: E402
 import earthd  # noqa: E402
+import terraincache  # noqa: E402
 import farfield as ff  # noqa: E402
 import geodesy  # noqa: E402
 from test_server import LAT, LON, FakeDem, ServerHarness  # noqa: E402
@@ -78,8 +82,20 @@ class DetailServerTest(ServerHarness):
         self.assertTrue(path.endswith("_base.png") and os.path.exists(path))
         im = Image.open(path)
         self.assertEqual((im.size, im.mode), ((earthd.BASE_PX, earthd.BASE_PX), "RGB"))
-        a = np.asarray(im)
-        self.assertGreater(a.std(), 5.0, "a real photo, not a flat fill")
+        self.assertGreater(np.asarray(im).std(), 5.0, "a real photo, not a flat fill")
+        # its packed BC7 copy in the game's terrain texture cache, under the game's key, newer than the photo
+        cache = os.path.join(self.tmp.name, "temp", "art", "terrainmaterialcache",
+                             terraincache.base_key(tr["base"], earthd.BASE_AO_VFS) + ".dds")
+        self.assertTrue(os.path.exists(cache))
+        self.assertGreaterEqual(os.path.getmtime(cache), os.path.getmtime(path))
+        data = open(cache, "rb").read()
+        self.assertEqual((data[:4], data[84:88], struct.unpack("<I", data[128:132])[0]),
+                         (b"DDS ", b"DX10", bc7.DXGI_BC7_UNORM_SRGB))
+        self.assertEqual(struct.unpack("<3I", data[12:20] + data[28:32]), (earthd.BASE_PX, earthd.BASE_PX,
+                                                                          int(np.log2(earthd.BASE_PX)) + 1))
+        px = bc7.decode(data[148:148 + earthd.BASE_PX ** 2], earthd.BASE_PX, earthd.BASE_PX)
+        self.assertTrue((np.abs(px[..., 3].astype(int) - earthd.BASE_AO) <= 1).all(), "alpha = the flat AO")
+        self.assertLess(np.abs(px[..., :3].astype(int) - np.asarray(im)).mean(), 4.0)
         # evicted with its heightmap
         key = (aid, 128.0, -128.0)
         self.server.hm_committed.clear(); self.server.hm_sent.clear()
@@ -90,6 +106,7 @@ class DetailServerTest(ServerHarness):
         finally:
             earthd.HM_CACHE = old_cache
         self.assertFalse(os.path.exists(path), "base photo removed with its heightmap")
+        self.assertFalse(os.path.exists(cache), "and its terrain cache entry")
 
 
 
