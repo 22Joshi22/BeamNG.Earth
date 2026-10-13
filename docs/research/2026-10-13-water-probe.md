@@ -20,7 +20,9 @@ The roadmap's water item (docs/ROADMAP.md "Water") has nothing built yet: lakes,
   - `getWorldBox` is right: the position is the box's centre and the scale its size, so the surface is at position.z + scale.z / 2.
   - Nothing is drawn, even with the surface 2 m above the ground (`water_2026-10-13/waterblock_not_drawn.jpg`).
   - Tried: the `scale` field or `setScale`; `postApply`; stock grid settings (gridSize / gridElementSize 1); 200 m and 2.4 km boxes.
-  - No log errors. Cause unknown. Next: create one from a stock level's full JSON (all fields), or check whether the editor's create path does more than `registerObject`.
+  - No log errors.
+  - The stock definition (West Coast USA's `WaterBlock_1`, all its fields) spawned the editor's way (`Sim.deserializeObjectFromText(json, true, true)`), surface at 1 m: not drawn either.
+  - So it is not our field values. Untested: a `WaterBlock` in our level's own items file, loaded with the level (a runtime-only problem?); a stock level with ours as the only change.
 
 ## Why a plane is not enough
 
