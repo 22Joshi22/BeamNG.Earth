@@ -1326,8 +1326,53 @@ def write_tile(out_dir, vfs_dir, aid, tx, ty, chunks, walks=None, road_mesh=None
             shape = f"walks_{aid}_{tx}_{ty}.cdae"
             b.write(os.path.join(out_dir, shape))
             data["walk"] = {"shape": f"{vfs_dir}/{shape}", "pos": [x0, y0, 0.0]}
+    boxes = collider_boxes(walks if data.get("walk") else None, chunks if data.get("deck") else None)
+    if boxes:
+        data["colliders"] = boxes
     tmp = path + ".tmp"
     with open(tmp, "w") as f:
         json.dump(data, f, separators=(",", ":"))
     os.replace(tmp, path)
     return f"{vfs_dir}/{name}", len(chunks)
+
+
+COLLIDER_PIECE_M = 20.0     # collider_boxes: a run / deck cut into boxes this long
+COLLIDER_MARGIN_M = 0.5
+
+
+def collider_boxes(walks, chunks):
+    """{"walk": [...], "deck": [...]}: boxes [x0, y0, z0, x1, y1, z1] (anchor frame, m) around the
+    sidewalk runs / corners and the bridge decks of a tile, in pieces of COLLIDER_PIECE_M. The mod
+    does not make a colliding mesh solid while the player's vehicle is inside one of its boxes (a late
+    curb or deck turning solid around a car; the intermittent NaN drives, 2026-10-13). Pure."""
+    import roadmesh
+    import sidewalks
+    out = {}
+
+    def add(what, pts, half_w, z_lo, z_hi):
+        pts = np.asarray(pts, np.float64)
+        seg = np.r_[0.0, np.cumsum(np.hypot(*np.diff(pts[:, :2], axis=0).T))] if len(pts) > 1 else np.zeros(1)
+        cut = np.floor(seg / COLLIDER_PIECE_M).astype(int)
+        for k in np.unique(cut):
+            idx = np.flatnonzero(cut == k)
+            sel = pts[max(idx[0] - 1, 0):idx[-1] + 1]     # the piece and the point before it
+            m = half_w + COLLIDER_MARGIN_M
+            out.setdefault(what, []).append([round(float(sel[:, 0].min() - m), 1), round(float(sel[:, 1].min() - m), 1),
+                                             round(float(sel[:, 2].min() + z_lo), 1), round(float(sel[:, 0].max() + m), 1),
+                                             round(float(sel[:, 1].max() + m), 1), round(float(sel[:, 2].max() + z_hi), 1)])
+    for wk in walks or ():
+        if "corner" in wk:
+            c = wk["corner"]             # the curb arc and the outer corner points: one box over both
+            pts = np.concatenate([np.asarray(c["arc"], np.float64), np.asarray(c["outer"], np.float64).reshape(-1, 3)])
+            add("walk", pts[np.argsort(np.arctan2(pts[:, 1] - pts[:, 1].mean(), pts[:, 0] - pts[:, 0].mean()))],
+                0.5, -1.0, 1.0)
+            continue
+        ww = wk.get("w", SIDEWALK["w"])
+        curb, outv = sidewalks.run_geometry(wk["pts"], wk["side"], ww)
+        mid = curb.copy()
+        mid[:, :2] = curb[:, :2] + outv * (ww / 2)
+        add("walk", mid, ww / 2 + 0.5, -1.0, 1.0)
+    for c in chunks or ():
+        if c.get("deck") and len(c["n"]) > 1:
+            add("deck", c["n"], float(c["w"]) / 2 + 1.0, -roadmesh.DECK_DEPTH - 1.0, 2.0)
+    return out

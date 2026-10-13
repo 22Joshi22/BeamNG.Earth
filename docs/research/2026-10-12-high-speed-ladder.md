@@ -321,3 +321,11 @@ Next:
   fresh data, no NaN, but 8 sidewalk meshes turned solid with the player inside their bounds (4 while
   parked at the start). The bounds are a whole tile, so it happens every drive. Next: a per-triangle
   test against the vehicle's box.
+- Mitigation instead of a finer diagnostic: the server's road tile now lists boxes around its sidewalk
+  runs / corners and bridge decks, in 20 m pieces (`roads.collider_boxes`, the tile's `colliders`), and
+  the mod holds a colliding mesh while the player's car is within 3 m (2.5 m vertically) of one of its
+  boxes: not made, or made since the last `reloadCollision` and removed again before it, then made
+  once the car is clear (`roads.lua` `playerIn` / `releaseHeld` / `noteNewColliders`).
+  Fresh-data drives, 30 m/s for 6 km each: Philadelphia (north), Washington (east), Manhattan
+  (south-west). All passed with no falls; the hold fired 3 times in total. The NaN rate before was
+  2 in about 17, so three clean drives do not prove the cause yet. Keep counting across later drives.

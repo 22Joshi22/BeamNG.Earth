@@ -112,6 +112,39 @@ roads.onDrop({ anchorId = 2, key = '5_5' })
 roads.update(gov, 2)
 T.check(#statics() == 0 and decalRoads() == 0 and S.calls.reloadCollision == 2, 'dropped tile: mesh deleted, collision reloaded')
 
+-- a sidewalk mesh never turns solid around the player's car: held while the car is in its boxes
+files['/t/h.json'] = '{ chunks = { }, walk = { shape = "/t/walks_2_7_7.cdae", pos = { 0, 0, 0 } }, ' ..
+  'colliders = { walk = { { 100, 100, 0, 120, 110, 1 } } } }'
+local car = { pos = vec3(110, 105, 0.5) }
+function car:getPosition() return self.pos end
+getPlayerVehicle = function() return car end
+roads.onTile({ anchorId = 2, key = '7_7', path = '/t/h.json', n = 0 }, 2)
+roads.update(gov, 2)
+T.check(#statics() == 0, 'not made with the car on it')
+car.pos = vec3(122, 105, 0.5)          -- within PLAYER_R of the box
+roads.update(gov, 2)
+T.check(#statics() == 0, 'still held next to it')
+car.pos = vec3(200, 105, 0.5)
+roads.update(gov, 2)
+T.check(#statics() == 1, 'made once the car is clear')
+-- made, then the car drives into it before collision is rebuilt: removed, made again once clear
+roads.onDrop({ anchorId = 2, key = '7_7' })
+roads.update(gov, 2)
+roads.RELOAD_EVERY_S = 1e9
+roads.onTile({ anchorId = 2, key = '7_7', path = '/t/h.json', n = 0 }, 2)
+roads.update(gov, 2)
+T.check(#statics() == 1, 'made (car clear)')
+car.pos = vec3(110, 105, 0.5)
+roads.collisionRebuilt()
+T.check(#statics() == 0 and roads.solidAround == 1, 'removed before it turns solid around the car')
+car.pos = vec3(200, 105, 0.5)
+roads.update(gov, 2)
+T.check(#statics() == 1, 'made again once clear')
+roads.RELOAD_EVERY_S = 0
+roads.onDrop({ anchorId = 2, key = '7_7' })
+roads.update(gov, 2)
+getPlayerVehicle = nil
+
 -- a road mesh: the tile's DecalRoads are not made; one TSStatic without collision instead
 files['/t/r.json'] = '{ chunks = { ' .. chunk(0) .. ', ' .. chunk(5) .. ' }, road = { shape = "/t/road_2_6_6.cdae", pos = { 0, 0, 0 } } }'
 S.calls.reloadCollision = 0

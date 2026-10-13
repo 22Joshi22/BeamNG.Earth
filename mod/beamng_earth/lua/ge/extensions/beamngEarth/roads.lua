@@ -36,8 +36,9 @@ M.enabled = true
 -- collision anyway: M.collisionRebuilt() clears the pending rebuild.
 M.RELOAD_EVERY_S = 3
 
-local newColliders = {}    -- { id, what } of the colliders made since the last reloadCollision (noteNewColliders)
-local noteNewColliders
+local newColliders = {}    -- { id, walkQ entry } of the colliders made since the last reloadCollision
+local held = {}            -- walkQ entries of colliding meshes held while the player is in their boxes
+local noteNewColliders, playerIn, releaseHeld
 local tiles = {}            -- key "a:tx_ty" -> { anchor, objs = { DecalRoad ids }, queued = n, walk = TSStatic id,
                             --   road = TSStatic id }
 local walkQ = {}            -- { key, walk = {shape, pos}, what = 'walk' | 'road' } FIFO
@@ -160,7 +161,8 @@ function M.onTile(msg, currentAnchor)
     return false
   end
   local road = type(data.road) == 'table' and data.road.shape and type(data.road.pos) == 'table' and data.road
-  tiles[key] = { anchor = msg.anchorId, objs = {}, queued = road and 0 or #data.chunks }
+  tiles[key] = { anchor = msg.anchorId, objs = {}, queued = road and 0 or #data.chunks,
+    colliders = type(data.colliders) == 'table' and data.colliders or {} }
   sinceChange = stopwatch.new()
   if road then                -- the tile's road mesh replaces its DecalRoads (server/roadmesh.py)
     walkQ[#walkQ + 1] = { key = key, walk = road, what = 'road' }
@@ -211,9 +213,14 @@ function M.update(gov, currentAnchor)
       sinceChange = stopwatch.new()
     end
   end
+  releaseHeld()
   while #walkQ > 0 and gov:try('roadWalk') do
     local q = table.remove(walkQ, 1)
     local t = tiles[q.key]
+    if t and q.what ~= 'road' and playerIn(t.colliders[q.what]) then
+      held[#held + 1] = q           -- the car is on it: made once the car is clear (playerIn)
+      t = nil
+    end
     if t then
       local t0 = now()
       if not loadedMaterials then
@@ -223,7 +230,7 @@ function M.update(gov, currentAnchor)
       local isRoad = q.what == 'road'
       local ok, id = pcall(createWalk, q.walk, not isRoad)
       if ok then
-        if isRoad then t.road = id else t[q.what] = id; collisionDirty = true; newColliders[#newColliders + 1] = { id, q.what } end
+        if isRoad then t.road = id else t[q.what] = id; collisionDirty = true; newColliders[#newColliders + 1] = { id, q } end
       else lastError = tostring(id) end
       gov:charge('roadWalk', now() - t0)
       sinceChange = stopwatch.new()
@@ -238,22 +245,57 @@ function M.update(gov, currentAnchor)
   end
 end
 
--- Diagnostics (2026-10-13, the intermittent NaN drives): colliders that turn solid with the player's
--- vehicle inside their bounds (a late sidewalk / deck mesh appearing around the car).
-noteNewColliders = function()
+-- A colliding mesh (sidewalks, bridge decks) never turns solid around the player's car (2026-10-13: the
+-- intermittent NaN drives; a late curb or deck appearing around a vehicle). The server's road tile lists
+-- boxes around its pieces (roads.collider_boxes); a mesh the car is in is not made (held) or, made since
+-- the last reloadCollision, is removed again before it, and made once the car is clear.
+M.PLAYER_R = 3.0    -- m around the player's position (half a car's length, and some)
+M.PLAYER_DZ = 2.5   -- m above / below
+
+playerIn = function(boxes)
+  if type(boxes) ~= 'table' or #boxes == 0 then return false end
   local veh = getPlayerVehicle and getPlayerVehicle(0)
-  local p = veh and veh:getPosition()
+  if not veh then return false end
+  local p = veh:getPosition()
+  local r, dz = M.PLAYER_R, M.PLAYER_DZ
+  for _, b in ipairs(boxes) do
+    if p.x >= b[1] - r and p.x <= b[4] + r and p.y >= b[2] - r and p.y <= b[5] + r
+        and p.z >= b[3] - dz and p.z <= b[6] + dz then
+      return true
+    end
+  end
+  return false
+end
+
+releaseHeld = function()
+  if #held == 0 then return end
+  local keep = {}
+  for _, q in ipairs(held) do
+    local t = tiles[q.key]
+    if t then
+      if playerIn(t.colliders[q.what]) then keep[#keep + 1] = q else walkQ[#walkQ + 1] = q end
+    end
+  end
+  held = keep
+end
+
+noteNewColliders = function()
+  local removed = 0
   for _, c in ipairs(newColliders) do
-    local o = p and scenetree.findObjectById(c[1])
-    local ok, b = pcall(function() return o and o:getWorldBox() end)
-    if ok and b and p.x >= b.minExtents.x - 2 and p.x <= b.maxExtents.x + 2 and p.y >= b.minExtents.y - 2
-        and p.y <= b.maxExtents.y + 2 and p.z >= b.minExtents.z - 3 and p.z <= b.maxExtents.z + 3 then
+    local q = c[2]
+    local t = tiles[q.key]
+    if t and t[q.what] == c[1] and playerIn(t.colliders[q.what]) then
+      local o = scenetree.findObjectById(c[1])
+      if o then o:delete() end
+      t[q.what] = nil
+      held[#held + 1] = q
+      removed = removed + 1
       M.solidAround = (M.solidAround or 0) + 1
-      log('I', 'beamngEarth', string.format('roads: %s mesh turned solid around the player at (%.0f, %.0f, %.1f)',
-        c[2], p.x, p.y, p.z))
+      log('I', 'beamngEarth', 'roads: a ' .. tostring(q.what) .. ' mesh around the player held until it is clear')
     end
   end
   newColliders = {}
+  return removed
 end
 M._noteNewColliders = noteNewColliders
 
@@ -261,14 +303,15 @@ function M.hasWork() return #createQ > 0 or #deleteQ > 0 or #walkQ > 0 or collis
 
 -- Somebody else just ran be:reloadCollision() (the terrain commit): the sidewalks made so far collide.
 function M.collisionRebuilt()
-  noteNewColliders()
-  collisionDirty, sinceReload = false, stopwatch.new()
+  -- that rebuild already made them solid: one held now leaves the physics at the next one
+  local removed = noteNewColliders()
+  collisionDirty, sinceReload = removed > 0, stopwatch.new()
 end
 
 -- Every road removed now (setting off, mod unload).
 function M.clear()
   for key in pairs(tiles) do dropTile(key) end
-  createQ = {}
+  createQ, held, newColliders = {}, {}, {}
   for _, id in ipairs(deleteQ) do
     local o = scenetree.findObjectById(id)
     if o then

@@ -368,6 +368,15 @@ class BuildTileTest(unittest.TestCase):
                 self.assertEqual(json.load(fh)["chunks"][0]["m"], "x")
 
 
+    def test_collider_boxes_deck(self):
+        deck = {"deck": True, "w": 8, "n": [[0, 0, 10], [50, 0, 12]]}
+        boxes = roads.collider_boxes(None, [deck, {"w": 6, "n": [[0, 0, 0], [5, 0, 0]]}])
+        self.assertEqual(list(boxes), ["deck"])
+        b = np.array(boxes["deck"])                    # every piece with the point before it: the span covered
+        self.assertTrue(b[:, 0].min() < 0 and b[:, 3].max() > 50 and b[:, 1].min() <= -4.5 and b[:, 4].max() >= 4.5)
+        self.assertTrue(b[:, 2].min() < 9 and b[:, 5].max() >= 14)
+        self.assertEqual(roads.collider_boxes(None, None), {})
+
 class FakeConn:
     def __init__(self):
         self.sent = []
