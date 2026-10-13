@@ -59,6 +59,7 @@ os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
 
 import argparse  # noqa: E402
 import asyncio  # noqa: E402
+import contextlib  # noqa: E402
 import glob  # noqa: E402
 import itertools  # noqa: E402
 import logging  # noqa: E402
@@ -527,6 +528,7 @@ class Server:
         self.hm_inflight = {}
         self.ter_serial = itertools.count()
         self.base_stale = set()         # blocks whose base photo lacks lazy imagery (NAIP) still to come
+        self.base_pending = {}          # block -> the analysis regions its base photo was rendered without
         self.base_rev = itertools.count(1)
         self.hm_committed = deque(maxlen=HM_KEEP_COMMITTED)
         self.hm_sent = deque(maxlen=HM_KEEP_SENT)
@@ -936,7 +938,9 @@ class Server:
         size = self.layout.block * heightmap.SQUARE
         x0, y0 = cx - size / 2, cy - size / 2
         try:
-            rgb, used = self.imagery.render(anchor.frame, x0, y0, size, BASE_PX)
+            pending = set()
+            with (self.deshadow.no_wait() if self.deshadow is not None else contextlib.nullcontext()):
+                rgb, used = self.imagery.render(anchor.frame, x0, y0, size, BASE_PX, pending)
             log.debug("base photo %s r%d: %s", (anchor.id, cx, cy), rev,
                       {k: round(v / BASE_PX ** 2, 3) for k, v in used.items()})
         except Exception as e:      # an imagery failure must not cost the terrain
@@ -946,8 +950,10 @@ class Server:
         path = os.path.join(self.out_dir, name)
         rgb = np.asarray(rgb, np.uint8)
         # a lazy source (NAIP) not fetched yet for all of it: rendered again once it is (base_refresh)
+        # ... and the analyses (de-shadow, colour match) it was rendered without (never waited for)
         key = (anchor.id, cx, cy)
-        if self.imagery.lazy_ready(anchor.frame, x0, y0, size, BASE_PX):
+        self.base_pending[key] = frozenset(pending)
+        if self.base_ready(anchor, cx, cy):
             self.base_stale.discard(key)
         else:
             self.base_stale.add(key)
@@ -962,6 +968,14 @@ class Server:
         except OSError as e:
             log.info("terrain cache for %s: %s", name, e)
         return name
+
+    def base_ready(self, anchor, cx, cy):
+        """Rendering the block's base photo again would not change it: every lazy imagery tile is here and
+        the regions it was rendered without (base_pending) are done."""
+        size = self.layout.block * heightmap.SQUARE
+        if not self.imagery.lazy_ready(anchor.frame, cx - size / 2, cy - size / 2, size, BASE_PX):
+            return False
+        return all(self._region_status(rk) is not None for rk in self.base_pending.get((anchor.id, cx, cy), ()))
 
     def terrain_cached(self, key):
         return key in self.hm or key in self.hm_inflight
@@ -1013,6 +1027,7 @@ class Server:
             self._remove(os.path.join(self.out_dir, self.hm_name(key)))
             self._remove(os.path.join(self.out_dir, self.base_name(key)))
             self.base_stale.discard(key)
+            self.base_pending.pop(key, None)
             if info.get("base") and info["base"] != self.base_name(key):     # a refreshed photo
                 self._remove(os.path.join(self.out_dir, info["base"]))
             if info.get("ter"):
@@ -1938,8 +1953,7 @@ class Connection:
         anchor = s.anchors.get(aid)
         cands = [k for k in list(s.hm_committed)[-1:] + list(s.hm_sent)[-1:] if k in s.base_stale and k[0] == aid]
         size = s.layout.block * heightmap.SQUARE
-        key = next((k for k in cands if k in s.hm and s.imagery.lazy_ready(
-            anchor.frame, k[1] - size / 2, k[2] - size / 2, size, BASE_PX)), None)
+        key = next((k for k in cands if k in s.hm and s.base_ready(anchor, k[1], k[2])), None)
         if key is None:
             return
         self.base_busy = True

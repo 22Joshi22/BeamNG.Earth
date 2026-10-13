@@ -784,7 +784,7 @@ class Imagery:
         if not any(s.lazy and s.name in used for s in self.chain) or all(s.lazy for s in self.chain):
             return rgb, used
         try:
-            ref, _ = self._render(frame, x0, y0, size, px, None, skip_lazy=True)
+            ref, _ = self._render(frame, x0, y0, size, px, pending, skip_lazy=True)
         except ImageryError:            # the reference is unreachable: NAIP as served
             return rgb, used
         return match_colours(rgb, ref, MATCH_SIGMA_M / (size / px)), used

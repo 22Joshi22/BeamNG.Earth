@@ -53,6 +53,7 @@ deepest shadows of relit texels less (tone_lut lift FULL_TONE_LIFT).
 """
 import heapq
 import json
+import contextlib
 import logging
 import math
 import os
@@ -705,6 +706,7 @@ class Deshadow:
         self.tile_dir = os.path.join(cache_dir, "imagery", f"{SOURCE}-ds{VERSION}-{mode}")
         self.mem_tiles = mem_tiles
         self.wait_s = wait_s
+        self._tl = threading.local()        # no_wait(): this thread's renders never wait for a region
         self._lock = threading.Lock()
         self._lru = OrderedDict()           # (z, x, y) -> uint8 tile or SAME
         self._params = {}                   # (rx, ry) -> params of a ready region
@@ -862,6 +864,17 @@ class Deshadow:
                 self._grids.popitem(last=False)
         return Region(P, g)
 
+    @contextlib.contextmanager
+    def no_wait(self):
+        """Renders on this thread take a region that is not ready as pending at once (the block's base
+        photo: a block answer must not wait for an analysis; earthd renders it again once it is done)."""
+        old = getattr(self._tl, "nowait", False)
+        self._tl.nowait = True
+        try:
+            yield
+        finally:
+            self._tl.nowait = old
+
     def pending_region(self, key, tile):
         """The region of a source tile whose relight is still to come: its region is not ready but
         wanted (within REQUEST_M of the anchor), else None. Tile workers call it BEFORE relight(),
@@ -991,7 +1004,7 @@ class Deshadow:
                 self._lru.move_to_end(ck)
                 return None if v is SAME else v
         rk = region_of(z, x, y)
-        R = self.region(rk)
+        R = self.region(rk, wait=not getattr(self._tl, "nowait", False))
         if R is None:
             self._count("pending")
             return None
