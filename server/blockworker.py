@@ -47,6 +47,7 @@ class _State:
         self.surface = surfacemod.Surface(md) if surface else None
         self.graders = {}           # anchor id -> grading.Grader
         self.chunks = {}            # anchor id -> heightmap.ChunkCache
+        self.bridges = {}           # anchor id -> roads.BridgeProfiles (roads_tile)
         self.lock = threading.Lock()
         self.want = []              # (grader, cell key) to plan, most urgent first
         self.cv = threading.Condition()
@@ -165,6 +166,37 @@ def build(aid, lat, lon, hm_zoom, q, cx, cy, size, out_dir, name, ter_name=None)
         stages["ter"] = time.perf_counter() - t1
     info["stages"] = stages
     return info
+
+
+def roads_tile(aid, lat, lon, zoom, tx, ty, out_dir, vfs_dir, sidewalks, lift):
+    """earthd.Server.build_roads_tile here (road-tile pool): the anchor's road tile (tx, ty) built and
+    written; returns roads.write_tile's (vfs path, chunks). In the server's process its Python made up
+    ~80 % of the main process's busy threads (in-game profile 2026-10-13): the block photos and far
+    textures waited for the GIL."""
+    import roadmesh as roadmeshmod
+    import roads as roadsmod
+    g, _ = _s.anchor(aid, lat, lon)
+    frame = geodesy.EnuFrame(lat, lon)
+    cells = [_s.md.cell(k, layers=("roads",), kind="demand").layers.get("roads")
+             for k in roadsmod.cells_of_tile(frame, tx, ty)]
+
+    def elev(la, lo):           # the physics ground (lifted under roads: grading.ROAD_LIFT)
+        z = _s.dem.sample(la, lo, zoom)
+        return g.apply(la, lo, z, gradingmod.ROAD_LIFT) if g is not None else z
+    with _s.lock:
+        bridges = _s.bridges.get(aid)
+        if bridges is None:
+            bridges = _s.bridges[aid] = roadsmod.BridgeProfiles(
+                frame, lambda key: _s.md.cell(key, layers=("roads",), kind="demand").layers.get("roads"), elev)
+            for old in sorted(_s.bridges)[:-ANCHORS_KEPT]:
+                del _s.bridges[old]
+    walks = []
+    urban = _s.surface.urban if _s.surface is not None else None
+    chunks = roadsmod.build_tile(frame, tx, ty, cells, elev, urban, walks=walks, bridges=bridges, widths=_s.widths)
+    x0, y0, _, _ = roadsmod.tile_bbox(tx, ty)
+    mesh = roadmeshmod.build(frame, chunks, elev, (x0, y0, 0.0), lift)
+    dmesh = roadmeshmod.deck(chunks, (x0, y0, 0.0))
+    return roadsmod.write_tile(out_dir, vfs_dir, aid, tx, ty, chunks, walks if sidewalks else None, mesh, dmesh)
 
 
 def base_entry(user_dir, base_vfs, ao_vfs, rgb, ao_value):

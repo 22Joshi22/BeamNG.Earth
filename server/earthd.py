@@ -179,6 +179,7 @@ HM_KEEP_SENT = 2            # terrains handed to the mod but maybe not committed
 TILE_CACHE = {32: 6000, 64: 2500}
 HM_THREADS = 4
 LAG_TICK_S, LAG_REPORT_S = 0.1, 0.25     # the event-loop stall report (-v)
+ROAD_PROCESSES = 2              # road-tile processes (--block-process on, --roads on)
 LANE_REQUEST, LANE_PREFETCH = 0, 1     # Server.block_pools: the blocks the mod asks for / the prefetch
 HM_BUSY_TILE_WORKERS = 1    # far tiles built at once while a physics block is building
 WARM_STEPS_S = (0.0, 10.0, 20.0, 30.0)   # s ahead on the player's straight path whose road cells are planned early
@@ -409,7 +410,8 @@ class Server:
                  tone=1.0, near_radii=None, status_interval=STATUS_INTERVAL, cells=CELLS_DEFAULT, tex=None,
                  block=BLOCK_DEFAULT, horizon=False, deshadow="off", weather=None, gravity=None, net=None,
                  colormatch="off", credits=None, cache=None, retex_rate=RETEX_RATE, surface=None,
-                 mapdata=None, grading=False, road_widths=False, block_pools=(), sidewalks=True, far_pool=None):
+                 mapdata=None, grading=False, road_widths=False, block_pools=(), sidewalks=True, far_pool=None,
+                 road_pool=None):
         """kfun: K(L) for every level (default: the layout's K table); near_radii: the min-level
         radii (default: the layout's); cells: 32 (v1.3.1) or 64 (M1, mesh mode only); tex: texture
         px per level from the finest (default: tex_near, tex_near, tex_far with 32 cells,
@@ -504,6 +506,7 @@ class Server:
         # Far-tile geometry in worker processes too (blockworker.far_geometry; the texture stays here): a
         # ProcessPoolExecutor of tile_workers, or None (built in tile_pool's threads)
         self.far_pool = far_pool
+        self.road_pool = road_pool          # road tiles in processes (blockworker.roads_tile), else threads
         self.warm_cv = threading.Condition()
         self.warm_thread = None
         self.tile_workers = tile_workers
@@ -772,6 +775,10 @@ class Server:
         anchor = self.anchors.get(aid)
         if anchor is None or self.mapdata is None:
             return None
+        if self.road_pool is not None:
+            return self.road_pool.submit(
+                blockworker.roads_tile, aid, anchor.lat, anchor.lon, anchor.zooms[0], tx, ty, self.out_dir,
+                self.vfs_dir, self.sidewalks, DETAIL_ROAD_LIFT if self.near_visual == "detail" else 0.0).result()
         cells = [self.mapdata.cell(k, layers=("roads",), kind="demand").layers.get("roads")
                  for k in roadsmod.cells_of_tile(anchor.frame, tx, ty)]
         zoom = anchor.zooms[0]
@@ -828,6 +835,8 @@ class Server:
                 q.put_nowait((anchor.id, anchor.lat, anchor.lon, keys))
             except Exception as e:      # a full / closed queue only costs the lookahead
                 log.debug("road plans ahead: %s", e)
+        if self.road_pool is not None:      # road tiles plan in their processes: this one needs none ahead
+            return
         with self.warm_cv:
             self.warm_want = [(g, k) for k in keys]
             if self.warm_thread is None:
@@ -2352,6 +2361,12 @@ async def main_async(args):
                       args.grading == "on" and args.roads == "on",
                       args.road_widths == "on" and args.roads == "on", False, ctx.Queue(maxsize=1),
                       logging.getLogger().level))
+    road_pool = None
+    if args.block_process == "on" and args.roads == "on":
+        road_pool = ProcessPoolExecutor(          # road tiles (blockworker.roads_tile)
+            ROAD_PROCESSES, mp_context=ctx, initializer=blockworker.init,
+            initargs=(args.cache_dir, args.offline, True, args.grading == "on", args.road_widths == "on",
+                      args.surface == "on", ctx.Queue(maxsize=1), logging.getLogger().level))
     server = Server(args.user_dir, args.cache_dir, args.workers, kfun, args.hysteresis, args.far_radius, fmt,
                     imagery=args.imagery, near_visual=args.near_visual, tex_near=args.tex_near,
                     tex_far=args.tex_far, tone=args.tone, near_radii=radii,
@@ -2368,7 +2383,7 @@ async def main_async(args):
                     grading=args.grading == "on" and args.roads == "on",
                     road_widths=args.road_widths == "on" and args.roads == "on",
                     sidewalks=args.sidewalks == "on",
-                    block_pools=block_pools, far_pool=far_pool)
+                    block_pools=block_pools, far_pool=far_pool, road_pool=road_pool)
 
     async def net_log():
         while True:

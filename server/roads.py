@@ -107,7 +107,7 @@ def _rule_value(table, i):
     """The value of the rule of feature i covering the largest share of it, or None."""
     if table is None or len(table.feature) == 0:
         return None
-    sel = np.nonzero(table.feature == i)[0]
+    sel = table.rows(i)
     if len(sel) == 0:
         return None
     span = table.end[sel] - table.start[sel]
@@ -124,7 +124,7 @@ def level_ranges(feats, i):
         t = feats.rules.get(name)
         if t is None or len(t.feature) == 0:
             continue
-        for j in np.nonzero(t.feature == i)[0]:
+        for j in t.rows(i):
             v = t.value[j]
             if name == "flags":
                 kind = "tunnel" if "is_tunnel" in str(v) else "bridge" if "is_bridge" in str(v) else None
@@ -200,7 +200,7 @@ def bridge_levels(feats, i):
             continue
         best = 1.0
         if t is not None and len(t.feature):
-            for j in np.nonzero(t.feature == i)[0]:
+            for j in t.rows(i):
                 if t.end[j] > a and t.start[j] < b:
                     try:
                         best = max(best, float(t.value[j]))
