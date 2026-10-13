@@ -257,10 +257,13 @@ class Surface:
         self._last = (lat, lon)
         dlat = radius_m / 111320.0
         dlon = radius_m / (111320.0 * max(0.05, math.cos(math.radians(lat))))
+        # a file test, not a load: this runs on the server's event loop at every pose, and reading each
+        # cell's arrays there stalled it for seconds while driving (2026-10-12); an unreadable file is
+        # rebuilt when a block reads it
         for key in mapcells.cells_for_bbox(lat - dlat, lon - dlon, lat + dlat, lon + dlon):
-            if self.md._load(self.md.path(key, "landcover")) is None:
+            if not self.md.has(key, "landcover"):
                 self._queue(key)
-            if self.md._load(self.md.path(key, "roads")) is None:
+            if not self.md.has(key, "roads"):
                 self._queue(key, ("roads",))
 
     def ready(self, lat, lon, radius_m=1000.0, timeout_s=2.0):

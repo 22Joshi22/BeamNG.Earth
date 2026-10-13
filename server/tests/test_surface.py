@@ -93,7 +93,7 @@ class MaskTest(unittest.TestCase):
 
 
 class FakeMapData:
-    """The parts of mapdata.MapData the Surface uses: path / _load / prefetch, in memory."""
+    """The parts of mapdata.MapData the Surface uses: path / _load / has / prefetch, in memory."""
 
     def __init__(self, fill):
         self.fill = fill            # key -> class value (or None: no coverage)
@@ -105,6 +105,9 @@ class FakeMapData:
 
     def _load(self, path):
         return self.cached.get(path)
+
+    def has(self, key, layer):
+        return self.path(key, layer) in self.cached
 
     def prefetch(self, key, layers):
         self.prefetched.append((key, layers))

@@ -265,7 +265,17 @@ class Dem:
         ty1 = min(n - 1, int(math.floor(fy.max()) + 1) // TILE)
         nx, ny = tx1 - tx0 + 1, ty1 - ty0 + 1
         if nx * ny > MAX_TILES_PER_SAMPLE:
-            raise ValueError(f"sample area too large: {nx}x{ny} tiles at z{zoom}")
+            # spread-out points (all the roads of a cell with a long highway, 2026-10-12: every road tile of
+            # a session failed on one 53 x 82 box): sample groups of nearby tiles separately
+            g = max(1, int(math.isqrt(MAX_TILES_PER_SAMPLE)) - 1)
+            gx = (np.floor(fx).astype(np.int64) // TILE) // g
+            gy = (np.floor(fy).astype(np.int64) // TILE) // g
+            sub = np.zeros(len(lat), np.float64)
+            for key in np.unique(np.stack([gx, gy], 1), axis=0):
+                m = (gx == key[0]) & (gy == key[1])
+                sub[m] = self.sample(lat[m], lon[m], zoom, progress)
+            out[valid] = sub
+            return out.reshape(shape)
         keys = {(tx, ty): (zoom, tx % n, ty) for ty in range(ty0, ty1 + 1) for tx in range(tx0, tx1 + 1)}
         got = self.tiles(keys.values(), progress)
         mosaic = np.empty((ny * TILE, nx * TILE), np.float32)

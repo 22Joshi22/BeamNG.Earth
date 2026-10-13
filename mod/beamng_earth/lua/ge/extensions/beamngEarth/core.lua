@@ -108,6 +108,9 @@ local function resetState()
     retryAt = 0,
     block = nil,             -- { cx, cy } centre of the committed terrain block, current anchor frame
     terrainPending = nil,    -- terrain-follow request { requestId, anchorId, cx, cy, ready, msg }
+    -- frames a follow request spent waiting, by cause (the harness's view of why the block lags):
+    -- server = not answered yet, gate = ready but its far tiles not live, governor = no heavy slot yet
+    followWait = { server = 0, gate = 0, governor = 0 },
     terrainRetryAt = 0,
     rebasing = nil,          -- a rebase between its two phases (see commitRebase)
     lagProbe = nil,          -- watches, at onPreRender, when the last rebase's vehicle move became visible
@@ -782,13 +785,23 @@ local function updateWorld(dt)
       net.send({ type = 'prepare_terrain', requestId = id, anchorId = st.anchorId, cx = tx, cy = ty })
     end
   elseif fa == 'commit' then
-    if gov:requestHeavy() then -- isolated heavy slot (governor.lua); until then the request repeats
+    -- isolated heavy slot (governor.lua); until then the request repeats. Past the hard commit
+    -- distance it is urgent: the car's ground comes before the frame budget (a far-tile import backlog
+    -- held commits for seconds at 90 m/s, 2026-10-12)
+    local urgent = b ~= nil and follow.cheb(pl.x, pl.y, b.cx, b.cy) > follow.HARD_COMMIT_DIST
+    if gov:requestHeavy(urgent) then
       local tp = st.terrainPending
       st.terrainPending = nil
       commitTerrain(tp.msg)
+    else
+      st.followWait.governor = st.followWait.governor + 1
     end
   elseif fa == 'discard' then
     st.terrainPending = nil
+  elseif st.terrainPending and b and follow.cheb(pl.x, pl.y, b.cx, b.cy) > follow.COMMIT_DIST then
+    -- past the commit distance and still not committing: why
+    local w = st.followWait
+    if not st.terrainPending.ready then w.server = w.server + 1 else w.gate = w.gate + 1 end
   end
 end
 
@@ -1139,6 +1152,7 @@ function M.status()
     inOurLevel = st.inOurLevel, nearVisual = nearVisual, rawView = rawView, terrainRendered = terrain.isRenderEnabled(),
     anchorId = st.anchorId, anchorKey = st.anchorKey, pending = st.pending and st.pending.purpose,
     block = st.block, terrainPending = st.terrainPending and { st.terrainPending.cx, st.terrainPending.cy },
+    followWait = st.followWait,
     rebaseDistance = rebase.distance, lastFollowMs = st.lastFollowMs, lastRebaseMs = st.lastRebaseMs,
     lastRebaseWaitFrames = st.lastRebaseWait, rebaseLag = rebaseLag, lastMoveLag = st.lastMoveLag, player = st.player, far = farfield.stats(), governor = gov:snapshot(), status = st.status,
     serverBacklog = st.serverBacklog, followCount = st.followCount, rebaseCount = st.rebaseCount,

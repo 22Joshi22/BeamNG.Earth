@@ -16,7 +16,6 @@ median); its right-of-way is then that median, split by split(): two sidewalks o
 and the class defaults stay. Pure; RoadWidths memoises per road for the life of the server, so the
 physics block, grading, the road meshes and the surface masks always agree.
 """
-import math
 import threading
 
 import numpy as np
@@ -41,31 +40,75 @@ class Walls:
 
     def __init__(self, segs):
         self.segs = np.asarray(segs, np.float64).reshape(-1, 4)       # x0 y0 x1 y1
-        self.index = {}
-        for k, (x0, y0, x1, y1) in enumerate(self.segs):
-            for bx in range(int(math.floor(min(x0, x1) / BUCKET)), int(math.floor(max(x0, x1) / BUCKET)) + 1):
-                for by in range(int(math.floor(min(y0, y1) / BUCKET)), int(math.floor(max(y0, y1) / BUCKET)) + 1):
-                    self.index.setdefault((bx, by), []).append(k)
+        # bucket index, vectorised (a Python loop per segment took ~18 s for a city's 9 cells, 2026-10-12):
+        # one (segment, bucket) pair per bucket a segment's box touches, sorted by bucket key
+        s = self.segs
+        bx0 = np.floor(np.minimum(s[:, 0], s[:, 2]) / BUCKET).astype(np.int64)
+        bx1 = np.floor(np.maximum(s[:, 0], s[:, 2]) / BUCKET).astype(np.int64)
+        by0 = np.floor(np.minimum(s[:, 1], s[:, 3]) / BUCKET).astype(np.int64)
+        by1 = np.floor(np.maximum(s[:, 1], s[:, 3]) / BUCKET).astype(np.int64)
+        nx, ny = bx1 - bx0 + 1, by1 - by0 + 1
+        cnt = nx * ny
+        seg = np.repeat(np.arange(len(s)), cnt)
+        k = np.arange(cnt.sum()) - np.repeat(np.cumsum(cnt) - cnt, cnt)
+        bx = np.repeat(bx0, cnt) + k % np.repeat(nx, cnt)
+        by = np.repeat(by0, cnt) + k // np.repeat(nx, cnt)
+        key = self._key(bx, by)
+        order = np.argsort(key, kind="stable")
+        self.keys, first, counts = np.unique(key[order], return_index=True, return_counts=True)
+        self.first, self.counts, self.seg_of = first, counts, seg[order]
+
+    @staticmethod
+    def _key(bx, by):
+        return (np.asarray(bx, np.int64) + (1 << 30)) * (1 << 31) + (np.asarray(by, np.int64) + (1 << 30))
 
     def ray(self, p, d, reach=REACH):
         """Distance from p (2,) along unit d (2,) to the first wall, or None within reach."""
+        t = self.rays(np.asarray(p, np.float64)[None], np.asarray(d, np.float64)[None], reach)[0]
+        return None if np.isnan(t) else float(t)
+
+    def rays(self, p, d, reach=REACH):
+        """Distances from the points p (m, 2) along the unit directions d (m, 2) to the first wall, NaN
+        where none is within reach. All rays at once (one Python call per ray took ~3 s a block,
+        2026-10-12): every (ray, bucket) pair of the rays' boxes, then every (ray, segment) pair of those
+        buckets, intersected together."""
+        p = np.asarray(p, np.float64).reshape(-1, 2)
+        d = np.asarray(d, np.float64).reshape(-1, 2)
+        out = np.full(len(p), np.nan)
+        if not len(p) or not len(self.keys):
+            return out
         q = p + d * reach
-        ks = set()
-        for bx in range(int(math.floor(min(p[0], q[0]) / BUCKET)), int(math.floor(max(p[0], q[0]) / BUCKET)) + 1):
-            for by in range(int(math.floor(min(p[1], q[1]) / BUCKET)), int(math.floor(max(p[1], q[1]) / BUCKET)) + 1):
-                ks.update(self.index.get((bx, by), ()))
-        if not ks:
-            return None
-        s = self.segs[sorted(ks)]
-        a, b = s[:, :2], s[:, 2:]
-        e = b - a
-        den = d[0] * e[:, 1] - d[1] * e[:, 0]
+        bx0 = np.floor(np.minimum(p[:, 0], q[:, 0]) / BUCKET).astype(np.int64)
+        bx1 = np.floor(np.maximum(p[:, 0], q[:, 0]) / BUCKET).astype(np.int64)
+        by0 = np.floor(np.minimum(p[:, 1], q[:, 1]) / BUCKET).astype(np.int64)
+        by1 = np.floor(np.maximum(p[:, 1], q[:, 1]) / BUCKET).astype(np.int64)
+        nx, ny = bx1 - bx0 + 1, by1 - by0 + 1
+        cnt = nx * ny
+        ray = np.repeat(np.arange(len(p)), cnt)
+        k = np.arange(cnt.sum()) - np.repeat(np.cumsum(cnt) - cnt, cnt)
+        bx = np.repeat(bx0, cnt) + k % np.repeat(nx, cnt)
+        by = np.repeat(by0, cnt) + k // np.repeat(nx, cnt)
+        key = self._key(bx, by)
+        i = np.minimum(np.searchsorted(self.keys, key), len(self.keys) - 1)
+        found = self.keys[i] == key
+        ray, i = ray[found], i[found]
+        c = self.counts[i]
+        ray = np.repeat(ray, c)
+        j = np.arange(c.sum()) - np.repeat(np.cumsum(c) - c, c) + np.repeat(self.first[i], c)
+        s = self.segs[self.seg_of[j]]
+        pr, dr = p[ray], d[ray]
+        a, e = s[:, :2], s[:, 2:] - s[:, :2]
+        den = dr[:, 0] * e[:, 1] - dr[:, 1] * e[:, 0]
         ok = np.abs(den) > 1e-12
-        w = a - p
-        t = np.where(ok, (w[:, 0] * e[:, 1] - w[:, 1] * e[:, 0]) / np.where(ok, den, 1), -1)
-        u = np.where(ok, (w[:, 0] * d[1] - w[:, 1] * d[0]) / np.where(ok, den, 1), -1)
+        sden = np.where(ok, den, 1.0)
+        w = a - pr
+        t = np.where(ok, (w[:, 0] * e[:, 1] - w[:, 1] * e[:, 0]) / sden, -1)
+        u = np.where(ok, (w[:, 0] * dr[:, 1] - w[:, 1] * dr[:, 0]) / sden, -1)
         hit = ok & (t > 0) & (t <= reach) & (u >= 0) & (u <= 1)
-        return float(t[hit].min()) if hit.any() else None
+        best = np.full(len(p), np.inf)
+        np.minimum.at(best, ray[hit], t[hit])
+        out[np.isfinite(best)] = best[np.isfinite(best)]
+        return out
 
 
 def measure_row(centreline, walls):
@@ -76,22 +119,22 @@ def measure_row(centreline, walls):
     s = np.r_[0.0, np.cumsum(seg)]
     if s[-1] < 2 * END_SKIP + STEP:
         return None
-    rows, n = [], 0
-    for dd in np.arange(END_SKIP, s[-1] - END_SKIP + 1e-9, STEP):
-        k = max(1, min(int(np.searchsorted(s, dd)), len(s) - 1))
-        t = xy[k] - xy[k - 1]
-        L = math.hypot(*t)
-        if L < 1e-6:
-            continue
-        nrm = np.array([-t[1], t[0]]) / L
-        c = np.array([np.interp(dd, s, xy[:, 0]), np.interp(dd, s, xy[:, 1])])
-        n += 1
-        l, r = walls.ray(c, nrm), walls.ray(c, -nrm)
-        if l is not None and r is not None:
-            rows.append(l + r)
-    if n == 0 or len(rows) < MIN_SAMPLES or len(rows) / n < WALLED:
+    dd = np.arange(END_SKIP, s[-1] - END_SKIP + 1e-9, STEP)
+    k = np.clip(np.searchsorted(s, dd), 1, len(s) - 1)
+    t = xy[k] - xy[k - 1]
+    L = np.hypot(t[:, 0], t[:, 1])
+    good = L >= 1e-6
+    dd, t, L = dd[good], t[good], L[good]
+    n = len(dd)
+    if n == 0:
         return None
-    w = np.array(rows)
+    nrm = np.stack([-t[:, 1], t[:, 0]], 1) / L[:, None]
+    c = np.stack([np.interp(dd, s, xy[:, 0]), np.interp(dd, s, xy[:, 1])], 1)
+    hits = walls.rays(np.r_[c, c], np.r_[nrm, -nrm])
+    w = hits[:n] + hits[n:]
+    w = w[~np.isnan(w)]
+    if len(w) < MIN_SAMPLES or len(w) / n < WALLED:
+        return None
     med = float(np.median(w))
     q1, q3 = np.percentile(w, [25, 75])
     if (q3 - q1) / med > AGREE:
@@ -109,17 +152,22 @@ def split(row):
 
 
 def polygon_walls(feats, frame):
-    """Wall segments of building polygons (Features) in frame's metres."""
-    segs = []
-    for i in range(len(feats)):
-        for part in feats.parts(i):
-            for ring in part:
-                if len(ring) < 3:
-                    continue
-                e, n, _ = frame.geodetic_to_enu(ring[:, 1], ring[:, 0], 0.0)
-                p = np.c_[e, n]
-                segs.append(np.c_[p[:-1], p[1:]])
-    return np.concatenate(segs) if segs else np.zeros((0, 4))
+    """Wall segments of building polygons (Features) in frame's metres: consecutive vertices of every ring
+    (rings of fewer than 3 points skipped). One coordinate transform for the whole set (one per ring took
+    ~22 s for a city's 9 cells, 2026-10-12)."""
+    ll = np.asarray(feats.lonlat, np.float64)
+    off = np.asarray(feats.coord_off, np.int64)
+    if len(ll) < 2 or len(off) < 2:
+        return np.zeros((0, 4))
+    e, n, _ = frame.geodetic_to_enu(ll[:, 1], ll[:, 0], 0.0)
+    p = np.stack([e, n], 1)
+    lengths = np.diff(off)
+    ring = np.repeat(np.arange(len(lengths)), lengths)
+    keep_ring = lengths >= 3
+    i = np.arange(len(ll) - 1)
+    ok = (ring[:-1] == ring[1:]) & keep_ring[ring[:-1]]
+    i = i[ok]
+    return np.concatenate([p[i], p[i + 1]], 1)
 
 
 class RoadWidths:
@@ -131,10 +179,20 @@ class RoadWidths:
         self.memo = {}                          # fid -> (carriageway, walk) or None
         self.walls = {}                         # cell key -> (frame, Walls)
         self.lock = threading.Lock()
+        self.key_locks = {}                     # cell key -> Lock: one thread builds a cell's walls
 
     def _walls(self, key):
         """The walls of the buildings in cell key and the 8 around it (a street near a cell edge sees
         both sides), in a frame at the cell's centre."""
+        with self.lock:
+            got = self.walls.get(str(key))
+            kl = self.key_locks.setdefault(str(key), threading.Lock())
+        if got is not None:
+            return got
+        with kl:
+            return self._build_walls(key)
+
+    def _build_walls(self, key):
         with self.lock:
             got = self.walls.get(str(key))
         if got is not None:

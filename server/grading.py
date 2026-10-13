@@ -41,6 +41,7 @@ T_MIN, T_MAX = 5.0, 12.0    # m, transition back to the natural ground (5: roads
 SLOPE_RUN = 2.0             # transition = SLOPE_RUN x the height difference (1:2 slope)
 VERTEX_STEP = 16.0          # m between the plan's vertices (segments for the grading pass)
 BUCKET = 32.0               # m, query-point buckets
+PAIR_BATCH = 2_000_000      # (segment, point) pairs graded at once (bounds the temporaries, ~200 MB)
 ROAD_LIFT = 0.04            # m the physics ground is raised under roads (see Grader.apply)
 BLEND_R = 4.0               # m: roads near each other blend their targets by 1 / (1 + (d / BLEND_R)^2)
 PROFILE_ZOOM = 15           # DEM zoom of the profiles (one zoom for every caller)
@@ -143,8 +144,18 @@ class Grader:
         self.cells = {}
         self.failed = {}        # cell key -> monotonic time of the last failed fetch
         self.lock = threading.Lock()
+        self.key_locks = {}     # cell key -> Lock: one thread plans a cell, the others wait for it
 
     def _cell_plans(self, key):
+        with self.lock:
+            got = self.cells.get(key)
+            kl = self.key_locks.setdefault(key, threading.Lock())
+        if got is not None:
+            return got
+        with kl:
+            return self._plan_cell(key)
+
+    def _plan_cell(self, key):
         with self.lock:
             got = self.cells.get(key)
             failed = self.failed.get(key)
@@ -175,6 +186,16 @@ class Grader:
         with self.lock:
             self.cells.setdefault(key, plans)
             return self.cells[key]
+
+    def planned(self, key):
+        """True once cell key's plans exist (made, or failed recently)."""
+        with self.lock:
+            f = self.failed.get(key)
+            return key in self.cells or (f is not None and time.monotonic() - f < RETRY_S)
+
+    def warm(self, key):
+        """Make cell key's plans now (worker threads: the lookahead ahead of the player)."""
+        self._cell_plans(key)
 
     def plans(self, lat, lon):
         """The Plans touching the points' area (each road once)."""
@@ -212,7 +233,15 @@ class Grader:
 
 
 def grade_points(px, py, base, plans, lift=0.0):
-    """base at the points (px, py) graded under the plans (see the module doc). Pure."""
+    """base at the points (px, py) graded under the plans (see the module doc). Pure.
+    All segments at once, in batches of about PAIR_BATCH (segment, point) pairs (a Python loop per
+    segment was the server's largest CPU cost while driving, 2026-10-12)."""
+    px = np.asarray(px, np.float64)
+    py = np.asarray(py, np.float64)
+    base = np.asarray(base, np.float64)
+    out = base.copy()
+    if not len(px):
+        return out
     x0, y0, x1, y1 = px.min(), py.min(), px.max(), py.max()
     bx = np.floor((px - x0) / BUCKET).astype(np.int64)
     by = np.floor((py - y0) / BUCKET).astype(np.int64)
@@ -220,54 +249,73 @@ def grade_points(px, py, base, plans, lift=0.0):
     key = by * nbx + bx
     order = np.argsort(key, kind="stable")
     sk = key[order]
+    # every segment of the plans near the points: ends, end heights, reach (core half width + T_MAX)
+    A, B, ZA, ZB, H = [], [], [], [], []
+    for p in plans:
+        if p.bbox[2] < x0 or p.bbox[0] > x1 or p.bbox[3] < y0 or p.bbox[1] > y1 or len(p.xy) < 2:
+            continue
+        A.append(p.xy[:-1])
+        B.append(p.xy[1:])
+        ZA.append(p.z[:-1])
+        ZB.append(p.z[1:])
+        H.append(np.full(len(p.xy) - 1, p.half))
+    if not A:
+        return out
+    A, B, ZA, ZB, H = (np.concatenate(v) for v in (A, B, ZA, ZB, H))
+    reach = H + T_MAX
+    lo_x = np.minimum(A[:, 0], B[:, 0]) - reach
+    hi_x = np.maximum(A[:, 0], B[:, 0]) + reach
+    lo_y = np.minimum(A[:, 1], B[:, 1]) - reach
+    hi_y = np.maximum(A[:, 1], B[:, 1]) + reach
+    near = ~((hi_x < x0) | (lo_x > x1) | (hi_y < y0) | (lo_y > y1))
+    A, B, ZA, ZB, H = A[near], B[near], ZA[near], ZB[near], H[near]
+    lo_x, hi_x, lo_y, hi_y = lo_x[near], hi_x[near], lo_y[near], hi_y[near]
+    cx0 = np.maximum(0, np.floor((lo_x - x0) / BUCKET)).astype(np.int64)
+    cx1 = np.minimum(nbx - 1, np.floor((hi_x - x0) / BUCKET)).astype(np.int64)
+    cy0 = np.maximum(0, np.floor((lo_y - y0) / BUCKET)).astype(np.int64)
+    cy1 = np.floor((hi_y - y0) / BUCKET).astype(np.int64)
+    # (segment, bucket row) pairs -> the sorted points' range of that row's buckets cx0..cx1
+    nrow = np.maximum(cy1 - cy0 + 1, 0)
+    seg = np.repeat(np.arange(len(A)), nrow)
+    row = np.repeat(cy0, nrow) + (np.arange(nrow.sum()) - np.repeat(np.cumsum(nrow) - nrow, nrow))
+    i0 = np.searchsorted(sk, row * nbx + cx0[seg], "left")
+    i1 = np.searchsorted(sk, row * nbx + cx1[seg], "right")
+    cnt = np.maximum(i1 - i0, 0)
+    keep = cnt > 0
+    seg, i0, cnt = seg[keep], i0[keep], cnt[keep]
     num = np.zeros(len(px))
     den = np.zeros(len(px))
     wmax = np.zeros(len(px))
-    for p in plans:
-        if p.bbox[2] < x0 or p.bbox[0] > x1 or p.bbox[3] < y0 or p.bbox[1] > y1:
-            continue
-        reach = p.half + T_MAX
-        for a, b, za, zb in zip(p.xy[:-1], p.xy[1:], p.z[:-1], p.z[1:]):
-            lo_x, hi_x = min(a[0], b[0]) - reach, max(a[0], b[0]) + reach
-            lo_y, hi_y = min(a[1], b[1]) - reach, max(a[1], b[1]) + reach
-            if hi_x < x0 or lo_x > x1 or hi_y < y0 or lo_y > y1:
-                continue
-            cx0 = max(0, int((lo_x - x0) // BUCKET))
-            cx1 = min(nbx - 1, int((hi_x - x0) // BUCKET))
-            cy0 = max(0, int((lo_y - y0) // BUCKET))
-            cy1 = int((hi_y - y0) // BUCKET)
-            idx = []
-            for cy in range(cy0, cy1 + 1):
-                k0, k1 = cy * nbx + cx0, cy * nbx + cx1
-                i0, i1 = np.searchsorted(sk, k0, "left"), np.searchsorted(sk, k1, "right")
-                if i1 > i0:
-                    idx.append(order[i0:i1])
-            if not idx:
-                continue
-            idx = np.concatenate(idx)
-            qx, qy = px[idx] - a[0], py[idx] - a[1]
-            ab = b - a
-            L2 = float(ab @ ab)
-            t = np.clip((qx * ab[0] + qy * ab[1]) / L2, 0.0, 1.0) if L2 > 1e-12 else np.zeros(len(idx))
-            d = np.hypot(qx - t * ab[0], qy - t * ab[1])
-            target = za + (zb - za) * t
-            dz = np.abs(target - base[idx])
-            T = np.clip(SLOPE_RUN * dz, T_MIN, T_MAX)
-            u = np.clip((d - p.half) / T, 0.0, 1.0)
-            w = 1.0 - u * u * (3.0 - 2.0 * u)           # 1 on the core, smooth to 0 over T
-            m = w > 0
-            if not m.any():
-                continue
-            i = idx[m]
-            # the blend between roads by inverse distance from each centreline (times w), so two roads
-            # near each other (divided carriageways, junctions) meet in a gradual slope; with w alone
-            # the target jumped at a core's edge (2026-10-11, the user's car flipped at speed:
-            # centreline 2nd difference p99 0.17 m per metre, worst 0.5 m)
-            wb = w[m] / (1.0 + (d[m] / BLEND_R) ** 2)
-            np.add.at(num, i, wb * target[m])
-            np.add.at(den, i, wb)
-            np.maximum.at(wmax, i, w[m])
-    out = base.copy()
+    ends = np.cumsum(cnt)
+    start = 0
+    while start < len(seg):
+        stop = int(np.searchsorted(ends, (ends[start - 1] if start else 0) + PAIR_BATCH, "right"))
+        stop = max(stop, start + 1)
+        c = cnt[start:stop]
+        s_ = np.repeat(seg[start:stop], c)
+        idx = order[np.repeat(i0[start:stop], c) + (np.arange(c.sum()) - np.repeat(np.cumsum(c) - c, c))]
+        a = A[s_]
+        ab = B[s_] - a
+        qx, qy = px[idx] - a[:, 0], py[idx] - a[:, 1]
+        L2 = ab[:, 0] * ab[:, 0] + ab[:, 1] * ab[:, 1]
+        long_ = L2 > 1e-12
+        t = np.where(long_, np.clip((qx * ab[:, 0] + qy * ab[:, 1]) / np.where(long_, L2, 1.0), 0.0, 1.0), 0.0)
+        d = np.hypot(qx - t * ab[:, 0], qy - t * ab[:, 1])
+        target = ZA[s_] + (ZB[s_] - ZA[s_]) * t
+        T = np.clip(SLOPE_RUN * np.abs(target - base[idx]), T_MIN, T_MAX)
+        u = np.clip((d - H[s_]) / T, 0.0, 1.0)
+        w = 1.0 - u * u * (3.0 - 2.0 * u)           # 1 on the core, smooth to 0 over T
+        m = w > 0
+        i = idx[m]
+        # the blend between roads by inverse distance from each centreline (times w), so two roads
+        # near each other (divided carriageways, junctions) meet in a gradual slope; with w alone
+        # the target jumped at a core's edge (2026-10-11, the user's car flipped at speed:
+        # centreline 2nd difference p99 0.17 m per metre, worst 0.5 m)
+        wb = w[m] / (1.0 + (d[m] / BLEND_R) ** 2)
+        num += np.bincount(i, wb * target[m], len(px))
+        den += np.bincount(i, wb, len(px))
+        np.maximum.at(wmax, i, w[m])
+        start = stop
     g = den > 0
     out[g] = base[g] + wmax[g] * (num[g] / den[g] - base[g] + lift)
     return out

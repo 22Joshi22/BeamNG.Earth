@@ -235,6 +235,10 @@ class MapData:
                     del self._locks[k]
 
     # --- one layer -------------------------------------------------------------------------------
+    def has(self, key, layer):
+        """True when the layer's file exists (not read: cheap enough for the event loop)."""
+        return os.path.exists(self.path(key, layer))
+
     def _load(self, path):
         """A layer file's arrays, or None when it is missing or unreadable (truncated, a damaged
         deflate stream, another layout): a miss, rebuilt and written again."""
