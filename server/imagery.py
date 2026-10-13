@@ -125,6 +125,9 @@ SOURCES["naipusda"] = Source(
 # Maryland's own six-inch orthophotos (MD iMAP, 0.15 m, flown 2023-25, leaf-off spring): ~1.3 s per
 # 1024² (in-game 2026-10-13, vs ~10 s for the USGS NAIP service Maryland otherwise needs; USDA's has none
 # there). White outside the state. Free with acknowledgement (docs/research/2026-10-10-us-state-imagery.md).
+# A cached MapServer: it draws only at ~1 m per pixel or coarser (0.75 and 0.5 m requests came back all
+# white, 2026-10-13); the z15 parent at 1024 px is 0.93 m at 39 N. Keep max_zoom 17 / export 2 (finer
+# texels need the three-inch ImageServer of that research).
 SOURCES["md6in"] = Source(
     "md6in", "https://mdgeodata.md.gov/imagery/rest/services/SixInch/SixInchImagery2023_2024_2025/MapServer/export"
              "?bbox={bbox}&bboxSR=3857&imageSR=3857&size={size},{size}&format=jpg&f=image",
