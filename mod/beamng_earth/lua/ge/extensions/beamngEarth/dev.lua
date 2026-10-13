@@ -862,6 +862,14 @@ local function drawControls(st)
   if im.Button(forced and 'Rebase pending...' or 'Force rebase now') and not forced then M.forceRebase(st) end
   local core = rawget(_G, 'beamngEarth_core')
   if core then
+    -- detail mode: before / after captures (the user, 2026-10-12): raw = the aerial photo on the DEM tiles,
+    -- generated = the drawn near block (photo base, surface textures, edited ground)
+    if core.nearVisualMode and core.nearVisualMode() == 'detail' then
+      local rv = boolPtr('rawView', core.rawView())
+      if im.Checkbox('Raw data view (satellite photo + DEM instead of the generated near ground)', rv) then
+        rv[0] = core.setRawView(rv[0])
+      end
+    end
     local gov = core._governor and core._governor()
     if gov then
       local bp = floatPtr('budget', gov.target)

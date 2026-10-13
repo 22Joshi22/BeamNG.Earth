@@ -240,7 +240,11 @@ local function loadBlock(tr)
   local layers = (type(tr.layers) == 'table' and type(tr.materials) == 'table')
     and { masks = tr.layers, materials = tr.materials } or nil -- server --surface on (surface.py)
   if layers then groundcover.ensure() end
-  local ok, err = terrain.load(tr.heightmap, sq, maxH, x, y, tr.zBase, layers)
+  -- detail mode: the block's aerial photo as its base colour (server write_base); else the level's
+  -- (false: detail mode without a photo -> the level's flat base; nil: other modes, untouched)
+  local base = nil
+  if nearVisual == 'detail' then base = type(tr.base) == 'string' and tr.base or false end
+  local ok, err = terrain.load(tr.heightmap, sq, maxH, x, y, tr.zBase, layers, base, tonumber(tr.baseSize))
   -- every block import / move drops all the grass on it; rebuild it before this frame is drawn
   groundcover.afterBlockChange()
   return ok, err
@@ -1076,14 +1080,30 @@ function M.setBlockSize(size)
   return n, ok
 end
 
--- Who draws the near ground: 'mesh' (far tiles; the TerrainBlock is physics-only, render disabled)
--- or 'terrain' (v1.2; anything else). Set by the server's hello; callable from the console to test.
+-- Who draws the near ground: 'mesh' (far tiles; the TerrainBlock is physics-only, render disabled),
+-- 'detail' (the mesh layout with the block drawn: aerial photo base, surface textures; 2026-10-12) or
+-- 'terrain' (v1.2; anything else). Set by the server's hello; callable from the console to test.
+local rawView = false
 function M.setNearVisual(mode)
-  nearVisual = (mode == 'mesh') and 'mesh' or 'terrain'
-  terrain.setRenderEnabled(nearVisual ~= 'mesh')
+  nearVisual = (mode == 'mesh' or mode == 'detail') and mode or 'terrain'
+  terrain.setRenderEnabled(nearVisual == 'terrain' or (nearVisual == 'detail' and not rawView))
   farfield.setNearVisual(nearVisual)
   return nearVisual
 end
+
+-- Detail mode, dev tools: on = show the raw data (the far tiles, aerial photo on the DEM) instead of the
+-- generated near ground (the drawn block), for before / after captures. No server round trip: the tiles
+-- under the block are loaded anyway (hidden or sunk). Returns the state.
+function M.setRawView(on)
+  rawView = on and true or false
+  farfield.setRawView(rawView)
+  terrain.setRenderEnabled(nearVisual == 'terrain' or (nearVisual == 'detail' and not rawView))
+  return rawView
+end
+
+function M.rawView() return rawView end
+
+function M.nearVisualMode() return nearVisual end
 
 -- Horizon mode (docs/V1_4_SPEC.md 3.6 M1h), from the server's hello.horizon: the view distance follows
 -- the far-field radius (setFarRadius, from status.radius) and the sky uses the tiles' planet radius.
@@ -1116,7 +1136,7 @@ end
 
 function M.status()
   return dumps({ net = net.state(), lastError = net.lastError, session = st.sessionId, active = st.active,
-    inOurLevel = st.inOurLevel, nearVisual = nearVisual, terrainRendered = terrain.isRenderEnabled(),
+    inOurLevel = st.inOurLevel, nearVisual = nearVisual, rawView = rawView, terrainRendered = terrain.isRenderEnabled(),
     anchorId = st.anchorId, anchorKey = st.anchorKey, pending = st.pending and st.pending.purpose,
     block = st.block, terrainPending = st.terrainPending and { st.terrainPending.cx, st.terrainPending.cy },
     rebaseDistance = rebase.distance, lastFollowMs = st.lastFollowMs, lastRebaseMs = st.lastRebaseMs,

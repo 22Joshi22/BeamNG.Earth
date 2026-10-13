@@ -45,6 +45,10 @@
 --       interior: hidden.
 --     onBlockCommit runs in the commit frame (the governor's heavy slot): newly uncovered tiles come
 --     back at their true height at once; newly covered ones sink over 0.3 s (then hide if interior).
+--   'detail' (2026-10-12): the mesh layout ('mesh' below) with the TerrainBlock drawn as the near ground
+--     (aerial photo base colour, terrain.lua): tiles under it are covered as in 'terrain' mode, against
+--     the 512² block (the server forces L-1 under it, so tile edges meet its 128 m-grid edges). The dev
+--     tools' raw view (setRawView) shows the tiles instead, as in 'mesh' mode, without a server round trip.
 --   'mesh' (v1.3 B): the TerrainBlock is physics-only (render disabled, core.lua/terrain.lua) and the
 --     tiles are the whole visible ground: nothing is ever covered, sunk or hidden for the block, and
 --     terrain-follow commits are not gated on far tiles (uncoverReady is always true). Queued tiles
@@ -129,7 +133,15 @@ local seqN = 0          -- arrival counter of far_tile messages
 local serial = 0        -- object name counter
 local clock = 0         -- s, transition clock (advanced by update)
 local materialChecked = false
-local nearVisual = 'terrain' -- 'terrain' | 'mesh' (server hello; survives forget(): a server setting)
+local nearVisual = 'terrain' -- 'terrain' | 'mesh' | 'detail' (server hello; survives forget(): a server setting)
+local rawView = false        -- detail mode, dev tools: the tiles are the ground (the block hidden by core)
+
+-- The tiles use the mesh-mode layout and rules (import order, old-anchor drops, the exact-ground metric).
+local function meshLayout() return nearVisual ~= 'terrain' end
+-- The TerrainBlock is the visible near ground: tiles under it are covered.
+local function blockShown() return nearVisual == 'terrain' or (nearVisual == 'detail' and not rawView) end
+-- Level of the tiles the server forces under the block: L0 (terrain mode, 256 m grid) or L-1 (detail).
+local function forcedLevel() return nearVisual == 'detail' and -1 or 0 end
 local counters = { imports = 0, failed = 0, crossovers = 0, instant = 0, pops = 0, textured = 0, materials = 0,
   capWaits = 0, oldCovered = 0, exactFrames = 0, exactMiss = 0, retex = 0, retexStale = 0, retexFailed = 0 }
 local exactLevel = M.EXACT_LEVEL
@@ -257,7 +269,7 @@ end
 -- mode the block is invisible, so nothing is covered.
 local function coverOf(inst)
   local b = block
-  if not b or nearVisual == 'mesh' then return 'none' end
+  if not b or not blockShown() then return 'none' end
   local e = 0.01
   if inst.x0 < b.x0 - e or inst.y0 < b.y0 - e or inst.x1 > b.x1 + e or inst.y1 > b.y1 + e then return 'none' end
   local d = min(inst.x0 - b.x0, inst.y0 - b.y0, b.x1 - inst.x1, b.y1 - inst.y1)
@@ -395,7 +407,7 @@ end
 -- completely goes at once. Safe: the current anchor's covered area never shrinks (every swap group
 -- replaces its own footprint). Called with the tiles that just settled.
 local function dropCoveredOld(adds)
-  if oldCount == 0 or nearVisual ~= 'mesh' or #adds == 0 then return end
+  if oldCount == 0 or not meshLayout() or #adds == 0 then return end
   local drop = {}
   for k, o in pairs(old) do
     local hit = false
@@ -655,7 +667,7 @@ end
 -- physics-only) or 'terrain' (v1.2). A change re-applies every shown tile's cover state at once
 -- (mesh: covered tiles come back at their true height).
 function M.setNearVisual(mode)
-  mode = (mode == 'mesh') and 'mesh' or 'terrain'
+  mode = (mode == 'mesh' or mode == 'detail') and mode or 'terrain'
   if mode == nearVisual then return end
   nearVisual = mode
   for _, inst in pairs(live) do applyCover(inst, false) end
@@ -663,6 +675,19 @@ function M.setNearVisual(mode)
 end
 
 function M.nearVisual() return nearVisual end
+
+-- Detail mode, dev tools (raw / generated before-after captures): on = the tiles are the ground again
+-- (nothing covered; core hides the block), off = the block. Re-applies every tile's cover at once.
+function M.setRawView(on)
+  on = on and true or false
+  if on == rawView then return rawView end
+  rawView = on
+  for _, inst in pairs(live) do applyCover(inst, false) end
+  for _, inst in pairs(old) do applyCover(inst, false) end
+  return rawView
+end
+
+function M.rawView() return rawView end
 
 -- The terrain block moved (terrain-follow commit frame, after importMaps + setPosition). Covers and
 -- uncovers far tiles; about 48 setPosition/setHidden calls for a 256 m move. Returns the changes.
@@ -681,20 +706,21 @@ end
 -- true height over the new terrain (coverOf only covers tiles fully inside the block), and one
 -- inside it would be hidden (it has no `sink`), leaving the 2 m N/E strip uncovered.
 function M.uncoverReady(ocx, ocy, ncx, ncy)
-  if nearVisual == 'mesh' then return true end -- the block is invisible: a move uncovers nothing
+  if not blockShown() then return true end -- the block is invisible: a move uncovers nothing
   local ox0, oy0, ox1, oy1 = lattice.coverBox(ocx, ocy)
   local nx0, ny0, nx1, ny1 = lattice.coverBox(ncx, ncy)
-  local L = lattice.L0
+  local fl = forcedLevel()
+  local L = lattice.L0 * 2 ^ fl
   local e = 0.01
   for _, inst in pairs(live) do
     if not inst.failed and inst.x0 < nx1 - e and nx0 + e < inst.x1 and inst.y0 < ny1 - e and ny0 + e < inst.y1
-      and (inst.level > 0 or inst.x0 < nx0 - e or inst.y0 < ny0 - e or inst.x1 > nx1 + e or inst.y1 > ny1 + e) then
+      and (inst.level > fl or inst.x0 < nx0 - e or inst.y0 < ny0 - e or inst.x1 > nx1 + e or inst.y1 > ny1 + e) then
       return false
     end
   end
   local idx = {}
   for _, inst in pairs(live) do
-    if inst.level == 0 and not inst.failed then idx[floor(inst.x0 / L + 0.5) .. ',' .. floor(inst.y0 / L + 0.5)] = true end
+    if inst.level == fl and not inst.failed then idx[floor(inst.x0 / L + 0.5) .. ',' .. floor(inst.y0 / L + 0.5)] = true end
   end
   local function anyCovers(px, py, set)
     for _, inst in pairs(set) do
@@ -827,7 +853,7 @@ local function peekImport(cam)
     mH = mH + 1
   end
   if mH <= mT then
-    if nearVisual ~= 'mesh' or not cam then return mainQ[mH], true end
+    if not meshLayout() or not cam then return mainQ[mH], true end
     local best, bd = nil, huge
     for i = mH, mT do
       local inst = mainQ[i]
@@ -889,7 +915,7 @@ local function updateUnder(player)
     end
   end
   local miss = false
-  if nearVisual == 'mesh' then -- terrain mode: the TerrainBlock itself is the visible near ground
+  if meshLayout() and not blockShown() then -- else the TerrainBlock itself is the visible near ground
     miss = not inst or inst.level ~= exactLevel or abs(inst.off) > M.EXACT_OFF
     counters.exactFrames = counters.exactFrames + 1
     if miss then counters.exactMiss = counters.exactMiss + 1 end
@@ -1177,7 +1203,7 @@ function M.stats()
     imports = counters.imports, failed = counters.failed, crossovers = counters.crossovers,
     instant = counters.instant, pops = counters.pops, capWaits = counters.capWaits, frameUnits = lastFrame.units,
     moving = lastFrame.moving, materials = satmat.count(), materialsCreated = counters.materials,
-    textured = counters.textured, oldCovered = counters.oldCovered, nearVisual = nearVisual,
+    textured = counters.textured, oldCovered = counters.oldCovered, nearVisual = nearVisual, rawView = rawView,
     waitingGroups = waiting, exactLevel = exactLevel, underLevel = under.level, underOld = under.old,
     exactMiss = counters.exactMiss, exactFrames = counters.exactFrames, retex = counters.retex,
     retexStale = counters.retexStale, retexFailed = counters.retexFailed }

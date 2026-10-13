@@ -308,10 +308,11 @@ def overlaps(a, b):
 
 def select(px, py, forced=(), prev_refined=frozenset(), kfun=None, h=HYSTERESIS,
            radius=RADIUS, max_level=MAX_LEVEL, hold=frozenset(), min_level=0, radii=None, layout=V131,
-           disc=False, horizon=None):
+           disc=False, horizon=None, forced_level=0):
     """Desired tiles for a player at (px, py).
 
-    forced: bboxes (terrain blocks) under which everything is refined to L0 (terrain mode).
+    forced: bboxes (terrain blocks) under which everything is refined to `forced_level` (terrain mode:
+    L0; detail mode: L-1, so tile edges meet the 128 m-grid edges of a 512² block).
     prev_refined: the nodes (L, i, j) refined last time (for the hysteresis).
     hold: nodes whose state must not change now (they changed less than HOLD_S ago).
     min_level: finest level (0; layout.min_level in mesh mode); kfun / radii: K(L) and the
@@ -342,7 +343,7 @@ def select(px, py, forced=(), prev_refined=frozenset(), kfun=None, h=HYSTERESIS,
         elif not (x0 < hi_x and x1 > lo_x and y0 < hi_y and y1 > lo_y):
             continue                                    # outside the far radius
         if lvl > min_level:
-            if lvl > 0 and any(x0 < b[2] and x1 > b[0] and y0 < b[3] and y1 > b[1] for b in forced):
+            if lvl > forced_level and any(x0 < b[2] and x1 > b[0] and y0 < b[3] and y1 > b[1] for b in forced):
                 split = True
             elif node in hold:
                 split = node in prev_refined
@@ -704,7 +705,7 @@ class Built:
     tris: np.ndarray        # (m, 3) counter-clockwise from +Z
     grid: np.ndarray        # (cells + 1)² absolute vertex heights, float32 (for swap-group deltas)
     err: float              # max |reference - tile| (m)
-    sink: float | None      # L0 (terrain mode): drop that puts the tile under the terrain everywhere
+    sink: float | None      # levels <= 0 with_sink (terrain / detail mode): drop that puts the tile under the terrain everywhere
     skirt: float            # skirt depth (m)
     size: float             # tile edge (m)
 
@@ -746,7 +747,7 @@ def build_tile(frame, dem, tile, zoom, q=None, ref_zoom=None, with_sink=True, la
         else:                           # the exact level: the vertices are the lattice; reference at 1 m
             r = x0 + np.arange(2 * cells + 1) * (sp / 2), y0 + np.arange(2 * cells + 1) * (sp / 2)
             ref = heightmap.surface_u(frame, elev_fn, *r)
-        if tile.level == 0 and with_sink:
+        if with_sink:                   # L0 (terrain mode) or any near level (detail mode)
             terrain = lq
     else:
         xs = x0 + np.arange(cells + 1) * sp
@@ -766,7 +767,7 @@ def build_tile(frame, dem, tile, zoom, q=None, ref_zoom=None, with_sink=True, la
     err = float(np.abs(ref - surface_at(U, sp, RX, RY)).max())
     sink = None
     if terrain is not None:
-        lf = np.arange(LATTICE) * heightmap.SQUARE
+        lf = np.arange(terrain.shape[0]) * heightmap.SQUARE
         LX, LY = np.meshgrid(lf, lf)
         sink = float(max(0.0, (surface_at(U, sp, LX, LY) - terrain).max()) + SINK_MARGIN)
 

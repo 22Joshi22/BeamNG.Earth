@@ -1,0 +1,112 @@
+"""The 'detail' near-visual mode (2026-10-12): the mesh layout (64 cells, the 512² block) with the
+physics block drawn as the near ground. The server forces L-1 tiles under the block (their 128 m edges
+meet the block's 128 m-grid edges), gives them sinks, and writes the block's aerial photo (BASE_PX²,
+the block's footprint) next to its heightmap; terrain messages name it (base, baseSize)."""
+import os
+import sys
+import time
+import unittest
+
+import numpy as np
+from PIL import Image
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+import earthd  # noqa: E402
+import farfield as ff  # noqa: E402
+import geodesy  # noqa: E402
+from test_server import LAT, LON, FakeDem, ServerHarness  # noqa: E402
+from netclient import FarState  # noqa: E402
+
+LAYOUT = ff.Layout(64, 512, True)
+
+
+class SelectTest(unittest.TestCase):
+    def test_forced_level_minus_one(self):
+        """A 512² block centred off the 256 m grid: with forced_level -1 no tile coarser than L-1 overlaps it,
+        so every tile under it lies wholly inside (covered) or wholly outside."""
+        block = ff.Block(128.0, -128.0, 512).bbox                       # [-384, -640, 640, 384]
+        tiles, _ = ff.select(2000.0, 2000.0, [block], min_level=LAYOUT.min_level, layout=LAYOUT, forced_level=-1)
+        under = [t for t in tiles.values() if ff.overlaps(t.bbox, block)]
+        self.assertTrue(under)
+        self.assertEqual({t.level for t in under}, {-1})
+        for t in under:
+            x0, y0, x1, y1 = t.bbox
+            self.assertTrue(x0 >= block[0] and y0 >= block[1] and x1 <= block[2] and y1 <= block[3]
+                            or x1 <= block[0] or x0 >= block[2] or y1 <= block[1] or y0 >= block[3])
+        # L0 forcing (terrain mode) leaves 256 m tiles straddling this block's edges
+        tiles0, _ = ff.select(2000.0, 2000.0, [block], min_level=LAYOUT.min_level, layout=LAYOUT)
+        self.assertTrue(any(ff.overlaps(t.bbox, block) and t.level == 0 for t in tiles0.values()))
+
+    def test_sink_on_l_minus_one(self):
+        frame = geodesy.EnuFrame(LAT, LON)
+        b = ff.build_tile(frame, FakeDem(), ff.Tile(-1, 0, 0), 15, 1 / 64, with_sink=True, layout=LAYOUT)
+        self.assertIsNotNone(b.sink)
+        self.assertGreaterEqual(b.sink, ff.SINK_MARGIN)     # the exact level: its vertices are the lattice
+        self.assertLess(b.sink, ff.SINK_MARGIN + 0.05)
+        b2 = ff.build_tile(frame, FakeDem(), ff.Tile(-1, 0, 0), 15, 1 / 64, with_sink=False, layout=LAYOUT)
+        self.assertIsNone(b2.sink)
+
+
+class DetailServerTest(ServerHarness):
+    near_visual = "detail"
+    with_imagery = True
+    cells = 64
+    block = 512
+
+    def test_detail_session(self):
+        c = self.c
+        far = FarState()
+        self.hello()                    # asserts hello.nearVisual == "detail"
+        aid = self.prepare_anchor(1, LAT, LON)["anchorId"]
+        c.send({"type": "commit_anchor", "anchorId": aid})
+        c.send({"type": "commit_terrain", "anchorId": aid, "cx": 0, "cy": 0})
+        self.pose(aid, 0.0, 0.0)
+        done, seen = self.stream_until_done(far, aid)
+        keys = far.keys(aid)
+        block = ff.Block(0.0, 0.0, 512).bbox
+        under = [ff.tile_of(k) for k in keys if ff.overlaps(ff.tile_of(k).bbox, block)]
+        self.assertTrue(under)
+        self.assertEqual({t.level for t in under}, {-1}, "only L-1 tiles under the drawn block")
+        tiles = {m["key"]: m for m in seen if m["type"] == "far_tile"}
+        self.assertTrue(all("sink" in tiles[t.key] for t in under if t.key in tiles), "tiles under the block have sinks")
+        # a terrain: the base photo next to the heightmap, over the block's footprint
+        c.send({"type": "prepare_terrain", "requestId": 9, "anchorId": aid, "cx": 130.0, "cy": -190.0})
+        tr, _ = c.until(lambda m: m["type"] == "terrain_ready", timeout=60)
+        self.assertEqual((tr["cx"], tr["cy"]), (128.0, -128.0))
+        self.assertEqual(tr["baseSize"], 512 * 2.0)
+        path = self.fs(tr["base"])
+        self.assertTrue(path.endswith("_base.png") and os.path.exists(path))
+        im = Image.open(path)
+        self.assertEqual((im.size, im.mode), ((earthd.BASE_PX, earthd.BASE_PX), "RGB"))
+        a = np.asarray(im)
+        self.assertGreater(a.std(), 5.0, "a real photo, not a flat fill")
+        # evicted with its heightmap
+        key = (aid, 128.0, -128.0)
+        self.server.hm_committed.clear(); self.server.hm_sent.clear()
+        old_cache = earthd.HM_CACHE
+        earthd.HM_CACHE = 0
+        try:
+            self.server.evict_heightmaps()
+        finally:
+            earthd.HM_CACHE = old_cache
+        self.assertFalse(os.path.exists(path), "base photo removed with its heightmap")
+
+
+
+class DetailNoImageryTest(ServerHarness):
+    near_visual = "detail"
+    with_imagery = False
+    cells = 64
+    block = 512
+
+    def test_no_imagery_no_base(self):
+        """Without imagery the terrain has no base (the mod keeps the level's flat base)."""
+        self.hello()
+        aid = self.prepare_anchor(1, LAT, LON)["anchorId"]
+        self.c.send({"type": "prepare_terrain", "requestId": 3, "anchorId": aid, "cx": 0.0, "cy": 0.0})
+        tr, _ = self.c.until(lambda m: m["type"] == "terrain_ready", timeout=60)
+        self.assertNotIn("base", tr)
+
+
+if __name__ == "__main__":
+    unittest.main()

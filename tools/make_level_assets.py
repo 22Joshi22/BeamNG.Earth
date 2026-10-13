@@ -102,6 +102,39 @@ lines(os.path.join(L, "main/MissionGroup/Weather/items.level.json"), [
 # here (means of template's t_terrain_base_dirt_*), so nothing depends on another level's zip.
 A = "/assets/materials/terrain/soil/"
 B = "/levels/beamng_earth/art/terrains/"
+BASE_TEX = 2048     # base texture slot (px): the shipped flat base maps and the server's photo (earthd.BASE_PX)
+# The server's surface materials (server/surface.py MATERIALS, the tyres' ground models), each with its
+# own stock detail / macro textures for the detail near-visual mode (terrain.lua LOOKS has the same
+# choices; in-game 2026-10-12: TerrainMaterials made at runtime cost ~1 s per updateMaterial, so they are
+# level materials now). Texture sizes are in heightmap samples (2 m on the shipped block: detail 4 m,
+# macro 32-64 m, dividing the 128 m block step); the colour comes from the photo base in detail mode.
+T_ = "/assets/materials/terrain/"
+def surface(name, gm, pid, detail, dsize, macro, msize, strength=0.25):
+    m = {"name": name, "internalName": name, "class": "TerrainMaterial", "persistentId": pid, "groundmodelName": gm,
+         "detailDistances": [0, 0, 50, 80], "macroDistances": [0, 0, 150, 1500],
+         "baseColorDetailStrength": [strength, 0.08], "normalDetailStrength": [1, 0.3], "roughnessDetailStrength": [1, 0.4],
+         "aoDetailStrength": [0.8, 0.2], "baseColorMacroStrength": [0.12, 0.08], "normalMacroStrength": [0.5, 0.3],
+         "roughnessMacroStrength": [0.5, 0.5]}
+    for key, suf, base in (("baseColor", "_b", "bngEarth_base_b.png"), ("normal", "_nm", "bngEarth_base_nm.png"),
+                           ("roughness", "_r", "bngEarth_base_r.png"), ("ao", "_ao", "bngEarth_base_ao.png")):
+        m[key + "BaseTex"], m[key + "BaseTexSize"] = B + base, 128
+        m[key + "DetailTex"], m[key + "DetailTexSize"] = T_ + detail + suf + ".png", dsize
+        m[key + "MacroTex"], m[key + "MacroTexSize"] = T_ + macro + suf + ".png", msize
+    m["heightBaseTex"], m["heightBaseTexSize"] = B + "bngEarth_base_h.png", 128
+    return {name: m}
+SURFACES = {}
+for i, args in enumerate((
+        ("bngEarthGroundAsphalt", "ASPHALT_OLD", "asphalt/asphalt/t_asphalt", 2, "asphalt/macro_asphalt/t_macro_asphalt", 16, 0.3),
+        ("bngEarthGroundGrass", "GRASS", "grass/t_grass_01/t_grass_01", 1, "grass/t_macro_grass/t_macro_grass", 32),
+        ("bngEarthGroundDusty", "DIRT_DUSTY", "soil/dirt_loose_dusty/t_dirt_loose_dusty", 1, "soil/macro_clumply/t_macro_clumpy", 32),
+        ("bngEarthGroundLoose", "DIRT_DUSTY_LOOSE", "soil/t_gravel/t_gravel", 1, "soil/macro_clumply/t_macro_clumpy", 32),
+        ("bngEarthGroundRock", "ROCK", "rock/t_dirt_rocky/t_dirt_rocky", 2, "rock/macro_rocky/t_macro_rocky", 32),
+        ("bngEarthGroundSnow", "SNOW", "sand/t_sand/t_sand", 2, "sand/t_macro_sand/t_macro_sand", 32, 0.12),
+        ("bngEarthGroundMud", "MUD", "mud/mud/t_mud", 1, "soil/macro_clumply/t_macro_clumpy", 32),
+        ("bngEarthGroundCobble", "COBBLESTONE", "asphalt/t_asphalt_02/t_asphalt_02", 1, "asphalt/macro_asphalt/t_macro_asphalt", 16, 0.3))):
+    name, gm, detail, dsize, macro, msize, *st = args
+    SURFACES.update(surface(name, gm, f"3b0f6f0e-8f5e-4a51-9a59-0b8e2f6a1c{30 + i}", detail, dsize, macro, msize, *st))
+
 pretty(os.path.join(T, "main.materials.json"), {
     "beamngEarthDirt": {
         "name": "beamngEarthDirt",
@@ -129,19 +162,22 @@ pretty(os.path.join(T, "main.materials.json"), {
         "roughnessDetailStrength": [1, 0], "roughnessDetailTex": A + "dirt_crumbly/t_dirt_crumbly_r.png",
         "roughnessMacroStrength": [0.5, 1], "roughnessMacroTex": A + "macro_clumply/t_macro_clumpy_r.png", "roughnessMacroTexSize": 64,
     },
+    **SURFACES,
     "beamngEarthTerrainMaterialTextureSet": {
         "name": "beamngEarthTerrainMaterialTextureSet",
         "class": "TerrainMaterialTextureSet",
         "persistentId": "3b0f6f0e-8f5e-4a51-9a59-0b8e2f6a1c11",
-        "baseTexSize": [512, 512], "detailTexSize": [1024, 1024], "macroTexSize": [1024, 1024],
+        # 2048: the detail near-visual mode swaps a 2048² aerial photo of the block's footprint in as every
+        # layer's base colour (terrain.lua setBase; the engine needs a base texture's pixel size to match)
+        "baseTexSize": [BASE_TEX, BASE_TEX], "detailTexSize": [1024, 1024], "macroTexSize": [1024, 1024],
     },
 })
 
-Image.new("RGB", (512, 512), (100, 88, 69)).save(os.path.join(T, "bngEarth_base_b.png"), optimize=True)
-Image.new("RGB", (512, 512), (127, 127, 255)).save(os.path.join(T, "bngEarth_base_nm.png"), optimize=True)
-Image.new("L", (512, 512), 206).save(os.path.join(T, "bngEarth_base_r.png"), optimize=True)
-Image.new("L", (512, 512), 251).save(os.path.join(T, "bngEarth_base_ao.png"), optimize=True)
-Image.new("L", (512, 512), 175).save(os.path.join(T, "bngEarth_base_h.png"), optimize=True)
+Image.new("RGB", (BASE_TEX, BASE_TEX), (100, 88, 69)).save(os.path.join(T, "bngEarth_base_b.png"), optimize=True)
+Image.new("RGB", (BASE_TEX, BASE_TEX), (127, 127, 255)).save(os.path.join(T, "bngEarth_base_nm.png"), optimize=True)
+Image.new("L", (BASE_TEX, BASE_TEX), 206).save(os.path.join(T, "bngEarth_base_r.png"), optimize=True)
+Image.new("L", (BASE_TEX, BASE_TEX), 251).save(os.path.join(T, "bngEarth_base_ao.png"), optimize=True)
+Image.new("L", (BASE_TEX, BASE_TEX), 175).save(os.path.join(T, "bngEarth_base_h.png"), optimize=True)
 # importMaps inputs, sized like the terrain block (N = 1024, docs/V1_1_SPEC.md 1a; and 512 for the
 # M4 block, docs/V1_4_SPEC.md 3.5: the layer map must match the heightmap size): one all-white
 # layer map (material 0 everywhere) and a flat 16-bit heightmap per size. The v1 2048-sample files
