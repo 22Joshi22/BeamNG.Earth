@@ -105,6 +105,13 @@ TILE_HOST = dict(redirect_limited=True, binary=True)
 POLICIES = {
     "basemap.nationalmap.gov": HostPolicy(rate=15.0, burst=60.0, max_conc=6, daily_budget=60000,
                                           allow_prefetch=True, offline_ok=True, miss_ttl=90 * DAY, **TILE_HOST),
+    # NAIP through USGS's ArcGIS exportImage (imagery.py "naip"): one 1024² image a request, 4-10 s each
+    # and 5xx under parallel requests (docs/research/2026-10-10-us-state-imagery.md, in-game 2026-10-13):
+    # one at a time, only imagery.warm()'s look-ahead (never on a render's critical path)
+    "imagery.nationalmap.gov": HostPolicy(rate=0.5, burst=4.0, max_conc=1, daily_budget=3000,
+                                          allow_prefetch=True, offline_ok=True, miss_ttl=90 * DAY,
+                                          binary=True, timeout=40.0, max_attempts=2, base_delay=2.0,
+                                          breaker_threshold=6, breaker_window=120.0),
     "tiles.maps.eox.at": HostPolicy(rate=6.0, burst=30.0, max_conc=4, daily_budget=20000,
                                     allow_prefetch=True, offline_ok=True, miss_ttl=90 * DAY, **TILE_HOST),
     "tiles.mapterhorn.com": HostPolicy(rate=20.0, burst=80.0, max_conc=8, daily_budget=30000,

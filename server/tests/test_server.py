@@ -62,7 +62,7 @@ class FakeImagery(imagery.Imagery):
     140 for the EOX layers (no network). usgs has data only east of LON (so the chain falls back to eox2023
     west of it); counts every load."""
 
-    def __init__(self, cache_dir, chain=imagery.DEFAULT_CHAIN, **kw):
+    def __init__(self, cache_dir, chain=("usgs", "eox2023", "eox2016"), **kw):     # (no lazy NAIP: timing)
         super().__init__(cache_dir, chain, **kw)
         self.loads = 0
 

@@ -144,3 +144,21 @@ but the block still falls behind there (~1 s per block answer).
     brighter), a one-frame flash in hills at low sun; a slow frame is the smaller evil.
   - Turning it off and on in the same frame keeps the spike. Re-setting `castShadows` to 1 before
     `postApply` once left the old terrain drawn: not safe.
+
+**NAIP for the near ground (2026-10-13, terrain quality).** The block's base photo came from USGS
+ImageryOnly at z16 (~1.9 m pixels, upscaled to the 1 m texels). The USGS NAIP ImageServer has the same
+flights at 0.3-0.6 m: `imagery.SOURCES["naip"]`, first in the default chain for z17-18 only.
+- **How it is fetched.** One exportImage of a z15 parent (1024 px) is split into its 16 z17 tiles on disk.
+  Black texels (outside the flights) make a tile missing, so USGS fills it.
+- **Never on the critical path.** A render that meets a NAIP tile not on disk takes USGS there. Only
+  `Imagery.warm()` fetches NAIP: one thread, the player's straight path (0-30 s) plus the block's half
+  width + 200 m, nearest first.
+- **Host behaviour.** In-game the host took 6-10 s a request (512 and 1024 px alike) and answered 5xx to
+  parallel requests (breaker trip): one request at a time, 2 attempts, a 6-in-120 s breaker.
+- **Result.** Fells Point block photo, same 1 m texels: USGS vs NAIP vs NAIP at 0.5 m texels
+  (`naip_2026-10-13/block_photo_usgs_naip_naip2048.jpg`). NAIP shows the houses, trees and parked cars;
+  0.5 m texels add little over 1 m, so `BASE_PX` stays 1024.
+- **Not yet.**
+  - The colour match and de-shadow work on USGS only, so NAIP is drawn as served (greyer).
+  - A block built before its NAIP arrives keeps USGS until rebuilt.
+  - At 10 s per ~0.9 km square, warm() keeps up with town driving, not with 130 mph.

@@ -14,6 +14,7 @@ only, nothing redistributed. Licence notes marked *(verify)* must be re-checked 
 
 | Data | Provider | Used for | Licence / terms | Attribution | Status |
 |---|---|---|---|---|---|
+| USDA NAIP orthoimagery (0.3-0.6 m), through the USGS NAIP ImageServer (exportImage) | U.S. Department of Agriculture (FSA) / U.S. Geological Survey | the near ground imagery in the lower 48 states (the block's photo, the nearest far tiles; `--imagery` source "naip") | public domain (US federal) | "USDA NAIP via USGS The National Map" | in use |
 | USGS National Map ImageryOnly (NAIP-based orthoimagery) | U.S. Geological Survey | ground imagery in the US | public domain (US federal) | "Imagery: USGS The National Map" | in use |
 | Sentinel-2 cloudless 2023 | EOX IT Services GmbH (s2maps.eu), contains modified Copernicus Sentinel data 2023 | ground imagery worldwide; the colour reference of `--colormatch s2` (in the session's attribution whenever it is on, and in the on-screen credits for the textures it corrected) | CC BY-NC-SA 4.0 (non-commercial) | "EOxCloudless https://cloudless.eox.at by EOX IT Services GmbH (Contains modified Copernicus Sentinel data 2023)" (EOX's June 2026 wording; imagery.py uses it) | in use |
 | Sentinel-2 cloudless 2016 | EOX IT Services GmbH, contains modified Copernicus Sentinel data 2016 | imagery fallback; `--colormatch` reference fallback | CC BY 4.0 | as above, "...data 2016 & 2017)" | in use |

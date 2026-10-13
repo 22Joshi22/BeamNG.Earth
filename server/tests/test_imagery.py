@@ -449,9 +449,134 @@ class ChainTest(unittest.TestCase):
         eox = "EOxCloudless https://cloudless.eox.at by EOX IT Services GmbH (Contains modified Copernicus Sentinel data "
         self.assertEqual(imagery.SOURCES["eox2023"].attribution, eox + "2023), CC BY-NC-SA 4.0")
         self.assertEqual(imagery.SOURCES["eox2016"].attribution, eox + "2016 & 2017), CC BY 4.0")
-        self.assertEqual(imagery.ATTRIBUTION, "Imagery: USGS The National Map (public domain); " + eox
+        self.assertEqual(imagery.ATTRIBUTION, "Imagery: USDA NAIP via USGS The National Map (public domain); "
+                         "USGS The National Map (public domain); " + eox
                          + "2023), CC BY-NC-SA 4.0; " + eox + "2016 & 2017), CC BY 4.0")
         self.assertNotIn("Sentinel-2 cloudless", imagery.ATTRIBUTION)
+
+
+class ExportTransport:
+    """netfetch transport for an export source ("naip": bbox + size in the URL) and XYZ tiles for the rest:
+    serve_export(z, x, y, size) -> (status, body) for the parent tile the bbox is; XYZ as ServeTransport."""
+    BBOX = re.compile(r"bbox=([-\d.]+),([-\d.]+),([-\d.]+),([-\d.]+).*size=(\d+),")
+
+    def __init__(self, serve_export, serve_xyz, requests):
+        self.serve_export, self.serve_xyz, self.requests = serve_export, serve_xyz, requests
+
+    def request(self, url, headers, timeout):
+        m = self.BBOX.search(url)
+        if m:
+            x0, y0, x1, y1, size = (float(v) for v in m.groups())
+            z = round(math.log2(imagery.EARTH_CIRC / (x1 - x0)))
+            tile = imagery.EARTH_CIRC / 2 ** z
+            x, y = round((x0 + imagery.EARTH_CIRC / 2) / tile), round((imagery.EARTH_CIRC / 2 - y1) / tile)
+            self.requests.append(("naip", z, x, y))
+            status, body = self.serve_export(z, x, y, int(size))
+            return status, {}, body
+        name = next(n for n, s in imagery.SOURCES.items() if url.startswith(s.url.split("{z}")[0]))
+        z, a, b = (int(v) for v in URL.search(url).groups())
+        self.requests.append((name, z, b, a))
+        status, body = self.serve_xyz(name, z, b, a)
+        return status, {}, body
+
+
+class ExportImageryTest(unittest.TestCase):
+    """The NAIP source: one exportImage per 4 x 4 tiles split on disk, lazy (a render never waits for it:
+    USGS until its tiles are on disk), black areas count as missing, warm() fetches ahead."""
+    LAT, LON = 39.2834, -76.5934        # Fells Point (the USGS probes say "covered" in the fakes)
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.frame = g.EnuFrame(self.LAT, self.LON)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    @staticmethod
+    def child_colour(x, y):
+        return (50 + x % 7 * 20, 60 + y % 5 * 30, 210)
+
+    def make(self, black=False):
+        def serve_export(z, x, y, size):
+            n = size // 256
+            a = np.zeros((size, size, 3), np.uint8)
+            for j in range(n):
+                for i in range(n):
+                    a[j * 256:(j + 1) * 256, i * 256:(i + 1) * 256] = self.child_colour(x * n + i, y * n + j)
+            a[::2, ::2] += 3                # not uniform
+            if black:
+                a[:, : size // 2] = 0       # the west half outside the flights
+            b = io.BytesIO()
+            Image.fromarray(a).save(b, "JPEG", quality=95)
+            return 200, b.getvalue()
+
+        def serve_xyz(name, z, x, y):
+            a = np.zeros((256, 256, 3), np.uint8) + np.array((200, 30, 30), np.uint8)
+            a[::2, ::2] += 6
+            return 200, png(a)
+        self.requests = []
+        net = netfetch.Fetcher(transport=ExportTransport(serve_export, serve_xyz, self.requests),
+                               sleep=lambda s: None, policies=FAST)
+        return imagery.Imagery(self.tmp.name, ("naip", "usgs"), fetcher=net, tone=0.0)
+
+    def wait(self, im):
+        for _ in range(200):
+            with im._lock:
+                busy = bool(im._inflight)
+            if not busy:
+                return
+            time.sleep(0.02)
+
+    def warm(self, im, points, radius=300.0):
+        im.warm(self.frame, points, radius, 1.0)
+        for _ in range(300):
+            with im._warm_cv:
+                left = [k for k in im._warm_want if not im._warm_done(k)]
+            if not left:
+                return left
+            time.sleep(0.02)
+        return left
+
+    def test_lazy_then_split_tiles(self):
+        im = self.make()
+        # 1 m texels: z17 (0.93 m pixels here), NAIP's zoom
+        rgb, used = im.render(self.frame, 0.0, 0.0, 256.0, 256)
+        self.assertEqual(set(used), {"usgs"})               # never waited for, never fetched by a render
+        self.wait(im)
+        self.assertFalse([r for r in self.requests if r[0] == "naip"])
+        self.assertEqual(self.warm(im, [(128.0, 128.0)]), [])
+        naip = [r for r in self.requests if r[0] == "naip"]
+        self.assertTrue(naip)
+        self.assertTrue(all(r[1] == 15 for r in naip))      # parents two levels up
+        rgb, used = im.render(self.frame, 0.0, 0.0, 256.0, 256)
+        self.assertEqual(set(used), {"naip"})
+        self.assertEqual(len([r for r in self.requests if r[0] == "naip"]), len(naip))   # no new fetch
+        # each child is its own part of the parent image
+        key = next(k for k in im._lru if k and k[0].name == "naip")
+        tile = im._lru[key]
+        self.assertLess(np.abs(tile.rgb.reshape(-1, 3).mean(0) - (np.array(self.child_colour(key[2], key[3])) + 0.75)).max(), 3)
+        self.assertEqual(len(os.listdir(os.path.join(self.tmp.name, "naip", "17", str(key[2])))) % 4, 0)   # whole parents
+
+    def test_black_is_missing(self):
+        im = self.make(black=True)
+        self.assertEqual(self.warm(im, [(128.0, 128.0)]), [])
+        _, used = im.render(self.frame, 0.0, 0.0, 256.0, 256)
+        self.wait(im)
+        _, used = im.render(self.frame, 0.0, 0.0, 256.0, 256)
+        self.assertIn("naip", used)
+        self.assertIn("usgs", used)             # the black half: USGS
+        n = len(self.requests)
+        im.render(self.frame, 0.0, 0.0, 256.0, 256)
+        self.wait(im)
+        self.assertEqual(len(self.requests), n)     # the missing children are remembered
+
+    def test_warm_fetches_ahead(self):
+        im = self.make()
+        self.assertEqual(self.warm(im, [(0.0, 0.0), (3000.0, 0.0)]), [])
+        parents = {r for r in self.requests if r[0] == "naip"}
+        self.assertGreaterEqual(len(parents), 2)            # both ends of the path
+        _, used = im.render(self.frame, 3000.0, 0.0, 256.0, 256)
+        self.assertEqual(set(used), {"naip"})               # on disk before any render
 
 
 class GutterTest(unittest.TestCase):

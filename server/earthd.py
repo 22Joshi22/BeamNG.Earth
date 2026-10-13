@@ -154,6 +154,7 @@ NEAR_VISUALS = ("mesh", "terrain", "detail")
 # as in terrain mode. MESH_LAYOUT: the modes on the mesh-mode tile layout; BLOCK_DRAWN: the block is seen.
 MESH_LAYOUT = ("mesh", "detail")
 BLOCK_DRAWN = ("terrain", "detail")
+IMG_WARM_MARGIN = 200.0         # m beyond the block's half width that warm_imagery fetches ahead
 BASE_PX = 1024                  # detail mode: the block's base photo (1 km -> 1 m per texel; USGS is ~1.9 m)
 BASE_AO_VFS = "/levels/beamng_earth/art/terrains/bngEarth_base_ao.png"   # every surface layer's aoBaseTex
 BASE_AO = 251                   # its flat value (tools/make_level_assets.py)
@@ -828,6 +829,15 @@ class Server:
                 self.warm_thread = threading.Thread(target=self._warm_loop, name="roads-ahead", daemon=True)
                 self.warm_thread.start()
             self.warm_cv.notify()
+
+    def warm_imagery(self, anchor, x, y, vx, vy):
+        """The lazy imagery sources (NAIP) along the player's straight path (WARM_STEPS_S), over the block's
+        footprint and a margin, at the base photo's texel size: fetched before the blocks there are built."""
+        if self.imagery is None:
+            return
+        reach = self.layout.block * heightmap.SQUARE / 2 + IMG_WARM_MARGIN
+        pts = [(x + vx * t, y + vy * t) for t in WARM_STEPS_S]
+        self.imagery.warm(anchor.frame, pts, reach, self.layout.block * heightmap.SQUARE / BASE_PX)
 
     def _warm_loop(self):
         while True:
@@ -1895,6 +1905,7 @@ class Connection:
         self.maybe_prefetch()
         if aid == self.active and self.following:
             self.s.warm_roads(self.s.anchors[aid], *self.focus, *self.vel)
+            self.s.warm_imagery(self.s.anchors[aid], *self.focus, *self.vel)
         if self.s.mapdata is not None and aid == self.active:
             self.roads.on_pose(self, aid, *self.focus, asyncio.get_running_loop(), self.s.build_roads_tile)
         self.refresh_status()

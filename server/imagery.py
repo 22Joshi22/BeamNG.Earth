@@ -60,6 +60,7 @@ MAX_MOSAIC = 36                    # source tiles per texture and source (zoom i
 MESH_CELLS = 8                     # render(): exact reprojection on an 8 x 8 grid of texture cells
 FALLBACK_RGB = (100, 89, 69)       # no imagery anywhere: the terrain material's dirt colour
 BLANK_RANGE = 2                    # a tile whose pixels all lie within this many levels is uniform
+NODATA_MAX, NODATA_SHARE = 6, 0.02   # an export tile with > 2 % texels this black is outside the data
 
 
 @dataclass(frozen=True)
@@ -76,6 +77,16 @@ class Source:
     # z <= 9 (verified 2026-10-10: imagery for the Alps / Pyrenees / open Pacific at z6 and z8,
     # 404 at z10), which would put a different source on the far rings outside the US.
     min_zoom: int = 0
+    # ArcGIS exportImage instead of XYZ tiles: one request covers 2^export x 2^export tiles of zoom z
+    # (the parent at z - export, (TILE << export)² px), split into z tiles on disk; url takes {bbox}
+    # (EPSG:3857) and {size}. 0: an XYZ source (url takes {z}, {x}, {y}).
+    export: int = 0
+    # Never fetched by a render: a tile not on disk yet is missing there this time (the next source fills
+    # it); warm() fetches them ahead of the player, one request at a time (slow hosts: USGS's NAIP
+    # service took ~10 s a request in-game, 512 or 1024 px alike, and 5xx'd under parallel requests).
+    lazy: bool = False
+    # The coverage probes ask this source instead (an export source's own probe would be a huge area)
+    probe_source: str = ""
 
 
 SOURCES = {
@@ -88,7 +99,15 @@ SOURCES = {
                       14, "EOxCloudless https://cloudless.eox.at by EOX IT Services GmbH (Contains modified "
                           "Copernicus Sentinel data 2016 & 2017), CC BY 4.0"),
 }
-DEFAULT_CHAIN = ("usgs", "eox2023", "eox2016")
+# NAIP (USDA aerial photography, 0.3-0.6 m, the flights the USGS layer above is made from at ~1.9 m),
+# for the near zooms only (z17-18: the block's base photo and the nearest far tiles); where it has
+# nothing (outside the lower 48: a uniform image) or its tile is not fetched yet, USGS takes over.
+SOURCES["naip"] = Source(
+    "naip", "https://imagery.nationalmap.gov/arcgis/rest/services/USGSNAIPImagery/ImageServer/exportImage"
+            "?bbox={bbox}&bboxSR=3857&imageSR=3857&size={size},{size}&format=jpg&f=image",
+    18, "USDA NAIP via USGS The National Map (public domain)", probe_zooms=(10, 12), min_zoom=17,
+    export=2, lazy=True, probe_source="usgs")
+DEFAULT_CHAIN = ("naip", "usgs", "eox2023", "eox2016")
 # The line the mod shows (V1_3_SPEC §C), for the default chain: every source's own credit, EOX's in
 # its June 2026 wording (docs/research/2026-10-10-rate-limits.md: "EOxCloudless https://cloudless.eox.at
 # by EOX IT Services GmbH (Contains modified Copernicus Sentinel data 2023)", 2016: "... 2016 & 2017").
@@ -157,6 +176,13 @@ def is_uniform(a):
     return int((a.max(axis=(0, 1)).astype(int) - a.min(axis=(0, 1))).max()) <= BLANK_RANGE
 
 
+def mercator_bbox(z, x, y):
+    """EPSG:3857 extent (minx, miny, maxx, maxy) of XYZ tile (z, x, y)."""
+    size = EARTH_CIRC / 2 ** z
+    x0, y1 = -EARTH_CIRC / 2 + x * size, EARTH_CIRC / 2 - y * size
+    return x0, y1 - size, x0 + size, y1
+
+
 @dataclass(frozen=True)
 class Tile:
     """A decoded source tile: RGB uint8 [256, 256, 3], and whether it is one colour (blank)."""
@@ -201,6 +227,10 @@ class Imagery:
             colormatch.bind(self)
         self._cm_lru = OrderedDict()        # (source, z, x, y, "cm1", relit) -> corrected RGB, or the input
         self._lru = OrderedDict()           # (source, z, x, y) -> Tile, or None (404)
+        self._export_locks = {}             # export parent -> its fetch lock (_download_export)
+        self._warm_want = []                # warm(): lazy tiles ahead of the player, nearest first
+        self._warm_cv = threading.Condition()
+        self._warm_thread = None
         self._inflight = {}
         self._lock = threading.RLock()     # RLock: a done future's callback runs at once
         self._local = threading.local()     # per fetch thread: the kind of the request being loaded
@@ -252,6 +282,8 @@ class Imagery:
         if data is not None:
             self._count(src.name + ":disk")
             return data
+        if src.export:
+            return self._download_export(src, z, x, y)
         url = src.url.format(z=z, x=x, y=y)
         if self.fetcher.miss_alive(miss, url):
             return None
@@ -284,6 +316,77 @@ class Imagery:
             self.disk.forget(miss)
         self._count(src.name + ":net")
         return data
+
+    def _download_export(self, src, z, x, y):
+        """An export source's tile: its parent (src.export levels up) fetched as one image and split into
+        its children on disk (one fetch per parent at a time); None if the host has no image there."""
+        k = src.export
+        parent = (src.name, z - k, x >> k, y >> k)
+        with self._lock:
+            lock = self._export_locks.setdefault(parent, threading.Lock())
+        with lock:
+            path, miss = self._paths(src, z, x, y)
+            data = self.disk.read(path)         # a sibling's fetch wrote it meanwhile
+            if data is not None:
+                self._count(src.name + ":disk")
+                return data
+            url = src.url.format(bbox=",".join(f"{v:.3f}" for v in mercator_bbox(z - k, x >> k, y >> k)),
+                                 size=TILE << k)
+            if self.fetcher.miss_alive(miss, url):
+                return None
+            kind = getattr(self._local, "kind", "demand")
+            try:
+                r = self.fetcher.get(url, kind=kind)
+            except netfetch.NotFound:
+                os.makedirs(os.path.dirname(miss), exist_ok=True)
+                open(miss, "wb").close()
+                self.disk.wrote(miss, 0)
+                self._count(src.name + ":404")
+                return None
+            except netfetch.FetchError as e:
+                deferred = kind != "demand" and isinstance(e, _DEFERRED)
+                self._count(src.name + (":deferred" if deferred else ":skipped" if isinstance(e, netfetch.HostUnavailable)
+                                        else ":error"))
+                raise ImageryError(f"imagery fetch failed: {url}: {e}", deferred) from None
+            with self._lock:
+                self.fetch_ms.append(r.elapsed * 1000)
+                del self.fetch_ms[:-2000]
+            try:
+                im = Image.open(io.BytesIO(r.body)).convert("RGB")
+            except (OSError, ValueError) as e:
+                raise ImageryError(f"undecodable {src.name} image {parent}: {e}") from None
+            if im.size != (TILE << k, TILE << k):
+                im = im.resize((TILE << k, TILE << k), Image.BILINEAR)
+            out = None
+            a = np.asarray(im)
+            for j in range(1 << k):
+                for i in range(1 << k):
+                    cx, cy = ((x >> k) << k) + i, ((y >> k) << k) + j
+                    cpath, cmiss = self._paths(src, z, cx, cy)
+                    child = a[j * TILE:(j + 1) * TILE, i * TILE:(i + 1) * TILE]
+                    if (child.max(axis=2) <= NODATA_MAX).mean() > NODATA_SHARE:
+                        # outside the flights (the image is black there): missing, the next source fills it
+                        os.makedirs(os.path.dirname(cmiss), exist_ok=True)
+                        open(cmiss, "wb").close()
+                        self.disk.wrote(cmiss, 0)
+                        continue
+                    buf = io.BytesIO()
+                    Image.fromarray(child).save(buf, "JPEG", quality=92)
+                    b = buf.getvalue()
+                    os.makedirs(os.path.dirname(cpath), exist_ok=True)
+                    tmp = f"{cpath}.{threading.get_ident()}.tmp"
+                    with open(tmp, "wb") as f:
+                        f.write(b)
+                    os.replace(tmp, cpath)
+                    self.disk.wrote(cpath, len(b))
+                    if (cx, cy) == (x, y):
+                        out = b
+            self._count(src.name + ":net")
+            return out
+
+    def _on_disk(self, key):
+        src, z, x, y = key
+        return os.path.exists(self._paths(src, z, x, y)[0])
 
     def _load_kind(self, key, kind):
         """_load(key) in a pool thread, its requests made as `kind` (subclasses override _load(key))."""
@@ -319,7 +422,7 @@ class Imagery:
         pz = max((p for p in src.probe_zooms if p < z), default=None)
         if pz is None:
             return None
-        return (src, pz, x >> (z - pz), y >> (z - pz))
+        return (SOURCES[src.probe_source] if src.probe_source else src, pz, x >> (z - pz), y >> (z - pz))
 
     @staticmethod
     def _covered(probe):
@@ -329,8 +432,9 @@ class Imagery:
         """'covered' / 'outside' / 'unknown' from the key's coverage probes, coarsest first;
         starts the fetch of the first unknown one. Caller holds the lock."""
         src, z, x, y = key
+        psrc = SOURCES[src.probe_source] if src.probe_source else src
         for pz in sorted(p for p in src.probe_zooms if p < z):
-            p = (src, pz, x >> (z - pz), y >> (z - pz))
+            p = (psrc, pz, x >> (z - pz), y >> (z - pz))
             if p not in self._lru:
                 self._future(p, "prefetch")
                 return "unknown"
@@ -374,6 +478,8 @@ class Imagery:
                 elif k in self._lru:
                     self._lru.move_to_end(k)
                     out[k] = self._lru[k]
+                elif k[0].lazy and not self._on_disk(k):
+                    out[k] = None                   # not fetched (warm() does, ahead): the next source now
                 else:
                     futs[k] = self._future(k, kind)
         err = None
@@ -402,7 +508,7 @@ class Imagery:
         zw = zoom_for(float(lat[1, 1]), t)
         for k, src in enumerate(self.chain):
             z = min(zw, src.max_zoom)
-            if z < src.min_zoom:
+            if z < src.min_zoom or src.lazy:    # (a lazy source's tiles: only warm() fetches them)
                 continue
             n = 2 ** z
             fx, fy = mercator_px(lat.ravel(), lon.ravel(), z)
@@ -442,6 +548,69 @@ class Imagery:
                         self._future(key, "prefetch")
             if not missing:
                 return
+
+    def warm(self, frame, points, radius, texel_m):
+        """Fetch the lazy sources' tiles ahead of the player (one background thread, nearest first): the
+        tiles at the zoom of `texel_m` m texels (the block's base photo) within `radius` m of the ENU
+        points (the player's path, in order). Replaces the previous list (the player moved on)."""
+        lazy = [s for s in self.chain if s.lazy]
+        if not lazy or not points:
+            return
+        pts = np.asarray(points, float)
+        lat, lon, _ = frame.enu_to_geodetic(pts[:, 0], pts[:, 1], np.zeros(len(pts)))
+        if np.abs(lat).max() > MAX_LAT:
+            return
+        want = []
+        for src in lazy:
+            z = min(zoom_for(float(lat[0]), texel_m), src.max_zoom)
+            if z < src.min_zoom:
+                continue
+            k = src.export
+            for la, lo in zip(np.atleast_1d(lat), np.atleast_1d(lon)):
+                r_px = radius / ground_res(float(la), z)
+                fx, fy = mercator_px(np.array([la]), np.array([lo]), z)
+                for ty in range(int((fy[0] - r_px) // TILE), int((fy[0] + r_px) // TILE) + 1):
+                    for tx in range(int((fx[0] - r_px) // TILE), int((fx[0] + r_px) // TILE) + 1):
+                        key = (src, z, (tx >> k) << k, (ty >> k) << k)   # one child per parent
+                        if key not in want:
+                            want.append(key)
+        with self._warm_cv:
+            self._warm_want = want
+            if self._warm_thread is None:
+                self._warm_thread = threading.Thread(target=self._warm_loop, name="img-warm", daemon=True)
+                self._warm_thread.start()
+            self._warm_cv.notify()
+
+    def _warm_loop(self):
+        self._local.kind = "prefetch"
+        while True:
+            with self._warm_cv:
+                key = None
+                while key is None:
+                    key = next((k for k in self._warm_want if not self._warm_done(k)), None)
+                    if key is None:
+                        self._warm_cv.wait()
+            try:
+                self._download(*key)
+                self._count(key[0].name + ":warm")
+            except ImageryError as e:       # the host takes no prefetch now / failed: later
+                with self._warm_cv:
+                    self._warm_cv.wait(5.0 if e.deferred else 30.0)
+            except Exception:
+                log.exception("imagery warm %s", key[1:])
+                with self._warm_cv:
+                    self._warm_want = [k for k in self._warm_want if k != key]
+
+    def _warm_done(self, key):
+        """The parent of key was fetched (its last child, the one written last, is on disk or known to be
+        missing), or its area is outside the coverage probes."""
+        src, z, x, y = key
+        last = (1 << src.export) - 1
+        path, miss = self._paths(src, z, x | last, y | last)
+        if os.path.exists(path) or os.path.exists(miss):
+            return True
+        with self._lock:
+            return self._probe_status(key) == "outside"
 
     def _finish(self, key, fut):
         with self._lock:
