@@ -134,3 +134,13 @@ but the block still falls behind there (~1 s per block answer).
 - **Terrain detail and altitude.** Nothing chooses detail from the height above sea level: far-tile
   levels follow the horizontal distance only. The horizon radius uses the eye's height above sea level,
   which is right for the curvature (the terrain heights it compares with are above sea level too).
+- **What is left of the block-move frame** (~37 ms): Lua ~12 ms (the `.ter` parse), and the shadow pass
+  ~14 ms instead of ~1.5 (the frame after `postApply` on a shadow-casting block; physics paused, fixed
+  view, 4 of 4 swaps).
+  - With the block's `castShadows` off in the swap frame and back on in the next one, the spike goes and
+    the swapped heights load (8 of 8). The shadows a few seconds later match a normal swap (synthetic
+    120 m ridge, low sun: mean difference < 1 grey level, 17 between two ridge positions).
+  - Not used: that frame draws no terrain-cast shadows (west of the ridge the ground goes visibly
+    brighter), a one-frame flash in hills at low sun; a slow frame is the smaller evil.
+  - Turning it off and on in the same frame keeps the spike. Re-setting `castShadows` to 1 before
+    `postApply` once left the old terrain drawn: not safe.
