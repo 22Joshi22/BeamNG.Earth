@@ -296,3 +296,4 @@ block's quantum: 1/16 m (6 cm steps).
 - A block only holds its own relief (zBase per block, a coarser step for one that does not fit), so
   the survey now takes the largest relief inside any 1.5-block window (61 x 61 samples, 500 m apart).
 - Courchevel and Whitney 1/16 -> 1/32 m; Fells Point and KBWI 1/128 -> 1/256 m.
+- In-game at LFLJ: the centreline's 2nd-difference RMS (4 m steps) 10.2 -> 2.1 cm.
