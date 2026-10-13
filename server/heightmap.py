@@ -234,6 +234,7 @@ def write_png(path, u, q=Q_DEFAULT):
 
 
 TER_VERSION = 9
+TER_HOLE = 255          # a .ter layer index: no ground there (drawn or colliding)
 
 
 def write_ter(path, qgrid, idx, materials):
@@ -245,7 +246,12 @@ def write_ter(path, qgrid, idx, materials):
     reloadCollision (docs/research/2026-10-12-engine-limits-and-worldgen.md §7), against ~30 ms of
     importMaps + reloadCollision and a ~20 ms physics frame."""
     n = qgrid.shape[0]
-    lay = np.zeros((n, n), np.uint8) if idx is None else np.asarray(idx, np.uint8)
+    lay = np.zeros((n, n), np.uint8) if idx is None else np.array(idx, np.uint8)
+    # the outermost samples are holes (TER_HOLE): the engine lights a block's edge cells as if it repeated
+    # (their normals take the opposite edge's heights), a dark 2 m strip along an edge that is lower than
+    # the opposite one (in-game 2026-10-13); the edge ring under them (0.3 m lower) shows instead. No
+    # collision there: the edge guard keeps the car tens of metres inside.
+    lay[0, :] = lay[-1, :] = lay[:, 0] = lay[:, -1] = TER_HOLE
     tmp = path + ".tmp"
     with open(tmp, "wb") as f:
         f.write(struct.pack("<BI", TER_VERSION, n))

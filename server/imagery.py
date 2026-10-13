@@ -100,12 +100,14 @@ SOURCES = {
                           "Copernicus Sentinel data 2016 & 2017), CC BY 4.0"),
 }
 # NAIP (USDA aerial photography, 0.3-0.6 m, the flights the USGS layer above is made from at ~1.9 m),
-# for the near zooms only (z17-18: the block's base photo and the nearest far tiles); where it has
+# at z17 only (~0.9 m): the block's base photo (1 m texels) and the nearest far tiles (L0 1 m, L-1
+# 0.5 m texels: capped at z17 so they use the tiles warm() fetched for the block; 0.5 m texels from
+# z18 looked hardly sharper in the 2026-10-13 comparison); where it has
 # nothing (outside the lower 48: a uniform image) or its tile is not fetched yet, USGS takes over.
 SOURCES["naip"] = Source(
     "naip", "https://imagery.nationalmap.gov/arcgis/rest/services/USGSNAIPImagery/ImageServer/exportImage"
             "?bbox={bbox}&bboxSR=3857&imageSR=3857&size={size},{size}&format=jpg&f=image",
-    18, "USDA NAIP via USGS The National Map (public domain)", probe_zooms=(10, 12), min_zoom=17,
+    17, "USDA NAIP via USGS The National Map (public domain)", probe_zooms=(10, 12), min_zoom=17,
     export=2, lazy=True, probe_source="usgs")
 # The same NAIP from USDA's own service: newer flights (2024-25, some states 0.3 m) and 2-5x faster
 # (1.6-4 s per 1024² in-game 2026-10-13 vs ~10 s), but blank in places (Maryland, Denver: black, so
@@ -113,7 +115,7 @@ SOURCES["naip"] = Source(
 SOURCES["naipusda"] = Source(
     "naipusda", "https://apps.geo.fpac.usda.gov/geo-imagery/rest/services/naip/conus_naip/ImageServer/exportImage"
                 "?bbox={bbox}&bboxSR=3857&imageSR=3857&size={size},{size}&format=jpg&f=image",
-    18, "USDA NAIP (public domain)", probe_zooms=(10, 12), min_zoom=17, export=2, lazy=True, probe_source="usgs")
+    17, "USDA NAIP (public domain)", probe_zooms=(10, 12), min_zoom=17, export=2, lazy=True, probe_source="usgs")
 DEFAULT_CHAIN = ("naipusda", "naip", "usgs", "eox2023", "eox2016")
 # The line the mod shows (V1_3_SPEC §C), for the default chain: every source's own credit, EOX's in
 # its June 2026 wording (docs/research/2026-10-10-rate-limits.md: "EOxCloudless https://cloudless.eox.at

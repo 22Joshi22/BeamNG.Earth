@@ -238,9 +238,10 @@ end
 -- Import a terrain message ({cx, cy, heightmap, squareSize, zBase, maxHeight, q}) as the block.
 -- The caller rebuilds collision. squareSize must be the 2.0 m lattice (lattice.lua); maxHeight is
 -- q * 65536 with zBase a multiple of q (design 12, P1), checked here and logged once if not.
--- swap: a terrain-follow move may take the server's .ter instead (terrain.swap; the third result is
--- then true and collision needs no rebuild).
-local function loadBlock(tr, swap)
+-- The server's .ter (terrain.swap) is taken whenever the block exists: ~12 ms, no collision rebuild
+-- (the third result is then true; teleports and rebases rebuild it anyway), and it carries the edge
+-- holes (heightmap.write_ter). The first import of a session takes the .ter right after it too.
+local function loadBlock(tr)
   local x, y = follow.blockOrigin(tr.cx, tr.cy)
   local sq = tonumber(tr.squareSize) or follow.SQUARE_SIZE
   if math.abs(sq - follow.SQUARE_SIZE) > 1e-9 then
@@ -256,12 +257,13 @@ local function loadBlock(tr, swap)
   -- (false: detail mode without a photo -> the level's flat base; nil: other modes, untouched)
   local base = nil
   if nearVisual == 'detail' then base = type(tr.base) == 'string' and tr.base or false end
-  if swap and M.TER_SWAP and type(tr.ter) == 'string'
-      and terrain.swap(tr.ter, sq, maxH, x, y, tr.zBase, layers, base, tonumber(tr.baseSize)) then
+  local ter = M.TER_SWAP and type(tr.ter) == 'string'
+  if ter and terrain.swap(tr.ter, sq, maxH, x, y, tr.zBase, layers, base, tonumber(tr.baseSize)) then
     groundcover.afterBlockChange()
     return true, nil, true
   end
   local ok, err = terrain.load(tr.heightmap, sq, maxH, x, y, tr.zBase, layers, base, tonumber(tr.baseSize))
+  if ok and ter then terrain.swap(tr.ter, sq, maxH, x, y, tr.zBase, layers, base, tonumber(tr.baseSize)) end
   -- every block import / move drops all the grass on it; rebuild it before this frame is drawn
   groundcover.afterBlockChange()
   return ok, err
@@ -469,7 +471,7 @@ local frameTimer = hptimer and hptimer() or nil
 
 local function commitTerrain(msg)
   local sw = stopwatch.new()
-  local ok, err, swapped = loadBlock(msg, true)
+  local ok, err, swapped = loadBlock(msg)
   if not ok then
     setStatus('Terrain-follow import failed: ' .. tostring(err))
     st.terrainRetryAt = st.clock + follow.RETRY_S

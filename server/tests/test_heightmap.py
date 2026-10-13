@@ -244,7 +244,10 @@ class HeightmapTest(unittest.TestCase):
         self.assertEqual(struct.unpack_from("<BI", data), (9, self.n))
         h = np.frombuffer(data, "<u2", n2, 5).reshape(self.n, self.n)
         np.testing.assert_array_equal(h, self.read())
-        np.testing.assert_array_equal(np.frombuffer(data, np.uint8, n2, 5 + 2 * n2).reshape(self.n, self.n), idx)
+        lay = np.frombuffer(data, np.uint8, n2, 5 + 2 * n2).reshape(self.n, self.n)
+        np.testing.assert_array_equal(lay[1:-1, 1:-1], idx[1:-1, 1:-1])
+        for edge in (lay[0], lay[-1], lay[:, 0], lay[:, -1]):        # the edge samples are holes
+            self.assertTrue((edge == heightmap.TER_HOLE).all())
         o = 5 + 3 * n2
         self.assertEqual(struct.unpack_from("<I", data, o), (3,))
         self.assertEqual(data[o + 4:], b"\x01a\x02bb\x03ccc")

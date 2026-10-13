@@ -190,3 +190,26 @@ calls, one Fells Point region run offline. Before: `detect_seams` ran 0.7 s per 
 - In-game A/B (fixed view, vsync off, one region running offline at duty 0.25, 180 s each): shadow pass
   median 1.24 vs 1.27 ms, p99 1.83 vs 1.75 ms (idle 1.19). No measurable difference at this light view:
   last night's pacing had already taken most of the effect.
+
+**The block's edge (2026-10-13, terrain quality).** From the air and at low angles a dark line ran along
+the drawn block's edge (Columbus OH, `block_edge_2026-10-13/block_edge_cmp.jpg`). Two causes:
+- **The neighbours were L1 tiles** (512 m, 8 m cells, 2 m texels: USGS), next to the block's 2 m
+  lattice and 1 m NAIP photo.
+  - `forced()` now grows each block box by `DETAIL_RING_M` = 128 m in detail mode: a ring of L-1
+    tiles (the block's own lattice, NAIP z17) around it.
+  - NAIP is capped at z17, so the L-1 tiles (0.5 m texels) use the tiles warm() fetched for the block.
+- **The dark line itself** stayed with the ring, went away in the raw view (block hidden) and stayed
+  with the block's `castShadows` off.
+  - Top-down it is the block's outermost 2 m cell column, dark on the edges lower than the opposite
+    edge (W 218.7 vs E 227.6 m: dark; E: not; N / S 1-2 m apart: faint).
+  - So the engine lights a lone block's edge cells as if it repeated: their normals take the
+    opposite edge's heights.
+  - Fix: `.ter` layer index 255 (a hole) on the outermost samples (`heightmap.TER_HOLE`); the sunk
+    edge ring shows there instead.
+  - The edge guard keeps the car 15 m inside, so no collision is lost where it matters.
+  - Every block load now takes the `.ter`: teleports and rebases swap (and rebuild collision as
+    before), and the first import of a session swaps right after.
+- **Drives (Columbus, 58 m/s, 10 km):**
+  - the earlier route passes (p99 21.5 ms, worst commit 26 ms);
+  - a second route went NaN once at 1.8 km mid-block (a physics blow-up, not at an edge), then passed
+    10 km on the rerun.

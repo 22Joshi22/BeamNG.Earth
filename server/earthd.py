@@ -154,6 +154,7 @@ NEAR_VISUALS = ("mesh", "terrain", "detail")
 # as in terrain mode. MESH_LAYOUT: the modes on the mesh-mode tile layout; BLOCK_DRAWN: the block is seen.
 MESH_LAYOUT = ("mesh", "detail")
 BLOCK_DRAWN = ("terrain", "detail")
+DETAIL_RING_M = 128.0           # detail mode: L-1 tiles this far beyond the block (forced())
 IMG_WARM_MARGIN = 200.0         # m beyond the block's half width that warm_imagery fetches ahead
 BASE_PX = 1024                  # detail mode: the block's base photo (1 km -> 1 m per texel; USGS is ~1.9 m)
 BASE_AO_VFS = "/levels/beamng_earth/art/terrains/bngEarth_base_ao.png"   # every surface layer's aoBaseTex
@@ -2044,10 +2045,15 @@ class Connection:
     # --- far field ----------------------------------------------------------
     def forced(self):
         """Boxes refined to L0 (terrain mode: the mod covers L0 under the block; detail mode: to L-1).
-        None in mesh mode: the block is invisible, so tiles never depend on it (V1_3_SPEC §B)."""
+        None in mesh mode: the block is invisible, so tiles never depend on it (V1_3_SPEC §B).
+        Detail mode: each box grown by DETAIL_RING_M, so the block's neighbours are L-1 tiles too (2 m
+        cells, the block's own lattice: their edge meets the block's; L1 neighbours, 8 m cells, left a
+        step and their dark skirt along the block's edge, in-game 2026-10-13)."""
         if self.s.near_visual not in BLOCK_DRAWN:
             return []
-        return [b.bbox for b in (self.block, self.pending_block, self.predicted_block) if b is not None]
+        g = DETAIL_RING_M if self.s.near_visual == "detail" else 0.0
+        return [(x0 - g, y0 - g, x1 + g, y1 + g) for x0, y0, x1, y1 in
+                (b.bbox for b in (self.block, self.pending_block, self.predicted_block) if b is not None)]
 
     def _retire(self, cks):
         now = time.monotonic()

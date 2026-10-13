@@ -72,6 +72,12 @@ class DetailServerTest(ServerHarness):
         under = [ff.tile_of(k) for k in keys if ff.overlaps(ff.tile_of(k).bbox, block)]
         self.assertTrue(under)
         self.assertEqual({t.level for t in under}, {-1}, "only L-1 tiles under the drawn block")
+        # and in a DETAIL_RING_M ring around it (the block's own 2 m lattice meets its neighbours)
+        g = earthd.DETAIL_RING_M
+        ring = (block[0] - g, block[1] - g, block[2] + g, block[3] + g)
+        near = [ff.tile_of(k) for k in keys if ff.overlaps(ff.tile_of(k).bbox, ring)]
+        self.assertEqual({t.level for t in near}, {-1}, "only L-1 tiles in the ring around the block")
+        self.assertGreater(len(near), len(under))
         tiles = {m["key"]: m for m in seen if m["type"] == "far_tile"}
         self.assertTrue(all("sink" in tiles[t.key] for t in under if t.key in tiles), "tiles under the block have sinks")
         # a terrain: the base photo next to the heightmap, over the block's footprint
