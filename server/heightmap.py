@@ -27,6 +27,7 @@ torque_split45), and a 128 m move is exactly 64 samples.
 """
 import math
 import os
+import struct
 import threading
 from collections import OrderedDict
 
@@ -232,6 +233,31 @@ def write_png(path, u, q=Q_DEFAULT):
     return q, z_base, max_height, qgrid
 
 
+TER_VERSION = 9
+
+
+def write_ter(path, qgrid, idx, materials):
+    """The block as the engine's own terrain file (.ter v9: version u8, size u32, size² u16 heights,
+    size² u8 material indices, material count u32, names as u8 length + bytes), written atomically.
+    Rows as qgrid's: row 0 = south (the engine's sample (x, y) is at block-local (x, y) * squareSize).
+    idx: the material index per sample (None: material 0 everywhere); materials: their names. The mod
+    swaps it in with terrainFile + postApply: ~11 ms for 512² and collision follows without a
+    reloadCollision (docs/research/2026-10-12-engine-limits-and-worldgen.md §7), against ~30 ms of
+    importMaps + reloadCollision and a ~20 ms physics frame."""
+    n = qgrid.shape[0]
+    lay = np.zeros((n, n), np.uint8) if idx is None else np.asarray(idx, np.uint8)
+    tmp = path + ".tmp"
+    with open(tmp, "wb") as f:
+        f.write(struct.pack("<BI", TER_VERSION, n))
+        f.write(np.ascontiguousarray(qgrid, "<u2").tobytes())
+        f.write(np.ascontiguousarray(lay).tobytes())
+        f.write(struct.pack("<I", len(materials)))
+        for name in materials:
+            b = name.encode()
+            f.write(struct.pack("<B", len(b)) + b)
+    os.replace(tmp, path)
+
+
 def heights(qgrid, z_base, max_height):
     """Stored heights of a quantised grid, as the engine computes them (float64 here)."""
     return z_base + qgrid.astype(np.float64) * (max_height / 65536)
@@ -256,15 +282,16 @@ def generate(frame, elev_fn, path, cx=0.0, cy=0.0, ground_at=(0.0, 0.0), q=Q_DEF
              chunks=None):
     """Build the size² block centred at (cx, cy) with height quantum q and write it to path.
     groundZ is the terrain height at ground_at (None if that point is outside the block). keep (a
-    dict, optional) receives "lat", "lon" and "u" of the grid ([gy, gx], gy = north). chunks: a
-    ChunkCache of this frame (the heights it holds are reused, the new ones added)."""
+    dict, optional) receives "lat", "lon" and "u" of the grid ([gy, gx], gy = north) and write_png's
+    "qgrid". chunks: a ChunkCache of this frame (the heights it holds are reused, the new ones added)."""
     if chunks is None:
         u = grid_u(frame, elev_fn, cx, cy, size, keep)
     else:
         u, _ = grid_u_chunked(frame, elev_fn, cx, cy, size, chunks, keep)
+    q, z_base, max_height, qgrid = write_png(path, u, q)
     if keep is not None:
         keep["u"] = u
-    q, z_base, max_height, qgrid = write_png(path, u, q)
+        keep["qgrid"] = qgrid
     gz = height_at(qgrid, z_base, max_height, cx, cy, *ground_at) if ground_at else None
     return {"cx": cx, "cy": cy, "zBase": z_base, "maxHeight": max_height, "q": q,
             "groundZ": None if gz is None else round(gz, 3),

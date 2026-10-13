@@ -96,6 +96,7 @@ MOD_TO_SERVER = {
     "commit_terrain": {"anchorId": F(int), "cx": F(NUM), "cy": F(NUM)},
     "pose": {"anchorId": F(int), "x": F(NUM), "y": F(NUM), "z": F(NUM), "vx": F(NUM), "vy": F(NUM), "lat": F(NUM),
              "lon": F(NUM), "speed": F(NUM), "cam": F(dict, OPT),
+             "follow": F(bool, OPT),        # false: the altitude rule holds the block (no prefetch)
              # previous anchors whose tile objects the mod still has (an empty Lua table may encode as {})
              "held": F((list, dict), OPT),
              # the session folders in use, as in hello: an earlier run's one no longer named is released
@@ -110,7 +111,8 @@ CAM = {"x", "y", "z", "fx", "fy", "fz", "fovDeg"}
 TERRAIN = {"cx": F(NUM), "cy": F(NUM), "heightmap": F(str), "size": F(int), "squareSize": F(NUM),
            "zBase": F(NUM), "maxHeight": F(NUM), "q": F(NUM),
            "layers": F(list, OPT), "materials": F(list, OPT),     # --surface on (surface.py)
-           "base": F(str, OPT), "baseSize": F(NUM, OPT)}           # --near-visual detail: the block's photo
+           "base": F(str, OPT), "baseSize": F(NUM, OPT),           # --near-visual detail: the block's photo
+           "ter": F(str, OPT)}                                     # the block as a .ter (swapped in, no import)
 SERVER_TO_MOD = {
     "hello": {"protocol": F(int), "format": F(int), "serverVersion": F(str), "sessionId": F(str),
               "farFormat": F(str), "material": F(str),
@@ -149,6 +151,8 @@ SERVER_TO_MOD = {
                 "pressureHpa": F(NUM), "utcOffsetS": F(int, OPT), "tz": F(str, OPT), "credit": F(str)},
     # real gravity at the player (gravity.py; additive, protocol 4): |g| in m/s^2 at (lat, lon, h m MSL)
     "gravity": {"v": F(int), "g": F(NUM), "lat": F(NUM), "lon": F(NUM), "h": F(NUM), "source": F(str)},
+    # the highest ground near the player's path (groundahead.py; the mod's altitude rule), z in the anchor's frame
+    "ground_ahead": {"anchorId": F(int), "z": F(NUM)},
     # data credits for the tiles around the player (credits.py; additive, protocol 4, --credits on)
     "credits": {"v": F(int), "near": F(str), "far": F(str), "ids": F(list), "farIds": F(list)},
     # road tiles near the player (roads.py; additive, with map data only): a JSON file of DecalRoad chunks
@@ -232,9 +236,10 @@ def server_reads():
 
 
 def lua_function(text, name):
-    """Body of `local function name(` / `function M.name(` up to the next top-level `end`."""
-    m = re.search(rf"^(?:local )?function (?:M\.)?{name}\(.*?^end", text, re.S | re.M)
-    return m.group(0) if m else ""
+    """Body of `local function name(` / `function M.name(` / `name = function(` (a forward-declared
+    local) up to the next top-level `end`; all of them if there are several (a wrapper and its body)."""
+    ms = re.finditer(rf"^(?:(?:local )?function (?:M\.)?{name}\(|{name} = function\().*?^end", text, re.S | re.M)
+    return "\n".join(m.group(0) for m in ms)
 
 
 class AgreementTableTest(unittest.TestCase):

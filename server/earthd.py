@@ -60,6 +60,7 @@ os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
 import argparse  # noqa: E402
 import asyncio  # noqa: E402
 import glob  # noqa: E402
+import itertools  # noqa: E402
 import logging  # noqa: E402
 import math  # noqa: E402
 import secrets  # noqa: E402
@@ -95,6 +96,7 @@ import farfield  # noqa: E402
 import terraincache  # noqa: E402
 import geodesy  # noqa: E402
 import gravity as gravitymod  # noqa: E402
+import groundahead as groundaheadmod  # noqa: E402
 import heightmap  # noqa: E402
 import imagery as imagerymod  # noqa: E402
 import netfetch  # noqa: E402
@@ -484,6 +486,7 @@ class Server:
         # Heightmap workers: with the block processes they mostly wait on a process, and with two a
         # request queued behind a prefetch and an earlier request (3.5 s at 90 m/s, 2026-10-12)
         self.hm_pool = ThreadPoolExecutor(HM_THREADS, thread_name_prefix="heightmap")
+        self.ground_pool = ThreadPoolExecutor(1, thread_name_prefix="ground-ahead")   # groundahead.py
         self.tile_pool = ThreadPoolExecutor(tile_workers, thread_name_prefix="far")
         # Road plans (grading) of the map cells ahead of the player, made before a block needs them: a
         # cell's first plans (and street widths) take 2-10 s, more than a block move allows at speed
@@ -520,6 +523,7 @@ class Server:
         # Heightmaps: (anchorId, cx, cy) -> info, LRU order.
         self.hm = OrderedDict()
         self.hm_inflight = {}
+        self.ter_serial = itertools.count()
         self.hm_committed = deque(maxlen=HM_KEEP_COMMITTED)
         self.hm_sent = deque(maxlen=HM_KEEP_SENT)
         # Far tiles: (anchorId, key) -> TileInfo, LRU order; files are far_<anchorId>_<key>.<fmt>.
@@ -748,6 +752,11 @@ class Server:
         aid, cx, cy = key
         return f"hm_{aid}_{int(cx)}_{int(cy)}.png"
 
+    def ter_name(self, key):
+        """A new .ter name for every build of key: the engine skips a terrainFile it already has, and a
+        rebuilt block (an evicted one, or one with more of its land cover) can differ."""
+        return f"{self.hm_name(key)[:-4]}_{next(self.ter_serial)}.ter"
+
     def hm_vfs(self, key):
         return f"{self.vfs_dir}/{self.hm_name(key)}"
 
@@ -850,9 +859,10 @@ class Server:
         if pool is not None:
             info = pool.submit(
                 blockworker.build, anchor.id, anchor.lat, anchor.lon, anchor.hm_zoom, q, cx, cy,
-                self.layout.block, self.out_dir, self.hm_name((anchor.id, cx, cy))).result()
+                self.layout.block, self.out_dir, self.hm_name((anchor.id, cx, cy)),
+                self.ter_name((anchor.id, cx, cy))).result()
             return self._finish_heightmap(anchor, cx, cy, info, t0, pool)
-        keep = {} if self.surface is not None else None
+        keep = {}
         g = self.grader_for(anchor)
 
         grade_s = [0.0]
@@ -869,7 +879,8 @@ class Server:
                                   os.path.join(self.out_dir, self.hm_name((anchor.id, cx, cy))), cx, cy, q=q,
                                   size=self.layout.block, keep=keep, chunks=anchor.chunks)
         stages = {"heights": time.perf_counter() - t0, "grading": grade_s[0]}
-        if keep is not None:
+        idx = None
+        if self.surface is not None:
             # ground models per 2 m sample from the cached land cover and the slope (surface.py);
             # rows flipped as the heightmap's (row 0 = north)
             t1 = time.perf_counter()
@@ -885,6 +896,7 @@ class Server:
             complete = complete and roads_complete
             info["layers"] = surfacemod.write_masks(idx[::-1], self.out_dir, self.hm_name((anchor.id, cx, cy))[:-4])
             info["surfaceComplete"] = complete
+        info["ter"] = surfacemod.write_ter(self.out_dir, self.ter_name((anchor.id, cx, cy)), keep["qgrid"], idx)
         info["stages"] = stages
         return self._finish_heightmap(anchor, cx, cy, info, t0)
 
@@ -976,9 +988,11 @@ class Server:
         keep |= {(aid, *a.first_terrain) for aid, a in sorted(self.anchors.items())[-2:]
                  if a.first_terrain is not None and (newest is None or aid > newest)}
         for key in [k for k in self.hm if k not in keep][:max(0, len(self.hm) - HM_CACHE)]:
-            del self.hm[key]
+            info = self.hm.pop(key)
             self._remove(os.path.join(self.out_dir, self.hm_name(key)))
             self._remove(os.path.join(self.out_dir, self.base_name(key)))
+            if info.get("ter"):
+                self._remove(os.path.join(self.out_dir, info["ter"]))
             if self.near_visual == "detail":     # its packed copy in the game's terrain texture cache
                 self._remove(os.path.join(terraincache.cache_dir(self.user_dir),
                                           terraincache.base_key(f"{self.vfs_dir}/{self.base_name(key)}", BASE_AO_VFS) + ".dds"))
@@ -1421,7 +1435,7 @@ class Server:
             for key in [k for k in self.hm if k[0] == aid]:
                 if key not in self.hm_committed and key not in self.hm_sent:
                     del self.hm[key]
-            keep = {self.hm_name(k) for k in self.hm}
+            keep = {self.hm_name(k) for k in self.hm} | {i["ter"] for i in self.hm.values() if i.get("ter")}
             doomed = []
             for p in glob.glob(os.path.join(self.out_dir, f"far_{aid}_*")):
                 name = os.path.basename(p)
@@ -1515,6 +1529,8 @@ class Connection:
         self.roads = roadsmod.Tracker()         # road tiles sent to the mod (--roads on)
         self.gravity = gravitymod.Tracker()     # real gravity: recompute rule, last message sent
         self.credits = creditsmod.Tracker()     # data credits: throttle, last message sent (--credits on)
+        self.ground_busy = False                # a groundahead job is running (one at a time)
+        self.following = True                   # the mod moves its block (pose "follow"; false high up)
 
     def send(self, msg):
         if not self.writer.is_closing():
@@ -1681,6 +1697,8 @@ class Connection:
         if info.get("base"):        # detail mode: the base photo over the block's world size
             out["base"] = f"{self.s.vfs_dir}/{info['base']}"
             out["baseSize"] = self.s.layout.block * heightmap.SQUARE
+        if info.get("ter"):         # the same block as the engine's terrain file (swapped in, no import)
+            out["ter"] = f"{self.s.vfs_dir}/{info['ter']}"
         return out
 
     async def prepare_anchor(self, msg):
@@ -1854,13 +1872,17 @@ class Connection:
         if self.s.horizon:
             self.update_eye(self.s.anchors[aid].frame, x, y, msg)
         self.gravity.on_pose(self, self.s.anchors[aid].frame, x, y, _num(msg, "z", 0.0))
+        self.ground_ahead(aid, x, y, vx, vy)
+        # the mod's altitude rule: high above the ground it does not move its block, so no block is
+        # built ahead (prefetch, road plans) until it comes down
+        self.following = msg.get("follow") is not False
         self.predicted_block = None
         # The mod asks for its next terrain relative to the block it will have committed by
         # then: the pending one if it asked already (it commits that one first), else the
         # committed one. Predicting from the committed block while a request is pending built
         # terrains nobody asks for whenever the heading changed.
         base = self.pending_block or self.block
-        if base is not None:
+        if base is not None and self.following:
             px, py = self.focus
             rule = self.s.follow
             ahead = rule.mode(*self.vel)[2]         # M4 fast mode: the mod tests a point ahead
@@ -1871,12 +1893,32 @@ class Connection:
                     self.predicted_block = self.s.layout.block_at(*c)
         self.update_far()
         self.maybe_prefetch()
-        if aid == self.active:
+        if aid == self.active and self.following:
             self.s.warm_roads(self.s.anchors[aid], *self.focus, *self.vel)
         if self.s.mapdata is not None and aid == self.active:
             self.roads.on_pose(self, aid, *self.focus, asyncio.get_running_loop(), self.s.build_roads_tile)
         self.refresh_status()
         self.credits.poke(self)             # the player moved: the near / far credits may change
+
+    def ground_ahead(self, aid, x, y, vx, vy):
+        """Send the mod the highest ground near its straight path (groundahead.py; its altitude rule), one
+        job at a time; a pose that arrives meanwhile is skipped (the next one comes in 0.5 s)."""
+        if self.ground_busy:
+            return
+        self.ground_busy = True
+        frame = self.s.anchors[aid].frame
+
+        async def run():
+            try:
+                z = await self.loop.run_in_executor(self.s.ground_pool, groundaheadmod.highest, self.s.dem, frame,
+                                                    x, y, vx, vy)
+                if math.isfinite(z):
+                    self.send({"type": "ground_ahead", "anchorId": aid, "z": round(z, 1)})
+            except Exception as e:      # offline, a DEM failure: the mod keeps following
+                log.debug("ground ahead: %s: %s", type(e).__name__, e)
+            finally:
+                self.ground_busy = False
+        self.spawn(run())
 
     def update_eye(self, frame, x, y, msg):
         """M1h: the eye's height above sea level from a pose in `frame` (the pose's anchor): the camera's

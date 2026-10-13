@@ -25,6 +25,7 @@ from concurrent.futures import ThreadPoolExecutor
 import numpy as np
 from PIL import Image, ImageDraw
 
+import heightmap
 import mapcells
 import mapdata as mapdatamod
 import roads as roadsmod
@@ -199,6 +200,14 @@ def write_masks(idx, out_dir, stem):
         Image.fromarray(np.where(idx == i, 255, 0).astype(np.uint8), "L").save(tmp, format="PNG", compress_level=1)
         os.replace(tmp, path)
     return names
+
+
+def write_ter(out_dir, name, qgrid, idx):
+    """The block's .ter (heightmap.write_ter) with these materials (idx: MATERIALS indices, row 0 =
+    south) or, idx None, the level's single dirt layer (the mod's terrain.MATERIAL). Returns name."""
+    mats = [m for m, _ in MATERIALS] if idx is not None else [MATERIALS[DIRT][0]]
+    heightmap.write_ter(os.path.join(out_dir, name), qgrid, idx, mats)
+    return name
 
 
 class Surface:

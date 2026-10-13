@@ -26,6 +26,8 @@
 --   beamngEarth_core.setRebaseDistance(m)   beamngEarth_core.setFarBudget(ms)  (streaming budget, 1-4 ms)
 
 local M = {}
+-- terrain-follow moves swap in the server's .ter when it sends one (terrain.swap); false: always importMaps
+M.TER_SWAP = true
 M.dependencies = { 'ui_imgui' }
 
 -- Helper modules live next to this file. 'lua/ge/extensions/?.lua' is on package.path
@@ -111,6 +113,7 @@ local function resetState()
     -- frames a follow request spent waiting, by cause (the harness's view of why the block lags):
     -- server = not answered yet, gate = ready but its far tiles not live, governor = no heavy slot yet
     followWait = { server = 0, gate = 0, governor = 0 },
+    followHeld = false, followHolds = 0, groundAhead = nil, -- the altitude rule (follow.altitudeHold)
     -- the last COMMIT_LOG follow commits, each { load, coll, cover (ms in the commit), f = { the wall ms of
     -- the commit frame and the two after it } } (what a block move costs, and where: GPU uploads land in
     -- the frames after)
@@ -235,7 +238,9 @@ end
 -- Import a terrain message ({cx, cy, heightmap, squareSize, zBase, maxHeight, q}) as the block.
 -- The caller rebuilds collision. squareSize must be the 2.0 m lattice (lattice.lua); maxHeight is
 -- q * 65536 with zBase a multiple of q (design 12, P1), checked here and logged once if not.
-local function loadBlock(tr)
+-- swap: a terrain-follow move may take the server's .ter instead (terrain.swap; the third result is
+-- then true and collision needs no rebuild).
+local function loadBlock(tr, swap)
   local x, y = follow.blockOrigin(tr.cx, tr.cy)
   local sq = tonumber(tr.squareSize) or follow.SQUARE_SIZE
   if math.abs(sq - follow.SQUARE_SIZE) > 1e-9 then
@@ -251,6 +256,11 @@ local function loadBlock(tr)
   -- (false: detail mode without a photo -> the level's flat base; nil: other modes, untouched)
   local base = nil
   if nearVisual == 'detail' then base = type(tr.base) == 'string' and tr.base or false end
+  if swap and M.TER_SWAP and type(tr.ter) == 'string'
+      and terrain.swap(tr.ter, sq, maxH, x, y, tr.zBase, layers, base, tonumber(tr.baseSize)) then
+    groundcover.afterBlockChange()
+    return true, nil, true
+  end
   local ok, err = terrain.load(tr.heightmap, sq, maxH, x, y, tr.zBase, layers, base, tonumber(tr.baseSize))
   -- every block import / move drops all the grass on it; rebuild it before this frame is drawn
   groundcover.afterBlockChange()
@@ -459,18 +469,20 @@ local frameTimer = hptimer and hptimer() or nil
 
 local function commitTerrain(msg)
   local sw = stopwatch.new()
-  local ok, err = loadBlock(msg)
+  local ok, err, swapped = loadBlock(msg, true)
   if not ok then
     setStatus('Terrain-follow import failed: ' .. tostring(err))
     st.terrainRetryAt = st.clock + follow.RETRY_S
     return false
   end
   local tLoad = sw()
-  be:reloadCollision()
-  roads.collisionRebuilt()      -- the sidewalks made so far collide now too
+  if not swapped then             -- a swapped .ter collides by the next frame by itself
+    be:reloadCollision()
+    roads.collisionRebuilt()      -- the sidewalks made so far collide now too
+  end
   local tColl = sw()
   farfield.onBlockCommit(msg.cx, msg.cy)
-  local c = { load = tLoad, coll = tColl - tLoad, cover = sw() - tColl, f = {} }
+  local c = { load = tLoad, coll = tColl - tLoad, cover = sw() - tColl, f = {}, swap = swapped or nil }
   table.insert(st.commits, c)
   if #st.commits > COMMIT_LOG then table.remove(st.commits, 1) end
   st.commitFrames = c
@@ -642,6 +654,9 @@ local function onMessage(msg)
     -- real gravity at the player (server gravity.py): applied by beamngEarth_weather's setGravity path
     local w = rawget(_G, 'beamngEarth_weather')
     if w and w.onGravity then w.onGravity(msg) end
+  elseif t == 'ground_ahead' then
+    -- the highest ground near the player's path (server groundahead.py): the altitude rule (follow.lua)
+    if tonumber(msg.z) then st.groundAhead = { anchorId = msg.anchorId, z = tonumber(msg.z), at = st.clock } end
   elseif t == 'credits' then
     -- the sources around the player (server credits.py): msg.near, msg.far, drawn by credits.lua
     credits.onMessage(msg)
@@ -682,7 +697,7 @@ local function updatePlayer(dt)
   local p = veh:getPosition()
   local v = veh:getVelocity()
   local lat, lon = st.anchor:enuToGeodetic(p.x, p.y, p.z)
-  st.player = { x = p.x, y = p.y, z = p.z, vx = v.x, vy = v.y, lat = lat, lon = lon, dist = hypot(p.x, p.y),
+  st.player = { x = p.x, y = p.y, z = p.z, vx = v.x, vy = v.y, vz = v.z, lat = lat, lon = lon, dist = hypot(p.x, p.y),
     speed = v:length() }
   st.slowFor = st.player.speed < SLOW_SPEED and (st.slowFor + dt) or 0
 end
@@ -731,7 +746,7 @@ local function updateWorld(dt)
     -- held: previous anchors of this server's session only (the far field's older sessions' anchor
     -- ids are another server's); sessions: every session folder in use
     net.send({ type = 'pose', anchorId = st.anchorId, x = pl.x, y = pl.y, z = pl.z, vx = pl.vx, vy = pl.vy,
-      lat = pl.lat, lon = pl.lon, speed = pl.speed,
+      lat = pl.lat, lon = pl.lon, speed = pl.speed, follow = not st.followHeld,
       held = (farfield.session() == st.sessionId) and farfield.heldAnchors() or {},
       sessions = farfield.heldSessions(),
       cam = c and { x = c.x, y = c.y, z = c.z, fx = c.fx, fy = c.fy, fz = c.fz, fovDeg = c.fovDeg } or nil })
@@ -785,7 +800,17 @@ local function updateWorld(dt)
     st.pending = nil -- the next frame prefetches at the player's position
   end
 
-  -- terrain-follow
+  -- terrain-follow, unless the altitude rule holds the block (high above the ground)
+  local ga = st.groundAhead
+  local gz = ga and ga.anchorId == st.anchorId and st.clock - ga.at <= follow.GROUND_STALE_S and ga.z or nil
+  local held = follow.altitudeHold(st.followHeld, pl.z, pl.vz, gz)
+  if held ~= st.followHeld then
+    st.followHeld = held
+    st.followHolds = st.followHolds + (held and 1 or 0)
+    log('I', 'beamngEarth', string.format('terrain follow %s at %.0f m above the ground ahead',
+      held and 'held' or 'resumed', pl.z - (gz or pl.z)))
+  end
+  if held then return end
   local b = st.block
   -- commit gating: the far tiles of the strip the move uncovers must be live, and no coarse tile
   -- may straddle the new block (design 2.3, farfield.uncoverReady)
@@ -1186,6 +1211,7 @@ function M.status()
     anchorId = st.anchorId, anchorKey = st.anchorKey, pending = st.pending and st.pending.purpose,
     block = st.block, terrainPending = st.terrainPending and { st.terrainPending.cx, st.terrainPending.cy },
     followWait = st.followWait, commits = st.commits,
+    followHeld = st.followHeld, followHolds = st.followHolds, groundAhead = st.groundAhead and st.groundAhead.z,
     rebaseDistance = rebase.distance, lastFollowMs = st.lastFollowMs, lastRebaseMs = st.lastRebaseMs,
     lastRebaseWaitFrames = st.lastRebaseWait, rebaseLag = rebaseLag, lastMoveLag = st.lastMoveLag, player = st.player, far = farfield.stats(), governor = gov:snapshot(), status = st.status,
     serverBacklog = st.serverBacklog, followCount = st.followCount, rebaseCount = st.rebaseCount,

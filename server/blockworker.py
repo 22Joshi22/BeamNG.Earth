@@ -124,13 +124,14 @@ def _warm_loop():
                 _s.want = [w for w in _s.want if w[1] != job[1]]
 
 
-def build(aid, lat, lon, hm_zoom, q, cx, cy, size, out_dir, name):
-    """Build and write the block (heightmap PNG name in out_dir, its surface masks beside it). Returns
-    the info dict of earthd's make_heightmap (without seconds / zoom / base)."""
+def build(aid, lat, lon, hm_zoom, q, cx, cy, size, out_dir, name, ter_name=None):
+    """Build and write the block (heightmap PNG name in out_dir, its surface masks beside it, and the
+    .ter ter_name if given). Returns the info dict of earthd's make_heightmap (without seconds / zoom /
+    base)."""
     t0 = time.perf_counter()
     g, chunks = _s.anchor(aid, lat, lon)
     frame = geodesy.EnuFrame(lat, lon)
-    keep = {} if _s.surface is not None else None
+    keep = {}
     grade_s = [0.0]
 
     def elev(la, lo):
@@ -144,7 +145,8 @@ def build(aid, lat, lon, hm_zoom, q, cx, cy, size, out_dir, name):
     info = heightmap.generate(frame, elev, os.path.join(out_dir, name), cx, cy, q=q, size=size, keep=keep,
                               chunks=chunks)
     stages = {"heights": time.perf_counter() - t0, "grading": grade_s[0]}
-    if keep is not None:
+    idx = None
+    if _s.surface is not None:
         t1 = time.perf_counter()
         classes, complete = _s.surface.classes(keep["lat"], keep["lon"])
         idx = surfacemod.classify(classes, keep["u"], heightmap.SQUARE)
@@ -157,6 +159,10 @@ def build(aid, lat, lon, hm_zoom, q, cx, cy, size, out_dir, name):
         stages["roadPaint"] = time.perf_counter() - t1
         info["layers"] = surfacemod.write_masks(idx[::-1], out_dir, name[:-4])
         info["surfaceComplete"] = complete and roads_complete
+    if ter_name is not None:
+        t1 = time.perf_counter()
+        info["ter"] = surfacemod.write_ter(out_dir, ter_name, keep["qgrid"], idx)
+        stages["ter"] = time.perf_counter() - t1
     info["stages"] = stages
     return info
 

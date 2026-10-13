@@ -267,6 +267,43 @@ function M.load(path, squareSize, maxHeight, x, y, z, layers, base, baseSize)
   return true
 end
 
+-- Move the block by swapping in the server's .ter of the new block (terrainFile + postApply, a new file
+-- name each time: the engine skips a name it already has). ~11 ms for 512², and collision follows by the
+-- next frame with no reloadCollision (docs/research/2026-10-12-engine-limits-and-worldgen.md §7) against
+-- importMaps (~20 ms) + reloadCollision (~10 ms Lua + a ~20 ms physics frame). Only after a first
+-- importMaps (the block exists with its material set-up) and at the same square size: returns false
+-- (nothing changed) otherwise, and the caller imports. The .ter names its materials (server
+-- surface.write_ter: layers.materials, or M.MATERIAL alone). The caller does NOT rebuild collision.
+function M.swap(terPath, squareSize, maxHeight, x, y, z, layers, base, baseSize)
+  local tb = M.get()
+  local sq = tonumber(squareSize)
+  if not tb or not M.slots or not sq or math.abs(sq - M.square) > 1e-9 then return false end
+  if type(terPath) ~= 'string' or not FS:fileExists(terPath) then return false end
+  local slots = { M.MATERIAL }
+  if layers then
+    if type(layers.materials) ~= 'table' or #layers.materials == 0 or not ensureSurfaceMaterials(layers.materials) then
+      return false
+    end
+    slots = {}
+    for i, nm in ipairs(layers.materials) do slots[i] = nm[1] end
+  end
+  local ok, err = pcall(function()
+    tb:setField('maxHeight', 0, tostring(maxHeight))
+    tb:setPosition(vec3(x, y, z))
+    tb:setField('terrainFile', 0, terPath)
+    tb:postApply()
+  end)
+  if not ok then
+    log('W', 'beamngEarth', 'terrain .ter swap failed: ' .. tostring(err))
+    return false
+  end
+  M.slots = slots
+  M.swaps = (M.swaps or 0) + 1
+  applyRender(tb)
+  if base ~= nil then M.setBase(base or nil, baseSize) end
+  return true
+end
+
 -- Detail mode: every layer's base colour = the aerial photo `path` (PNG, row 0 = north, `size` m over the
 -- block from its SW corner, converted to samples); nil = the level's flat base. Also gives the level's own material its look (once). The engine
 -- re-reads a material on updateMaterial (index = the block's material slot); ~6 ms for a 2048² PNG.

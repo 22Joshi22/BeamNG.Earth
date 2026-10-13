@@ -256,4 +256,12 @@ T.check(f.SIZE == 1024 and f.HALF == 1024 and f.GRID == 256 and f.REACH == 420 a
 tx = f.target(0, 0, 200, 0)
 T.check(tx == 256, '1024: derived REACH restored (clamped lead 256)')
 
+-- the altitude rule (follow.altitudeHold): holds high above the ground ahead, follows again on the way down
+T.check(not f.altitudeHold(false, 1000, 0, nil) and not f.altitudeHold(true, 1000, 0, nil), 'no ground known: never holds')
+T.check(not f.altitudeHold(false, 250, 0, 0) and f.altitudeHold(false, 350, 0, 0), 'holds above HOLD_AGL (300 m)')
+T.check(f.altitudeHold(true, 200, 0, 0) and not f.altitudeHold(true, 140, 0, 0), 'hysteresis: held until RESUME_AGL (150 m)')
+T.check(not f.altitudeHold(true, 500, -50, 0), 'a 50 m/s descent from 500 m resumes (8 s ahead: 100 m)')
+T.check(not f.altitudeHold(false, 400, -20, 0), 'a 20 m/s descent at 400 m does not start holding')
+T.check(f.altitudeHold(false, 1400, 0, 1000), 'heights above the ground ahead, not above z = 0')
+
 T.done('test_follow')

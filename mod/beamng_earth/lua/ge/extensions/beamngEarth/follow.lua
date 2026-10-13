@@ -215,6 +215,25 @@ function M.decide(px, py, vx, vy, cx, cy, pending, now, retryAt, gate, latency)
 end
 
 -- Distances for the UI: to the prepare threshold and to the commit threshold (<= 0 = passed).
+-- Altitude rule (the user, 2026-10-13: "at high flying altitude we can stop the block following but bring it
+-- back at low altitude"). High above the ground nothing needs the physics block, and at 300 m/s its builds
+-- cannot keep up (~1 s per answer). The ground is the server's ground_ahead (the highest ground near the
+-- straight path for the next 10 s; the far tiles do not collide, so the mod cannot measure it). Holds above
+-- HOLD_AGL; follows again once the height, less what HOLD_LEAD_S of the current descent takes, is below
+-- RESUME_AGL, so the block is under the player before it gets low. groundZ nil (no answer, a stale one):
+-- never holds.
+M.HOLD_AGL = 300        -- m (~1,000 ft)
+M.RESUME_AGL = 150      -- m
+M.HOLD_LEAD_S = 8       -- s of descent looked ahead
+M.GROUND_STALE_S = 3    -- s: an older ground_ahead does not count
+
+function M.altitudeHold(holding, z, vz, groundZ)
+  if not groundZ then return false end
+  local agl = z - groundZ + min(0, vz or 0) * M.HOLD_LEAD_S
+  if holding then return agl > M.RESUME_AGL end
+  return agl > M.HOLD_AGL
+end
+
 function M.thresholds(px, py, cx, cy)
   if not cx then return nil end
   local d = M.cheb(px, py, cx, cy)

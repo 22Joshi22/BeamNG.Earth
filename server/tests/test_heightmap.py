@@ -1,5 +1,6 @@
 import math
 import os
+import struct
 import sys
 import tempfile
 import unittest
@@ -229,6 +230,24 @@ class HeightmapTest(unittest.TestCase):
         self.assertAlmostEqual(info["groundZ"], 0.0, delta=0.01)
         corner = heightmap.heights(q, info["zBase"], info["maxHeight"])[0, 0]
         self.assertAlmostEqual(corner, -(self.half ** 2 * 2) / (2 * 6371000), delta=0.02)
+
+    def test_ter_file(self):
+        """write_ter: the PNG's samples, south row first (the engine's sample (x, y) = block-local
+        (x, y) * squareSize), the material indices the same way, then the names."""
+        keep = {}
+        self.generate(rough, self.path, keep=keep)
+        idx = (np.arange(self.n * self.n) % 3).reshape(self.n, self.n).astype(np.uint8)
+        ter = os.path.join(self.tmp.name, "hm.ter")
+        heightmap.write_ter(ter, keep["qgrid"], idx, ["a", "bb", "ccc"])
+        data = open(ter, "rb").read()
+        n2 = self.n * self.n
+        self.assertEqual(struct.unpack_from("<BI", data), (9, self.n))
+        h = np.frombuffer(data, "<u2", n2, 5).reshape(self.n, self.n)
+        np.testing.assert_array_equal(h, self.read())
+        np.testing.assert_array_equal(np.frombuffer(data, np.uint8, n2, 5 + 2 * n2).reshape(self.n, self.n), idx)
+        o = 5 + 3 * n2
+        self.assertEqual(struct.unpack_from("<I", data, o), (3,))
+        self.assertEqual(data[o + 4:], b"\x01a\x02bb\x03ccc")
 
 
 class Heightmap512Test(HeightmapTest):
