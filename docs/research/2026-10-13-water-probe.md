@@ -26,6 +26,19 @@ The roadmap's water item (docs/ROADMAP.md "Water") has nothing built yet: lakes,
   - So it is not our field values.
   - Loaded with the level (West Coast USA's `WaterBlock_1` in a temporary MissionGroup group of our level, game restarted): not drawn either. So it is not runtime creation: in our level (smallgrid-based, `levels/beamng_earth`) WaterBlocks are not drawn while a WaterPlane is. Next: compare the level's setup with a stock level that has water (LevelInfo / post effects / water-related globals).
 
+### In gridmap_v2 (a stock level with one WaterBlock, a sunken pool)
+
+- **The stock block** draws.
+  - Moved with `setPosition` / `setPosRot` onto a neighbouring test panel, it was not seen.
+  - Moved back, it drew again.
+  - The panels are raised meshes above the terrain height `getTerrainHeight` reported, so the moved
+    water sat under them: inconclusive.
+- **Field diff with a runtime block:** the runtime default is `fullReflect` 1 (stock 0). But a runtime
+  block with `fullReflect` 0 and its surface 1 m above Fells Point harbour (our level) was not drawn
+  either.
+- **So far:** WaterPlane yes, runtime WaterBlock never, in our level. The design should start from
+  WaterPlanes (bounded by placement, see below) unless the WaterBlock is solved in an engine-level look.
+
 ## Why a plane is not enough
 
 A `WaterPlane` is infinite and flat in the anchor frame, but the earth curves away below it: d^2 / 2R = 0.3 m at 2 km, 7.8 m at 10 km. Coastal land lower than that in the distance would be drawn under water. Lakes need their own levels.
