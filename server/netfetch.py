@@ -117,6 +117,11 @@ POLICIES = {
                                          allow_prefetch=True, offline_ok=True, miss_ttl=90 * DAY,
                                          binary=True, timeout=30.0, max_attempts=2, base_delay=2.0,
                                          breaker_threshold=6, breaker_window=120.0),
+    # MD iMAP six-inch MapServer export (imagery.py "md6in"): ~1.3 s a 1024² image in-game 2026-10-13
+    "mdgeodata.md.gov": HostPolicy(rate=1.0, burst=4.0, max_conc=1, daily_budget=4000,
+                                   allow_prefetch=True, offline_ok=True, miss_ttl=90 * DAY,
+                                   binary=True, timeout=30.0, max_attempts=2, base_delay=2.0,
+                                   breaker_threshold=6, breaker_window=120.0),
     "tiles.maps.eox.at": HostPolicy(rate=6.0, burst=30.0, max_conc=4, daily_budget=20000,
                                     allow_prefetch=True, offline_ok=True, miss_ttl=90 * DAY, **TILE_HOST),
     "tiles.mapterhorn.com": HostPolicy(rate=20.0, burst=80.0, max_conc=8, daily_budget=30000,

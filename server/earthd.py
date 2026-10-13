@@ -2314,6 +2314,8 @@ async def main_async(args):
     mapdata = (mapdatamod.MapData(args.cache_dir, fetcher=net)
                if "on" in (args.surface, args.roads) else None)
     pacer.DUTY = args.background_duty
+    global DETAIL_RING_M
+    DETAIL_RING_M = args.detail_ring
     block_pools, far_pool = [], None
     if args.block_process == "on":
         ctx = multiprocessing.get_context("spawn")
@@ -2527,6 +2529,8 @@ def main():
     ap.add_argument("--roads", choices=("on", "off"), default="on",
                     help="Overture roads near the player (roads.py): DecalRoads in the mod (paved asphalt, "
                          "gravel / dirt tracks) within ~640 m, in 256 m tiles; off = none")
+    ap.add_argument("--detail-ring", type=float, default=DETAIL_RING_M,
+                    help="detail mode: metres of L-1 tiles around the drawn block (0 = none)")
     ap.add_argument("--background-duty", type=float, default=pacer.CLI_DUTY,
                     help="share of the time the background imagery analyses (colour seams, de-shadow) may run "
                          "(pacer.py): their memory traffic slowed the game's rendering up to 2x; 1 = unpaced")

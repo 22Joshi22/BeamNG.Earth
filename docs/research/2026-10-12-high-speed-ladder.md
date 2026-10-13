@@ -213,3 +213,20 @@ the drawn block's edge (Columbus OH, `block_edge_2026-10-13/block_edge_cmp.jpg`)
   - the earlier route passes (p99 21.5 ms, worst commit 26 ms);
   - a second route went NaN once at 1.8 km mid-block (a physics blow-up, not at an edge), then passed
     10 km on the rerun.
+
+**Maryland's own imagery (2026-10-13; the user asked about it).** The state research
+(`2026-10-10-us-state-imagery.md`) lists MD iMAP's six-inch (0.15 m, 2023-25, statewide) and three-inch
+layers.
+- **Speed.** Six-inch export: ~1.3 s per 1024² (vs ~10 s for the USGS NAIP service; USDA's has
+  nothing in Maryland). White outside the state.
+- **Source `md6in`.** First in the chain, with `bounds` (never asked outside Maryland's box) and
+  `nodata="white"` (> 25 % pure white = missing; roofs stay).
+- **Alignment.** Within ~5.6 m of NAIP (phase correlation over a z15 parent). Our road edges sit on
+  the streets in both.
+- **Licence.** Free with acknowledgement ("State of Maryland, MD iMAP / DoIT", in the credits),
+  to re-verify before release.
+- **Result.** Baltimore, north from Fells Point, 58 m/s for 10 km: all 43 blocks built with the sharp
+  imagery.
+- **Regression.** That drive and the morning's Fells Point route east ran at 69-74 fps (101 this
+  morning), and the east route failed at 4 km: a block answer took 6.4 s (its base photo stage 5.4 s)
+  and the edge guard held the car. Under test: the L-1 ring (`--detail-ring`) vs none.

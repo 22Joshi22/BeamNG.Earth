@@ -52,6 +52,7 @@ MAX_DEM_KEYS = 64               # DEM tiles looked up per far tile (a footprint 
 # without the licence name); the others as in imagery.SOURCES / earthd.ELEVATION_CREDIT. The full
 # credits stay in hello.attribution (the settings page) and CREDITS.md.
 IMAGERY = {
+    "md6in": "State of Maryland, MD iMAP / DoIT",
     "naipusda": "USDA NAIP",
     "naip": "USDA NAIP via USGS The National Map",
     "usgs": "USGS The National Map",

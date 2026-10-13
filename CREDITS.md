@@ -14,6 +14,7 @@ only, nothing redistributed. Licence notes marked *(verify)* must be re-checked 
 
 | Data | Provider | Used for | Licence / terms | Attribution | Status |
 |---|---|---|---|---|---|
+| MD iMAP Six-Inch Imagery 2023-2025 (0.15 m), MapServer export | State of Maryland, MD iMAP / Department of Information Technology (DoIT) | the near ground imagery in Maryland (`--imagery` source "md6in", first in the chain there) | free distribution with acknowledgement (service metadata; re-verify before release) | "State of Maryland, MD iMAP / DoIT" | in use |
 | USDA NAIP orthoimagery (0.3-0.6 m, 2024-25 flights), through USDA FPAC's NAIP ImageServer (exportImage) | U.S. Department of Agriculture (FPAC / FSA) | the near ground imagery in the lower 48 states where this service has it (`--imagery` source "naipusda", tried before "naip") | public domain (US federal) | "USDA NAIP" | in use |
 | USDA NAIP orthoimagery (0.3-0.6 m), through the USGS NAIP ImageServer (exportImage) | U.S. Department of Agriculture (FSA) / U.S. Geological Survey | the near ground imagery in the lower 48 states (the block's photo, the nearest far tiles; `--imagery` source "naip") | public domain (US federal) | "USDA NAIP via USGS The National Map" | in use |
 | USGS National Map ImageryOnly (NAIP-based orthoimagery) | U.S. Geological Survey | ground imagery in the US | public domain (US federal) | "Imagery: USGS The National Map" | in use |

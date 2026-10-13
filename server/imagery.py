@@ -61,6 +61,8 @@ MESH_CELLS = 8                     # render(): exact reprojection on an 8 x 8 gr
 FALLBACK_RGB = (100, 89, 69)       # no imagery anywhere: the terrain material's dirt colour
 BLANK_RANGE = 2                    # a tile whose pixels all lie within this many levels is uniform
 NODATA_MAX, NODATA_SHARE = 6, 0.02   # an export tile with > 2 % texels this black is outside the data
+NODATA_WHITE_MIN, NODATA_WHITE_SHARE = 254, 0.25   # ... or (nodata "white") > 25 % this white: white roofs
+                                                   # are bright but rarely a quarter of a 240 m tile
 
 
 @dataclass(frozen=True)
@@ -87,6 +89,10 @@ class Source:
     lazy: bool = False
     # The coverage probes ask this source instead (an export source's own probe would be a huge area)
     probe_source: str = ""
+    # (south, west, north, east) degrees: tiles wholly outside are never asked (a state's own service)
+    bounds: tuple = ()
+    # The colour an export source fills outside its data with ("black" or "white"), see NODATA_*
+    nodata: str = "black"
 
 
 SOURCES = {
@@ -116,7 +122,15 @@ SOURCES["naipusda"] = Source(
     "naipusda", "https://apps.geo.fpac.usda.gov/geo-imagery/rest/services/naip/conus_naip/ImageServer/exportImage"
                 "?bbox={bbox}&bboxSR=3857&imageSR=3857&size={size},{size}&format=jpg&f=image",
     17, "USDA NAIP (public domain)", probe_zooms=(10, 12), min_zoom=17, export=2, lazy=True, probe_source="usgs")
-DEFAULT_CHAIN = ("naipusda", "naip", "usgs", "eox2023", "eox2016")
+# Maryland's own six-inch orthophotos (MD iMAP, 0.15 m, flown 2023-25, leaf-off spring): ~1.3 s per
+# 1024² (in-game 2026-10-13, vs ~10 s for the USGS NAIP service Maryland otherwise needs; USDA's has none
+# there). White outside the state. Free with acknowledgement (docs/research/2026-10-10-us-state-imagery.md).
+SOURCES["md6in"] = Source(
+    "md6in", "https://mdgeodata.md.gov/imagery/rest/services/SixInch/SixInchImagery2023_2024_2025/MapServer/export"
+             "?bbox={bbox}&bboxSR=3857&imageSR=3857&size={size},{size}&format=jpg&f=image",
+    17, "State of Maryland, MD iMAP / DoIT six-inch imagery", min_zoom=17, export=2, lazy=True,
+    bounds=(37.88, -79.49, 39.73, -75.04), nodata="white")
+DEFAULT_CHAIN = ("md6in", "naipusda", "naip", "usgs", "eox2023", "eox2016")
 # The line the mod shows (V1_3_SPEC §C), for the default chain: every source's own credit, EOX's in
 # its June 2026 wording (docs/research/2026-10-10-rate-limits.md: "EOxCloudless https://cloudless.eox.at
 # by EOX IT Services GmbH (Contains modified Copernicus Sentinel data 2023)", 2016: "... 2016 & 2017").
@@ -198,6 +212,18 @@ def match_colours(rgb, ref, sigma_px):
     gain = (np.asarray(b, np.float32) + 4.0) / (np.asarray(a, np.float32) + 4.0)
     out = rgb.astype(np.float32) * np.clip(gain, 1 / 3, 3)
     return np.clip(np.rint(out), 0, 255).astype(np.uint8)
+
+
+def in_bounds(src, z, x, y):
+    """Tile (z, x, y) overlaps src.bounds (True when the source has none)."""
+    if not src.bounds:
+        return True
+    s, w, n, e = src.bounds
+    k = 2 ** z
+    lon0, lon1 = x / k * 360 - 180, (x + 1) / k * 360 - 180
+    lat1 = math.degrees(math.atan(math.sinh(math.pi * (1 - 2 * y / k))))
+    lat0 = math.degrees(math.atan(math.sinh(math.pi * (1 - 2 * (y + 1) / k))))
+    return lon1 > w and lon0 < e and lat1 > s and lat0 < n
 
 
 def mercator_bbox(z, x, y):
@@ -388,7 +414,8 @@ class Imagery:
                     cx, cy = ((x >> k) << k) + i, ((y >> k) << k) + j
                     cpath, cmiss = self._paths(src, z, cx, cy)
                     child = a[j * TILE:(j + 1) * TILE, i * TILE:(i + 1) * TILE]
-                    if (child.max(axis=2) <= NODATA_MAX).mean() > NODATA_SHARE:
+                    if (child.max(axis=2) <= NODATA_MAX).mean() > NODATA_SHARE or (
+                            src.nodata == "white" and (child.min(axis=2) >= NODATA_WHITE_MIN).mean() > NODATA_WHITE_SHARE):
                         # outside the flights (the image is black there): missing, the next source fills it
                         os.makedirs(os.path.dirname(cmiss), exist_ok=True)
                         open(cmiss, "wb").close()
@@ -502,6 +529,8 @@ class Imagery:
                 elif k in self._lru:
                     self._lru.move_to_end(k)
                     out[k] = self._lru[k]
+                elif not in_bounds(*k):
+                    out[k] = None                   # outside the source's area
                 elif k[0].lazy and not self._on_disk(k):
                     out[k] = None                   # not fetched (warm() does, ahead): the next source now
                 else:
@@ -596,7 +625,7 @@ class Imagery:
                 for ty in range(int((fy[0] - r_px) // TILE), int((fy[0] + r_px) // TILE) + 1):
                     for tx in range(int((fx[0] - r_px) // TILE), int((fx[0] + r_px) // TILE) + 1):
                         key = (src, z, (tx >> k) << k, (ty >> k) << k)   # one child per parent
-                        if key not in want:
+                        if key not in want and in_bounds(*key):
                             want.append(key)
         with self._warm_cv:
             self._warm_want = want
@@ -662,6 +691,8 @@ class Imagery:
         for ty in range(int(math.floor(fy.min() - 1)) // TILE, int(math.floor(fy.max() + 1)) // TILE + 1):
             for tx in range(int(math.floor(fx.min() - 1)) // TILE, int(math.floor(fx.max() + 1)) // TILE + 1):
                 for src in lazy:            # the first with data decides; a missing one passes to the next
+                    if not in_bounds(src, z, tx, ty):
+                        continue
                     path, miss = self._paths(src, z, tx, ty)
                     if os.path.exists(path):
                         break

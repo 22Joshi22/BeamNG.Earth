@@ -449,7 +449,8 @@ class ChainTest(unittest.TestCase):
         eox = "EOxCloudless https://cloudless.eox.at by EOX IT Services GmbH (Contains modified Copernicus Sentinel data "
         self.assertEqual(imagery.SOURCES["eox2023"].attribution, eox + "2023), CC BY-NC-SA 4.0")
         self.assertEqual(imagery.SOURCES["eox2016"].attribution, eox + "2016 & 2017), CC BY 4.0")
-        self.assertEqual(imagery.ATTRIBUTION, "Imagery: USDA NAIP (public domain); "
+        self.assertEqual(imagery.ATTRIBUTION, "Imagery: State of Maryland, MD iMAP / DoIT six-inch imagery; "
+                         "USDA NAIP (public domain); "
                          "USDA NAIP via USGS The National Map (public domain); "
                          "USGS The National Map (public domain); " + eox
                          + "2023), CC BY-NC-SA 4.0; " + eox + "2016 & 2017), CC BY 4.0")
@@ -472,7 +473,7 @@ class ExportTransport:
             z = round(math.log2(imagery.EARTH_CIRC / (x1 - x0)))
             tile = imagery.EARTH_CIRC / 2 ** z
             x, y = round((x0 + imagery.EARTH_CIRC / 2) / tile), round((imagery.EARTH_CIRC / 2 - y1) / tile)
-            name = "naipusda" if "fpac.usda.gov" in url else "naip"
+            name = "naipusda" if "fpac.usda.gov" in url else "md6in" if "mdgeodata" in url else "naip"
             self.requests.append((name, z, x, y))
             status, body = (self.serve_export(z, x, y, int(size), name) if self.by_name
                             else self.serve_export(z, x, y, int(size)))
@@ -605,6 +606,48 @@ class ExportImageryTest(unittest.TestCase):
         self.assertIn("naipusda", used)
         # where a USDA tile meets a USGS-NAIP one, neither has all four bilinear taps: a texel line of USGS
         self.assertLess(used.get("usgs", 0), 0.001 * 1024 * 1024)
+
+    def test_state_source_bounds_and_white(self):
+        """md6in: only asked inside its bounds; white (outside the state, inside the box) is missing, the
+        next source fills it; big white roofs below the share are kept."""
+        def serve_export(z, x, y, size, name):
+            a = np.zeros((size, size, 3), np.uint8) + np.array((70, 100, 80), np.uint8)
+            a[::2, ::2] += 3
+            if name == "md6in":
+                if x % 2:
+                    a[:] = 255                  # outside the state: white
+                else:
+                    a[:size // 8, :size // 8] = 255     # a white roof: 1.6 % of the image
+            b = io.BytesIO()
+            Image.fromarray(a).save(b, "JPEG", quality=95)
+            return 200, b.getvalue()
+
+        def serve_xyz(name, z, x, y):
+            a = np.zeros((256, 256, 3), np.uint8) + np.array((200, 30, 30), np.uint8)
+            a[::2, ::2] += 6
+            return 200, png(a)
+        self.requests = []
+        net = netfetch.Fetcher(transport=ExportTransport(serve_export, serve_xyz, self.requests, by_name=True),
+                               sleep=lambda s: None, policies=FAST)
+        im = imagery.Imagery(self.tmp.name, ("md6in", "naipusda", "usgs"), fetcher=net, tone=0.0)
+        self.assertEqual(self.warm(im, [(0.0, 0.0), (1500.0, 0.0)], radius=700.0), [])
+        md = {r[2:] for r in self.requests if r[0] == "md6in"}
+        usda = {r[2:] for r in self.requests if r[0] == "naipusda"}
+        self.assertTrue(md and usda)
+        self.assertTrue(all(x % 2 for x, y in usda), "USDA only where Maryland's image was white")
+        _, used = im._render(self.frame, -512.0, -512.0, 1024.0, 1024)
+        self.assertIn("md6in", used)
+        self.assertIn("naipusda", used)
+        # far from Maryland: never asked
+        n = len(self.requests)
+        far = g.EnuFrame(LAT0, LON0)        # California
+        im.warm(far, [(0.0, 0.0)], 300.0, 1.0)
+        for _ in range(100):
+            with im._warm_cv:
+                if all(im._warm_done(k) for k in im._warm_want):
+                    break
+            time.sleep(0.02)
+        self.assertFalse([r for r in self.requests[n:] if r[0] == "md6in"])
 
     def test_colours_from_the_chain(self):
         """A rendered NAIP texture keeps its detail but takes the next source's large-scale colour (no seam
