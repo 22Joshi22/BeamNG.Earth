@@ -272,3 +272,12 @@ textures 10-20 %.
   - The road processes at nice 15: 94.9 fps.
   - Neither moves it (runs spread 92.6-96.4), so it is neither the imagery work nor CPU competition
     with the road processes. Accepted for now.
+
+**How sharp the block photo is drawn (2026-10-13).** From 120 m straight down the Fells Point photo looked
+like 3-4 m texels while its file (MD six-inch at 1 m texels) is crisp.
+- The block's `baseTexSize` 4096 instead of 1024 changed nothing.
+- A test photo of 1, 2, 4 and 8 texel stripes showed even the 1-texel stripes. So the engine draws the
+  photo at its full 1 m; the softness is 1 m texels magnified (+ BC7, the colour match, the detail
+  textures, haze).
+- Sharper needs finer texels: MD six-inch draws nothing finer than ~1 m (`imagery.py`), NAIP at 0.5 m
+  looked hardly sharper; the three-inch ImageServer is the candidate.
