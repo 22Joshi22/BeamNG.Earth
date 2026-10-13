@@ -267,3 +267,8 @@ textures 10-20 %.
   queue behind the GIL and use memory bandwidth next to the game.
 - Kept: block delivery is what decides the edge guard at speed (the failed drive today was a 6.4 s
   answer). `--road-processes 0` gives the old balance.
+- **Two more checks of that cost** (same drive, fresh game each):
+  - The NAIP colour match against a 1/8-size reference (block photo median 0.42 s, max 0.66 s): 92.6 fps.
+  - The road processes at nice 15: 94.9 fps.
+  - Neither moves it (runs spread 92.6-96.4), so it is neither the imagery work nor CPU competition
+    with the road processes. Accepted for now.
