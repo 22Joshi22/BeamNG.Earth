@@ -317,3 +317,7 @@ Next:
   and reproduce on fresh data.
 - If confirmed, create a collider that the car is touching without collision until it is clear: a
   per-mesh check, since a sidewalk mesh spans its whole 256 m tile.
+- First diagnostic (`roads.status().solidAround`, logged): Philadelphia east over the Delaware, 8 km on
+  fresh data, no NaN, but 8 sidewalk meshes turned solid with the player inside their bounds (4 while
+  parked at the start). The bounds are a whole tile, so it happens every drive. Next: a per-triangle
+  test against the vehicle's box.

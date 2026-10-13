@@ -36,6 +36,8 @@ M.enabled = true
 -- collision anyway: M.collisionRebuilt() clears the pending rebuild.
 M.RELOAD_EVERY_S = 3
 
+local newColliders = {}    -- { id, what } of the colliders made since the last reloadCollision (noteNewColliders)
+local noteNewColliders
 local tiles = {}            -- key "a:tx_ty" -> { anchor, objs = { DecalRoad ids }, queued = n, walk = TSStatic id,
                             --   road = TSStatic id }
 local walkQ = {}            -- { key, walk = {shape, pos}, what = 'walk' | 'road' } FIFO
@@ -221,7 +223,7 @@ function M.update(gov, currentAnchor)
       local isRoad = q.what == 'road'
       local ok, id = pcall(createWalk, q.walk, not isRoad)
       if ok then
-        if isRoad then t.road = id else t[q.what] = id; collisionDirty = true end
+        if isRoad then t.road = id else t[q.what] = id; collisionDirty = true; newColliders[#newColliders + 1] = { id, q.what } end
       else lastError = tostring(id) end
       gov:charge('roadWalk', now() - t0)
       sinceChange = stopwatch.new()
@@ -229,16 +231,37 @@ function M.update(gov, currentAnchor)
   end
   if collisionDirty and sinceReload() > M.RELOAD_EVERY_S * 1000 then
     local t0 = now()
+    noteNewColliders()
     be:reloadCollision()
     collisionDirty, sinceReload = false, stopwatch.new()
     gov:charge('roadWalk', now() - t0)
   end
 end
 
+-- Diagnostics (2026-10-13, the intermittent NaN drives): colliders that turn solid with the player's
+-- vehicle inside their bounds (a late sidewalk / deck mesh appearing around the car).
+noteNewColliders = function()
+  local veh = getPlayerVehicle and getPlayerVehicle(0)
+  local p = veh and veh:getPosition()
+  for _, c in ipairs(newColliders) do
+    local o = p and scenetree.findObjectById(c[1])
+    local ok, b = pcall(function() return o and o:getWorldBox() end)
+    if ok and b and p.x >= b.minExtents.x - 2 and p.x <= b.maxExtents.x + 2 and p.y >= b.minExtents.y - 2
+        and p.y <= b.maxExtents.y + 2 and p.z >= b.minExtents.z - 3 and p.z <= b.maxExtents.z + 3 then
+      M.solidAround = (M.solidAround or 0) + 1
+      log('I', 'beamngEarth', string.format('roads: %s mesh turned solid around the player at (%.0f, %.0f, %.1f)',
+        c[2], p.x, p.y, p.z))
+    end
+  end
+  newColliders = {}
+end
+M._noteNewColliders = noteNewColliders
+
 function M.hasWork() return #createQ > 0 or #deleteQ > 0 or #walkQ > 0 or collisionDirty end
 
 -- Somebody else just ran be:reloadCollision() (the terrain commit): the sidewalks made so far collide.
 function M.collisionRebuilt()
+  noteNewColliders()
   collisionDirty, sinceReload = false, stopwatch.new()
 end
 
@@ -282,7 +305,7 @@ function M.status()
     if t.deck then nd = (nd or 0) + 1 end
   end
   return { enabled = M.enabled, tiles = nt, roads = no, queued = #createQ, deleting = #deleteQ, anchor = anchorId,
-    walks = nw, roadMeshes = nr, decks = nd, walksQueued = #walkQ,
+    walks = nw, roadMeshes = nr, decks = nd, walksQueued = #walkQ, solidAround = M.solidAround or 0,
     quietS = sinceChange() / 1000, error = lastError }
 end
 
