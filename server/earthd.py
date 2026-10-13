@@ -274,7 +274,9 @@ HORIZON_RETRY = 30.0
 HORIZON_BLOCK_CACHE = 1024      # DEM tiles' block maxima kept between anchors (16 KB each)
 # Anchor height quantum: relief survey of +-SURVEY_HALF around the anchor at DEM zoom SURVEY_ZOOM.
 SURVEY_HALF = 15000.0
-SURVEY_N = 31
+SURVEY_N = 61                       # 500 m apart
+SURVEY_WINDOW = 1.5                 # blocks: the windows survey_q takes the relief of (an unaligned block, z10 smoothing)
+BLOCK_SURVEY_M = 2048.0             # m: the largest block (1024² at 2 m); Server passes its own
 SURVEY_ZOOM = 10
 DELTA_MARGIN = 0.1          # m added to measured swap-group deltas (crossings between vertices)
 NICE = 10                   # default niceness of the server process (§4.5)
@@ -393,12 +395,17 @@ def _num(msg, name, default=None):
     return v
 
 
-def survey_q(frame, dem):
-    """Height quantum of an anchor (§1.3): from the relief of a +-15 km survey at DEM z10, the
-    smallest ladder step whose block range covers it plus 10 %."""
+def survey_q(frame, dem, block_m=BLOCK_SURVEY_M):
+    """Height quantum of an anchor (§1.3): the smallest ladder step whose block range covers the
+    largest relief inside any window of SURVEY_WINDOW blocks (block_m m) of a +-15 km survey at DEM
+    z10, plus 10 %. A block only has to hold its own relief (its zBase is its own; one that does not
+    fit takes the next coarser step, heightmap.block_params). The whole survey's relief made every
+    mountain anchor 1/16 m: 6 cm steps on the runways and roads (Courchevel, in-game 2026-10-13)."""
     xs = np.linspace(-SURVEY_HALF, SURVEY_HALF, SURVEY_N)
     u = heightmap.surface_u(frame, lambda la, lo: dem.sample(la, lo, SURVEY_ZOOM), xs, xs)
-    return heightmap.choose_q(float(u.max() - u.min()))
+    k = min(len(xs), int(math.ceil(SURVEY_WINDOW * block_m / (xs[1] - xs[0]))) + 1)
+    win = np.lib.stride_tricks.sliding_window_view(u, (k, k))
+    return heightmap.choose_q(float((win.max(axis=(2, 3)) - win.min(axis=(2, 3))).max()))
 
 
 def sat_material(aid, key):
@@ -710,7 +717,7 @@ class Server:
         """The anchor's height quantum, surveyed once (worker threads)."""
         with anchor.q_lock:
             if anchor.q is None:
-                anchor.q = survey_q(anchor.frame, self.dem)
+                anchor.q = survey_q(anchor.frame, self.dem, self.layout.block * heightmap.SQUARE)
                 log.info("anchor %d height quantum 1/%d m", anchor.id, round(1 / anchor.q))
             return anchor.q
 

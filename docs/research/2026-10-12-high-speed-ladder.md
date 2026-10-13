@@ -281,3 +281,18 @@ like 3-4 m texels while its file (MD six-inch at 1 m texels) is crisp.
   textures, haze).
 - Sharper needs finer texels: MD six-inch draws nothing finer than ~1 m (`imagery.py`), NAIP at 0.5 m
   looked hardly sharper; the three-inch ImageServer is the candidate.
+
+**Airports (2026-10-13, `--airports on`).** Runway grading and markings wired (ARCHITECTURE.md "Airports and
+runways").
+- KBWI 10/28: the centreline 3x smoother than the DEM.
+- Markings drawn by the road mesh in the mod's runway paint: threshold stripes, displaced-threshold arrows,
+  centreline, side stripes.
+- Courchevel (LFLJ, 12-19 %): the game matches the planned profile within +-3 cm at 20 m steps; the
+  runway's top end 0.7 m lower (a graded road there).
+
+**Height quantum from block-sized windows.** At Courchevel the "roughness" along the runway was the
+block's quantum: 1/16 m (6 cm steps).
+- `survey_q` took the relief of the whole +-15 km survey, so every mountain anchor was 1/16.
+- A block only holds its own relief (zBase per block, a coarser step for one that does not fit), so
+  the survey now takes the largest relief inside any 1.5-block window (61 x 61 samples, 500 m apart).
+- Courchevel and Whitney 1/16 -> 1/32 m; Fells Point and KBWI 1/128 -> 1/256 m.

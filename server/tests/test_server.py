@@ -1136,11 +1136,19 @@ class AnchorQTest(unittest.TestCase):
                 return 1000 + self.relief * (np.asarray(lat) - LAT) / 0.27     # +-15 km = +-0.135 deg
         f = geodesy.EnuFrame(LAT, LON)
         d = Dem(10)
-        self.assertEqual(earthd.survey_q(f, d), 1 / 256)    # 10 m + 35 m of curvature
+        self.assertEqual(earthd.survey_q(f, d), 1 / 256)
         self.assertEqual(d.zoom, earthd.SURVEY_ZOOM)
-        self.assertEqual(earthd.survey_q(f, Dem(500)), 1 / 64)
-        self.assertEqual(earthd.survey_q(f, Dem(1000)), 1 / 32)
-        self.assertEqual(earthd.survey_q(f, Dem(3000)), 1 / 16)
+        # the relief inside block-sized windows decides, not the whole survey's: a steady slope of
+        # 3000 m over 30 km is 200 m per window (5 samples, 2 km, for 1.5 blocks of 1024 m)
+        self.assertEqual(earthd.survey_q(f, Dem(3000), 1024.0), 1 / 128)
+        self.assertEqual(earthd.survey_q(f, Dem(9000), 1024.0), 1 / 64)      # 600 m per window
+        self.assertEqual(earthd.survey_q(f, Dem(9000), 2048.0), 1 / 32)      # bigger blocks, bigger windows
+
+        class Peak(Dem):            # flat, with one 1200 m spike: the window over it decides
+            def sample(self, lat, lon, zoom, progress=None):
+                la, lo = np.asarray(lat), np.asarray(lon)
+                return 1000 + 1200 * np.exp(-(((la - LAT) * 111320) ** 2 + ((lo - LON) * 86000) ** 2) / 600.0 ** 2)
+        self.assertEqual(earthd.survey_q(f, Peak(0), 1024.0), 1 / 32)
 
 
 class PredictTest(unittest.TestCase):
