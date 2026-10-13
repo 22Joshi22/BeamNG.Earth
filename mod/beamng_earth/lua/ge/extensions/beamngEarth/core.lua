@@ -467,6 +467,7 @@ local function commitTerrain(msg)
   end
   local tLoad = sw()
   be:reloadCollision()
+  roads.collisionRebuilt()      -- the sidewalks made so far collide now too
   local tColl = sw()
   farfield.onBlockCommit(msg.cx, msg.cy)
   local c = { load = tLoad, coll = tColl - tLoad, cover = sw() - tColl, f = {} }
@@ -936,6 +937,19 @@ local function onUpdate(dtReal, dtSim)
   local cf = st.commitFrames
   if cf then                    -- the commit frame and the two after it (wall ms between updates)
     cf.f[#cf.f + 1] = frameMs
+    if #cf.f == 1 and Engine and Engine.Debug and Engine.Debug.getLastPerformanceMetrics then
+      -- the engine's per-subsystem breakdown of the commit frame (the frame that just ended): its 8 largest
+      local m = {}
+      if pcall(Engine.Debug.getLastPerformanceMetrics, m) then
+        local arr = {}
+        for k, v in pairs(m) do
+          if type(v) == 'number' and not k:find('^phys') and not k:find('^virt') then arr[#arr + 1] = { k, v } end
+        end
+        table.sort(arr, function(a, b) return a[2] > b[2] end)
+        cf.engine = {}
+        for i = 1, math.min(8, #arr) do cf.engine[arr[i][1]] = math.floor(arr[i][2] * 10 + 0.5) / 10 end
+      end
+    end
     if #cf.f >= 3 then st.commitFrames = nil end
   end
   st.clock = st.clock + dtReal

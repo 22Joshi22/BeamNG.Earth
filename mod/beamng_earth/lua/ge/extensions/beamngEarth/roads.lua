@@ -30,7 +30,11 @@ M.MATERIAL_FILES = { '/levels/west_coast_usa/art/road/main.materials.json',
   '/levels/driver_training/art/road/main.materials.json' }         -- m_metal_grid_drain (storm drains)
 M.FADE = '450 150'          -- distanceFade: start, range (m)
 M.enabled = true
-M.RELOAD_EVERY_S = 0.5      -- be:reloadCollision() at most this often
+-- be:reloadCollision() at most this often: every rebuild is a ~20 ms physics frame (2026-10-13, the
+-- engine's frame metrics), and while driving new sidewalk tiles arrive all the time. They arrive ~640 m
+-- ahead (11 s at 58 m/s), so a few seconds before they collide do not matter. A terrain commit rebuilds
+-- collision anyway: M.collisionRebuilt() clears the pending rebuild.
+M.RELOAD_EVERY_S = 3
 
 local tiles = {}            -- key "a:tx_ty" -> { anchor, objs = { DecalRoad ids }, queued = n, walk = TSStatic id,
                             --   road = TSStatic id }
@@ -232,6 +236,11 @@ function M.update(gov, currentAnchor)
 end
 
 function M.hasWork() return #createQ > 0 or #deleteQ > 0 or #walkQ > 0 or collisionDirty end
+
+-- Somebody else just ran be:reloadCollision() (the terrain commit): the sidewalks made so far collide.
+function M.collisionRebuilt()
+  collisionDirty, sinceReload = false, stopwatch.new()
+end
 
 -- Every road removed now (setting off, mod unload).
 function M.clear()
