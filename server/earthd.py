@@ -2362,9 +2362,9 @@ async def main_async(args):
                       args.road_widths == "on" and args.roads == "on", False, ctx.Queue(maxsize=1),
                       logging.getLogger().level))
     road_pool = None
-    if args.block_process == "on" and args.roads == "on":
+    if args.block_process == "on" and args.roads == "on" and args.road_processes > 0:
         road_pool = ProcessPoolExecutor(          # road tiles (blockworker.roads_tile)
-            ROAD_PROCESSES, mp_context=ctx, initializer=blockworker.init,
+            args.road_processes, mp_context=ctx, initializer=blockworker.init,
             initargs=(args.cache_dir, args.offline, True, args.grading == "on", args.road_widths == "on",
                       args.surface == "on", ctx.Queue(maxsize=1), logging.getLogger().level))
     server = Server(args.user_dir, args.cache_dir, args.workers, kfun, args.hysteresis, args.far_radius, fmt,
@@ -2563,6 +2563,8 @@ def main():
     ap.add_argument("--roads", choices=("on", "off"), default="on",
                     help="Overture roads near the player (roads.py): DecalRoads in the mod (paved asphalt, "
                          "gravel / dirt tracks) within ~640 m, in 256 m tiles; off = none")
+    ap.add_argument("--road-processes", type=int, default=ROAD_PROCESSES,
+                    help="processes building the road tiles (--block-process on); 0 = threads in the server")
     ap.add_argument("--detail-ring", type=float, default=DETAIL_RING_M,
                     help="detail mode: metres of L-1 tiles around the drawn block (0 = none)")
     ap.add_argument("--background-duty", type=float, default=pacer.CLI_DUTY,

@@ -244,3 +244,26 @@ layers.
   - A 0.05 s PNG save taking 1.86 s, and the loop watchdog's two stalls in `os.path.exists` /
     `os.remove` (0.3 s on an NVMe disk), point at contention for the main process's GIL.
   - Next: profile what holds it, or move the base photo render into a process.
+
+**What held the server's GIL (2026-10-13).** A stack sampler (every thread's innermost frame every 5 ms,
+waits excluded) during a 58 m/s drive: road tile builds (roads / junctions / sidewalks / grading Python,
+in the default executor) were ~80 % of the main process's busy threads, map data loads ~30 %, far
+textures 10-20 %.
+- `RuleTable.rows` (feature -> rows, built once) removed a whole-table scan per feature: 8 % on road
+  tiles.
+- The cost is spread over many functions, so road tiles now build in their own processes
+  (`blockworker.roads_tile`, `--road-processes`, default 2; byte-identical tiles, `test_blockworker`).
+- Fresh game and server each, Fells Point east, 58 m/s, 10 km:
+
+| road tiles in | fps | p99 | block photo p90 / max | road tiles live |
+|---|---|---|---|---|
+| threads (0) | 100.7-101.2 | 18.1-18.4 ms | 2.40-2.49 / 4.29-4.64 s | 38 |
+| 1 process | 93.9 | 20.5 ms | 0.59 / 0.76 s | |
+| 2 processes | 93.0-96.4 | 20.3-21.5 ms | 0.57-0.58 / 0.75 s | 42 |
+| 2, paced to 50 % | 94.3 | 20.8 ms | 0.57 / 0.75 s | |
+
+- Pacing the road processes changes nothing, and 10 % more live road tiles cannot explain ~0.7 ms. So
+  the cost is the rest of the server keeping up better: its far textures and analyses no longer
+  queue behind the GIL and use memory bandwidth next to the game.
+- Kept: block delivery is what decides the edge guard at speed (the failed drive today was a 6.4 s
+  answer). `--road-processes 0` gives the old balance.
