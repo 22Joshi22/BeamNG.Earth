@@ -38,7 +38,7 @@ class RoadsTileTest(unittest.TestCase):
         f = features([[(-300, 100), (300, 100)], [(120, -100), (120, 300)]], ["secondary", "residential"])
         keys = roads.cells_of_tile(FRAME, 0, 0)
         md = FakeMapData(f, keys[0])
-        blockworker._s = SimpleNamespace(md=md, dem=FakeDem(), widths=None, surface=None, lock=threading.Lock(),
+        blockworker._s = SimpleNamespace(md=md, dem=FakeDem(), widths=None, surface=None, airports=None, lock=threading.Lock(),
                                          bridges={}, anchor=lambda aid, lat, lon: (None, None))
         with tempfile.TemporaryDirectory() as a, tempfile.TemporaryDirectory() as b:
             got = blockworker.roads_tile(1, LAT, LON, 15, 0, 0, a, "/temp/x", True, 0.05)
