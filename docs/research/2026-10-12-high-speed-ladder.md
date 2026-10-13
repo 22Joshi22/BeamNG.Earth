@@ -227,6 +227,20 @@ layers.
   to re-verify before release.
 - **Result.** Baltimore, north from Fells Point, 58 m/s for 10 km: all 43 blocks built with the sharp
   imagery.
-- **Regression.** That drive and the morning's Fells Point route east ran at 69-74 fps (101 this
-  morning), and the east route failed at 4 km: a block answer took 6.4 s (its base photo stage 5.4 s)
-  and the edge guard held the car. Under test: the L-1 ring (`--detail-ring`) vs none.
+- **Apparent regression.** That drive and the morning's Fells Point route east ran at 69-74 fps (101
+  this morning), and the east route failed at 4 km: a block answer took 6.4 s (its base photo stage
+  5.4 s) and the edge guard held the car.
+  - The A/B with a fresh game and a fresh server each (the morning's route, 58 m/s, 10 km):
+    - ring 0: pass, 106.7 fps, p99 17.1 ms;
+    - ring 128: pass, 100.2 fps, p99 18.2 ms; worst commit 24.6 ms both.
+  - So the slow run was the hours-old game session (many teleports), and the ring costs ~6 % fps:
+    kept.
+- **The base photo stage's tail** (median ~0.6 s, p90 ~2 s, max ~4.7 s; this morning p90 1.1 s, max
+  2.6 s).
+  - De-shadow waits are now never on the path (`Deshadow.no_wait`; the photo is redone once its
+    regions are ready, `Server.base_ready`), but the tail stayed.
+  - Its parts over 51 photos: render median 0.23 s (p90 1.32, max 2.49); PNG save median 0.05 s
+    (max 1.86); BC7 cache 0.29 s (max 0.45).
+  - A 0.05 s PNG save taking 1.86 s, and the loop watchdog's two stalls in `os.path.exists` /
+    `os.remove` (0.3 s on an NVMe disk), point at contention for the main process's GIL.
+  - Next: profile what holds it, or move the base photo render into a process.

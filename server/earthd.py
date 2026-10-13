@@ -937,6 +937,7 @@ class Server:
         when no imagery could be rendered (the block keeps the level's neutral base)."""
         size = self.layout.block * heightmap.SQUARE
         x0, y0 = cx - size / 2, cy - size / 2
+        t0 = time.perf_counter()
         try:
             pending = set()
             with (self.deshadow.no_wait() if self.deshadow is not None else contextlib.nullcontext()):
@@ -957,8 +958,10 @@ class Server:
             self.base_stale.discard(key)
         else:
             self.base_stale.add(key)
+        t1 = time.perf_counter()
         Image.fromarray(rgb, "RGB").save(path + ".tmp", format="PNG", compress_level=1)
         os.replace(path + ".tmp", path)
+        t2 = time.perf_counter()
         try:            # after the photo: the cache entry must be the newer file
             args = (self.user_dir, f"{self.vfs_dir}/{name}", BASE_AO_VFS, rgb, BASE_AO)
             if pool is not None:            # the BC7 encode on the block process's core
@@ -967,6 +970,8 @@ class Server:
                 terraincache.base_entry(*args)
         except OSError as e:
             log.info("terrain cache for %s: %s", name, e)
+        log.debug("base photo %s r%d: render %.2f png %.2f cache %.2f s", key, rev, t1 - t0, t2 - t1,
+                  time.perf_counter() - t2)
         return name
 
     def base_ready(self, anchor, cx, cy):
