@@ -99,6 +99,13 @@ M.MATERIALS_FILE = '/levels/beamng_earth/art/shapes/beamngEarth/main.materials.j
 M.EDGE_BAND = 128       -- a covered tile nearer than this to the block boundary is in the edge ring
 M.HIDE_DEPTH = 2.0      -- covered tile without a server `sink`: how far it sinks before it hides
 M.DELETE_PRESSURE = 64  -- deletes wait for the import queue unless this many objects are doomed
+-- Lazy unloading (the user, 2026-10-12: "maybe a more lazy unloading system would be better"): a tile
+-- removed from the current anchor is kept hidden as a spare for SPARE_S, at most SPARE_MAX of them, and
+-- revived when the server sends the same tile (key and shape file) again instead of importing it again.
+-- An out-and-back flight imported 3-4x as many tiles per second on the way back as on the way out (the
+-- server answered from its cache; the import is the mod's cost), at ~13 fps less. 0: delete at once.
+M.SPARE_MAX = 400
+M.SPARE_S = 120
 M.MAX_DT = 0.1          -- s; longest step of the transition clock per frame
 M.EXACT_LEVEL = -2      -- the exact (physics lattice) level of the 32-cell mesh layout (server MESH_MIN_LEVEL)
 M.MAX_LEVEL = 9         -- coarsest level (server farfield.MAX_LEVEL); the horizon mode's L10 tiles (M1h)
@@ -123,6 +130,10 @@ local matOf = {}        -- doomed object id -> name of the per-tile material it 
 local doomedAnchor = {} -- doomed object id -> anchorId of its shape file (heldAnchors)
 local doomedSession = {} -- doomed object id -> session of its instance (heldAnchors) ...
 local doomedFolder = {}  -- ... and the session folder of its shape file (heldSessions)
+local spares = {}       -- key .. '|' .. shape -> { id, mat, anchor, session, folder, t } (hidden objects)
+local spareQ, sH, sT = {}, 1, 0 -- spare keys, oldest first (entries already revived are skipped)
+local nSpares = 0
+local switching = false -- inside switchAnchor: the old anchor's tiles are not parked
 local moving = {}       -- instance -> true while its z offset changes over time
 local lossy = {}        -- anchorId -> true: one of its adds was dropped, ignore its removes
 local block = nil       -- committed terrain block { cx, cy, x0, y0, x1, y1 } (cover box)
@@ -143,7 +154,8 @@ local function blockShown() return nearVisual == 'terrain' or (nearVisual == 'de
 -- Level of the tiles the server forces under the block: L0 (terrain mode, 256 m grid) or L-1 (detail).
 local function forcedLevel() return nearVisual == 'detail' and -1 or 0 end
 local counters = { imports = 0, failed = 0, crossovers = 0, instant = 0, pops = 0, textured = 0, materials = 0,
-  capWaits = 0, oldCovered = 0, exactFrames = 0, exactMiss = 0, retex = 0, retexStale = 0, retexFailed = 0 }
+  capWaits = 0, oldCovered = 0, exactFrames = 0, exactMiss = 0, retex = 0, retexStale = 0, retexFailed = 0,
+  parked = 0, revived = 0 }
 local exactLevel = M.EXACT_LEVEL
 local under = { level = nil, old = false, miss = false } -- the tile under the player, last update
 -- Previous anchors whose tiles may still be shown, newest first: { anchor, invs = inverse transforms
@@ -168,6 +180,8 @@ local function deleteById(id)
 end
 
 local function getObj(inst) return inst.id and scenetree.findObjectById(inst.id) end
+local park -- (inst) -> true if kept as a spare (defined with the spares below)
+local switchAnchor -- M.switchAnchor's body (it runs with parking off)
 
 -- TSStatic visibility: setHidden as in levels/smallgrid/mainLevel.lua:27; the field otherwise.
 local function setHidden(o, h)
@@ -241,7 +255,24 @@ local function writePos(o, inst, off)
   end
 end
 
+-- Revive a spare of this tile (same key and shape file, same anchor and session): no import.
+local function revive(inst)
+  local k = inst.key .. '|' .. inst.shape
+  local sp = spares[k]
+  if not sp or sp.anchor ~= inst.anchor or sp.session ~= inst.session then return false end
+  local o = scenetree.findObjectById(sp.id)
+  spares[k], nSpares = nil, nSpares - 1
+  if not o then return false end
+  if sp.mat then satmat.unref(sp.mat) end      -- the new instance holds its own reference
+  inst.id, inst.loaded, inst.off, inst.hidden = sp.id, true, 0, true
+  writePos(o, inst, 0)
+  counters.revived = counters.revived + 1
+  if watcher then watcher.onAdd(inst) end
+  return true
+end
+
 local function spawn(inst)
+  if revive(inst) then return end
   ensureMaterial()
   if not FS:fileExists(inst.shape) then
     log('W', 'beamngEarth', 'far tile shape missing: ' .. inst.shape)
@@ -321,6 +352,41 @@ local function refresh(inst)
 end
 
 -- Take an instance out of the field; its object goes through the delete queue.
+-- A spare goes to the delete queue (evicted, or every spare at a rebase / anchor switch).
+local function dropSpare(k)
+  local sp = spares[k]
+  if not sp then return end
+  spares[k], nSpares = nil, nSpares - 1
+  doomed[#doomed + 1] = sp.id
+  doomedAnchor[sp.id], doomedSession[sp.id], doomedFolder[sp.id] = sp.anchor, sp.session or false, sp.folder or false
+  if sp.mat then matOf[sp.id] = sp.mat end
+end
+
+local function dropAllSpares()
+  for k in pairs(spares) do dropSpare(k) end
+  spareQ, sH, sT = {}, 1, 0
+end
+
+-- Keep a removed tile of the current anchor as a hidden spare (lazy unloading). Returns true if kept.
+park = function(inst)
+  if switching or M.SPARE_MAX <= 0 or not inst.loaded or inst.failed or inst.anchor ~= anchorId
+    or inst.session ~= session then
+    return false
+  end
+  local o = getObj(inst)
+  if not o then return false end
+  if not inst.hidden then setHidden(o, true); inst.hidden = true end
+  local k = inst.key .. '|' .. inst.shape
+  if spares[k] then dropSpare(k) end           -- an older copy of the same tile
+  spares[k] = { id = inst.id, mat = inst.mat, anchor = inst.anchor, session = inst.session,
+    folder = M.folderOf(inst.shape), t = clock }
+  inst.mat = nil
+  nSpares = nSpares + 1
+  sT = sT + 1; spareQ[sT] = k
+  counters.parked = counters.parked + 1
+  return true
+end
+
 local function doom(inst, hideNow)
   if inst.doomed then return end
   if hideNow and inst.id and not inst.hidden then
@@ -331,6 +397,7 @@ local function doom(inst, hideNow)
   inst.doomed, inst.grp, inst.coverAnim = true, nil, nil
   moving[inst] = nil
   if inst.queued then inst.queued = false; nQueued = nQueued - 1 end
+  if inst.id and park(inst) then return end
   if inst.id then
     doomed[#doomed + 1] = inst.id
     doomedAnchor[inst.id] = inst.anchor
@@ -758,6 +825,7 @@ end
 -- Running transitions end first. Call before switchAnchor(..., true).
 function M.transform(xf)
   finishAll()
+  dropAllSpares() -- their positions are the old frame's
   if xf.inverse then
     local inv = xf:inverse()
     for _, f in ipairs(oldFrames) do table.insert(f.invs, 1, inv) end
@@ -792,7 +860,16 @@ end
 -- resync with a restarted server keeps the old session's tiles like a rebase; its far_removes never
 -- come (the new server does not know them), so they go when covered (mesh) or at the new far_done.
 function M.switchAnchor(newAnchorId, keepOld, blk, newSession)
+  switching = true
+  local ok, err = pcall(switchAnchor, newAnchorId, keepOld, blk, newSession)
+  switching = false
+  dropAllSpares()
+  if not ok then error(err, 0) end
+end
+
+switchAnchor = function(newAnchorId, keepOld, blk, newSession)
   finishAll()
+  dropAllSpares()
   ensureMaterial()
   local keep = {}
   if keepOld then
@@ -1077,6 +1154,14 @@ function M.update(gov, dt, cam, player)
   -- 6. deletes; then the materials no object uses any more (never before their last object).
   --    Not in a frame that imported a tile (unless under pressure): a textured import (~3 ms) plus
   --    its material and a few deletes would make a frame more than 4 ms long.
+  -- spares past SPARE_S, or beyond SPARE_MAX, join the delete queue
+  while sH <= sT do
+    local k = spareQ[sH]
+    local sp = spares[k]
+    if sp and nSpares <= M.SPARE_MAX and clock - sp.t < M.SPARE_S then break end
+    spareQ[sH] = nil; sH = sH + 1
+    if sp then dropSpare(k) end
+  end
   if (nQueued == 0 and not imported) or #doomed > M.DELETE_PRESSURE then
     while #doomed > 0 and gov:try('delete') do
       local t1 = now()
@@ -1126,6 +1211,7 @@ function M.clear()
     for _, inst in pairs(set) do if inst.id then deleteById(inst.id) end end
   end
   for _, id in ipairs(doomed) do deleteById(id) end
+  for _, sp in pairs(spares) do deleteById(sp.id) end
   M.forget() -- deletes the per-tile materials, now that no tile uses them
 end
 
@@ -1138,6 +1224,7 @@ function M.forget()
   groups, activeGroups, removals, rH, rT = {}, 0, {}, 1, 0
   anchorId, doneReceived, block, session = nil, false, nil, nil
   matOf, doomedAnchor, doomedSession, doomedFolder = {}, {}, {}, {}
+  spares, spareQ, sH, sT, nSpares = {}, {}, 1, 0, 0
   satmat.clearAll()
   materialChecked = false
   if watcher then watcher.onReset() end
@@ -1176,6 +1263,7 @@ function M.heldSessions()
     end
   end
   for _, f in pairs(doomedFolder) do if f then set[f] = true end end
+  for _, sp in pairs(spares) do if sp.folder then set[sp.folder] = true end end
   satmat.eachTexture(function(tex)
     local f = M.folderOf(tex)
     if f then set[f] = true end
@@ -1199,7 +1287,7 @@ function M.stats()
   local waiting = 0
   for _, g in ipairs(groups) do if g.state == 'wait' then waiting = waiting + 1 end end
   return { live = n, covered = covered, preloaded = hiddenLoaded, queued = nQueued, groups = waiting,
-    transitions = activeGroups, old = oldCount, deleting = #doomed, done = doneReceived,
+    transitions = activeGroups, old = oldCount, deleting = #doomed, done = doneReceived, spares = nSpares,
     imports = counters.imports, failed = counters.failed, crossovers = counters.crossovers,
     instant = counters.instant, pops = counters.pops, capWaits = counters.capWaits, frameUnits = lastFrame.units,
     moving = lastFrame.moving, materials = satmat.count(), materialsCreated = counters.materials,

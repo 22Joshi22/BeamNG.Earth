@@ -8,6 +8,7 @@ local dir = (arg[0]:match('^(.*)[/\\]') or '.')
 local T = dofile(dir .. '/testlib.lua')
 local S = dofile(dir .. '/stubs.lua')
 local farfield = require('beamngEarth/farfield')
+farfield.SPARE_MAX = 0 -- these tests check the delete pipeline; the spare pool is test_farfield_spares.lua
 local governor = require('beamngEarth/governor')
 local geodesy = require('beamngEarth/geodesy')
 local crossover = require('beamngEarth/crossover')
