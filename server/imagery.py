@@ -61,8 +61,9 @@ MESH_CELLS = 8                     # render(): exact reprojection on an 8 x 8 gr
 FALLBACK_RGB = (100, 89, 69)       # no imagery anywhere: the terrain material's dirt colour
 BLANK_RANGE = 2                    # a tile whose pixels all lie within this many levels is uniform
 NODATA_MAX, NODATA_SHARE = 6, 0.02   # an export tile with > 2 % texels this black is outside the data
-NODATA_WHITE_MIN, NODATA_WHITE_SHARE = 254, 0.25   # ... or (nodata "white") > 25 % this white: white roofs
-                                                   # are bright but rarely a quarter of a 240 m tile
+NODATA_WHITE_MIN, NODATA_WHITE_SHARE = 250, 0.25   # ... or (nodata "white") > 25 % this white: white roofs
+                                                   # are bright but rarely a quarter of a 240 m tile (MD
+                                                   # iMAP's white comes back as 253 in its JPEGs)
 
 
 @dataclass(frozen=True)

@@ -329,3 +329,8 @@ Next:
   Fresh-data drives, 30 m/s for 6 km each: Philadelphia (north), Washington (east), Manhattan
   (south-west). All passed with no falls; the hold fired 3 times in total. The NaN rate before was
   2 in about 17, so three clean drives do not prove the cause yet. Keep counting across later drives.
+- Washington had no NAIP at all (every block USGS 1.9 m): MD iMAP's "white" outside the state comes back
+  as 253 in its JPEGs, under the 254 of the nodata-white test, so its blank tiles inside the Maryland
+  box (DC, northern Virginia, Delaware) were cached as imagery and warm() counted those places as
+  covered. Threshold now 250 (the 25 % share still keeps white roofs); 512 of 3296 cached md6in tiles
+  were such blanks (converted to .404 by hand). Same drive after: 49 of 50 blocks >= 99 % NAIP (was 0).

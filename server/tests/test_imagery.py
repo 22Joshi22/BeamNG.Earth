@@ -615,7 +615,7 @@ class ExportImageryTest(unittest.TestCase):
             a[::2, ::2] += 3
             if name == "md6in":
                 if x % 2:
-                    a[:] = 255                  # outside the state: white
+                    a[:] = 253                  # outside the state: white (253 in MD iMAP's JPEGs)
                 else:
                     a[:size // 8, :size // 8] = 255     # a white roof: 1.6 % of the image
             b = io.BytesIO()
