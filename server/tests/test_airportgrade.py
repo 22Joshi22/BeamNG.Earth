@@ -70,7 +70,7 @@ class AirportGradeTest(unittest.TestCase):
         per = {t: self.ag.tile_chunks(frame, *t, elev, roads.tile_bbox) for t in tiles}
         allc = [c for cs in per.values() for c in cs]
         self.assertGreater(len(allc), 50)
-        self.assertLessEqual({c["m"] for c in allc}, {"line_white", "line_yellow"})
+        self.assertLessEqual({c["m"] for c in allc}, {"line_runway_white", "line_runway_yellow"})
         for (tx, ty), cs in per.items():
             x0, y0, x1, y1 = roads.tile_bbox(tx, ty)
             for c in cs:

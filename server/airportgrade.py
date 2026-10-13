@@ -27,7 +27,8 @@ MAX_CELLS = 64              # a box spanning more map-data cells (a far tile) as
 # Markings as road-tile chunks (roads.build_tile's format; the road mesh draws them like the lane lines)
 MARK_PIECE_M = 50.0         # strokes cut into pieces this long, each in the tile of its midpoint
 MARK_NODE_M = 10.0          # ... with a node this often (they follow the graded ground)
-MARK_LOOK = {"white": {"m": "line_white", "tl": 6.4, "p": 2}, "yellow": {"m": "line_yellow", "tl": 6.4, "p": 2}}
+MARK_LOOK = {"white": {"m": "line_runway_white", "tl": 6.4, "p": 2},      # mod: levels/beamng_earth/art/runway
+             "yellow": {"m": "line_runway_yellow", "tl": 6.4, "p": 2}}
 
 
 class AirportGrader:
