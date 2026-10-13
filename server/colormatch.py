@@ -207,17 +207,21 @@ def fill(C, mask, iters=64):
 
 
 # --- weights and the ratio ---------------------------------------------------------------------
-def base_weights(U, S, valid=None):
+def base_weights(U, S, valid=None, rows=256):
     """Reliability of a cell for the colour ratio before the robust reweighting: deep shadow and
     water (min luminance < 0.006) and snow / cloud in one source only (bright and grey) get 0.02,
-    cells without data in either source 0."""
-    lu, ls = luma(U), luma(S)
-    w = np.clip((np.minimum(lu, ls) - 0.006) / 0.02, 0.02, 1).astype(np.float32)
-
+    cells without data in either source 0. In chunks of `rows` rows (pacer: short busy slices)."""
     def grey_bright(x, lum):
         sat = (x.max(-1) - x.min(-1)) / np.maximum(x.max(-1), 1e-4)
         return (lum > 0.45) & (sat < 0.15)
-    w[grey_bright(U, lu) ^ grey_bright(S, ls)] = 0.02
+    w = np.empty(U.shape[:2], np.float32)
+    for r0 in range(0, U.shape[0], rows):
+        pacer.pace()
+        u, s_ = U[r0:r0 + rows], S[r0:r0 + rows]
+        lu, ls = luma(u), luma(s_)
+        wc = np.clip((np.minimum(lu, ls) - 0.006) / 0.02, 0.02, 1).astype(np.float32)
+        wc[grey_bright(u, lu) ^ grey_bright(s_, ls)] = 0.02
+        w[r0:r0 + rows] = wc
     if valid is not None:
         w *= valid
     return w
@@ -323,6 +327,7 @@ def detect_seams(Lu, Ls, w, seg=16, nseg=NSEG, depth=3, n_ang=N_ANG, thr=THR, ga
         a1, a0 = np.clip(j, 0, H), np.clip(j - depth, 0, H)
         sums = []
         for arr in [wr] + [_rot(Lw[..., c], deg) for c in range(6)]:
+            pacer.pace()
             c = np.zeros((H, W + 1))
             np.cumsum(arr, 1, out=c[:, 1:])
             s = c[:, hi_x] - c[:, lo_x]
@@ -334,11 +339,15 @@ def detect_seams(Lu, Ls, w, seg=16, nseg=NSEG, depth=3, n_ang=N_ANG, thr=THR, ga
         Dseg = [((b * ib) - (a * ia)).astype(np.float32) for b, a in sums[1:]]     # per channel, segment at x
         full = 0.3 * depth * (2 * half + 1)
         ok = (wb > full) & (wa > full)
+        pacer.pace()
         oks = np.stack([_shift(ok, o) for o in offs], 0)        # [K, H, W]
         DL = [np.stack([_shift(Dseg[c] - Dseg[c + 3], o) for o in offs], 0) for c in range(3)]
         nvalid = oks.sum(0)
+        pacer.pace()
         Dm = [_vmedian(DL[c], oks, nvalid) for c in range(3)]
+        pacer.pace()
         Dsm = [_vmedian(np.stack([_shift(Dseg[c + 3], o) for o in offs], 0), oks, nvalid) for c in range(3)]
+        pacer.pace()
         nm = _norm3(*Dm)
         nk = _norm3(*DL)
         cos = (DL[0] * Dm[0] + DL[1] * Dm[1] + DL[2] * Dm[2]) / np.maximum(nk * nm, 1e-6)
@@ -347,6 +356,7 @@ def detect_seams(Lu, Ls, w, seg=16, nseg=NSEG, depth=3, n_ang=N_ANG, thr=THR, ga
         # a natural edge with a different contrast in the two images: |D_usgs - D_s2| <= |b - 1| |D_s2|;
         # a survey seam has |D_usgs - D_s2| >> |D_s2| (S2 only has texture noise there)
         g = np.clip(1 - np.maximum(_norm3(*Dsm) - 0.03, 0) / (gate * nm + 1e-3), 0, 1)
+        pacer.pace()
         score_o = _unrot((nm * cons * g).astype(np.float32), deg, (h, wd))
         m = score_o > best
         if m.any():
@@ -358,11 +368,14 @@ def detect_seams(Lu, Ls, w, seg=16, nseg=NSEG, depth=3, n_ang=N_ANG, thr=THR, ga
     yy, xx = np.mgrid[0:h, 0:wd]
     keep = np.ones((h, wd), bool)
     for sgn in (1, -1):                 # NMS along the normal
+        pacer.pace()
         y2 = np.clip(np.rint(yy + sgn * ny).astype(int), 0, h - 1)
         x2 = np.clip(np.rint(xx + sgn * nx).astype(int), 0, wd - 1)
         keep &= best >= best[y2, x2]
     nms = keep & (best > thr * HYST_LOW)
+    pacer.pace()
     seam = _hysteresis(nms, nms & (best > thr))
+    pacer.pace()
     seam, stats = _drop_small(seam, min_len, best, thr, Dbest, MAX_INCONS)
     return seam, ang, Dbest, best, stats
 
@@ -370,6 +383,7 @@ def detect_seams(Lu, Ls, w, seg=16, nseg=NSEG, depth=3, n_ang=N_ANG, thr=THR, ga
 def _hysteresis(weak, strong):
     lab = strong.copy()
     for _ in range(400):
+        pacer.pace()
         g = dilate(lab) & weak
         if (g == lab).all():
             break
@@ -389,6 +403,7 @@ def _components(mask):
             i = parent[i]
         return i
     for (y, x), i in idx.items():
+        pacer.pace()
         for dy, dx in ((0, 1), (1, -1), (1, 0), (1, 1)):
             j = idx.get((y + dy, x + dx))
             if j is not None:
@@ -411,6 +426,7 @@ def _drop_small(mask, min_cells, score, min_score, D, max_incons):
     u, inv = np.unique(roots, return_inverse=True)
     keep = np.zeros(len(u), bool)
     for k in range(len(u)):
+        pacer.pace()
         m = inv == k
         ext = max(ys[m].max() - ys[m].min(), xs[m].max() - xs[m].min()) + 1
         if ext < min_cells:
@@ -501,7 +517,9 @@ def detect_region(U, S, valid, cell_m, core, fine=None):
     bool [h, w], both sources have data; core: (y0, y1, x0, x1) window cells whose seam cells are
     kept; fine: the z16 sampler of seam_lines (None: lines through the cell centres).
     Returns dict(y, x (window cells), ang, D, step, ok, off, stats); no seam: y is empty."""
+    pacer.pace()
     w0 = base_weights(U, S, valid)
+    pacer.pace()
     _, w = smooth_ratio(U, S, w0, 4.0, None, robust=1, tau=DET_TAU)
     f = DET_F
     dc = cell_m * f
@@ -1313,6 +1331,7 @@ class ColorMatch:
         S = np.zeros((W, W, 3), np.float32)
         valid = np.zeros((W, W), bool)
         for (i, j), rgb in ref.items():
+            pacer.pace()
             sl = (slice(j * TILE, (j + 1) * TILE), slice(i * TILE, (i + 1) * TILE))
             U[sl] = SRGB2LIN[got[keys[(i, j)]].rgb]
             S[sl] = SRGB2LIN[rgb]

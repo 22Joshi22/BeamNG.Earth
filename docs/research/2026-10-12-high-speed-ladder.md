@@ -169,3 +169,13 @@ flights at 0.3-0.6 m: `imagery.SOURCES["naip"]`, first in the default chain for 
   the square is gone in-game (`naip_2026-10-13/annapolis_seam_before_after.jpg`, a faint edge left on
   water).
 - **Not yet.** At 10 s per ~0.9 km square, warm() keeps up with town driving, not with 130 mph.
+
+**Shorter paced slices in the colour match (2026-10-13).** `pace()` wrapped to log the gaps between its
+calls, one Fells Point region run offline. Before: `detect_seams` ran 0.7 s per angle pass between two
+`pace()` calls (315 times a region) and 1.45 s after its last one; `base_weights` 0.44 s.
+- Fix: `pace()` per rotated channel and between the median steps, in the NMS / hysteresis / component
+  loops, and `base_weights` in 256-row chunks. Every gap is now <= 0.36 s (most <= 0.26 s); de-shadow
+  was already <= 0.3 s. The colour match tests are unchanged.
+- In-game A/B (fixed view, vsync off, one region running offline at duty 0.25, 180 s each): shadow pass
+  median 1.24 vs 1.27 ms, p99 1.83 vs 1.75 ms (idle 1.19). No measurable difference at this light view:
+  last night's pacing had already taken most of the effect.
