@@ -96,3 +96,21 @@ fresh location while they ran: the shadow pass 4.5-6.5 ms instead of 7-10 (basel
 bumps are single ~0.5 s numpy steps. The far-tile geometry moved to worker processes too
 (`blockworker.far_geometry`), and the shadow pass is about 1.2 ms cheaper with no roads (the road and
 sidewalk meshes cast sun shadows).
+
+**The block-move frame** (`status().commits[i].engine`, the engine's breakdown of the commit frame, 58 m/s
+drive): 70-94 ms = ~30 ms Lua (`importMaps` 19-21 ms + `reloadCollision` 8-17 ms), ~20 ms physics (the
+collision rebuild), ~13 ms shadows (the changed terrain). The `.ter` swap of §7 of the engine-limits note
+(7-11 ms, no collision rebuild) is the next step for it; it changes how the physics ground under the car
+loads, so it waits for the user's OK.
+
+**Road collision rebuilds**: every `reloadCollision` is a ~20 ms physics frame; the roads module ran one up
+to every 0.5 s while sidewalk tiles arrived. At most every 3 s, and none right after a terrain commit:
+p99 frame 38.2 -> 17.2 ms on a 58 m/s drive.
+
+**Lazy unloading** (the user's suggestion): an out-and-back flight imported 15.5 tiles/s on the way back
+against 5.6 on the way out. Removed tiles now wait hidden as spares (120 s, at most 400) and are revived:
+7.8 tiles/s on the way back, 369 of ~1,770 tile loads revived.
+
+**After tonight** (fresh game, monitors off): a 58 m/s drive through Fells Point at 101-103 fps mean,
+p99 17 ms; flights at 134 m/s (400 m) 86 fps with a flat far-tile backlog, 300 m/s 80 fps (it was 44)
+but the block still falls behind there (~1 s per block answer).
