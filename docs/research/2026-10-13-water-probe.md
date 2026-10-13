@@ -55,3 +55,10 @@ So the plan stays the roadmap's: bounded water per area near the player (blocks 
    - Near the player, water objects at the surface level, covering the water polygons in rectangles of a coarse grid, so land lower than the water outside the shore is not flooded.
    - Needs the WaterBlock fix, or a `WaterPlane` per sea-level area while the player is within ~2 km.
 4. **Buoyancy:** the engine's water objects give it (to verify with a car).
+
+## Second probe (2026-10-13 evening, with the user watching)
+
+- **View distance is not the cause:** our LevelInfo `visibleDistance` (~147 km) set to gridmap_v2's 12.8 km made no difference.
+- **The runtime WaterBlock is dead for physics too:** with a 30 m block around the parked car (surface 0.5 m above the ground), `obj:inWater` was false for all 950 nodes. That held whether the block was moved after registering or placed before.
+- **A WaterPlane works for both:** 0.5 m above the ground, it drew (it flooded everything lower, `plane_test.jpg`) and 379 of 950 nodes were in water.
+- **Not tested:** whether a runtime WaterBlock works in a stock level. The open question is whether WaterBlocks need something our level lacks or are broken at runtime everywhere.
