@@ -97,6 +97,8 @@ import farfield  # noqa: E402
 import terraincache  # noqa: E402
 import geodesy  # noqa: E402
 import gravity as gravitymod  # noqa: E402
+import airportgrade as airportgrademod  # noqa: E402
+import airports as airportsmod  # noqa: E402
 import groundahead as groundaheadmod  # noqa: E402
 import heightmap  # noqa: E402
 import imagery as imagerymod  # noqa: E402
@@ -413,7 +415,7 @@ class Server:
                  block=BLOCK_DEFAULT, horizon=False, deshadow="off", weather=None, gravity=None, net=None,
                  colormatch="off", credits=None, cache=None, retex_rate=RETEX_RATE, surface=None,
                  mapdata=None, grading=False, road_widths=False, block_pools=(), sidewalks=True, far_pool=None,
-                 road_pool=None):
+                 road_pool=None, airports_db=None):
         """kfun: K(L) for every level (default: the layout's K table); near_radii: the min-level
         radii (default: the layout's); cells: 32 (v1.3.1) or 64 (M1, mesh mode only); tex: texture
         px per level from the finest (default: tex_near, tex_near, tex_far with 32 cells,
@@ -460,6 +462,8 @@ class Server:
         self.tile_cache = TILE_CACHE[cells]
         self.net = net if net is not None else netfetch.Fetcher()
         self.dem = demmod.Dem(os.path.join(cache_dir, "dem"), fetcher=self.net)
+        # runways graded in (--airports on: main() loads the OurAirports copy before the worker processes)
+        self.airports = airportgrademod.AirportGrader(airports_db, self.dem) if airports_db is not None else None
         # Satellite imagery (§A); None = --imagery off (v3-style palette tiles).
         # De-shadowing of the USGS tiles (--deshadow lambert|full; off = the imagery as served).
         self.deshadow = None
@@ -789,6 +793,8 @@ class Server:
 
         def elev(la, lo):           # the physics ground (lifted under roads: grading.ROAD_LIFT)
             z = self.dem.sample(la, lo, zoom)
+            if self.airports is not None:
+                z = self.airports.apply(la, lo, z)
             return g.apply(la, lo, z, gradingmod.ROAD_LIFT) if g is not None else z
         walks = []
         with self.grader_lock:
@@ -895,6 +901,8 @@ class Server:
 
         def elev(la, lo):
             z = self.dem.sample(la, lo, anchor.hm_zoom, progress)
+            if self.airports is not None:
+                z = self.airports.apply(la, lo, z)
             if g is None:
                 return z
             t1 = time.perf_counter()
@@ -1190,7 +1198,8 @@ class Server:
         ref_zoom = anchor.zooms[lvl - 1] if lvl > 0 else None
         path = os.path.join(self.out_dir, self.tile_name(anchor.id, tile.key))
         g = self.grader_for(anchor) if lvl <= 0 and self.far_pool is None else None   # graded like the block
-        src = gradingmod.GradedDem(self.dem, g) if g is not None else self.dem
+        base = self.airports.wrap(self.dem) if self.airports is not None else self.dem
+        src = gradingmod.GradedDem(base, g) if g is not None else base
         if self.far_pool is not None:
             built = self.far_pool.submit(blockworker.far_geometry, anchor.id, anchor.lat, anchor.lon, tile,
                                          anchor.zooms[max(lvl, 0)], q, ref_zoom, self.near_visual in BLOCK_DRAWN,
@@ -2360,19 +2369,27 @@ async def main_async(args):
                 initargs=(args.cache_dir, args.offline, args.roads == "on",
                           args.grading == "on" and args.roads == "on",
                           args.road_widths == "on" and args.roads == "on", args.surface == "on", warm_q,
-                          logging.getLogger().level)), warm_q))
+                          logging.getLogger().level, args.airports == "on")), warm_q))
         far_pool = ProcessPoolExecutor(
             args.workers, mp_context=ctx, initializer=blockworker.init,
             initargs=(args.cache_dir, args.offline, args.roads == "on",
                       args.grading == "on" and args.roads == "on",
                       args.road_widths == "on" and args.roads == "on", False, ctx.Queue(maxsize=1),
-                      logging.getLogger().level))
+                      logging.getLogger().level, args.airports == "on"))
+    airports_db = None
+    if args.airports == "on":       # before any worker process starts: they read this copy
+        try:
+            airports_db = airportsmod.Store(args.cache_dir, net).load()
+            log.info("airports: %s", airports_db.summary())
+        except airportsmod.AirportsUnavailable as e:
+            log.warning("airports: no runway grading (%s)", e)
     road_pool = None
     if args.block_process == "on" and args.roads == "on" and args.road_processes > 0:
         road_pool = ProcessPoolExecutor(          # road tiles (blockworker.roads_tile)
             args.road_processes, mp_context=ctx, initializer=blockworker.init,
             initargs=(args.cache_dir, args.offline, True, args.grading == "on", args.road_widths == "on",
-                      args.surface == "on", ctx.Queue(maxsize=1), logging.getLogger().level))
+                      args.surface == "on", ctx.Queue(maxsize=1), logging.getLogger().level,
+                      args.airports == "on"))
     server = Server(args.user_dir, args.cache_dir, args.workers, kfun, args.hysteresis, args.far_radius, fmt,
                     imagery=args.imagery, near_visual=args.near_visual, tex_near=args.tex_near,
                     tex_far=args.tex_far, tone=args.tone, near_radii=radii,
@@ -2389,7 +2406,7 @@ async def main_async(args):
                     grading=args.grading == "on" and args.roads == "on",
                     road_widths=args.road_widths == "on" and args.roads == "on",
                     sidewalks=args.sidewalks == "on",
-                    block_pools=block_pools, far_pool=far_pool, road_pool=road_pool)
+                    block_pools=block_pools, far_pool=far_pool, road_pool=road_pool, airports_db=airports_db)
 
     async def net_log():
         while True:
@@ -2569,6 +2586,9 @@ def main():
     ap.add_argument("--roads", choices=("on", "off"), default="on",
                     help="Overture roads near the player (roads.py): DecalRoads in the mod (paved asphalt, "
                          "gravel / dirt tracks) within ~640 m, in 256 m tiles; off = none")
+    ap.add_argument("--airports", choices=("on", "off"), default="off",
+                    help="runways graded into the ground and the tiles (OurAirports, airportgrade.py); "
+                         "the data is downloaded once (~5 MB) and refreshed weekly")
     ap.add_argument("--road-processes", type=int, default=ROAD_PROCESSES,
                     help="processes building the road tiles (--block-process on); 0 = threads in the server")
     ap.add_argument("--detail-ring", type=float, default=DETAIL_RING_M,

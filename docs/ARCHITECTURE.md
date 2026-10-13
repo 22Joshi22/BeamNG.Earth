@@ -1300,5 +1300,11 @@ host policy `netfetch.POLICIES["davidmegginson.github.io"]` and `airports` in `c
   v1.5 layer masks (+4-5 ms per 512² commit for 8 layers); groups per map-data cell; M6 tile content keys
   gain the OurAirports snapshot and the runwaygeom version; DecalRoad markings within ~2 km; runway ends
   as spawn places; taxiways / aprons / buildings from Overture / OSM later.
-- Tests: `server/tests/test_airports.py`, `test_runwaygeom.py`, `test_runwaymarks.py` (synthetic files from
+- **Wired (2026-10-13, `--airports on`, default off):** `airportgrade.AirportGrader` (one per process: the main
+  server loads / refreshes the OurAirports copy before the worker processes start, they read it offline) grades the
+  groups touching a box's map-data cells, planned once per process on a fixed z15 DEM sampler; every elevation
+  function takes it before the road grading: the block (`blockworker.build`, the thread path), the far tiles
+  (`GradedRunwayDem`), the road tiles. KBWI 10/28 in-game: centreline 2nd-difference RMS 0.40 cm (DEM 1.28 cm),
+  within 16 cm of the DEM. Not yet: markings (DecalRoads), runway ground models in the layers, spawn places.
+- Tests: `server/tests/test_airports.py`, `test_runwaygeom.py`, `test_runwaymarks.py`, `test_airportgrade.py` (synthetic files from
   `airportfixtures.py`, synthetic DEMs, fake netfetch transport and wall clock; no network).

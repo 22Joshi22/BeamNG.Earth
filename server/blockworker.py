@@ -35,9 +35,11 @@ _s = None       # this process's state (init)
 
 
 class _State:
-    def __init__(self, cache_dir, offline, roads, grading, road_widths, surface):
+    def __init__(self, cache_dir, offline, roads, grading, road_widths, surface, airports=False):
         net = netfetch.Fetcher(offline=offline)
         self.dem = demmod.Dem(os.path.join(cache_dir, "dem"), fetcher=net)
+        # runways graded in (--airports on): the copy the server loaded, never refreshed here
+        self.airports = load_airports(cache_dir, self.dem) if airports else None
         md = mapdatamod.MapData(cache_dir, fetcher=net) if (roads or surface) else None
         self.md = md if roads else None
         self.grading = bool(grading) and self.md is not None
@@ -69,10 +71,23 @@ class _State:
 ANCHORS_KEPT = 2
 
 
-def init(cache_dir, offline, roads, grading, road_widths, surface, warm_q, log_level=logging.INFO):
+def load_airports(cache_dir, dem):
+    """An airportgrade.AirportGrader over the OurAirports copy in the cache (no download), or None."""
+    import airportgrade
+    import airports as airportsmod
+    try:
+        db = airportsmod.Store(cache_dir, netfetch.Fetcher(offline=True)).load(
+            max_age=float("inf"))
+    except (airportsmod.AirportsUnavailable, OSError, ValueError) as e:
+        log.warning("airports: no runway grading (%s)", e)
+        return None
+    return airportgrade.AirportGrader(db, dem)
+
+
+def init(cache_dir, offline, roads, grading, road_widths, surface, warm_q, log_level=logging.INFO, airports=False):
     global _s
     logging.basicConfig(level=log_level, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
-    _s = _State(cache_dir, offline, roads, grading, road_widths, surface)
+    _s = _State(cache_dir, offline, roads, grading, road_widths, surface, airports)
     threading.Thread(target=_watch_parent, args=(os.getppid(),), daemon=True, name="parent-watch").start()
     threading.Thread(target=_read_warm, args=(warm_q,), daemon=True, name="warm-read").start()
     threading.Thread(target=_warm_loop, daemon=True, name="roads-ahead").start()
@@ -137,6 +152,8 @@ def build(aid, lat, lon, hm_zoom, q, cx, cy, size, out_dir, name, ter_name=None)
 
     def elev(la, lo):
         z = _s.dem.sample(la, lo, hm_zoom)
+        if _s.airports is not None:
+            z = _s.airports.apply(la, lo, z)
         if g is None:
             return z
         t1 = time.perf_counter()
@@ -182,6 +199,8 @@ def roads_tile(aid, lat, lon, zoom, tx, ty, out_dir, vfs_dir, sidewalks, lift):
 
     def elev(la, lo):           # the physics ground (lifted under roads: grading.ROAD_LIFT)
         z = _s.dem.sample(la, lo, zoom)
+        if _s.airports is not None:
+            z = _s.airports.apply(la, lo, z)
         return g.apply(la, lo, z, gradingmod.ROAD_LIFT) if g is not None else z
     with _s.lock:
         bridges = _s.bridges.get(aid)
@@ -209,6 +228,7 @@ def far_geometry(aid, lat, lon, tile, zoom, q, ref_zoom, with_sink, layout):
     most of a far tile's cost; its texture is rendered in the server, where the imagery corrections live).
     Returns the Built."""
     g, _ = _s.anchor(aid, lat, lon)
-    src = gradingmod.GradedDem(_s.dem, g) if (g is not None and tile.level <= 0) else _s.dem
+    base = _s.airports.wrap(_s.dem) if _s.airports is not None else _s.dem
+    src = gradingmod.GradedDem(base, g) if (g is not None and tile.level <= 0) else base
     return farfield.build_tile(geodesy.EnuFrame(lat, lon), src, tile, zoom, q, ref_zoom, with_sink=with_sink,
                                layout=layout)
