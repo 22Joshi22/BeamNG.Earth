@@ -687,6 +687,17 @@ Gameplay
 - **Generated challenges**: point-to-point time trials between real places, a timed Cannonball run
   with checkpoints, delivery jobs between real towns.
 
+## User requests 2026-10-13 (after water; in this order unless the user reorders)
+- **Performance, monitored live:** the user drives by hand in different places while the game and
+  server metrics are watched; there are still hitches while driving.
+- **Texture patterns** visible in some terrain (repeating tiles): find and fix.
+- **Sidewalks and intersections:** many need work. Take many in-game photos of sidewalks and
+  intersections and compare them with high-resolution aerial or street-level imagery.
+- **Decoration:** trees, rocks and other scatter.
+- **Airport buildings:** terminals, the control tower, hangars (the runways themselves look good).
+- **LOD quality settings** (after the performance work, closer to the final look): at 4K on a large
+  monitor, the terrain from half distance outward looks low quality.
+
 ## Bugs to look at (reported, not fixed yet)
 - **Rain particles "spazzing out"** (user, 2026-10-11): some raindrops jump around or streak across the
   view (seen in Fells Point's real rain). Suspects: the Precipitation object's box following the
