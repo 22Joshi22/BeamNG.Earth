@@ -18,11 +18,16 @@ import numpy as np
 import dem as demmod
 import mapcells
 import runwaygeom
+import runwaymarks
 
 log = logging.getLogger("earthd.airportgrade")
 
 PLAN_ZOOM_M = 2.0           # m: the DEM pixels a runway's profile is fitted on (z15 almost everywhere)
 MAX_CELLS = 64              # a box spanning more map-data cells (a far tile) asks only its corners' cells
+# Markings as road-tile chunks (roads.build_tile's format; the road mesh draws them like the lane lines)
+MARK_PIECE_M = 50.0         # strokes cut into pieces this long, each in the tile of its midpoint
+MARK_NODE_M = 10.0          # ... with a node this often (they follow the graded ground)
+MARK_LOOK = {"white": {"m": "line_white", "tl": 6.4, "p": 2}, "yellow": {"m": "line_yellow", "tl": 6.4, "p": 2}}
 
 
 class AirportGrader:
@@ -30,6 +35,7 @@ class AirportGrader:
         self.db, self.dem = db, dem
         self._plans = {}                # frozenset of runway ids -> [Plan]
         self._group_locks = {}          # frozenset of runway ids -> the lock its planning holds
+        self._mark_cache = {}           # runway id -> its markings in lat/lon (_marks)
         self._lock = threading.Lock()
         self.stats = {"plans": 0, "graded_calls": 0}
 
@@ -83,6 +89,60 @@ class AirportGrader:
         plans = [p for g in groups for p in self.plans_for(g)]
         self.stats["graded_calls"] += 1
         return runwaygeom.apply(plans, lat, lon, z)[0]
+
+    def tile_chunks(self, frame, tx, ty, elev, tile_bbox):
+        """The runway markings (runwaymarks) inside road tile (tx, ty) of `frame`, as road chunks
+        ({"m", "w", "tl", "p", "n": [[x, y, z], ...]}): every stroke near a runway touching the tile's
+        map-data cells, cut into MARK_PIECE_M pieces, each in the tile of its midpoint; z from elev (the
+        graded ground) at nodes MARK_NODE_M apart. tile_bbox(tx, ty) -> (x0, y0, x1, y1)."""
+        x0, y0, x1, y1 = tile_bbox(tx, ty)
+        la, lo, _ = frame.enu_to_geodetic(np.array([x0, x1, x0, x1]), np.array([y0, y0, y1, y1]), np.zeros(4))
+        pieces = []
+        for g in self._groups(la, lo):
+            for rw in g:
+                strokes = self._marks(rw)
+                if not strokes:
+                    continue
+                pts = np.array([[a, b, c, d] for a, b, c, d, *_ in strokes])
+                ex, ny, _ = frame.geodetic_to_enu(pts[:, [0, 2]].ravel(), pts[:, [1, 3]].ravel(), np.zeros(2 * len(pts)))
+                ex, ny = np.asarray(ex).reshape(-1, 2), np.asarray(ny).reshape(-1, 2)
+                for (sx0, sx1), (sy0, sy1), st in zip(ex, ny, strokes):
+                    L = float(np.hypot(sx1 - sx0, sy1 - sy0))
+                    n = max(1, int(np.ceil(L / MARK_PIECE_M)))
+                    for i in range(n):
+                        a, b = i / n, (i + 1) / n
+                        mx, my = sx0 + (sx1 - sx0) * (a + b) / 2, sy0 + (sy1 - sy0) * (a + b) / 2
+                        if not (x0 <= mx < x1 and y0 <= my < y1):
+                            continue
+                        k = max(1, int(np.ceil(L * (b - a) / MARK_NODE_M)))
+                        f = np.linspace(a, b, k + 1)
+                        pieces.append((sx0 + (sx1 - sx0) * f, sy0 + (sy1 - sy0) * f, st))
+        if not pieces:
+            return []
+        # one elevation call for every node (the road grader's cost is per call, roads.build_tile)
+        xs = np.concatenate([p[0] for p in pieces])
+        ys = np.concatenate([p[1] for p in pieces])
+        nla, nlo, _ = frame.enu_to_geodetic(xs, ys, np.zeros_like(xs))
+        _, _, zs = frame.geodetic_to_enu(nla, nlo, np.asarray(elev(nla, nlo), np.float64))
+        out, i = [], 0
+        for px, py, st in pieces:
+            m = len(px)
+            look = MARK_LOOK.get(st[6], MARK_LOOK["white"])
+            out.append({"m": look["m"], "w": round(float(st[4]), 2), "tl": look["tl"], "p": look["p"],
+                        "n": [[round(float(x), 3), round(float(y), 3), round(float(z), 3)]
+                              for x, y, z in zip(px, py, zs[i:i + m])]})
+            i += m
+        return out
+
+    def _marks(self, rw):
+        """runwaymarks.to_world of a runway, cached: [(lat0, lon0, lat1, lon1, width, kind, color)]."""
+        with self._lock:
+            m = self._mark_cache.get(rw.id)
+        if m is None:
+            m = runwaymarks.to_world(runwaygeom.geometry(rw), runwaymarks.markings(rw).strokes)
+            with self._lock:
+                self._mark_cache[rw.id] = m
+        return m
 
     def wrap(self, dem):
         return GradedRunwayDem(dem, self)

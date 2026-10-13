@@ -59,6 +59,33 @@ class AirportGradeTest(unittest.TestCase):
         np.testing.assert_array_equal(sub, out[30:50, 30:50])
         self.assertEqual(self.ag.stats["plans"], plans)
 
+    def test_marking_chunks(self):
+        """A runway's markings as road chunks: white / yellow line materials, pieces of at most
+        MARK_PIECE_M, each in exactly one road tile (its midpoint's), z from the elevation function."""
+        import geodesy
+        import roads
+        frame = geodesy.EnuFrame(45.0, 7.0)
+        elev = lambda la, lo: self.ag.apply(la, lo, self.dem.fn(la, lo))     # noqa: E731
+        tiles = [(tx, ty) for tx in range(-8, 8) for ty in range(-8, 8)]
+        per = {t: self.ag.tile_chunks(frame, *t, elev, roads.tile_bbox) for t in tiles}
+        allc = [c for cs in per.values() for c in cs]
+        self.assertGreater(len(allc), 50)
+        self.assertLessEqual({c["m"] for c in allc}, {"line_white", "line_yellow"})
+        for (tx, ty), cs in per.items():
+            x0, y0, x1, y1 = roads.tile_bbox(tx, ty)
+            for c in cs:
+                n = np.array(c["n"])
+                L = float(np.hypot(*(n[-1, :2] - n[0, :2])))
+                self.assertLessEqual(L, airportgrade.MARK_PIECE_M + 1e-6)
+                mx, my = (n[0, :2] + n[-1, :2]) / 2
+                self.assertTrue(x0 - 0.01 <= mx < x1 + 0.01 and y0 - 0.01 <= my < y1 + 0.01)
+        c = allc[0]
+        la, lo, _ = frame.enu_to_geodetic(np.array([c["n"][0][0]]), np.array([c["n"][0][1]]), np.zeros(1))
+        _, _, z = frame.geodetic_to_enu(la, lo, elev(la, lo))
+        self.assertAlmostEqual(c["n"][0][2], float(z[0]), places=2)
+        far = self.ag.tile_chunks(frame, 400, 400, elev, roads.tile_bbox)
+        self.assertEqual(far, [], "no runway, no markings")
+
     def test_wrapped_dem(self):
         la, lo = self.grid(45.0, 7.0, half=0.004, n=41)
         src = self.ag.wrap(self.dem)

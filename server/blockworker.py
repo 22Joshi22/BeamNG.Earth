@@ -212,6 +212,8 @@ def roads_tile(aid, lat, lon, zoom, tx, ty, out_dir, vfs_dir, sidewalks, lift):
     walks = []
     urban = _s.surface.urban if _s.surface is not None else None
     chunks = roadsmod.build_tile(frame, tx, ty, cells, elev, urban, walks=walks, bridges=bridges, widths=_s.widths)
+    if _s.airports is not None:         # runway markings, drawn by the road mesh like the lane lines
+        chunks += _s.airports.tile_chunks(frame, tx, ty, elev, roadsmod.tile_bbox)
     x0, y0, _, _ = roadsmod.tile_bbox(tx, ty)
     mesh = roadmeshmod.build(frame, chunks, elev, (x0, y0, 0.0), lift)
     dmesh = roadmeshmod.deck(chunks, (x0, y0, 0.0))
