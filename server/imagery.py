@@ -202,15 +202,26 @@ def is_uniform(a):
 MATCH_SIGMA_M = 40.0     # m: match_colours keeps the detail below this scale, the colours above it (20: haloes)
 
 
+MATCH_DOWN, MATCH_MIN_PX = 8, 16    # render(): the reference at px / MATCH_DOWN (at least MATCH_MIN_PX)
+
+
 def match_colours(rgb, ref, sigma_px):
-    """rgb with the large-scale colour of ref (same size, uint8): rgb * blur(ref) / blur(rgb), per channel,
-    the gain clipped to [1/3, 3] (Gaussian blur of sigma_px texels). Where rgb already is ref, nothing
+    """rgb with the large-scale colour of ref (uint8; ref the same size or coarser, sigma_px in ref's texels):
+    rgb * blur(ref) / blur(rgb), per channel, the gain clipped to [1/3, 3] (Gaussian blur of sigma_px
+    texels) and, for a coarser ref, computed at its size and scaled up. Where rgb already is ref, nothing
     changes; elsewhere the detail is rgb's and everything coarser than ~sigma ref's."""
     r = max(1.0, float(sigma_px))
-    a = Image.fromarray(rgb, "RGB").filter(ImageFilter.GaussianBlur(r))
+    h, w = ref.shape[:2]
+    im = Image.fromarray(rgb, "RGB")
+    if (h, w) != rgb.shape[:2]:
+        im = im.resize((w, h), Image.BOX)
+    a = im.filter(ImageFilter.GaussianBlur(r))
     b = Image.fromarray(ref, "RGB").filter(ImageFilter.GaussianBlur(r))
-    gain = (np.asarray(b, np.float32) + 4.0) / (np.asarray(a, np.float32) + 4.0)
-    out = rgb.astype(np.float32) * np.clip(gain, 1 / 3, 3)
+    gain = np.clip((np.asarray(b, np.float32) + 4.0) / (np.asarray(a, np.float32) + 4.0), 1 / 3, 3)
+    if (h, w) != rgb.shape[:2]:
+        gain = np.stack([np.asarray(Image.fromarray(gain[..., c], "F").resize(rgb.shape[1::-1], Image.BILINEAR))
+                         for c in range(3)], -1)
+    out = rgb.astype(np.float32) * gain
     return np.clip(np.rint(out), 0, 255).astype(np.uint8)
 
 
@@ -783,11 +794,14 @@ class Imagery:
         rgb, used = self._render(frame, x0, y0, size, px, pending)
         if not any(s.lazy and s.name in used for s in self.chain) or all(s.lazy for s in self.chain):
             return rgb, used
+        # the reference only gives the colour above MATCH_SIGMA_M: rendered and matched at MATCH_DOWN times
+        # coarser texels (64x fewer texels to render, blur and stream through memory than at full size)
+        small = max(MATCH_MIN_PX, px // MATCH_DOWN)
         try:
-            ref, _ = self._render(frame, x0, y0, size, px, pending, skip_lazy=True)
+            ref, _ = self._render(frame, x0, y0, size, small, pending, skip_lazy=True)
         except ImageryError:            # the reference is unreachable: NAIP as served
             return rgb, used
-        return match_colours(rgb, ref, MATCH_SIGMA_M / (size / px)), used
+        return match_colours(rgb, ref, MATCH_SIGMA_M / (size / small)), used
 
     def _render(self, frame, x0, y0, size, px, pending=None, skip_lazy=False):
         """Texture of the ENU square [x0, x0+size] x [y0, y0+size] (anchor `frame`), px x px,
