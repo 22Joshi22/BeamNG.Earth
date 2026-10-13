@@ -111,6 +111,10 @@ local function resetState()
     -- frames a follow request spent waiting, by cause (the harness's view of why the block lags):
     -- server = not answered yet, gate = ready but its far tiles not live, governor = no heavy slot yet
     followWait = { server = 0, gate = 0, governor = 0 },
+    -- the last COMMIT_LOG follow commits, each { load, coll, cover (ms in the commit), f = { the wall ms of
+    -- the commit frame and the two after it } } (what a block move costs, and where: GPU uploads land in
+    -- the frames after)
+    commits = {}, commitFrames = nil,
     terrainRetryAt = 0,
     rebasing = nil,          -- a rebase between its two phases (see commitRebase)
     lagProbe = nil,          -- watches, at onPreRender, when the last rebase's vehicle move became visible
@@ -450,6 +454,9 @@ end
 -- Terrain-follow commit (V1_1_SPEC 1a, V1_2_DESIGN 2.3), in a governor heavy slot, atomic in one
 -- frame: importMaps + setPosition + reloadCollision + the far tiles' cover change. Vehicles and
 -- camera stay where they are; far tiles only sink / hide / come back (no imports in this frame).
+local COMMIT_LOG = 20
+local frameTimer = hptimer and hptimer() or nil
+
 local function commitTerrain(msg)
   local sw = stopwatch.new()
   local ok, err = loadBlock(msg)
@@ -458,8 +465,14 @@ local function commitTerrain(msg)
     st.terrainRetryAt = st.clock + follow.RETRY_S
     return false
   end
+  local tLoad = sw()
   be:reloadCollision()
+  local tColl = sw()
   farfield.onBlockCommit(msg.cx, msg.cy)
+  local c = { load = tLoad, coll = tColl - tLoad, cover = sw() - tColl, f = {} }
+  table.insert(st.commits, c)
+  if #st.commits > COMMIT_LOG then table.remove(st.commits, 1) end
+  st.commitFrames = c
   st.block = { cx = msg.cx, cy = msg.cy }
   net.send({ type = 'commit_terrain', anchorId = st.anchorId, cx = msg.cx, cy = msg.cy })
   st.lastFollowMs = sw()
@@ -919,6 +932,12 @@ end
 
 local function onUpdate(dtReal, dtSim)
   dtReal = dtReal or 0
+  local frameMs = frameTimer and frameTimer:stopAndReset() or dtReal * 1000
+  local cf = st.commitFrames
+  if cf then                    -- the commit frame and the two after it (wall ms between updates)
+    cf.f[#cf.f + 1] = frameMs
+    if #cf.f >= 3 then st.commitFrames = nil end
+  end
   st.clock = st.clock + dtReal
   -- the governor's frame opens first: its clock is the wall time since the last onUpdate (hptimer)
   gov:setLoading(st.placeFrames ~= nil or st.clock < st.loadingUntil or st.slowFor > SLOW_S)
@@ -1152,7 +1171,7 @@ function M.status()
     inOurLevel = st.inOurLevel, nearVisual = nearVisual, rawView = rawView, terrainRendered = terrain.isRenderEnabled(),
     anchorId = st.anchorId, anchorKey = st.anchorKey, pending = st.pending and st.pending.purpose,
     block = st.block, terrainPending = st.terrainPending and { st.terrainPending.cx, st.terrainPending.cy },
-    followWait = st.followWait,
+    followWait = st.followWait, commits = st.commits,
     rebaseDistance = rebase.distance, lastFollowMs = st.lastFollowMs, lastRebaseMs = st.lastRebaseMs,
     lastRebaseWaitFrames = st.lastRebaseWait, rebaseLag = rebaseLag, lastMoveLag = st.lastMoveLag, player = st.player, far = farfield.stats(), governor = gov:snapshot(), status = st.status,
     serverBacklog = st.serverBacklog, followCount = st.followCount, rebaseCount = st.rebaseCount,

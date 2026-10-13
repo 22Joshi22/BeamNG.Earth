@@ -68,6 +68,8 @@ import time
 from collections import OrderedDict
 
 import numpy as np
+
+import pacer
 from PIL import Image
 
 import cache as cachemod
@@ -135,8 +137,10 @@ def _rf_pass(X, cut_prev, a):
     n = X.shape[1]
     f = np.where(cut_prev, 0.0, a).astype(np.float32)[..., None]
     for c in range(1, n):
+        pacer.pace()
         X[:, c] += f[:, c] * (X[:, c - 1] - X[:, c])
     for c in range(n - 2, -1, -1):
+        pacer.pace()
         X[:, c] += f[:, c + 1] * (X[:, c + 1] - X[:, c])
 
 
@@ -152,6 +156,7 @@ def dt_blur(X, sigma, cut=None, iters=3):
     cut_v = np.zeros((w, h), bool)
     cut_v[:, 1:] = cut.T[:, 1:] | cut.T[:, :-1]
     for i in range(iters):
+        pacer.pace()
         s = sigma * math.sqrt(3) * 2 ** (iters - i - 1) / math.sqrt(4 ** iters - 1)
         a = math.exp(-math.sqrt(2) / s)
         _rf_pass(X, cut_h, a)
@@ -184,6 +189,7 @@ def fill(C, mask, iters=64):
     C = C.copy()
     m = mask.copy()
     for _ in range(iters):
+        pacer.pace()
         if not m.any():
             break
         acc = np.zeros_like(C)
@@ -224,6 +230,7 @@ def smooth_ratio(U, S, w0, sigma, cut=None, robust=2, tau=0.25, usgs=False):
     L = np.log(U + EPS) - np.log(S + EPS)
     w = w0.copy()
     for it in range(robust + 1):
+        pacer.pace()
         last = usgs and it == robust
         X = np.concatenate([U * w[..., None], S * w[..., None]] + ([w[..., None]] if last else []), -1)
         B = dt_blur(X, sigma, cut)
@@ -306,6 +313,7 @@ def detect_seams(Lu, Ls, w, seg=16, nseg=NSEG, depth=3, n_ang=N_ANG, thr=THR, ga
     offs = [int(round((k - (nseg - 1) / 2) * seg)) for k in range(nseg)]
     Lw = L * w[..., None]
     for k in range(n_ang):
+        pacer.pace()
         deg = 180.0 * k / n_ang
         wr = _rot(w, deg)
         H, W = wr.shape
@@ -1157,6 +1165,7 @@ class ColorMatch:
                 self._enqueue(rk)
 
     def _worker(self):
+        pacer.enable(pacer.DUTY)     # a background analysis: paced (pacer.py)
         while True:
             with self._lock:
                 while not self._queue and not self._closed:
@@ -1168,6 +1177,7 @@ class ColorMatch:
                 if self._closed:
                     return
                 _, _, rk = heapq.heappop(self._queue)
+            pacer.idle()                # the wait above was not busy time
             try:
                 t0 = time.perf_counter()
                 F, info = self._compute_field(rk)

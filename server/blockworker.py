@@ -8,8 +8,8 @@ street widths, height chunks and land-cover reader over the same disk caches. Al
 so a block built here is the one the server would build (the far tiles, graded in the server process, agree
 with it).
 
-init(...) runs once in the process (ProcessPoolExecutor initializer); build(...) and base_entry(...) are its
-jobs. warm_q (a multiprocessing queue) carries the road cells to plan ahead of the player: (anchor id, lat,
+init(...) runs once in the process (ProcessPoolExecutor initializer); build(...), base_entry(...) and
+far_geometry(...) (the far-tile workers, the same state) are its jobs. warm_q (a multiprocessing queue) carries the road cells to plan ahead of the player: (anchor id, lat,
 lon, [mapcells.CellKey]), the latest list replacing the earlier one.
 """
 import logging
@@ -19,6 +19,7 @@ import threading
 import time
 
 import dem as demmod
+import farfield
 import geodesy
 import grading as gradingmod
 import heightmap
@@ -163,3 +164,13 @@ def build(aid, lat, lon, hm_zoom, q, cx, cy, size, out_dir, name):
 def base_entry(user_dir, base_vfs, ao_vfs, rgb, ao_value):
     """terraincache.base_entry here (its BC7 encode is the base photo's main cost)."""
     return terraincache.base_entry(user_dir, base_vfs, ao_vfs, rgb, ao_value)
+
+
+def far_geometry(aid, lat, lon, tile, zoom, q, ref_zoom, with_sink, layout):
+    """farfield.build_tile here (far-tile workers: the geometry, graded at levels <= 0 like the block, is
+    most of a far tile's cost; its texture is rendered in the server, where the imagery corrections live).
+    Returns the Built."""
+    g, _ = _s.anchor(aid, lat, lon)
+    src = gradingmod.GradedDem(_s.dem, g) if (g is not None and tile.level <= 0) else _s.dem
+    return farfield.build_tile(geodesy.EnuFrame(lat, lon), src, tile, zoom, q, ref_zoom, with_sink=with_sink,
+                               layout=layout)

@@ -89,6 +89,7 @@ import roadwidth as roadwidthmod  # noqa: E402
 import mapdata as mapdatamod  # noqa: E402
 import dem as demmod  # noqa: E402
 import mapcells  # noqa: E402
+import pacer  # noqa: E402
 import deshadow as deshadowmod  # noqa: E402
 import farfield  # noqa: E402
 import terraincache  # noqa: E402
@@ -403,7 +404,7 @@ class Server:
                  tone=1.0, near_radii=None, status_interval=STATUS_INTERVAL, cells=CELLS_DEFAULT, tex=None,
                  block=BLOCK_DEFAULT, horizon=False, deshadow="off", weather=None, gravity=None, net=None,
                  colormatch="off", credits=None, cache=None, retex_rate=RETEX_RATE, surface=None,
-                 mapdata=None, grading=False, road_widths=False, block_pools=(), sidewalks=True):
+                 mapdata=None, grading=False, road_widths=False, block_pools=(), sidewalks=True, far_pool=None):
         """kfun: K(L) for every level (default: the layout's K table); near_radii: the min-level
         radii (default: the layout's); cells: 32 (v1.3.1) or 64 (M1, mesh mode only); tex: texture
         px per level from the finest (default: tex_near, tex_near, tex_far with 32 cells,
@@ -494,6 +495,9 @@ class Server:
         # lane, LANE_REQUEST and LANE_PREFETCH, so a block the mod asks for never waits behind a prefetch
         # (one shared process: answers up to 4 s at 90 m/s, 2026-10-12). Empty: built in hm_pool's threads.
         self.block_pools = list(block_pools)
+        # Far-tile geometry in worker processes too (blockworker.far_geometry; the texture stays here): a
+        # ProcessPoolExecutor of tile_workers, or None (built in tile_pool's threads)
+        self.far_pool = far_pool
         self.warm_cv = threading.Condition()
         self.warm_thread = None
         self.tile_workers = tile_workers
@@ -1115,10 +1119,15 @@ class Server:
         q = self.anchor_q(anchor) if lvl <= 0 else None
         ref_zoom = anchor.zooms[lvl - 1] if lvl > 0 else None
         path = os.path.join(self.out_dir, self.tile_name(anchor.id, tile.key))
-        g = self.grader_for(anchor) if lvl <= 0 else None      # graded like the block (grading.py)
+        g = self.grader_for(anchor) if lvl <= 0 and self.far_pool is None else None   # graded like the block
         src = gradingmod.GradedDem(self.dem, g) if g is not None else self.dem
-        built = farfield.build_tile(anchor.frame, src, tile, anchor.zooms[max(lvl, 0)], q,
-                                    ref_zoom, with_sink=self.near_visual in BLOCK_DRAWN, layout=self.layout)
+        if self.far_pool is not None:
+            built = self.far_pool.submit(blockworker.far_geometry, anchor.id, anchor.lat, anchor.lon, tile,
+                                         anchor.zooms[max(lvl, 0)], q, ref_zoom, self.near_visual in BLOCK_DRAWN,
+                                         self.layout).result()
+        else:
+            built = farfield.build_tile(anchor.frame, src, tile, anchor.zooms[max(lvl, 0)], q,
+                                        ref_zoom, with_sink=self.near_visual in BLOCK_DRAWN, layout=self.layout)
         t1 = time.perf_counter()
         material = texture = used = None
         tex_bytes = 0
@@ -2192,7 +2201,8 @@ async def main_async(args):
     # map data (mapdata.py): land cover for the surfaces, roads; one instance shares its cache locks
     mapdata = (mapdatamod.MapData(args.cache_dir, fetcher=net)
                if "on" in (args.surface, args.roads) else None)
-    block_pools = []
+    pacer.DUTY = args.background_duty
+    block_pools, far_pool = [], None
     if args.block_process == "on":
         ctx = multiprocessing.get_context("spawn")
         for _ in (LANE_REQUEST, LANE_PREFETCH):
@@ -2203,6 +2213,12 @@ async def main_async(args):
                           args.grading == "on" and args.roads == "on",
                           args.road_widths == "on" and args.roads == "on", args.surface == "on", warm_q,
                           logging.getLogger().level)), warm_q))
+        far_pool = ProcessPoolExecutor(
+            args.workers, mp_context=ctx, initializer=blockworker.init,
+            initargs=(args.cache_dir, args.offline, args.roads == "on",
+                      args.grading == "on" and args.roads == "on",
+                      args.road_widths == "on" and args.roads == "on", False, ctx.Queue(maxsize=1),
+                      logging.getLogger().level))
     server = Server(args.user_dir, args.cache_dir, args.workers, kfun, args.hysteresis, args.far_radius, fmt,
                     imagery=args.imagery, near_visual=args.near_visual, tex_near=args.tex_near,
                     tex_far=args.tex_far, tone=args.tone, near_radii=radii,
@@ -2219,7 +2235,7 @@ async def main_async(args):
                     grading=args.grading == "on" and args.roads == "on",
                     road_widths=args.road_widths == "on" and args.roads == "on",
                     sidewalks=args.sidewalks == "on",
-                    block_pools=block_pools)
+                    block_pools=block_pools, far_pool=far_pool)
 
     async def net_log():
         while True:
@@ -2399,6 +2415,9 @@ def main():
     ap.add_argument("--roads", choices=("on", "off"), default="on",
                     help="Overture roads near the player (roads.py): DecalRoads in the mod (paved asphalt, "
                          "gravel / dirt tracks) within ~640 m, in 256 m tiles; off = none")
+    ap.add_argument("--background-duty", type=float, default=pacer.CLI_DUTY,
+                    help="share of the time the background imagery analyses (colour seams, de-shadow) may run "
+                         "(pacer.py): their memory traffic slowed the game's rendering up to 2x; 1 = unpaced")
     ap.add_argument("--sidewalks", choices=("on", "off"), default="on",
                     help="raised sidewalks (curbs and slabs, sidewalks.py) with the road tiles; off = the roads "
                          "without them")

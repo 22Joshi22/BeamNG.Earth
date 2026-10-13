@@ -45,3 +45,54 @@ server's answer time against the block's 128 m grid, then the far tiles (the unc
 - Commit frames of 60-80 ms in the game (37-51 per run).
 - Lazy unloading (the user, 2026-10-12): keep tiles and blocks around when turning back; deletes are not
   a measured cost today.
+
+## Frame rate (2026-10-12/13)
+
+**Roads and sidewalks** (`earthd --sidewalks off`, `--roads off`; a 58 m/s drive north of Fells Point and 30 s
+creeping there, one run each):
+
+| | all on | sidewalks off | no roads |
+|---|---|---|---|
+| drive fps mean / worst second | 42.7 / 27 | 42.5 / 28 | 44.0 / 32 |
+| frames over 50 ms | 111 | 89 | 55 |
+| worst commit frame | 80 ms | 83 ms | 48 ms |
+| creeping fps | 61.4 | 57.7 | 57.9 |
+
+Sidewalks cost nothing measurable; roads add about half the hard dips. `be:reloadCollision()` takes 10 ms
+with 27 sidewalk meshes + 30 road meshes + a deck (1.6 ms without, 2026-10-10); the roads module calls it
+at most every 0.5 s while tiles arrive, the follow commit once more.
+
+**The block processes are not the frame cost**: a 90 m/s flight at 150 m, `--block-process on` 39.4 fps,
+`off` 36.5 fps (and the block fell 3.6 km behind). At 150-400 m the settled far field draws at ~50 fps
+against ~90-100 on the ground.
+
+**Where a frame goes** (stationary, toggles): hiding the far tiles, the block, grass, particles, rain, clouds
+or SSAO changed nothing; sun shadows off saved ~6 ms. The game's main thread was at 96 % CPU. The game's MCP
+`get_performance_metrics` gives a per-subsystem frame breakdown (RenderShadows, Render, Lua, FramePresent,
+...); `get_fps_limit_reason` the caps (vsync, 60/30 fps foreground/background limits).
+
+**The game slows down with session age.** The same four fixed free-camera views (`fixedviews.py` in the
+session scratch; the orbit camera and the time of day changed the old "stationary baseline" by several ms):
+12-13 ms per frame after ~1.5 h of tests, 6.9 ms after a restart (the 144 Hz vsync cap: the fresh game is
+faster still). Not the cause: particle emitters (they leak from ground-drive crashes, ~25 per drive; deleting
+all of them changed nothing), decals (`decalManagerClear()` changed nothing), scene objects or live
+materials (flat). Four 90 m/s flights alone did not age it measurably.
+
+**Root cause of the dips and the "aging" (2026-10-13): the server's memory traffic.** A time series of the
+game's own frame breakdown at a fixed view showed the cost alternating between two states every
+~15-20 s (shadows 3.4 vs 7-10 ms, ticking 0.75 vs 1.5-2.2 ms, reflections 1.8 vs 4-5.5 ms) with the player
+parked and nothing streaming. Not the vehicle (physics paused: same cycle), not the weather (clear, no
+precipitation). It followed the server's CPU exactly: the colour-seam analysis (`colormatch`, ~24 s per
+region, region after region while the player explores) ran at 100 % of a core in those phases, and
+with the server frozen (SIGSTOP) the game stayed in the low state for 40 s. Not SMT sharing (the threads
+were on different physical cores): a pure CPU loop changed nothing, one numpy thread streaming large
+arrays made the shadow pass 5-6x slower (3.4 -> 16-20 ms). The game's renderer is that sensitive to memory
+bandwidth. The "aging" was the analyses' backlog growing with the explored area (plus the test harness's
+own numpy work); the leaked particle emitters (BNGP_*, the stock vehicle particles, ~11 per km of
+scraping) were a red herring: deleting them changed nothing once measured at a fixed view.
+
+Fix: `pacer.py`, the background analyses run at most `--background-duty` (0.25) of the time. Measured at a
+fresh location while they ran: the shadow pass 4.5-6.5 ms instead of 7-10 (baseline 4.0). The remaining
+bumps are single ~0.5 s numpy steps. The far-tile geometry moved to worker processes too
+(`blockworker.far_geometry`), and the shadow pass is about 1.2 ms cheaper with no roads (the road and
+sidewalk meshes cast sun shadows).

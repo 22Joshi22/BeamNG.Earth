@@ -62,6 +62,8 @@ from collections import OrderedDict
 from dataclasses import dataclass
 
 import numpy as np
+
+import pacer
 from PIL import Image
 
 import cache as cachemod
@@ -207,6 +209,7 @@ def horizon_tan(hpad, res, pad, n, az, max_dist=PAD_M, dmax=None, growth=1.04):
     stop = min(max_dist, (pad - 1.5) * res, max_dist if dmax is None else dmax)
     d = res
     while d <= stop:
+        pacer.pace()
         dy, dx = -c * d / res, s * d / res
         iy, ix = math.floor(dy), math.floor(dx)
         fy, fx = dy - iy, dx - ix
@@ -261,6 +264,7 @@ def score_grid(hpad, L, res, pad, azs, els):
         ht = horizon_tan(hpad, res, pad, n, az, dmax=dmax).ravel()
         a = (nx * math.sin(math.radians(az)) + ny * math.cos(math.radians(az))).ravel()
         for j, el in enumerate(els):
+            pacer.pace()
             lit = ht < math.tan(math.radians(el))
             dirc = np.maximum(0.0, a * math.cos(math.radians(el)) + nz.ravel() * math.sin(math.radians(el))) * lit
             dc = dirc - dirc.mean()
@@ -284,6 +288,7 @@ def fit_sun(hpad, L, res, pad):
     Returns dict(az, el, r2, mcc)."""
     best = None
     for k, f in enumerate(FIT_F):
+        pacer.pace()
         off = pad % f
         hp, Lf, pf = down(hpad[off:, off:], f), down(L, f), (pad - off) // f
         if k == 0:
@@ -888,6 +893,7 @@ class Deshadow:
         return True if os.path.exists(self._paths(rk)[0]) else None
 
     def _worker(self):
+        pacer.enable(pacer.DUTY)     # a background analysis: paced (pacer.py)
         while True:
             with self._lock:
                 while not self._queue and not self._closed:
@@ -895,6 +901,7 @@ class Deshadow:
                 if self._closed:
                     return
                 _, _, rk = heapq.heappop(self._queue)
+            pacer.idle()                # the wait above was not busy time
             try:
                 P, grids = self._compute(rk)
             except Exception as e:      # network / DEM trouble: tried again later
