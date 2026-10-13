@@ -71,6 +71,7 @@ from concurrent.futures import ThreadPoolExecutor  # noqa: E402
 from dataclasses import dataclass, field, replace  # noqa: E402
 
 import numpy as np  # noqa: E402
+from PIL import Image  # noqa: E402
 
 import cache as cachemod  # noqa: E402
 import cdae  # noqa: E402
@@ -85,6 +86,7 @@ import mapdata as mapdatamod  # noqa: E402
 import dem as demmod  # noqa: E402
 import deshadow as deshadowmod  # noqa: E402
 import farfield  # noqa: E402
+import terraincache  # noqa: E402
 import geodesy  # noqa: E402
 import gravity as gravitymod  # noqa: E402
 import heightmap  # noqa: E402
@@ -111,7 +113,7 @@ def resolve_block(block, near_visual):
     """The --block value to use: the given one, else 512 in mesh mode and 1024 in terrain mode."""
     if block is not None:
         return block
-    return CLI_BLOCK_MESH if near_visual == "mesh" else heightmap.SIZE
+    return CLI_BLOCK_MESH if near_visual in MESH_LAYOUT else heightmap.SIZE
 
 
 def resolve_colormatch(mode, chain):
@@ -128,16 +130,26 @@ def resolve_horizon(horizon, near_visual):
     terrain mode. Server() keeps horizon=False (test_v131_default / test_cli_default)."""
     if horizon is not None:
         return horizon
-    return near_visual == "mesh"
+    return near_visual in MESH_LAYOUT
 
 
 def resolve_cells(cells, near_visual):
     """The --cells value to use: the given one, else 64 in mesh mode and 32 in terrain mode."""
     if cells is not None:
         return cells
-    return CLI_CELLS_MESH if near_visual == "mesh" else 32
+    return CLI_CELLS_MESH if near_visual in MESH_LAYOUT else 32
 SERVER_VERSION = netfetch.SERVER_VERSION      # one place: the User-Agent carries it too
-NEAR_VISUALS = ("mesh", "terrain")
+NEAR_VISUALS = ("mesh", "terrain", "detail")
+# detail (2026-10-12, docs/research/2026-10-12-engine-limits-and-worldgen.md §6-7): the mesh layout
+# (64 cells, the 512² block, the horizon) with the physics block drawn as the near ground: aerial photo
+# as its base colour, the surface materials' own detail textures; far tiles under it are hidden or sunk
+# as in terrain mode. MESH_LAYOUT: the modes on the mesh-mode tile layout; BLOCK_DRAWN: the block is seen.
+MESH_LAYOUT = ("mesh", "detail")
+BLOCK_DRAWN = ("terrain", "detail")
+BASE_PX = 1024                  # detail mode: the block's base photo (1 km -> 1 m per texel; USGS is ~1.9 m)
+BASE_AO_VFS = "/levels/beamng_earth/art/terrains/bngEarth_base_ao.png"   # every surface layer's aoBaseTex
+BASE_AO = 251                   # its flat value (tools/make_level_assets.py)
+DETAIL_ROAD_LIFT = 0.05         # detail mode: road surfaces over the drawn block (its 2 m triangles + slack)
 TEX_NEAR, TEX_FAR = 256, 256    # 32 cells: texture edge (px) of the two finest levels / of the others (512
                                  # near was 15x finer than USGS: no visible gain for 2x build time and VRAM);
                                  # --tex gives one per level (64 cells: farfield.TEX_DEFAULT)
@@ -401,6 +413,7 @@ class Server:
         self.heartbeat_at = time.monotonic()
         self._scan_sessions()
         self.out_dir = os.path.join(root, self.sid)
+        self.user_dir = user_dir           # the game's user folder (detail mode fills its terrain texture cache)
         self.cdae_dir = os.path.join(user_dir, *CDAE_ROOT, self.sid.lower())
         self.vfs_dir = f"/temp/beamngEarth/{self.sid}"
         os.makedirs(self.out_dir, exist_ok=True)
@@ -415,9 +428,12 @@ class Server:
         if tex is None and cells == 32:
             tex = (tex_near, tex_near, tex_far)         # the v1.3.1 rule: the two finest levels are near
         # Every layout-dependent rule reads self.layout (terrain mode: frozen at 32 cells)
-        self.layout = farfield.Layout(cells, block, near_visual == "mesh", tex)
+        self.layout = farfield.Layout(cells, block, near_visual in MESH_LAYOUT, tex)
         self.follow = FOLLOW_RULES[self.layout.block]     # the mod's terrain-follow table for this block
         self.min_level = self.layout.min_level
+        # the finest level under a drawn block's forced box (detail: L-1, whose 128 m edges meet the 512²
+        # block's 128 m-grid edges; terrain: L0 under the 256 m-grid 1024² block)
+        self.forced_level = max(self.min_level, -1) if near_visual == "detail" else 0
         self.near_radii = dict(self.layout.near_radii if near_radii is None else near_radii)
         self.tile_cache = TILE_CACHE[cells]
         self.net = net if net is not None else netfetch.Fetcher()
@@ -460,8 +476,8 @@ class Server:
         self.status_interval = status_interval
         # M1h: the line-of-sight far field. One worker builds the anchors' zmax grids (coarse DEM
         # passes) so neither a heightmap nor a tile ever waits behind one.
-        if horizon and near_visual != "mesh":
-            raise ValueError("horizon mode needs the mesh near-visual mode")
+        if horizon and near_visual not in MESH_LAYOUT:
+            raise ValueError("horizon mode needs the mesh (or detail) near-visual mode")
         self.horizon = bool(horizon)
         self.horizon_pool = ThreadPoolExecutor(1, thread_name_prefix="horizon") if self.horizon else None
         self.horizon_grids = {}             # anchorId -> farfield.HorizonGrid
@@ -485,7 +501,7 @@ class Server:
         self.prune_recheck = PRUNE_RECHECK
         self.retired_keep = RETIRED_KEEP
         self.delete_interval = DELETE_INTERVAL
-        self.delete_max_rate = DELETE_MAX_RATE if near_visual == "mesh" else 1.0 / DELETE_INTERVAL
+        self.delete_max_rate = DELETE_MAX_RATE if near_visual in MESH_LAYOUT else 1.0 / DELETE_INTERVAL
         self.delete_queue = deque()     # (path, tile key or None) waiting for a rate-limited delete
         self._deleting = False
         self._prune_scheduled = set()
@@ -728,7 +744,8 @@ class Server:
         chunks = roadsmod.build_tile(anchor.frame, tx, ty, cells, elev, urban, walks=walks, bridges=anchor.bridges,
                                      widths=self.road_widths)
         x0, y0, _, _ = roadsmod.tile_bbox(tx, ty)
-        mesh = roadmeshmod.build(anchor.frame, chunks, elev, (x0, y0, 0.0))
+        mesh = roadmeshmod.build(anchor.frame, chunks, elev, (x0, y0, 0.0),
+                                 DETAIL_ROAD_LIFT if self.near_visual == "detail" else 0.0)
         dmesh = roadmeshmod.deck(chunks, (x0, y0, 0.0))
         return roadsmod.write_tile(self.out_dir, self.vfs_dir, aid, tx, ty, chunks, walks, mesh, dmesh)
 
@@ -768,9 +785,38 @@ class Server:
             complete = complete and roads_complete
             info["layers"] = surfacemod.write_masks(idx[::-1], self.out_dir, self.hm_name((anchor.id, cx, cy))[:-4])
             info["surfaceComplete"] = complete
+        if self.near_visual == "detail" and self.imagery is not None:
+            info["base"] = self.write_base(anchor, cx, cy)
         info["seconds"] = time.perf_counter() - t0
         info["zoom"] = anchor.hm_zoom
         return info
+
+    def base_name(self, key):
+        return self.hm_name(key)[:-4] + "_base.png"
+
+    def write_base(self, anchor, cx, cy):
+        """Detail mode: the block footprint's aerial photo (BASE_PX² PNG, row 0 = north, the same imagery
+        chain and corrections as the far tiles), the drawn block's base colour. The game would pack it into
+        BC7 on its main thread (1.5 s for a new 1024² photo); terraincache writes that packed texture into
+        the game's cache first (~0.4 s here), so the game takes it as it is. Returns the file name, or None
+        when no imagery could be rendered (the block keeps the level's neutral base)."""
+        size = self.layout.block * heightmap.SQUARE
+        x0, y0 = cx - size / 2, cy - size / 2
+        try:
+            rgb, _ = self.imagery.render(anchor.frame, x0, y0, size, BASE_PX)
+        except Exception as e:      # an imagery failure must not cost the terrain
+            log.info("base photo %s: %s", (anchor.id, cx, cy), e)
+            return None
+        name = self.base_name((anchor.id, cx, cy))
+        path = os.path.join(self.out_dir, name)
+        rgb = np.asarray(rgb, np.uint8)
+        Image.fromarray(rgb, "RGB").save(path + ".tmp", format="PNG", compress_level=1)
+        os.replace(path + ".tmp", path)
+        try:            # after the photo: the cache entry must be the newer file
+            terraincache.base_entry(self.user_dir, f"{self.vfs_dir}/{name}", BASE_AO_VFS, rgb, BASE_AO)
+        except OSError as e:
+            log.info("terrain cache for %s: %s", name, e)
+        return name
 
     def terrain_cached(self, key):
         return key in self.hm or key in self.hm_inflight
@@ -818,6 +864,10 @@ class Server:
         for key in [k for k in self.hm if k not in keep][:max(0, len(self.hm) - HM_CACHE)]:
             del self.hm[key]
             self._remove(os.path.join(self.out_dir, self.hm_name(key)))
+            self._remove(os.path.join(self.out_dir, self.base_name(key)))
+            if self.near_visual == "detail":     # its packed copy in the game's terrain texture cache
+                self._remove(os.path.join(terraincache.cache_dir(self.user_dir),
+                                          terraincache.base_key(f"{self.vfs_dir}/{self.base_name(key)}", BASE_AO_VFS) + ".dds"))
             if self.surface is not None:        # its surface masks (only read at import)
                 for name in surfacemod.mask_names(self.hm_name(key)[:-4]):
                     self._remove(os.path.join(self.out_dir, name))
@@ -958,7 +1008,7 @@ class Server:
         g = self.grader_for(anchor) if lvl <= 0 else None      # graded like the block (grading.py)
         src = gradingmod.GradedDem(self.dem, g) if g is not None else self.dem
         built = farfield.build_tile(anchor.frame, src, tile, anchor.zooms[max(lvl, 0)], q,
-                                    ref_zoom, with_sink=self.near_visual == "terrain", layout=self.layout)
+                                    ref_zoom, with_sink=self.near_visual in BLOCK_DRAWN, layout=self.layout)
         t1 = time.perf_counter()
         material = texture = used = None
         tex_bytes = 0
@@ -1506,6 +1556,9 @@ class Connection:
         if info.get("layers"):      # --surface on: one mask per material, MATERIALS order
             out["layers"] = [f"{self.s.vfs_dir}/{n}" for n in info["layers"]]
             out["materials"] = [[name, gm] for name, gm in surfacemod.MATERIALS]
+        if info.get("base"):        # detail mode: the base photo over the block's world size
+            out["base"] = f"{self.s.vfs_dir}/{info['base']}"
+            out["baseSize"] = self.s.layout.block * heightmap.SQUARE
         return out
 
     async def prepare_anchor(self, msg):
@@ -1757,9 +1810,9 @@ class Connection:
 
     # --- far field ----------------------------------------------------------
     def forced(self):
-        """Boxes refined to L0 (terrain mode: the mod covers L0 under the block). None in mesh
-        mode: the block is invisible, so tiles never depend on it (V1_3_SPEC §B)."""
-        if self.s.near_visual == "mesh":
+        """Boxes refined to L0 (terrain mode: the mod covers L0 under the block; detail mode: to L-1).
+        None in mesh mode: the block is invisible, so tiles never depend on it (V1_3_SPEC §B)."""
+        if self.s.near_visual not in BLOCK_DRAWN:
             return []
         return [b.bbox for b in (self.block, self.pending_block, self.predicted_block) if b is not None]
 
@@ -1779,7 +1832,7 @@ class Connection:
         new, refined = farfield.select(*self.focus, self.forced(), self.refined, self.s.kfun,
                                        self.s.hysteresis, radius, hold=set(self.node_changed),
                                        min_level=self.s.min_level, radii=self.s.near_radii, layout=self.s.layout,
-                                       **extra)
+                                       forced_level=self.s.forced_level, **extra)
         if self.desired:                # the first selection of an anchor is not a change
             for n in refined ^ self.refined:
                 self.node_changed[n] = now
@@ -1804,14 +1857,14 @@ class Connection:
             self.send({"type": "far_remove", "anchorId": aid, "key": k})
         # Build order: L0 under the committed / pending block (the mod's cover and commit
         # gating need them), then groups that are partly sent, then the rest; nearest first.
-        gate = [b.bbox for b in (self.block, self.pending_block) if b is not None and self.s.near_visual == "terrain"]
+        gate = [b.bbox for b in (self.block, self.pending_block) if b is not None and self.s.near_visual in BLOCK_DRAWN]
         started = {k for adds, _ in self.groups if any(a in self.sent for a in adds) for k in adds}
         fx, fy = self.focus
         todo = [self.desired[k] for k in needed if k not in self.sent]
 
         def prio(t):
             cls = 2
-            if t.level == 0 and any(farfield.overlaps(t.bbox, b) for b in gate):
+            if t.level in (0, self.s.forced_level) and any(farfield.overlaps(t.bbox, b) for b in gate):
                 cls = 0
             elif t.key in started:
                 cls = 1
@@ -2106,7 +2159,9 @@ def main():
                          "or 'off' for the v1.2 palette look (default: usgs,eox2023,eox2016)")
     ap.add_argument("--near-visual", choices=NEAR_VISUALS, default="mesh",
                     help="mesh: the ground near the player is drawn by 64/128 m tiles and the terrain block is "
-                         "physics only (default); terrain: the v1.2 look (the terrain block is drawn)")
+                         "physics only (default); terrain: the v1.2 look (the terrain block is drawn); detail: the "
+                         "mesh layout with the physics block drawn as the near ground (aerial photo base colour, "
+                         "surface detail textures)")
     ap.add_argument("--cells", type=int, choices=farfield.CELL_COUNTS, default=None,
                     help="tile cells per edge: 64 = docs/V1_4_SPEC.md M1 (FORMAT 4, exact level L-1; the "
                          "default in mesh mode), 32 = the v1.3.1 layout (FORMAT 3; terrain mode always)")
@@ -2182,11 +2237,11 @@ def main():
     args.block = resolve_block(args.block, args.near_visual)
     args.horizon = resolve_horizon(args.horizon, args.near_visual)
     args.colormatch = resolve_colormatch(args.colormatch, args.imagery)
-    if args.cells != 32 and args.near_visual != "mesh":
+    if args.cells != 32 and args.near_visual not in MESH_LAYOUT:
         ap.error("--cells 64 needs --near-visual mesh (terrain mode is frozen at the v1.3.1 layout)")
-    if args.block != heightmap.SIZE and args.near_visual != "mesh":
+    if args.block != heightmap.SIZE and args.near_visual not in MESH_LAYOUT:
         ap.error("--block 512 needs --near-visual mesh (terrain mode is frozen at the v1.3.1 layout)")
-    if args.horizon and args.near_visual != "mesh":
+    if args.horizon and args.near_visual not in MESH_LAYOUT:
         ap.error("--horizon needs --near-visual mesh (terrain mode is frozen at the v1.3.1 layout)")
     logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO,
                         format="%(asctime)s %(levelname)s %(name)s: %(message)s")

@@ -109,7 +109,8 @@ MOD_TO_SERVER = {
 CAM = {"x", "y", "z", "fx", "fy", "fz", "fovDeg"}
 TERRAIN = {"cx": F(NUM), "cy": F(NUM), "heightmap": F(str), "size": F(int), "squareSize": F(NUM),
            "zBase": F(NUM), "maxHeight": F(NUM), "q": F(NUM),
-           "layers": F(list, OPT), "materials": F(list, OPT)}     # --surface on (surface.py)
+           "layers": F(list, OPT), "materials": F(list, OPT),     # --surface on (surface.py)
+           "base": F(str, OPT), "baseSize": F(NUM, OPT)}           # --near-visual detail: the block's photo
 SERVER_TO_MOD = {
     "hello": {"protocol": F(int), "format": F(int), "serverVersion": F(str), "sessionId": F(str),
               "farFormat": F(str), "material": F(str),
@@ -550,13 +551,28 @@ class ConstantsTest(unittest.TestCase):
         self.assertLess(create.index("ensureMaterials()"), create.index("TerrainBlock()"))
 
     def test_near_visual_values(self):
-        """hello.nearVisual: the mod draws the ground with tiles for 'mesh' and with the
-        TerrainBlock for anything else (an older server sends none: the v1.2 look)."""
-        self.assertEqual(set(earthd.NEAR_VISUALS), {"mesh", "terrain"})
+        """hello.nearVisual: the mod draws the ground with tiles for 'mesh', with tiles plus the drawn
+        block for 'detail' (2026-10-12) and with the TerrainBlock for anything else (an older server
+        sends none: the v1.2 look)."""
+        self.assertEqual(set(earthd.NEAR_VISUALS), {"mesh", "terrain", "detail"})
+        self.assertEqual(set(earthd.MESH_LAYOUT), {"mesh", "detail"})
+        self.assertEqual(set(earthd.BLOCK_DRAWN), {"terrain", "detail"})
         core = (LUA / "core.lua").read_text()
-        self.assertIn("nearVisual = (mode == 'mesh') and 'mesh' or 'terrain'", lua_function(core, "setNearVisual"))
+        self.assertIn("nearVisual = (mode == 'mesh' or mode == 'detail') and mode or 'terrain'", lua_function(core, "setNearVisual"))
         far = (LUA / "farfield.lua").read_text()
-        self.assertIn("mode = (mode == 'mesh') and 'mesh' or 'terrain'", lua_function(far, "setNearVisual"))
+        self.assertIn("mode = (mode == 'mesh' or mode == 'detail') and mode or 'terrain'", lua_function(far, "setNearVisual"))
+
+    def test_detail_base_photo(self):
+        """Detail mode: terrain.base / baseSize (earthd.terrain_msg) reach terrain.load through core's
+        loadBlock; the base texture slot of the shipped texture set is the server's photo size."""
+        core = (LUA / "core.lua").read_text()
+        load = lua_function(core, "loadBlock")
+        self.assertIn("tr.base", load)
+        self.assertIn("tonumber(tr.baseSize)", load)
+        level = LUA.parents[3] / "levels" / "beamng_earth" / "art" / "terrains" / "main.materials.json"
+        mats = json.loads(level.read_text())
+        ts = mats["beamngEarthTerrainMaterialTextureSet"]
+        self.assertEqual(ts["baseTexSize"], [earthd.BASE_PX, earthd.BASE_PX])
 
     def test_imagery_material(self):
         """satmat.lua builds the Material the way the server's shapes and textures need: mapTo =

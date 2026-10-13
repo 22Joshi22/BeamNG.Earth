@@ -80,10 +80,11 @@ def ribbons(chunks):
     return out
 
 
-def build(frame, chunks, elev, origin):
+def build(frame, chunks, elev, origin, lift=0.0):
     """The road mesh of a tile (render only; on bridges it lies DECK_SKIN over deck()'s slab): (positions
     relative to origin, tris, uvs, materials, tri material index), or None. elev(lat, lon) -> m (graded,
-    as the physics block). One elev call."""
+    as the physics block). One elev call. lift: m more for the draped surfaces (detail mode: the physics
+    block is drawn, so the asphalt must sit over it, not in it; earthd DETAIL_ROAD_LIFT)."""
     rb = ribbons(chunks)                        # deck surfaces too: their asphalt over deck()'s concrete
     polys = [c for c in chunks if c.get("poly")]
     if not rb and not polys:
@@ -101,7 +102,7 @@ def build(frame, chunks, elev, origin):
     for left, right, v, m, layer, fz in rb:
         k = len(left)
         if fz is None:
-            z = u[k0:k0 + 2 * k] + LIFT[layer]
+            z = u[k0:k0 + 2 * k] + LIFT[layer] + lift
             k0 += 2 * k
         else:                                   # on a deck: over its opaque concrete top
             z = np.r_[fz, fz] + LIFT[layer] + DECK_SKIN
@@ -119,7 +120,7 @@ def build(frame, chunks, elev, origin):
     for c in polys:                             # filled polygons (corner asphalt): a fan from vertex 0
         q = np.asarray(c["poly"], np.float64)
         k = len(q)
-        z = u[k0:k0 + k] + LIFT[layer_of(c)]
+        z = u[k0:k0 + k] + LIFT[layer_of(c)] + lift
         k0 += k
         if c["m"] not in mats:
             mats.append(c["m"])

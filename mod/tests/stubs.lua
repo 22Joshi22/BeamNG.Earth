@@ -56,7 +56,14 @@ function TerrainBlock()
   local tb = S.newObject('TerrainBlock')
   function tb:setTerrFileLvlFolder(p) self.folder = p end
   function tb:addMaterial() S.count('addMaterial') end
-  function tb:updateMaterial() end
+  function tb:updateMaterial(i, n)
+    S.count('updateMaterial'); self.updated = self.updated or {}; self.updated[#self.updated + 1] = { i, n }
+  end
+  function tb:getMaterialNames()
+    local r = {}
+    for i, m in ipairs(self.lastImport and self.lastImport.mats or {}) do r[i] = m end
+    return r
+  end
   function tb:importMaps(path, sq, maxH, hole, mats, maps, flip)
     S.count('importMaps'); self.lastImport = { path = path, sq = sq, maxH = maxH, mats = mats, maps = maps, flip = flip }
     return true
