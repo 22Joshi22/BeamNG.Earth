@@ -155,6 +155,8 @@ NEAR_VISUALS = ("mesh", "terrain", "detail")
 # as in terrain mode. MESH_LAYOUT: the modes on the mesh-mode tile layout; BLOCK_DRAWN: the block is seen.
 MESH_LAYOUT = ("mesh", "detail")
 BLOCK_DRAWN = ("terrain", "detail")
+GROUND_RESEND_M, GROUND_RESEND_S = 1.0, 1.5   # ground_ahead: sent on a change, else this often (the mod's
+                                               # follow.GROUND_STALE_S is 3 s)
 DETAIL_RING_M = 128.0           # detail mode: L-1 tiles this far beyond the block (forced())
 IMG_WARM_MARGIN = 200.0         # m beyond the block's half width that warm_imagery fetches ahead
 BASE_PX = 1024                  # detail mode: the block's base photo (1 km -> 1 m per texel; USGS is ~1.9 m)
@@ -1585,6 +1587,7 @@ class Connection:
         self.credits = creditsmod.Tracker()     # data credits: throttle, last message sent (--credits on)
         self.ground_busy = False                # a groundahead job is running (one at a time)
         self.base_busy = False                  # a base photo refresh is running (base_refresh)
+        self.ground_sent = None                 # (anchor id, z, monotonic) of the last ground_ahead sent
         self.following = True                   # the mod moves its block (pose "follow"; false high up)
 
     def send(self, msg):
@@ -2005,7 +2008,10 @@ class Connection:
             try:
                 z = await self.loop.run_in_executor(self.s.ground_pool, groundaheadmod.highest, self.s.dem, frame,
                                                     x, y, vx, vy)
-                if math.isfinite(z):
+                now, last = time.monotonic(), self.ground_sent
+                if math.isfinite(z) and (last is None or last[0] != aid or abs(z - last[1]) > GROUND_RESEND_M
+                                         or now - last[2] >= GROUND_RESEND_S):
+                    self.ground_sent = (aid, z, now)
                     self.send({"type": "ground_ahead", "anchorId": aid, "z": round(z, 1)})
             except Exception as e:      # offline, a DEM failure: the mod keeps following
                 log.debug("ground ahead: %s: %s", type(e).__name__, e)
