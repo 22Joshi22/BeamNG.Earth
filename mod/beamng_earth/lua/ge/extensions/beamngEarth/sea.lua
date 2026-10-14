@@ -5,7 +5,7 @@
 -- centre), its volume DEPTH_M / 2 below.
 local M = {}
 
-M.DEPTH_M = 40          -- the blocks' z scale: water down to 20 m below the surface (the floor is <= 6 m)
+M.DEPTH_M = 200         -- the blocks' z scale: water down to 100 m below the surface (sea floors <= 80 m)
 M.CREATE_PER_FRAME = 4  -- tiles made per frame (a full set of ~50 in under a second, no hitch)
 M.NUDGE_SPEED = 1.0     -- m/s: a car slower than this inside a new tile is re-placed where it is, so its
                         -- physics sees the water (a parked car only notices water when it moves)
