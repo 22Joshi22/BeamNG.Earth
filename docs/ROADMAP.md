@@ -695,6 +695,8 @@ Gameplay
   with checkpoints, delivery jobs between real towns.
 
 ## User requests 2026-10-13 (after water; in this order unless the user reorders)
+- **Lava (later, user idea):** River / WaterBlock objects with `liquidType` lava (the "Downhill Mayhem"
+  map's lava pools: orange, emissive, density 10000) for volcanoes or other places with lava.
 - **Performance, monitored live:** the user drives by hand in different places while the game and
   server metrics are watched; there are still hitches while driving.
 - **Texture patterns** visible in some terrain (repeating tiles): find and fix.

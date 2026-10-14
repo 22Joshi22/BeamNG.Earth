@@ -31,7 +31,7 @@ import mapcells
 
 log = logging.getLogger("earthd.seacarve")
 
-VERSION = 6
+VERSION = 8
 SEA_E = 0.0                 # m: the sea surface (the DEMs' heights are above mean sea level)
 DEPTH_SLOPE = 0.15          # floor depth per metre from the shoreline (1 : 6.7)
 DEPTH_CAP = 6.0             # m: the floor's depth away from the shore without bathymetry (Chesapeake mean
@@ -64,7 +64,8 @@ RIVER_SKIP_CLASSES = ("drain", "ditch")
 RIVER_DEPTH_CAP = 3.0       # m
 RIVER_DEM_STEP = 4          # river levels: the DEM every 4th pixel (~7.5 m), the lowest of 3 x 3 such
                             # samples (the flattened surface, not a bank),
-RIVER_SMOOTH = 4            # ... then the lowest of the river's samples within 4 more (~70 m along it)
+RIVER_FLAT_M = 0.25         # a river whose samples stand more than this above its surface (p90) is not
+                            # flattened by the DEM: left out (rough creeks; River objects later)
 WATER_BANK_M = 1.0          # m: a lake / river pixel whose DEM is higher than its level by more is dry
                             # (outlines that include banks, islands, a floodplain)
 LAKE_SKIP_CLASSES = ("fountain", "swimming_pool", "wastewater", "basin", "drain", "fish_pass")
@@ -109,6 +110,30 @@ def shore_steps(water, kmax):
         out[cur & ~nxt] = k
         cur = nxt
     out[cur] = kmax
+    return out
+
+
+def _components(mask):
+    """The 8-connected components of a boolean grid: a list of (rows, cols) index arrays."""
+    seen = np.zeros(mask.shape, bool)
+    n, m = mask.shape
+    out = []
+    for j0, i0 in zip(*np.nonzero(mask)):
+        if seen[j0, i0]:
+            continue
+        stack, rows, cols = [(j0, i0)], [], []
+        seen[j0, i0] = True
+        while stack:
+            j, i = stack.pop()
+            rows.append(j)
+            cols.append(i)
+            for dj in (-1, 0, 1):
+                for di in (-1, 0, 1):
+                    a, b = j + dj, i + di
+                    if 0 <= a < n and 0 <= b < m and mask[a, b] and not seen[a, b]:
+                        seen[a, b] = True
+                        stack.append((a, b))
+        out.append((np.array(rows), np.array(cols)))
     return out
 
 
@@ -178,11 +203,12 @@ class SeaCarver:
             with np.load(p, allow_pickle=False) as f:
                 if not f["any"]:
                     return None, True
-                return (f["depth"].astype(np.float32) / 100.0, f["level"].astype(np.float32)), True
+                return (f["depth"].astype(np.float32) / 100.0, f["level"].astype(np.float32),
+                        f["outline"].astype(bool)), True
         r = self._build(x, y)
-        complete = r is None or r[2]
+        complete = r is None or r[3]
         if r is not None:
-            r = (np.round(r[0] * 100.0).astype(np.float32) / 100.0, r[1])   # the values the file gives back
+            r = (np.round(r[0] * 100.0).astype(np.float32) / 100.0, r[1], r[2])   # as the file gives back
         if p and complete:              # an incomplete raster (no bathymetry yet) is built again later
             os.makedirs(os.path.dirname(p), exist_ok=True)
             tmp = f"{p}.{os.getpid()}.{threading.get_ident()}.tmp"
@@ -190,7 +216,8 @@ class SeaCarver:
                 if r is None:
                     np.savez_compressed(fh, any=False)
                 else:
-                    np.savez_compressed(fh, any=True, depth=np.round(r[0] * 100.0).astype(np.uint16), level=r[1])
+                    np.savez_compressed(fh, any=True, depth=np.round(r[0] * 100.0).astype(np.uint16), level=r[1],
+                                        outline=r[2])
             os.replace(tmp, p)
         return r, complete
 
@@ -229,6 +256,7 @@ class SeaCarver:
         depth = np.zeros((n, n), np.float32)
         lake[sea] = -1                  # the sea wins where they overlap
         river &= ~sea & (lake < 0)
+        outline = river.copy()          # every river outline (riverlines.py measures widths across it)
         for k in range(len(lake_ids)):
             m = lake == k
             lv = self._lake_level(m, ox, oy, px)
@@ -267,7 +295,8 @@ class SeaCarver:
                 st = shore_steps(sea, kmax).astype(np.float32)
                 depth[sea] = np.minimum(target[sea], SHORE_SLOPE * (st[sea] - 0.5) * px)
             level[sea] = SEA_E
-        if not np.isfinite(level[PAD_PX:-PAD_PX, PAD_PX:-PAD_PX]).any():
+        inner = (slice(PAD_PX, -PAD_PX), slice(PAD_PX, -PAD_PX))
+        if not (np.isfinite(level[inner]).any() or outline[inner].any()):
             return None
         for _ in range(LEVEL_PAD_PX):   # spread the levels onto the shore (bilinear lookups beside it)
             p = np.pad(level, 1, constant_values=np.nan)
@@ -276,7 +305,7 @@ class SeaCarver:
                 fill = np.nanmax(np.where(np.isfinite(nb), nb, -np.inf), axis=0)
             level = np.where(np.isnan(level) & np.isfinite(fill), fill, level).astype(np.float32)
         c = slice(PAD_PX - 1, PAD_PX + CELL_PX + 1)
-        return depth[c, c].copy(), level[c, c].copy(), complete
+        return depth[c, c].copy(), level[c, c].copy(), outline[c, c].copy(), complete
 
     def _bathy(self, ox, oy, n):
         """NOAA's elevations (m, negative below the sea) on the n x n raster at z16 pixel (ox, oy), or None
@@ -328,26 +357,34 @@ class SeaCarver:
 
     def _river_levels(self, m, ox, oy):
         """The water level of every river pixel (m): from the DEM every RIVER_DEM_STEP pixels, the lowest of
-        the river's own samples within RIVER_SMOOTH (the channel's flattened surface, not a bank, a sandbar
-        or the floodplain an outline may include), quantised to LEVEL_Q; NaN elsewhere and where the DEM
-        stands more than WATER_BANK_M above that level (not water, whatever the outline says). None
-        without a DEM."""
+        the 3 x 3 samples around (the surface rather than a bank), quantised to LEVEL_Q. Only rivers whose
+        surface the DEM flattens (US DEMs do for rivers wider than ~30 m): a connected river whose inner
+        samples (away from its edge) stand more than RIVER_FLAT_M above that surface at their 90th
+        percentile (a creek in a wide outline, a rough channel), or that has none, gets none (NaN: no
+        water, no carving; riverlines.py draws it as River objects). NaN too where the DEM
+        is more than WATER_BANK_M above the level. None without a DEM."""
         c = self._coarse_dem(m, ox, oy)
         if c is None:
             return None
         e, j0, i0 = c
         k = RIVER_DEM_STEP
         jj, ii = np.nonzero(m)
-        cm = np.zeros(e.shape, bool)
-        cm[jj // k - j0, ii // k - i0] = True
-        lo = np.where(cm, e, np.inf)
-        for _ in range(RIVER_SMOOTH):   # the lowest within RIVER_SMOOTH samples (a min filter, 3 x 3 steps)
-            p = np.pad(lo, 1, constant_values=np.inf)
-            lo = np.min(np.stack([p[a:a + e.shape[0], b:b + e.shape[1]] for a in range(3) for b in range(3)]), axis=0)
         cj, ci = jj // k - j0, ii // k - i0
+        cm = np.zeros(e.shape, bool)
+        cm[cj, ci] = True
+        p = np.pad(np.where(cm, e, np.inf), 1, constant_values=np.inf)
+        lo = np.min(np.stack([p[a:a + e.shape[0], b:b + e.shape[1]] for a in range(3) for b in range(3)]), axis=0)
+        q = np.pad(cm, 1)
+        inner = np.all(np.stack([q[a:a + e.shape[0], b:b + e.shape[1]] for a in range(3) for b in range(3)]), axis=0)
+        flat = np.zeros(e.shape, bool)
+        for comp in _components(cm):
+            core = inner[comp]          # judged away from its edge (the outline's cells there read the banks)
+            if core.any() and np.percentile((e[comp] - lo[comp])[core], 90) <= RIVER_FLAT_M:
+                flat[comp] = True
         lvl = np.round(lo[cj, ci] / LEVEL_Q) * LEVEL_Q
+        ok = flat[cj, ci] & (e[cj, ci] <= lvl + WATER_BANK_M)
         out = np.full(m.shape, np.nan, np.float32)
-        out[jj, ii] = np.where(e[cj, ci] <= lvl + WATER_BANK_M, lvl, np.nan)
+        out[jj, ii] = np.where(ok, lvl, np.nan)
         return out
 
     def _lake_dry(self, m, level, ox, oy):
@@ -472,7 +509,7 @@ class SeaCarver:
             r = self.raster(int(kx), int(ky))
             if r is None:
                 continue
-            rd, rl = r
+            rd, rl = r[0], r[1]
             sel = (cx == kx) & (cy == ky)
             fx = mx[sel] - kx * CELL_PX + 0.5      # raster coords: pixel centres at i + 0.5 - 1
             fy = my[sel] - ky * CELL_PX + 0.5
@@ -506,6 +543,34 @@ class SeaCarver:
         sea and away from water; wait=False: also in cells not at hand yet, built in the background)."""
         d, lv = self.water(lat, lon, wait=wait)[:2]
         return np.where((d > 0) & (lv > SEA_HI), lv, np.nan)
+
+    def outline_at(self, lat, lon):
+        """Inside a river outline (any, flattened or not) at the points; False in cells not at hand yet
+        (built in the background)."""
+        lat = np.asarray(lat, np.float64)
+        lon = np.asarray(lon, np.float64)
+        out = np.zeros(lat.shape, bool)
+        if lat.size == 0:
+            return out
+        mx, my = _merc(lat, lon)
+        cx = np.floor(mx / CELL_PX).astype(np.int64)
+        cy = np.floor(my / CELL_PX).astype(np.int64)
+        later = []
+        for kx, ky in np.unique(np.stack([cx.ravel(), cy.ravel()], -1), axis=0):
+            kx, ky = int(kx), int(ky)
+            if not self.ready(kx, ky):
+                later.append((kx, ky))
+                continue
+            r = self.raster(kx, ky)
+            if r is None:
+                continue
+            sel = (cx == kx) & (cy == ky)
+            ni = np.clip(np.floor(mx[sel] - kx * CELL_PX + 1.0).astype(np.int64), 0, r[2].shape[1] - 1)
+            nj = np.clip(np.floor(my[sel] - ky * CELL_PX + 1.0).astype(np.int64), 0, r[2].shape[0] - 1)
+            out[sel] = r[2][nj, ni]
+        if later:
+            self.warm(later)
+        return out
 
     def near(self, lat, lon, radius_m, step_m=250.0):
         """Any sea within radius_m of (lat, lon) (sampled on a step_m grid)."""

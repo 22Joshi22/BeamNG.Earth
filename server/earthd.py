@@ -101,6 +101,7 @@ import airportgrade as airportgrademod  # noqa: E402
 import airports as airportsmod  # noqa: E402
 import seacarve as seacarvemod  # noqa: E402
 import seatiles as seatilesmod  # noqa: E402
+import riverlines as riverlinesmod  # noqa: E402
 import groundahead as groundaheadmod  # noqa: E402
 import heightmap  # noqa: E402
 import imagery as imagerymod  # noqa: E402
@@ -2071,17 +2072,32 @@ class Connection:
 
         async def run():
             try:
+                def cell_water(key):    # a cell's water lines if its map data is at hand (else built meanwhile)
+                    md = sea.md
+                    if not os.path.exists(md.path(mapdatamod._key(key), "water")):
+                        sea.warm([(key.x, key.y)])
+                        return None
+                    return md.cell(key, layers=("water",)).layers.get("water")
+
+                def tiled(la, lo):      # already water as tiles (sea, lakes, flattened rivers)
+                    d, lv, _ = sea.water(la, lo, wait=False)
+                    return np.where(np.isfinite(lv), d, 0.0)
+
                 def plan():
                     # with the cells at hand (the others are built in the background and used by the
                     # next plan, SEA_CHECK_S later): water appears at once at a new place
-                    return (seatilesmod.plan(frame, x, y, lambda la, lo, size: sea.sea_at(dem, la, lo, size, False))
-                            + seatilesmod.plan_lakes(frame, x, y, lambda la, lo: sea.lake_at(la, lo, False),
-                                                     lambda la, lo: dem.sample(la, lo, seatilesmod.LAKE_DEM_ZOOM)))
-                tiles = await self.loop.run_in_executor(self.s.ground_pool, plan)
-                msg = [t.to_msg() for t in tiles]
+                    tiles = (seatilesmod.plan(frame, x, y, lambda la, lo, size: sea.sea_at(dem, la, lo, size, False))
+                             + seatilesmod.plan_lakes(frame, x, y, lambda la, lo: sea.lake_at(la, lo, False),
+                                                      lambda la, lo: dem.sample(la, lo, seatilesmod.LAKE_DEM_ZOOM)))
+                    rivers = riverlinesmod.plan(frame, x, y, cell_water, tiled,
+                                                lambda la, lo: dem.sample(la, lo, riverlinesmod.DEM_ZOOM),
+                                                sea.outline_at)
+                    return tiles, rivers
+                tiles, rivers = await self.loop.run_in_executor(self.s.ground_pool, plan)
+                msg = ([t.to_msg() for t in tiles], [r.to_msg() for r in rivers])
                 if self.sea_sent is None or self.sea_sent[0] != aid or self.sea_sent[1] != msg:
                     self.sea_sent = (aid, msg)
-                    self.send({"type": "sea", "anchorId": aid, "tiles": msg})
+                    self.send({"type": "sea", "anchorId": aid, "tiles": msg[0], "rivers": msg[1]})
             except Exception as e:      # offline, no map data: no water tiles
                 log.debug("sea tiles: %s: %s", type(e).__name__, e)
             finally:

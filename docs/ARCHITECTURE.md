@@ -1377,6 +1377,21 @@ position; vehicles see water they drive into, but not water that appears around 
   fitted to their water (least squares; split while a sample is > 0.15 m off), tilted to match, and the
   physics block takes the tilted surface's height at the player. Ground carved > 5 cm under water gets
   the MUD layer (no grass through the surface).
+- **River objects along centrelines (`server/riverlines.py`, 2026-10-13):** after the user's look at the
+  "Downhill Mayhem" map (each of its two rivers is one River with 24-130 nodes, 5 m deep, the surface
+  following the valley, `flowMagnitudePhysics` 35 / 100 m/s pushing cars). Overture water lines (river /
+  stream, canal of class canal; no drains, ditches, intermittent) are chained where one way continues
+  another (OSM draws them in flow order), resampled every 10-20 m and cut into pieces on a 1024 m lattice
+  of the anchor frame (stable keys). Surface: the lowest DEM of the node and four points 3 m around, a
+  5-node running median, never rising downstream (running minimum), + 0.25 m; not carved yet (shallow
+  water in the channel). Width across the river's outline (seacarve's outline mask) or 12 / 4 / 8 m by
+  class; depth width / 8 (1-4 m); flow 1.0 / 0.6 / 0.3 m/s downstream. Left out where tiles are water
+  (the sea, lakes, rivers the DEM flattens: those keep their carved tiles). Only rivers the DEM flattens
+  (p90 of their inner samples <= 0.25 m above the surface) are tiles now; rough ones are left to these.
+  Sent as `sea.rivers` [key, kind, flow, [[x, y, z, width, depth], ...]] with the tiles; the mod makes
+  them from a definition (`Sim.deserializeObjectFromText`, which leaves them out of every group: added to
+  MissionGroup) with little foam (shallow water drew as white ribbons). Creek near Harrisburg: 12 pieces,
+  0.7 s to plan warm.
 - **Bathymetry (2026-10-13):** per cell, one export of NOAA NCEI's DEM global mosaic (CUDEM ~3 m along
   the US coasts; host policy `gis.ngdc.noaa.gov`), 4x coarser than the raster and aligned with it. The
   sea floor reaches NOAA's depth (1-80 m) from the shore at 0.3 m/m; without it (offline, refused) the

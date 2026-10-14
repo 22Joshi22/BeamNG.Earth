@@ -155,8 +155,9 @@ SERVER_TO_MOD = {
     "block_base": {"anchorId": F(int), "cx": F(NUM), "cy": F(NUM), "base": F(str), "baseSize": F(NUM)},
     # the highest ground near the player's path (groundahead.py; the mod's altitude rule), z in the anchor's frame
     "ground_ahead": {"anchorId": F(int), "z": F(NUM)},
-    # the sea's water tiles near the player (seatiles.py, --sea on): [key, x, y, z, size, nx, ny] each
-    "sea": {"anchorId": F(int), "tiles": F(list)},
+    # the water near the player (--sea on): tiles [key, x, y, z, size, nx, ny] (seatiles.py), rivers
+    # [key, kind, flow m/s, [[x, y, z, width, depth], ...]] (riverlines.py)
+    "sea": {"anchorId": F(int), "tiles": F(list), "rivers": F(list)},
     # data credits for the tiles around the player (credits.py; additive, protocol 4, --credits on)
     "credits": {"v": F(int), "near": F(str), "far": F(str), "ids": F(list), "farIds": F(list)},
     # road tiles near the player (roads.py; additive, with map data only): a JSON file of DecalRoad chunks

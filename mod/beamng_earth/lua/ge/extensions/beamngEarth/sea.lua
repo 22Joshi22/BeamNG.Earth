@@ -46,6 +46,12 @@ local INLAND = {
   { 'baseColor', 0, '44 74 60 255' }, { 'underwaterColor', 0, '52 78 58 240' }, { 'clarity', 0, '0.12' },
   { 'overallWaveMagnitude', 0, '0.04' }, { 'overallRippleMagnitude', 0, '0.12' },
 }
+-- Rivers along centrelines lie in their channels, shallow: little foam (with the bay's 0.75 m foam depth
+-- a stream drew as a white ribbon, 2026-10-13)
+local RIVER_LOOK = {
+  { 'overallFoamOpacity', 0, '0.4' }, { 'foamMaxDepth', 0, '0.1' }, { 'depthGradientMax', 0, '1.5' },
+  { 'overallRippleMagnitude', 0, '0.3' },
+}
 local TEXTURES = {      -- field, East Coast's file, the core fallback
   { 'rippleTex', '/levels/east_coast_usa/art/water/ripple3.dds', '/core/art/water/ripple_nm.normal.dds' },
   { 'depthGradientTex', '/levels/east_coast_usa/art/water/depthcolor_ramp.dds',
@@ -53,12 +59,14 @@ local TEXTURES = {      -- field, East Coast's file, the core fallback
   { 'foamTex', '/core/art/water/foam.dds', '/core/art/water/foam_b.color.png' },
 }
 
-local want = nil         -- { anchorId, tiles = { key -> tile } } from the server, or nil
+local want = nil         -- { anchorId, tiles = { key -> tile }, rivers = { key -> river } } from the server
 local made = {}         -- key -> { id, t }
+local madeRivers = {}   -- key -> id
 local madeAnchor = nil
 local phys = nil        -- { id, x, y, z } of the physics block
 local physStale = false -- tiles were made since it was: made again once a frame makes none
-M.created, M.nudges, M.physMade = 0, 0, 0
+M.created, M.nudges, M.physMade, M.riversMade, M.riverErrors = 0, 0, 0, 0, 0
+M.RIVER_PREFIX = 'bngEarthRiver_'
 
 local function exists(p)
   return not FS or FS:fileExists(p)
@@ -77,8 +85,38 @@ local function removeAll()
     local o = scenetree.findObjectById(m.id)
     if o then o:delete() end
   end
-  made, madeAnchor = {}, nil
+  for _, id in pairs(madeRivers) do
+    local o = scenetree.findObjectById(id)
+    if o then o:delete() end
+  end
+  made, madeRivers, madeAnchor = {}, {}, nil
   removePhys()
+end
+
+-- A River along a river's or stream's centreline (server riverlines.py): its nodes {x, y, z, width,
+-- depth} downstream, flowing at flow m/s (flowMagnitudePhysics pushes what floats in it), made from a
+-- definition as the editor does (Sim.deserializeObjectFromText).
+local function createRiver(key, r)
+  local nodes = {}
+  for _, n in ipairs(r.nodes) do nodes[#nodes + 1] = { n[1], n[2], n[3], n[4], n[5], 0, 0, 1 } end
+  local def = { name = M.RIVER_PREFIX .. key, class = 'River', position = { nodes[1][1], nodes[1][2], nodes[1][3] },
+    nodes = nodes, flowMagnitudePhysics = r.flow }
+  local ok = pcall(Sim.deserializeObjectFromText, jsonEncode(def), true, true)
+  local o = ok and scenetree.findObject(M.RIVER_PREFIX .. key)
+  if not o then
+    M.riverErrors = M.riverErrors + 1
+    return
+  end
+  for _, f in ipairs(FIELDS) do o:setField(f[1], f[2], f[3]) end
+  for _, f in ipairs(INLAND) do o:setField(f[1], f[2], f[3]) end
+  for _, f in ipairs(RIVER_LOOK) do o:setField(f[1], f[2], f[3]) end
+  for _, x in ipairs(TEXTURES) do o:setField(x[1], 0, exists(x[2]) and x[2] or x[3]) end
+  o:setField('cubemap', 0, 'BNG_Sky_01_cubemap')
+  o:setField('flowMagnitudePhysics', 0, tostring(r.flow))
+  o.canSave = false
+  if scenetree.MissionGroup and o.getGroup and not o:getGroup() then scenetree.MissionGroup:addObject(o) end
+  madeRivers[key] = o:getId()
+  M.riversMade = M.riversMade + 1
 end
 
 -- The tile of the server's set the point is in (the nearest centre if on an edge), or nil.
@@ -144,7 +182,13 @@ function M.onMessage(msg)
         nx = tonumber(r[6]), ny = tonumber(r[7]) }
     end
   end
-  want = { anchorId = msg.anchorId, tiles = tiles }
+  local rivers = {}
+  for _, r in ipairs(type(msg.rivers) == 'table' and msg.rivers or {}) do
+    if type(r) == 'table' and type(r[4]) == 'table' and #r[4] >= 2 then
+      rivers[tostring(r[1])] = { kind = r[2], flow = tonumber(r[3]) or 0, nodes = r[4] }
+    end
+  end
+  want = { anchorId = msg.anchorId, tiles = tiles, rivers = rivers }
 end
 
 -- Every frame: the tiles of the server's set for the current anchor exist, the others are gone.
@@ -162,7 +206,21 @@ function M.update(anchorId, player)
       made[key] = nil
     end
   end
+  for key, id in pairs(madeRivers) do
+    if not want.rivers[key] then
+      local o = scenetree.findObjectById(id)
+      if o then o:delete() end
+      madeRivers[key] = nil
+    end
+  end
   local n, nudge = 0, false
+  for key, r in pairs(want.rivers) do
+    if not madeRivers[key] then
+      if n >= M.CREATE_PER_FRAME then break end
+      createRiver(key, r)
+      n = n + 1
+    end
+  end
   for key, t in pairs(want.tiles) do
     if not made[key] then
       if n >= M.CREATE_PER_FRAME then break end
@@ -206,7 +264,7 @@ end
 
 -- Level end: the level deletes its objects itself.
 function M.reset()
-  want, made, madeAnchor, phys, physStale = nil, {}, nil, nil, false
+  want, made, madeRivers, madeAnchor, phys, physStale = nil, {}, {}, nil, nil, false
 end
 
 function M.status()
@@ -214,16 +272,19 @@ function M.status()
   for _ in pairs(made) do n = n + 1 end
   local w = 0
   for _ in pairs(want and want.tiles or {}) do w = w + 1 end
+  local rv = 0
+  for _ in pairs(madeRivers) do rv = rv + 1 end
   return { tiles = n, want = w, created = M.created, nudges = M.nudges, physMade = M.physMade,
-    phys = phys and phys.z or nil }
+    phys = phys and phys.z or nil, rivers = rv, riversMade = M.riversMade, riverErrors = M.riverErrors }
 end
 
 -- A reloaded module (extensions.reload) deletes the tiles (and the old WaterPlane) the old one left.
 do
   if scenetree and scenetree.findClassObjects then
-    for _, cls in ipairs({ 'WaterBlock', 'WaterPlane' }) do
+    for _, cls in ipairs({ 'WaterBlock', 'WaterPlane', 'River' }) do
       for _, name in ipairs(scenetree.findClassObjects(cls) or {}) do
-        if tostring(name):sub(1, #M.PREFIX) == M.PREFIX or name == 'bngEarthSea' or name == M.PHYS_NAME then
+        if tostring(name):sub(1, #M.PREFIX) == M.PREFIX or name == 'bngEarthSea' or name == M.PHYS_NAME
+            or tostring(name):sub(1, #M.RIVER_PREFIX) == M.RIVER_PREFIX then
           local o = scenetree.findObject(name)
           if o then o:delete() end
         end

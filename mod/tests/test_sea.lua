@@ -100,4 +100,39 @@ sea.update(2, player)
 sea.clear()
 T.check(count(blocks()) == 0 and sea.status().want == 0, 'clear: removed and forgotten')
 
+-- rivers: River objects along the server's centrelines, made from a definition, changed keys only
+local defs = {}
+jsonEncode = function(t) return t end            -- the test's Sim reads the table itself
+Sim = { deserializeObjectFromText = function(def)
+  local o = S.newObject('River')
+  function o:getId() return self.id end
+  o.def = def
+  o:registerObject(def.name)
+  defs[#defs + 1] = def
+  return o.id
+end }
+local function rivers()
+  local r = {}
+  for _, o in pairs(S.objects) do if o.class == 'River' then r[o.name] = o end end
+  return r
+end
+local stream = { 'Rabc_0_0_0', 'stream', 0.6, { { 0, 0, 10, 4, 1 }, { 10, 0, 9.8, 4, 1 }, { 20, 0, 9.5, 4, 1 } } }
+sea.onMessage({ type = 'sea', anchorId = 3, tiles = {}, rivers = { stream } })
+sea.update(3, player)
+local rv = rivers()[sea.RIVER_PREFIX .. 'Rabc_0_0_0']
+T.check(rv ~= nil and #rv.def.nodes == 3 and rv.def.nodes[2][3] == 9.8 and rv.def.nodes[2][4] == 4,
+  'a River along the nodes: their heights and widths')
+T.check(rv.def.nodes[1][8] == 1 and rv.fields.flowMagnitudePhysics == '0.6' and rv.canSave == false,
+  'upright, flowing at the server\'s speed, not saved')
+T.check(sea.status().rivers == 1, 'counted')
+sea.update(3, player)
+T.check(sea.riversMade == 1, 'made once')
+sea.onMessage({ type = 'sea', anchorId = 3, tiles = {}, rivers = {} })
+sea.update(3, player)
+T.check(next(rivers()) == nil and sea.status().rivers == 0, 'gone from the set: removed')
+sea.onMessage({ type = 'sea', anchorId = 3, tiles = {}, rivers = { stream } })
+sea.update(3, player)
+sea.clear()
+T.check(next(rivers()) == nil, 'clear: removed')
+
 T.done('test_sea')
