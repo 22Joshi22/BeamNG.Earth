@@ -1437,7 +1437,7 @@ The user asked for "trees, rocks and other decoration" (ROADMAP v1.9 "Cities & n
     and height, shrub, rock), yaw, size variation, and a fixed rank for thinning.
   - Cost: ~3.5 s per cell the first time (Patterson Park 5,074 trees; Loch Raven woods 10,387; an
     Arizona desert cell 13,000 rocks).
-- **Tiles:** 256 m tiles like the road tiles, sent within 768 m and dropped beyond 1024 m (`veg_tile` /
+- **Tiles:** 256 m tiles like the road tiles, sent within 1280 m and dropped beyond 1536 m (`veg_tile` /
   `veg_drop`), each a JSON of [group, x, y, z, yaw, scale, height, rank] in the anchor frame. z is the
   block's ground (`Server.ground`: runways, carved water); items in water are left out.
 - **Mod (`trees.lua`):**
@@ -1448,7 +1448,7 @@ The user asked for "trees, rocks and other decoration" (ROADMAP v1.9 "Cities & n
   - Item types are TSForestItemData made with `worldEditorCppApi.createObject` (plain `createObject`
     returns nil for datablocks), after loading the shapes' `main.materials.json`.
   - A tile shows the items whose rank is under its distance's threshold: all within 300 m, half to
-    550 m, a quarter beyond.
+    550 m, a quarter to 900 m, an eighth beyond (2026-10-14: out to 1280 m like the far buildings).
   - Up to 300 items are made or removed per frame (~19 us each, 2026-10-13 probe: 1024 items in 19 ms).
 - **Regions (`vegetation.regional`, 2026-10-14):** a coarse climate from the position and the land cover
   turns the generic groups into the stock maps' species: West Coast pines / redwoods and oaks /

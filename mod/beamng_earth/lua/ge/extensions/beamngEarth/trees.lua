@@ -8,7 +8,7 @@
 local M = {}
 
 M.PER_FRAME = 300       -- items made or removed per frame at most
-M.RINGS = { { 300, 1.0 }, { 550, 0.5 }, { 1e9, 0.25 } }    -- tile distance (m): the rank shown below
+M.RINGS = { { 300, 1.0 }, { 550, 0.5 }, { 900, 0.25 }, { 1e9, 0.12 } }   -- tile distance (m): the rank shown below
 M.FOREST_NAME = 'bngEarthForest'
 
 local ECA = '/levels/east_coast_usa/art/shapes/'

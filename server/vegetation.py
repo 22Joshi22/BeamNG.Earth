@@ -488,8 +488,8 @@ def _mask_roads(f, mask, chm, push=None):
 
 # --- tiles for the mod --------------------------------------------------------------------------------
 TILE = 256.0                # m, as the road tiles (roads.tile_bbox)
-SEND_M = 768.0              # tiles this close to the player (Chebyshev) are sent ...
-DROP_M = 1024.0             # ... and dropped beyond this
+SEND_M = 1280.0             # tiles this close to the player (Chebyshev) are sent ...
+DROP_M = 1536.0             # ... and dropped beyond this
 BUILD_PER_POSE = 8
 
 
