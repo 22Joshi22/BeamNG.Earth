@@ -60,13 +60,15 @@ class MeshTest(unittest.TestCase):
         good = ((mid - c) * n).sum(1) > 0
         nz = n[:, 2] / np.maximum(np.linalg.norm(n, axis=1), 1e-12)
         good |= (nz < -0.99) & (mid[:, 2] > spec.height - 1.0)     # a cornice's underside faces down
+        good |= mid[:, 2] > spec.height + bld.CORNICE_UP_M + 0.01   # roof boxes: their own outsides
         self.assertTrue(good.all(), f"{(~good).sum()} of {len(T)} triangles face in ({spec.roof})")
         self.assertLess(M.max(), len(mats))
         return spec, P
 
     def test_flat_box(self):
         spec, P = self.check_outward(rect(0, 0, 30, 20), {"class": "retail", "height": 9.0})
-        self.assertAlmostEqual(P[:, 2].max(), 9.0 + bld.CORNICE_UP_M)
+        self.assertAlmostEqual(P[:, 2][P[:, 2] < 9.5].max(), 9.0 + bld.CORNICE_UP_M)
+        self.assertGreater(P[:, 2].max(), 10.0, "boxes on a 600 m2 flat roof")
         self.assertAlmostEqual(P[:, 2].min(), -bld.FOUNDATION_M)
 
     def test_gabled_and_hipped(self):
@@ -123,7 +125,7 @@ class PartsTest(unittest.TestCase):
         self.assertEqual(tops, [15, 30, 90], "the podium, a floating part, the tower at the building's height")
         self.assertEqual(len({s.seed for s, _, _ in items}), 1, "one look")
         P = bld.build(items)[0]
-        self.assertAlmostEqual(P[:, 2].max(), 90.0, delta=0.01)
+        self.assertAlmostEqual(P[:, 2][P[:, 2] < 90.5].max(), 90.0, delta=0.01)
 
 
 if __name__ == "__main__":

@@ -450,6 +450,48 @@ def _cornice(m, spec, ring, z_eave, mat_idx):
         m.quad((a[0], a[1], z0), (b[0], b[1], z0), (b2[0], b2[1], z0), (a2[0], a2[1], z0), *uv, mat)      # under
 
 
+def _inside(ring, p):
+    """Point p inside the ring (even-odd)."""
+    x, y = p
+    xs, ys = ring[:, 0], ring[:, 1]
+    xj, yj = np.roll(xs, 1), np.roll(ys, 1)
+    cross = ((ys > y) != (yj > y)) & (x < (xj - xs) * (y - ys) / np.where(yj - ys == 0, 1e-12, yj - ys) + xs)
+    return bool(np.count_nonzero(cross) % 2)
+
+
+def _box(m, c, u, hx, hy, z0, z1, mat):
+    """An axis-u box (half sizes hx along u, hy across) from z0 to z1: four sides and a top."""
+    v = np.array([-u[1], u[0]])
+    k = [c + u * sx * hx + v * sy * hy for sx, sy in ((-1, -1), (1, -1), (1, 1), (-1, 1))]
+    uv = ((0.002, 0.995), (0.012, 0.995), (0.012, 0.999), (0.002, 0.999))
+    for i in range(4):
+        a, b = k[i], k[(i + 1) % 4]
+        m.quad((a[0], a[1], z0), (b[0], b[1], z0), (b[0], b[1], z1), (a[0], a[1], z1), *uv, mat)
+    m.quad(*[(p[0], p[1], z1) for p in k], *uv, mat)
+
+
+ROOF_CLUTTER_M2 = 250.0     # flat roofs this large get boxes: air-conditioning units, stair bulkheads
+
+
+def _clutter(m, spec, ring, z_eave, mat_idx):
+    area = _area2(ring) / 2
+    if spec.roof != "flat" or spec.plain or area < ROOF_CLUTTER_M2:
+        return
+    c, u, hl, hw = oriented_box(ring)
+    v = np.array([-u[1], u[0]])
+    n = min(6, 1 + int(area / 600.0))
+    mat = mat_idx["bne_bld_fac_grey"]
+    for k in range(n):
+        s = (_hash01(spec.seed, "cx", k) * 2 - 1) * (hl - 3.0)
+        t = (_hash01(spec.seed, "cy", k) * 2 - 1) * (hw - 3.0)
+        p = c + u * s + v * t
+        if not _inside(ring, p):
+            continue
+        big = _hash01(spec.seed, "cb", k) < 0.25
+        hx, hy, h = (2.0, 1.6, 2.6) if big else (1.1, 0.7, 1.1)
+        _box(m, p, u, hx, hy, z_eave, z_eave + h, mat)
+
+
 def _roof(m, spec, ring, z_eave, mat_idx):
     rm = mat_idx[spec.roof_mat]
     if spec.roof == "flat":
@@ -519,6 +561,8 @@ def build(specs_and_ground, lite=False):
         _roof(m, spec, ring, z_eave, mat_idx)
         if spec.roof == "flat" and not spec.plain and spec.floors <= 6 and not lite:
             _cornice(m, spec, ring, z_eave, mat_idx)
+        if not lite:
+            _clutter(m, spec, ring, z_eave, mat_idx)
     if m.n == 0:
         return None
     P, UV, T, M, C = m.arrays()
