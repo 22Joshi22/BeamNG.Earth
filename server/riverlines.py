@@ -42,7 +42,8 @@ SMOOTH_N = 7                # the centre and width also averaged over this many 
 SURFACE_ABOVE_M = 0.25      # m: the water's surface above the channel's DEM (where nothing is carved)
 CARVED_ABOVE_M = 0.05       # m: ... above the carved level (seacarve cuts the bed below it)
 DEPTH_M = (1.0, 8.0)        # the River's depth (its volume below the surface): width / 8, clamped
-FLOW_MS = {"river": 1.0, "stream": 0.6, "canal": 0.3}          # flowMagnitudePhysics (m/s), downstream
+FLOW_MS = {"river": 2.0, "stream": 1.2, "canal": 0.5}          # flowMagnitudePhysics (m/s), downstream
+                                                                # (stock rivers: 2-4, waterfalls 5-8)
 DEM_ZOOM = 15
 
 

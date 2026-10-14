@@ -48,12 +48,25 @@ local INLAND = {
   -- the ripples drift visibly (with 0.12 and the bay's slow speeds a lake looked frozen, 2026-10-13)
   { 'rippleSpeed', 0, '0.03' }, { 'rippleSpeed', 1, '0.09' }, { 'rippleSpeed', 2, '0.012' },
 }
--- Rivers along centrelines: no foam (with the bay's 0.75 m foam depth a stream drew as a white ribbon,
--- and their shallow edges as white fringes, 2026-10-13)
+-- Rivers along centrelines, styled like the stock maps' (Italy's main rivers, Utah, Jungle Rock Island;
+-- 2026-10-13 research): no foam (white fringes at shallow edges); waves small (they fade out at
+-- LowLODDistance and popped where a segment switched meshes); the near high-detail mesh to 120 m;
+-- 4 m slices (less stretching at bends: the texture runs along the centreline). The ripples run
+-- downstream (flowMagnitudePhysics only pushes things; the shader never sees it): tiles longer along the
+-- river than across, each layer moving at the river's flow (riverLook below).
 local RIVER_LOOK = {
   { 'overallFoamOpacity', 0, '0' }, { 'foamMaxDepth', 0, '0.1' }, { 'depthGradientMax', 0, '6' },
-  { 'overallRippleMagnitude', 0, '0.3' },
+  { 'overallRippleMagnitude', 0, '1.2' }, { 'overallWaveMagnitude', 0, '0.05' },
+  { 'rippleMagnitude', 0, '1' }, { 'rippleMagnitude', 1, '1' }, { 'rippleMagnitude', 2, '0.3' },
+  { 'rippleDir', 0, '0 1' }, { 'rippleDir', 1, '0.2 1' }, { 'rippleDir', 2, '-0.2 1' },
+  { 'rippleTexScale', 0, '2 4' }, { 'rippleTexScale', 1, '5 10' }, { 'rippleTexScale', 2, '20 40' },
+  { 'SegmentLength', 0, '4' }, { 'LowLODDistance', 0, '120' },
 }
+-- ripple layer speeds (tiles per second) so their patterns drift at the river's flow (m/s) / 1, 2, 5
+local function riverSpeeds(flow)
+  return { flow / 4, flow / 10 / 2, flow / 40 / 5 }
+end
+
 local TEXTURES = {      -- field, East Coast's file, the core fallback
   { 'rippleTex', '/levels/east_coast_usa/art/water/ripple3.dds', '/core/art/water/ripple_nm.normal.dds' },
   { 'depthGradientTex', '/levels/east_coast_usa/art/water/depthcolor_ramp.dds',
@@ -69,6 +82,7 @@ local phys = nil        -- { id, x, y, z } of the physics block
 local physStale = false -- tiles were made since it was: made again once a frame makes none
 M.created, M.nudges, M.physMade, M.riversMade, M.riverErrors = 0, 0, 0, 0, 0
 M.RIVER_PREFIX = 'bngEarthRiver_'
+M.SUBDIVIDE_MIN, M.SUBDIVIDE_COLUMNS = 6, 8    -- a River's near mesh: at most 8 columns, cells >= 6 m
 
 local function exists(p)
   return not FS or FS:fileExists(p)
@@ -112,6 +126,12 @@ local function createRiver(key, r)
   for _, f in ipairs(FIELDS) do o:setField(f[1], f[2], f[3]) end
   for _, f in ipairs(INLAND) do o:setField(f[1], f[2], f[3]) end
   for _, f in ipairs(RIVER_LOOK) do o:setField(f[1], f[2], f[3]) end
+  for i, v in ipairs(riverSpeeds(r.flow)) do o:setField('rippleSpeed', i - 1, string.format('%.4f', v)) end
+  -- the near mesh's columns are its widest node / SubdivideLength: too many and the engine draws no near
+  -- mesh at all (a 48 m creek vanished near the camera at 3 m, drew at 6 m; 2026-10-13)
+  local wmax = 0
+  for _, nd in ipairs(r.nodes) do wmax = math.max(wmax, tonumber(nd[4]) or 0) end
+  o:setField('SubdivideLength', 0, string.format('%.1f', math.max(M.SUBDIVIDE_MIN, wmax / M.SUBDIVIDE_COLUMNS)))
   for _, x in ipairs(TEXTURES) do o:setField(x[1], 0, exists(x[2]) and x[2] or x[3]) end
   o:setField('cubemap', 0, 'BNG_Sky_01_cubemap')
   o:setField('flowMagnitudePhysics', 0, tostring(r.flow))

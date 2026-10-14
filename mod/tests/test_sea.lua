@@ -127,6 +127,7 @@ T.check(rv ~= nil and #rv.def.nodes == 3 and rv.def.nodes[2][3] == 9.8 and rv.de
 T.check(rv.def.nodes[1][8] == 1 and rv.fields.flowMagnitudePhysics == '0.6' and rv.canSave == false,
   'upright, flowing at the server\'s speed, not saved')
 T.check(rv.reloaded and rv.regenerated, 'textures and mesh built again after styling')
+T.check(rv.fields.SubdivideLength == '6.0', 'a narrow river: the near mesh at the finest allowed')
 T.check(sea.status().rivers == 1, 'counted')
 sea.update(3, player)
 T.check(sea.riversMade == 1, 'made once')
