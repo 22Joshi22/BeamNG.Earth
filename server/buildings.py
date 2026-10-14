@@ -78,6 +78,7 @@ WALL_TINTS = {               # houses with plain walls and laid-over windows: th
 for _m, _cs in list(ROOF_TINTS.items()) + list(WALL_TINTS.items()):
     for _k, _c in enumerate(_cs):
         LOOKS[f"{_m}|{_k}"] = (_m, _c)
+BARN_REDS = 2               # the last siding tints are barn red (barns only)
 JITTER = 0.06               # a building's colour varies this much (one factor, hashed)
 
 
@@ -371,7 +372,8 @@ def plan(ring, attrs, neighbours=0, lat=None, lon=None, look=None, town=False):
         west = lon is not None and lon < -100.0
         kind = (STUCCO if u < 0.65 else SIDING if u < 0.9 else None) if west else (SIDING if u < 0.75 else None)
         if kind is not None:
-            wall = f"{kind}|{int(_hash01(seed, 'wc') * len(WALL_TINTS[kind]))}"
+            n = len(WALL_TINTS[kind]) - (BARN_REDS if kind == SIDING else 0)     # houses: not barn red
+            wall = f"{kind}|{int(_hash01(seed, 'wc') * n)}"
             facade = wall
     if terminal:
         facade, band, plain = OFFICE, BAND_OFFICE, False
