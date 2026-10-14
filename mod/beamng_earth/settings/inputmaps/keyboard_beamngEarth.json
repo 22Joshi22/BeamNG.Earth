@@ -1,0 +1,6 @@
+{
+  "bindings":[
+    {"control":"ctrl shift n", "action":"beamngEarth_reportNote"},
+    {"control":"ctrl shift b", "action":"beamngEarth_reportBench"}
+  ]
+}

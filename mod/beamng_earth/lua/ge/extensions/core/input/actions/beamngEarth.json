@@ -1,3 +1,26 @@
 {
-"beamngEarth_devToggle": {"cat":"debug", "order": 90, "ctx": "tlua", "onDown": "if beamngEarth_dev then beamngEarth_dev.toggleLast() end", "title": "BeamNG.Earth: toggle dev overlays", "desc": "Turns the last-used BeamNG.Earth dev tools preset on (default: LOD), or everything off. Unbound by default."}
+"beamngEarth_devToggle": {
+"cat": "debug",
+"order": 90,
+"ctx": "tlua",
+"onDown": "if beamngEarth_dev then beamngEarth_dev.toggleLast() end",
+"title": "BeamNG.Earth: toggle dev overlays",
+"desc": "Turns the last-used BeamNG.Earth dev tools preset on (default: LOD), or everything off. Unbound by default."
+},
+"beamngEarth_reportNote": {
+"cat": "gameplay",
+"order": 91,
+"ctx": "tlua",
+"onDown": "if beamngEarth_report then beamngEarth_report.note() end",
+"title": "BeamNG.Earth: note / report",
+"desc": "Captures a screenshot, the location and the performance now, and opens a window for a note (Ctrl+Shift+N)."
+},
+"beamngEarth_reportBench": {
+"cat": "gameplay",
+"order": 92,
+"ctx": "tlua",
+"onDown": "if beamngEarth_report then beamngEarth_report.benchmark() end",
+"title": "BeamNG.Earth: 30 s benchmark",
+"desc": "Records 30 s of frame times while you drive and saves a report (Ctrl+Shift+B)."
+}
 }

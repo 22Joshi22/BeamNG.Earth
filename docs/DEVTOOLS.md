@@ -378,3 +378,17 @@ parking brake, the screenshot path, the free camera at
 credits overlay and HUD for the shots (they are in every image, the same in both runs), a per-view
 sun / weather override, matching the real photo itself (the photo benchmark is compared run to run;
 the photo stays on Commons).
+
+## Reports (the user's notes and benchmarks; `report.lua`, 2026-10-13)
+- **Ctrl+Shift+N:** captures the moment at once: a screenshot, the location (lat/lon, anchor), the
+  vehicle and camera, the last ~10 s of frame times, the engine's per-system frame metrics, the fps limit
+  and VRAM, and the mod's whole status (far tiles, trees, sea...). Then it opens a window for the note:
+  "Save note", "Save + 30 s benchmark" or "Cancel".
+- **Ctrl+Shift+B:** a 30 s benchmark while driving: every frame time, one sample per second (position,
+  speed, far tiles, trees, engine metrics) and every frame over 50 ms with its position. Then the same
+  report with the statistics (fps, p50 / p95 / p99, worst, frames over 33 / 50 / 100 ms).
+- Saved in `<user folder>/beamngearth/reports/<date>_<time>_<kind>_<n>/` (report.json, screenshot.jpg),
+  with one line per report in `reports/index.jsonl`. The folder name is lower case: the game's file
+  system lowercases new folders.
+- `tools/reports.py` lists them; `tools/reports.py show N` prints one.
+
