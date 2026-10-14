@@ -55,7 +55,8 @@ local roads = require('beamngEarth/roads') -- DecalRoads from the server's road 
 local sea = require('beamngEarth/sea') -- the sea's WaterBlock tiles (server seatiles.py)
 local trees = require('beamngEarth/trees') -- trees, bushes, rocks (server vegetation.py)
 local parking = require('beamngEarth/parking') -- parked cars on the road tiles' spots (stock gameplay_parking)
-local navgraph = require('beamngEarth/navgraph') -- the AI road graph for the stock traffic and AI (map.reset)
+local navgraph = require('beamngEarth/navgraph')
+local postfx = require('beamngEarth/postfx')       -- no far depth-of-field blur in our level -- the AI road graph for the stock traffic and AI (map.reset)
 
 local LEVEL_ID = 'beamng_earth'
 local MOD_VERSION = '0.4.0'
@@ -994,6 +995,7 @@ end
 
 local function onUpdate(dtReal, dtSim)
   dtReal = dtReal or 0
+  postfx.update(st.inOurLevel)
   local frameMs = frameTimer and frameTimer:stopAndReset() or dtReal * 1000
   local cf = st.commitFrames
   if cf then                    -- the commit frame and the two after it (wall ms between updates)
@@ -1128,6 +1130,7 @@ local function onClientStartMission()
 end
 
 local function onClientEndMission()
+  postfx.restore()
   -- runs before the level deletes its objects (server/server.lua:19 vs :34): delete the far tiles
   -- ourselves first, so their per-tile materials (not level objects) can go after them
   farfield.clear()
