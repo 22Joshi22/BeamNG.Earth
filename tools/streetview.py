@@ -44,6 +44,17 @@ DATA = os.path.join(ROOT, "docs", "research", "streetview")
 FIELDS = ("id,computed_geometry,geometry,computed_compass_angle,compass_angle,captured_at,camera_type,"
           "camera_parameters,is_pano,thumb_2048_url,width,height,creator,sequence")
 CAMERA_AGL = 2.0            # m: most street photos are taken from a car roof or a dashboard
+# The user's car stands this far behind the photo along its heading: under the camera, the idling car's exhaust
+# puffs drifted through the shots (the user spotted it, 2026-10-14)
+CAR_BACK_M = 8.0
+
+
+def car_spot(lat, lon, heading):
+    """(lat, lon) CAR_BACK_M behind (lat, lon) looking along heading (deg from north)."""
+    h = math.radians(heading)
+    m_lat = 111320.0
+    m_lon = m_lat * math.cos(math.radians(lat))
+    return lat - CAR_BACK_M * math.cos(h) / m_lat, lon - CAR_BACK_M * math.sin(h) / m_lon
 MIN_SPACING_M = 25.0        # chosen photos are at least this far apart, or look another way
 MIN_TURN_DEG = 45.0
 PER_SEQUENCE = 3            # photos from one capture run at most (variety across the place)
@@ -164,7 +175,8 @@ def cmd_fetch(a):
                          # required by the set format; the place's own views are the ones used
                          "views": [{"name": "ground", "agl": 1.7, "pitch": -3, "fov": 70}]},
             # one place per photo: the car (and so the detailed ground) at the photo, as when driving there
-            "places": [{"id": f"{a.name}_{k:02d}", "name": f"{a.name} photo {k}", "lat": v["lat"], "lon": v["lon"],
+            "places": [{"id": f"{a.name}_{k:02d}", "name": f"{a.name} photo {k}",
+                        **dict(zip(("lat", "lon"), car_spot(v["lat"], v["lon"], v["heading"]))),
                         "heading": v["heading"], "group": "streetview", "heldout": False, "tags": ["streetview"],
                         "why": "street view comparison", "views": [v]} for k, v in enumerate(views)]}
     with open(os.path.join(d, "set.json"), "w") as f:

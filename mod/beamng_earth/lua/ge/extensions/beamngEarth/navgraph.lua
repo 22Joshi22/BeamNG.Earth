@@ -29,6 +29,7 @@ M.GUARD_S = 0.5
 M.STUCK_S = 45
 M.STUCK_MS = 0.5
 M.STUCK_FAR_M = 40
+M.RESPAWN_M = { 60, 300 }   -- a respawned car goes this far (min, max) behind the camera
 M.EXTENSIONS = { 'core_multiSpawn', 'gameplay_traffic' }
 
 local graph = nil       -- the server's last graph {anchor, nodes, edges}
@@ -326,7 +327,14 @@ local function guard(b, all)
         local d = pp and (p - pp):length() or math.huge
         if all or not M.inside(b, p.x, p.y, M.GUARD_M) or M.stuck(stillSince[id], now, d) then
           stillSince[id] = nil
-          pcall(gt.forceTeleport, id)
+          -- behind the camera: the stock default is 100-500 m in front of it, where the player sees the car
+          -- pop in and its tyres smoke as it lands (the photo comparisons, 2026-10-14)
+          local cp, cf = core_camera and core_camera.getPosition(), core_camera and core_camera.getForward()
+          if cp and cf then
+            pcall(gt.forceTeleport, id, cp, -cf, M.RESPAWN_M[1], M.RESPAWN_M[2])
+          else
+            pcall(gt.forceTeleport, id)
+          end
         end
       else
         stillSince[id] = nil
