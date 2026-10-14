@@ -738,7 +738,9 @@ Next, from the photo comparisons (docs/research/streetview/fp*, base_*):
 - Building parts (Overture `building_part`): towers' podiums and setbacks; roof clutter (HVAC boxes).
 - Facade variety: painted brick, formstone, siding colours per region; window sheet per era.
 - Wires between utility poles; signs (stop, speed limits) from data where present.
-- Odd dark mounds of ground near some Harbor East buildings (raised plazas or DEM remnants).
+- The "dark mounds" near Harbor East (President St bridge) are the 4-5 m quays beside the Jones Falls
+  outlet, whose water (DEM 0 m) is drawn as bare ground: a water gap (the inlet is not covered by the
+  sea tiles), for the water work.
 - Road widths: urban trunks / primaries not lined by buildings default to 4 lanes since 2026-10-14
   (Moab's Main Street); real lane counts would need OSM `lanes` (Overture has none).
 - Curb ramps: the pad is the first 0.6 m of the slope since 2026-10-14; tint it yellow / red.
