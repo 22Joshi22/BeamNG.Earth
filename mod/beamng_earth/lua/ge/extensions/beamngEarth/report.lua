@@ -1,27 +1,37 @@
--- In-game reports for the user (2026-10-13: "a reporting tool that makes it easy for me to take notes on
--- the world or to record the performance of my game ... without needing to invoke you every time").
+-- In-game reports for the user and the friends testing the mod (2026-10-13: "a reporting tool that
+-- makes it easy for me to take notes on the world or to record the performance of my game";
+-- 2026-10-14: reports become GitHub issues: map issues, performance issues, bugs, ideas).
 --
---   Ctrl+Shift+N   a note: the moment is captured at once (screenshot, location, frame times, engine
---                  metrics, the mod's state), then a window takes the note text; Save writes it all.
---   Ctrl+Shift+B   a benchmark: 30 s of frame times (and position, every second) while the player
---                  drives, then the same report with the statistics and every hitch.
+--   Ctrl+Shift+N   a report: the moment is captured at once (screenshot, location, frame times, engine
+--                  metrics, the mod's state), then a window takes the kind (Map issue / Performance
+--                  issue / Bug / Idea), a short title and the description; Save writes it all.
+--   Ctrl+Shift+B   the performance profiler: 30 s of frame times (and position, every second) while the
+--                  player drives; then the same window, kind "Performance issue", with its numbers.
 --
--- Reports go to <user folder>/beamngEarth/reports/<date>_<time>_<kind>/ (report.json, screenshot.jpg);
--- reports/index.jsonl gets one line per report. Read back by the developer (Claude) later.
+-- Reports go to <user folder>/beamngEarth/reports/<date>_<time>_<report|profile>_<n>/ (the game
+-- lowercases new folders): report.json, screenshot.jpg, hardware.json (what the engine can tell about
+-- the machine and the graphics settings, collectHardware()) and issue.md (a ready-to-post GitHub issue
+-- the user edits: issuefmt.lua; tools/reports.py issue N opens it and the new-issue page).
+-- reports/index.jsonl gets one line per report. Kinds before 2026-10-14: 'note', 'bench'.
 local M = {}
 M.dependencies = { 'ui_imgui' }
 
 M.BENCH_S = 30
-M.RING = 900            -- frames kept for the "recent" statistics in a note (~10 s at 90 fps)
+M.RING = 900            -- frames kept for the "recent" statistics in a report (~10 s at 90 fps)
 M.DIR = 'beamngEarth/reports/'
+M.SAVED_S = 30          -- the "report saved" window closes itself after this long
 
+local fmt = require('beamngEarth/issuefmt')
 local im = nil
 local ffi = require('ffi')
-local note = nil        -- the open note: { dir, data, buf, open }
-local bench = nil       -- the running benchmark: { t0, dts, samples, hitches, dir, data }
+local form = nil        -- the open report window: { dir, data, kind, titleBuf, noteBuf, frames }
+local prof = nil        -- the running profiler: { t0, dur, dts, track, hitches, dir, start, form }
+local saved = nil       -- the "report saved" window: { folder, dir, url, untilT }
 local ring, ringN = {}, 0
 local toast, toastUntil = nil, 0
 local count = 0
+local indexed = {}      -- report folders already in index.jsonl (a re-save rewrites the files only)
+local lastKind = 'map'
 
 -- wall seconds (os.clock is the process CPU time over all threads: stopwatch.lua)
 local wallMs = require('beamngEarth/stopwatch').clock()
@@ -45,11 +55,73 @@ local function stats(dts)
   end
   return res
 end
+M.stats = stats
 
 local function safe(f, ...)
   local ok, v = pcall(f, ...)
   if ok then return v end
   return 'error: ' .. tostring(v)
+end
+
+-- A table's plain values (strings, numbers, booleans), one level: what jsonEncode always takes.
+local function scalars(t)
+  if type(t) ~= 'table' then return nil end
+  local c = {}
+  for k, v in pairs(t) do
+    local tv = type(v)
+    if type(k) == 'string' and (tv == 'string' or tv == 'number' or tv == 'boolean') then c[k] = v end
+  end
+  return c
+end
+
+-- An engine call that may be missing in this game version: nil instead of an error.
+local function try(f, ...)
+  if type(f) ~= 'function' then return nil end
+  local ok, v = pcall(f, ...)
+  if ok then return v end
+  return nil
+end
+
+local function platform(name)
+  local P = rawget(_G, 'Engine') and Engine.Platform
+  return P and try(P[name])
+end
+
+-- What the game can tell about the machine, the game and its graphics settings, the mod and the server
+-- (hardware.json). The engine calls are those of the game's own hardware page and screenshot metadata
+-- (lua/ge/extensions/core/hardwareinfo.lua getInfo(), lua/ge/screenshot.lua getMetadataJson()); every
+-- one may be missing: the field is then left out.
+function M.collectHardware()
+  local hw = {}
+  hw.os = scalars(platform('getOSInfo'))
+  hw.cpu = scalars(platform('getCPUInfo'))
+  hw.gpu = scalars(platform('getGPUInfo'))
+  local mem = scalars(platform('getMemoryInfo'))
+  if mem then hw.mem = { osPhysAvailable = mem.osPhysAvailable, osPhysUsed = mem.osPhysUsed,
+    processPhysUsed = mem.processPhysUsed } end
+  if hw.os and hw.os.type == 'linux' then hw.os.windowsystem = platform('getVideoDriver') end
+  local R = rawget(_G, 'Engine') and Engine.Render
+  hw.graphicsApi = R and try(R.getAdapterType)
+  local G = rawget(_G, 'GFXDevice')
+  hw.videoMode = scalars(G and try(G.getVideoMode))
+  hw.desktopVideoMode = try(rawget(_G, 'getDesktopVideoMode'))
+  hw.game = { versiond = rawget(_G, 'beamng_versiond'), versionb = rawget(_G, 'beamng_versionb'),
+    buildnumber = rawget(_G, 'beamng_buildnumber'), arch = rawget(_G, 'beamng_arch'),
+    buildtype = rawget(_G, 'beamng_buildtype') }
+  local S = rawget(_G, 'settings')
+  if S and type(S.getValue) == 'function' then
+    hw.settings = {}
+    for _, e in ipairs(fmt.SETTING_KEYS) do
+      local v = try(S.getValue, e[1])
+      if v ~= nil and type(v) ~= 'table' then hw.settings[e[1]] = v end
+    end
+  end
+  local mm = rawget(_G, 'core_modmanager')
+  if mm and try(mm.isReady) then hw.mods = scalars(try(mm.getStats)) end
+  local core = rawget(_G, 'beamngEarth_core')
+  hw.modVersion = core and core.MOD_VERSION
+  hw.server = core and try(core.serverHello) or nil
+  return hw
 end
 
 -- Everything the moment can tell: where, what the engine and the mod are doing.
@@ -99,40 +171,83 @@ local function screenshot(rel)
   return ok and (FS:getUserPath() .. rel .. 'screenshot.jpg'):gsub('\\', '/') or nil
 end
 
-local function write(rel, data)
+local function encode(t)
+  local ok, s = pcall(jsonEncodePretty or jsonEncode, t)
+  if ok and s then return s end
+  return jsonEncode(t)
+end
+
+local function write(rel, data, quiet)
   data.folder = (FS:getUserPath() .. rel):gsub('\\', '/')
-  writeFile(rel .. 'report.json', jsonEncodePretty and jsonEncodePretty(data) or jsonEncode(data))
-  local line = jsonEncode({ time = data.time, kind = data.kind, folder = data.folder, lat = data.lat, lon = data.lon,
-    note = data.note, fps = data.bench and data.bench.fps or (data.recentFrames and data.recentFrames.fps) })
-  local idx = M.DIR .. 'index.jsonl'
-  local old = readFile(idx) or ''
-  writeFile(idx, old .. line .. '\n')
-  toast, toastUntil = 'BeamNG.Earth report saved (' .. data.kind .. ')', now() + 3
+  writeFile(rel .. 'report.json', encode(data))
+  local okH, hw = pcall(M.collectHardware)
+  if not okH then hw = { error = tostring(hw) } end
+  pcall(writeFile, rel .. 'hardware.json', encode(hw))
+  local okI, issue = pcall(fmt.buildIssue, data, hw)
+  if okI then pcall(writeFile, rel .. 'issue.md', issue) else log('W', 'beamngEarth', 'issue.md: ' .. tostring(issue)) end
+  if not indexed[rel] then
+    indexed[rel] = true
+    local line = jsonEncode({ time = data.time, kind = data.kind, folder = data.folder, lat = data.lat, lon = data.lon,
+      title = data.title, note = data.note,
+      fps = data.bench and data.bench.fps or (data.recentFrames and data.recentFrames.fps) })
+    local idx = M.DIR .. 'index.jsonl'
+    local old = readFile(idx) or ''
+    writeFile(idx, old .. line .. '\n')
+  end
   log('I', 'beamngEarth', 'report saved: ' .. data.folder)
+  if quiet then return end
+  local url = nil
+  if okI then
+    local k = fmt.kind(data.kind)
+    local title, body = fmt.splitIssue(issue)
+    url = fmt.issueUrl(title, body, k.label)
+  end
+  saved = { folder = data.folder, dir = rel, url = url, untilT = now() + M.SAVED_S, kind = fmt.kind(data.kind).name }
 end
 
--- Ctrl+Shift+N: capture now, ask for the note.
+local function openForm(rel, data, kind)
+  form = { dir = rel, data = data, kind = kind or lastKind, titleBuf = nil, noteBuf = nil, frames = 0 }
+end
+
+-- Ctrl+Shift+N: capture now, open the report window.
 function M.note()
-  if note then return end
-  local rel = newDir('note')
+  if form then return end
+  if prof then M.profilerAttach() return end
+  local rel = newDir('report')
   local data = capture()
-  data.kind = 'note'
   data.screenshot = screenshot(rel)       -- the view the player saw (the window opens next frame)
-  note = { dir = rel, data = data, buf = nil, open = true, frames = 0 }
+  saved = nil
+  openForm(rel, data)
 end
 
--- Ctrl+Shift+B: a benchmark over the next BENCH_S seconds.
-function M.benchmark(seconds)
-  if bench then return end
-  local rel = newDir('bench')
-  bench = { t0 = now(), dur = tonumber(seconds) or M.BENCH_S, dts = {}, track = {}, hitches = {}, dir = rel,
-    lastSample = -1, start = capture() }
-  bench.start.screenshot = screenshot(rel)
-  toast, toastUntil = string.format('BeamNG.Earth benchmark: recording %d s', bench.dur), now() + 3
+-- Ctrl+Shift+B: the performance profiler over the next BENCH_S seconds. With the report window open,
+-- the profile goes into that report (kind Performance issue).
+function M.profiler(seconds)
+  if prof then return end
+  local rel, start, pending
+  if form then
+    rel, start, pending = form.dir, form.data, form
+    pending.kind = 'perf'
+    form = nil
+  else
+    rel = newDir('profile')
+    start = capture()
+    start.screenshot = screenshot(rel)
+  end
+  prof = { t0 = now(), dur = tonumber(seconds) or M.BENCH_S, dts = {}, track = {}, hitches = {}, dir = rel,
+    lastSample = -1, start = start, form = pending }
+  toast, toastUntil = string.format('Performance profiler: recording %d s (keep driving)', prof.dur), now() + 3
+end
+M.benchmark = M.profiler   -- the input action (beamngEarth_reportBench) and older console calls
+
+-- Ctrl+Shift+N while the profiler runs: the report window opens when it ends.
+function M.profilerAttach()
+  if prof and not prof.form then prof.form = { kind = 'perf' } end
+  toast, toastUntil = 'The report window opens when the profiler ends', now() + 3
 end
 
-local function benchFrame(dtMs)
-  local b = bench
+local function profFrame(dtMs)
+  local b = prof
   b.dts[#b.dts + 1] = dtMs
   local t = now() - b.t0
   local core = rawget(_G, 'beamngEarth_core')
@@ -163,27 +278,47 @@ local function benchFrame(dtMs)
   end
   if t >= b.dur then
     local data = b.start
-    data.kind = 'bench'
+    data.kind = 'perf'
     data.bench = stats(b.dts)
     data.bench.seconds = t
     data.bench.hitches = b.hitches
     data.track = b.track
     data.endState = capture()
-    write(b.dir, data)
-    bench = nil
+    prof = nil
+    local f = b.form
+    if f and f.data then
+      -- started from the report window ("Save + record"): the user's text is already in data
+      write(b.dir, data)
+    else
+      -- the hotkey: saved at once (nothing is lost), then the window for the title / description
+      write(b.dir, data, true)
+      openForm(b.dir, data, 'perf')
+      toast, toastUntil = 'Performance profiler done: add a title and Save', now() + 4
+    end
   end
 end
 
--- Save the open note with this text (tests, the console).
-function M.saveNote(text)
-  if not note then M.note() end
-  note.data.note = tostring(text or '')
-  write(note.dir, note.data)
-  note = nil
+local function formText(f)
+  if f.titleBuf then f.data.title = ffi.string(f.titleBuf) end
+  if f.noteBuf then f.data.note = ffi.string(f.noteBuf) end
+  f.data.kind = f.kind
+  lastKind = f.kind
+end
+
+-- Save the open report with this text (tests, the console). kind: map / perf / bug / idea.
+function M.saveNote(text, kind, title)
+  if not form then M.note() end
+  if not form then return end
+  form.data.note = tostring(text or '')
+  form.data.title = title and tostring(title) or form.data.title
+  form.data.kind = kind or form.kind
+  write(form.dir, form.data)
+  form = nil
 end
 
 function M.status()
-  return { noteOpen = note ~= nil, benchRunning = bench ~= nil, saved = count }
+  return { formOpen = form ~= nil, noteOpen = form ~= nil, profilerRunning = prof ~= nil,
+    benchRunning = prof ~= nil, saved = count, lastFolder = saved and saved.folder }
 end
 
 function M.onPreRender(dtReal)
@@ -191,7 +326,84 @@ function M.onPreRender(dtReal)
   local ms = dtReal * 1000
   ringN = ringN + 1
   ring[(ringN - 1) % M.RING + 1] = ms
-  if bench then benchFrame(ms) end
+  if prof then profFrame(ms) end
+end
+
+local function wrapped(s)
+  im.PushTextWrapPos(0)
+  im.TextUnformatted(tostring(s))
+  im.PopTextWrapPos()
+end
+
+local function drawSaved()
+  if not saved then return end
+  if now() > saved.untilT then saved = nil return end
+  im.SetNextWindowSize(im.ImVec2(560, 0), im.Cond_FirstUseEver)
+  if im.Begin('BeamNG.Earth report saved##bngeSaved', nil, im.WindowFlags_AlwaysAutoResize) then
+    im.TextUnformatted(saved.kind .. ' report saved in:')
+    im.TextUnformatted(saved.folder)
+    wrapped('issue.md there is a ready-to-post GitHub issue: edit it, then post it with the screenshot '
+      .. '(or run: python3 tools/reports.py issue).')
+    if im.Button('Open folder') then
+      pcall(Engine.Platform.exploreFolder, '/' .. saved.dir)
+      saved.untilT = now() + M.SAVED_S
+    end
+    if saved.url then
+      im.SameLine()
+      if im.Button('Open GitHub issue page') then
+        pcall(openWebBrowser, saved.url)
+        saved.untilT = now() + M.SAVED_S
+      end
+    end
+    im.SameLine()
+    if im.Button('Close') then saved = nil end
+  end
+  im.End()
+end
+
+local function drawForm()
+  local f = form
+  f.frames = f.frames + 1
+  if not f.titleBuf then
+    f.titleBuf = im.ArrayChar(128, f.data.title or '')
+    f.noteBuf = im.ArrayChar(4096, f.data.note or '')
+  end
+  im.SetNextWindowSize(im.ImVec2(560, 360), im.Cond_FirstUseEver)
+  if im.Begin('BeamNG.Earth report##bngeNote', nil, 0) then
+    im.TextUnformatted(string.format('%s  |  %s', f.data.time or '',
+      f.data.lat and string.format('%.5f, %.5f', f.data.lat, f.data.lon) or 'no location'))
+    for i, k in ipairs(fmt.KINDS) do
+      if i > 1 then im.SameLine() end
+      if im.RadioButton1(k.name .. '##bngeKind' .. i, f.kind == k.id) then f.kind = k.id end
+    end
+    wrapped(fmt.kind(f.kind).hint)
+    im.TextUnformatted('Title:')
+    if f.frames == 2 then im.SetKeyboardFocusHere() end
+    im.PushItemWidth(-1)
+    im.InputText('##bngeTitle', f.titleBuf, im.GetLengthArrayCharPtr(f.titleBuf))
+    im.PopItemWidth()
+    im.TextUnformatted('Description:')
+    im.InputTextMultiline('##bngeNoteText', f.noteBuf, im.GetLengthArrayCharPtr(f.noteBuf), im.ImVec2(-1, 130))
+    local b = f.data.bench
+    if b and b.fps then
+      im.TextUnformatted('Performance profiler: ' .. (fmt.framesLine(b) or ''))
+    end
+    if im.Button('Save report') then
+      formText(f)
+      write(f.dir, f.data)
+      form = nil
+    end
+    if form and f.kind == 'perf' and not b then
+      im.SameLine()
+      if im.Button(string.format('Save + record %d s profile', M.BENCH_S)) then
+        formText(f)
+        M.profiler()
+      end
+    end
+    im.SameLine()
+    if form and im.Button(b and 'Close (keep the profile)' or 'Cancel') then form = nil end
+  end
+  im.End()
 end
 
 function M.onUpdate()
@@ -205,40 +417,16 @@ function M.onUpdate()
     end
     im.End()
   end
-  if bench then
+  if prof then
     im.SetNextWindowPos(im.ImVec2(20, 160), im.Cond_Always)
     if im.Begin('##bngeBench', nil, im.WindowFlags_NoDecoration + im.WindowFlags_AlwaysAutoResize
         + im.WindowFlags_NoInputs) then
-      im.TextUnformatted(string.format('Benchmark: %.0f / %d s', now() - bench.t0, bench.dur))
+      im.TextUnformatted(string.format('Performance profiler: %.0f / %d s', now() - prof.t0, prof.dur))
     end
     im.End()
   end
-  if not note then return end
-  note.frames = note.frames + 1
-  if not note.buf then note.buf = im.ArrayChar(4096) end
-  im.SetNextWindowSize(im.ImVec2(520, 260), im.Cond_FirstUseEver)
-  if im.Begin('BeamNG.Earth note##bngeNote', nil, 0) then
-    im.TextUnformatted(string.format('%s  |  %s', note.data.time,
-      note.data.lat and string.format('%.5f, %.5f', note.data.lat, note.data.lon) or 'no location'))
-    im.TextUnformatted('Your note (what looks wrong, what looks good, performance...):')
-    if note.frames == 2 then im.SetKeyboardFocusHere() end
-    im.InputTextMultiline('##bngeNoteText', note.buf, im.GetLengthArrayCharPtr(note.buf), im.ImVec2(-1, 140))
-    if im.Button('Save note') then
-      note.data.note = ffi.string(note.buf)
-      write(note.dir, note.data)
-      note = nil
-    end
-    im.SameLine()
-    if note and im.Button('Save + 30 s benchmark') then
-      note.data.note = ffi.string(note.buf)
-      write(note.dir, note.data)
-      note = nil
-      M.benchmark()
-    end
-    im.SameLine()
-    if note and im.Button('Cancel') then note = nil end
-  end
-  im.End()
+  drawSaved()
+  if form then drawForm() end
 end
 
 return M
