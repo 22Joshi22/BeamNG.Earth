@@ -312,5 +312,29 @@
    {}
   ],
   "translucent": false
+ },
+ "bne_sidewalk_brick": {
+  "name": "bne_sidewalk_brick",
+  "mapTo": "bne_sidewalk_brick",
+  "class": "Material",
+  "version": 1.5,
+  "persistentId": "2f368e89-37d9-5676-96df-2ebf28ae62fc",
+  "Stages": [
+   {
+    "baseColorMap": "/assets/materials/tileable/brick/brick_herringbone/t_brick_herringbone_b.color.png",
+    "roughnessFactor": 0.9,
+    "metallicFactor": 0,
+    "baseColorFactor": [
+     0.92,
+     0.88,
+     0.86,
+     1
+    ]
+   },
+   {},
+   {},
+   {}
+  ],
+  "translucent": false
  }
 }

@@ -865,6 +865,7 @@ class Server:
             drives = []
             props.extend(buildingsmod.doors(items, lines, x0, y0, drives))
             chunks += drives
+            buildingsmod.brick_walks(walks, items, anchor.lat, anchor.lon)
         mesh = roadmeshmod.build(anchor.frame, chunks, elev, (x0, y0, 0.0),
                                  DETAIL_ROAD_LIFT if self.near_visual == "detail" else 0.0)
         dmesh = roadmeshmod.deck(chunks, (x0, y0, 0.0))

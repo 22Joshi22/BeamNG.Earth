@@ -1096,3 +1096,19 @@ def fill_photo(rgb, mask, size, px):
         fill = ch / np.maximum(wb, 1e-3)
         out[:, :, c] = np.where(mask, np.clip(fill, 0, 255), out[:, :, c])
     return out.astype(np.uint8)
+
+
+
+BRICK_WALK_COVERAGE = 0.35  # dense old cores (row houses) of brick regions ...
+BRICK_WALK_SHARE = 0.55     # ... pave this share of their streets' sidewalks with brick (hashed per street)
+
+
+def brick_walks(walks, items, lat, lon):
+    """Marks the sidewalk runs (roads.build_tile's walks) of a dense brick-region tile that are brick pavers
+    (Fells Point's historic streets): every run of a street the same."""
+    if not walks or brick_share(lat, lon) < 0.7 or coverage(items) < BRICK_WALK_COVERAGE:
+        return
+    for wk in walks:
+        fid = wk.get("fid")
+        if fid is not None and _hash01(str(fid), "brickwalk") < BRICK_WALK_SHARE:
+            wk["brick"] = True
