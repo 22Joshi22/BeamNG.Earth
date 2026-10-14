@@ -59,7 +59,7 @@ ROOT = Path(__file__).resolve().parents[1]
 HERE = Path(__file__).resolve().parent
 LUA = HERE / "benchmark.lua"
 SET_PATH = ROOT / "docs" / "benchmarks.json"
-ROADS_QUIET_S = 3.0         # s without a new or deleted road before the views are ready
+ROADS_QUIET_S = 6.0         # s without a new or deleted road before the views are ready
 RUNS_DIR = ROOT / "docs" / "research" / "benchmarks"
 
 MAX_SPEED = 1.0             # m/s: refuse to start while the player moves faster (--force overrides)
@@ -323,7 +323,11 @@ def readiness(p, anchor_before=None, need_anchor=True, exact=True, backlog=False
         reasons.append(f"near ground: L{far.get('underLevel')} under the car, exact is L{far.get('exactLevel')}"
                        + (" (previous anchor)" if far.get("underOld") else ""))
     roads = p.get("roads") or {}
-    if roads.get("enabled") and (roads.get("queued") or roads.get("deleting")):
+    if roads.get("enabled") and roads.get("tiles") == 0:
+        reasons.append("roads: no road tiles yet")             # a teleport's tiles are still being built
+    elif roads.get("enabled") and roads.get("walksQueued"):
+        reasons.append(f"roads: {roads['walksQueued']} road / sidewalk / building meshes to make")
+    elif roads.get("enabled") and (roads.get("queued") or roads.get("deleting")):
         reasons.append(f"roads: {roads.get('queued', 0)} to make, {roads.get('deleting', 0)} to delete")
     elif roads.get("enabled") and roads.get("quietS") is not None and roads["quietS"] < ROADS_QUIET_S:
         reasons.append("roads: still arriving / settling")    # the engine fits new DecalRoads over frames
