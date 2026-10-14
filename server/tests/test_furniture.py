@@ -62,5 +62,26 @@ class PoleTest(unittest.TestCase):
         self.assertEqual(furniture.place([road("d", "tertiary", True)], [], (0, 0, 256, 256)), [])
 
 
+class JunctionTest(unittest.TestCase):
+    def arm(self, fid, cls, dx, dy, c=(100.0, 100.0)):
+        pts = np.array([(c[0], c[1], 0.0), (c[0] + dx * 80, c[1] + dy * 80, 0.0)])
+        return (fid, roads.Spec(10.0, "paved", True, cls, False), pts, 0.0)
+
+    def test_signals_where_major_roads_cross(self):
+        rs = [self.arm(f"a{i}", "tertiary", dx, dy) for i, (dx, dy) in enumerate([(1, 0), (-1, 0), (0, 1), (0, -1)])]
+        rows = furniture.junction_props(rs, (0, 0, 256, 256))
+        self.assertEqual(sorted(r[0] for r in rows), [furniture.G_SIGNAL] * 4)
+        for r in rows:              # on the approach's right, outside the carriageways
+            self.assertGreater(max(abs(r[1] - 100), abs(r[2] - 100)), 5.0)
+
+    def test_stop_on_the_stem_of_a_minor_t(self):
+        rs = [self.arm("e", "residential", 1, 0), self.arm("w", "residential", -1, 0), self.arm("s", "residential", 0, -1)]
+        rows = furniture.junction_props(rs, (0, 0, 256, 256))
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0][0], furniture.G_STOP)
+        self.assertLess(rows[0][2], 100.0, "on the southern stem")
+        self.assertGreater(rows[0][1], 100.0, "on its right for northbound drivers (east side)")
+
+
 if __name__ == "__main__":
     unittest.main()

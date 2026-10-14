@@ -87,6 +87,8 @@ M.CATALOG = {
     { '/art/shapes/common/building_architect_modules/doors/R_HS_A_DR_01_90x220', 2.3 },
     { '/art/shapes/common/building_architect_modules/doors/R_HS_A_DR_02_100x210', 2.5 },
   },
+  signal = { { '/art/shapes/objects/s_trafficlight_boom_sn', 9.4 } },
+  stop = { { '/levels/east_coast_usa/art/shapes/signs_usa/sign_stop', 3.0 } },
   streetlight = { { '/art/shapes/garage_and_dealership/Clutter/eca_lamppost', 9.0 } },
   pole = { { '/levels/automation_test_track/art/shapes/objects/s_powerpole_3wire', 9.2 } },
   tropical = {
@@ -103,6 +105,7 @@ local MATERIALS = {
   JV .. 'rocks', JV .. 'trees/deserttrees', JV .. 'trees', JRI .. 'trees/trees_palm', JRI .. 'trees/trees_tropical_1',
   JRI .. 'trees/trees_tropical_2', JRI .. 'trees/bush_tropical_1', JRI .. 'trees/bush_tropical_2', JRI .. 'trees',
   IT .. 'trees/trees_italy', IT .. 'trees', '/levels/automation_test_track/art/shapes/objects',
+  ECA .. 'signs_usa', '/art/shapes/objects',
 }
 
 local tiles = {}        -- key "a:tx_ty" -> { anchor, cx, cy, rows, made = { i -> item }, shown = rank }

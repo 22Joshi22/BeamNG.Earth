@@ -132,6 +132,70 @@ def wire_mesh(lines, origin):
     return P, np.array(T, np.int64), np.zeros((len(P), 2))
 
 
+MAJOR = {"primary", "secondary", "tertiary", "trunk"}
+MINOR = {"residential", "unclassified", "living_street"}
+G_SIGNAL, G_STOP = "signal", "stop"
+JUNCTION_SNAP_M = 1.0       # road ends this close are one junction
+
+
+def _arms(roads):
+    """Junctions: {(x, y) rounded: [(fid, spec, unit vector away from the junction), ...]} of road ends that
+    meet (Overture splits segments at their connectors)."""
+    ends = {}
+    for fid, spec, pts, _ in roads:
+        if len(pts) < 2:
+            continue
+        for p, q in ((pts[0], pts[1]), (pts[-1], pts[-2])):
+            d = q[:2] - p[:2]
+            L = float(np.hypot(*d))
+            if L < 1e-3:
+                continue
+            k = (round(float(p[0]) / JUNCTION_SNAP_M), round(float(p[1]) / JUNCTION_SNAP_M))
+            ends.setdefault(k, []).append((fid, spec, d / L, p))
+    return ends
+
+
+def junction_props(roads, box, curb_h=0.15):
+    """Signals at urban junctions of two or more major roads (every arm), stop signs at urban junctions
+    of minor roads (the minor arms meeting a major road; the stem of a T; half the four-way ones, hashed).
+    Each on the approach's right (US), at the junction's edge, facing the drivers who come in."""
+    x0, y0, x1, y1 = box
+    rows = []
+    for k, arms in _arms(roads).items():
+        if len(arms) < 3 or not all(a[1].urban for a in arms):
+            continue
+        p = arms[0][3]
+        if not (x0 <= p[0] < x1 and y0 <= p[1] < y1):
+            continue
+        major = [a for a in arms if a[1].cls in MAJOR]
+        minor = [a for a in arms if a[1].cls in MINOR]
+        signalled = len(major) >= 3 or (len(major) >= 2 and len(arms) >= 4)
+        if signalled:
+            put = [(a, G_SIGNAL) for a in arms if a[1].cls in MAJOR | MINOR]
+        elif major:
+            put = [(a, G_STOP) for a in minor]
+        elif len(arms) == 3:
+            # the stem: the arm least in line with another
+            def straightest(a):
+                return max(-float(a[2] @ b[2]) for b in arms if b is not a)
+            put = [(min(arms, key=straightest), G_STOP)] if all(a[1].cls in MINOR for a in arms) else []
+        else:
+            put = [(a, G_STOP) for a in minor] if _h01("allway", k) < 0.5 else []
+        if not put:
+            continue
+        wide = max(a[1].width for a in arms) / 2
+        for (fid, spec, u, c), what in put:
+            # the approach comes in along -u; its right is (-u_y, u_x)... rotated: right of travel (-u)
+            inc = -u
+            right = np.array([inc[1], -inc[0]])
+            q = c[:2] + u * (wide + 2.5) + right * (spec.width / 2 + 1.0)
+            if not (x0 - 20 <= q[0] < x1 + 20 and y0 - 20 <= q[1] < y1 + 20):
+                continue
+            rows.append([what, round(float(q[0]), 2), round(float(q[1]), 2), round(float(c[2] + curb_h), 2),
+                         round(_yaw(right[0], right[1]), 1), 1.0, 9.4 if what == G_SIGNAL else 3.0, 0.0])
+    return rows
+
+
 def place(roads, walks, box, curb_h=0.15, wires=None):
     """Rows [group, x, y, z, yaw, scale, height, rank] (trees.lua's tile rows) of the lamps and poles of a
     tile box (x0, y0, x1, y1). roads: build_tile's (fid, spec, centreline (k, 3), lon); walks: its sidewalk
@@ -181,6 +245,7 @@ def place(roads, walks, box, curb_h=0.15, wires=None):
                 continue
             rows.append([G_LAMP, round(float(q[0]), 2), round(float(q[1]), 2), round(float(p[2] + curb_h), 2),
                          round(_yaw(-out[0], -out[1]), 1), 1.0, 9.0, 0.0])
+    rows.extend(junction_props(roads, box, curb_h))
     for fid, spec, line, _ in roads:
         if spec.urban or fid in lit or spec.cls not in POLE_CLASSES or len(line) < 2:
             continue
