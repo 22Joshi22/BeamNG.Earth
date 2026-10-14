@@ -721,6 +721,10 @@ centrelines, carved channels, ripples flowing downstream, a current). Known issu
   map's lava pools: orange, emissive, density 10000) for volcanoes or other places with lava.
 - **Performance, monitored live:** the user drives by hand in different places while the game and
   server metrics are watched; there are still hitches while driving.
+  2026-10-14 drive data (4 km at 34 mph, Fells Point north): ~72 frames over 50 ms either way, with or without
+  traffic; full static-collision rebuilds had grown to ~56 ms (1.1 M vertices, mostly building meshes colliding
+  with their visible mesh) and now run every 6 s at most. Next: a low-poly collision mesh for buildings (walls +
+  roof prisms) and the engine profiler on the hitch frames.
 - **Texture patterns** visible in some terrain (repeating tiles): find and fix.
 - **Sidewalks and intersections:** many need work. Take many in-game photos of sidewalks and
   intersections and compare them with high-resolution aerial or street-level imagery.
