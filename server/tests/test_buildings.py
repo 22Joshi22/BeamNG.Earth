@@ -44,6 +44,12 @@ class PlanTest(unittest.TestCase):
         roofs = {bld.plan(rect(x * 50, 0, 10, 8), {"class": "house"}).roof for x in range(20)}
         self.assertEqual(roofs, {"gabled", "hipped"})
 
+    def test_barn_gabled_metal(self):
+        s = bld.plan(rect(0, 0, 30, 15), {"class": "barn"}, 0, 40.0, -76.1)
+        self.assertEqual(s.roof, "gabled")
+        self.assertTrue(s.roof_mat.startswith(bld.ROOF_METAL))
+        self.assertGreater(s.height, 5.0)
+
     def test_deterministic(self):
         a = bld.plan(rect(3, 7, 12, 9), {"class": ""})
         b = bld.plan(rect(3, 7, 12, 9), {"class": ""})

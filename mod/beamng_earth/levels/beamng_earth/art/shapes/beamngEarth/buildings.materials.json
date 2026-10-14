@@ -237,5 +237,32 @@
    {}
   ],
   "translucent": false
+ },
+ "bne_bld_roof_metal": {
+  "name": "bne_bld_roof_metal",
+  "mapTo": "bne_bld_roof_metal",
+  "class": "Material",
+  "version": 1.5,
+  "persistentId": "b45877c4-bc82-5093-8ecc-49bb910f14a8",
+  "Stages": [
+   {
+    "baseColorMap": "/assets/materials/tileable/metal/cladding_zinc/t_metal_cladded_zinc_b.color.png",
+    "normalMap": "/assets/materials/tileable/metal/cladding_zinc/t_metal_cladded_zinc_nm.normal.png",
+    "roughnessMap": "/assets/materials/tileable/metal/cladding_zinc/t_metal_cladded_zinc_r.data.png",
+    "ambientOcclusionMap": "/assets/materials/tileable/metal/cladding_zinc/t_metal_cladded_zinc_ao.data.png",
+    "metallicMap": "/assets/materials/tileable/metal/cladding_zinc/t_metal_cladded_zinc_m.data.png",
+    "baseColorFactor": [
+     1,
+     1,
+     1,
+     1
+    ],
+    "vertColor": true
+   },
+   {},
+   {},
+   {}
+  ],
+  "translucent": false
  }
 }

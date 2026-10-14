@@ -46,9 +46,11 @@ ROOF_SHINGLE = "bne_bld_roof_shingle"
 SIDING = "bne_bld_siding"
 FACADE = "bne_bld_facade"    # the plaster window sheet, tinted per building by vertex colour
 STUCCO = "bne_bld_stucco"   # plain stucco walls (windows laid over them from the sheet)
+ROOF_METAL = "bne_bld_roof_metal"   # standing-seam metal (barns, sheds, farm buildings)
+BARN_CLASSES = {"barn", "farm_auxiliary", "stable", "cowshed"}
 # The mesh's materials (vertColor: each building's colours are its vertices'); the names above are the
 # looks plan() picks, each one of these with a colour (LOOKS).
-MATERIALS = (FACADE, SHOP, OFFICE, ROOF_FLAT, ROOF_SLATE, ROOF_SHINGLE, SIDING, STUCCO)
+MATERIALS = (FACADE, SHOP, OFFICE, ROOF_FLAT, ROOF_SLATE, ROOF_SHINGLE, SIDING, STUCCO, ROOF_METAL)
 LOOKS = {
     "bne_bld_fac_white": (FACADE, (1.0, 1.0, 1.0)), "bne_bld_fac_cream": (FACADE, (1.0, 0.93, 0.80)),
     "bne_bld_fac_sand": (FACADE, (0.92, 0.82, 0.68)), "bne_bld_fac_grey": (FACADE, (0.80, 0.82, 0.84)),
@@ -61,10 +63,11 @@ ROOF_TINTS = {               # per roof material: the colours a building's roof 
     ROOF_FLAT: ((0.85, 0.85, 0.85), (0.62, 0.62, 0.64), (0.95, 0.93, 0.88), (0.45, 0.45, 0.46), (0.75, 0.70, 0.64)),
     ROOF_SLATE: ((1.0, 1.0, 1.0), (0.80, 0.66, 0.56), (0.76, 0.80, 0.90), (0.62, 0.62, 0.62)),
     ROOF_SHINGLE: ((0.75, 0.72, 0.70), (0.55, 0.50, 0.48), (0.70, 0.56, 0.48), (0.62, 0.66, 0.72)),
+    ROOF_METAL: ((0.85, 0.86, 0.88), (0.55, 0.57, 0.60), (0.45, 0.58, 0.48), (0.62, 0.30, 0.26), (0.40, 0.42, 0.48)),
 }
 WALL_TINTS = {               # houses with plain walls and laid-over windows: their colours (hashed)
     SIDING: ((0.96, 0.95, 0.92), (0.90, 0.86, 0.76), (0.78, 0.84, 0.90), (0.95, 0.92, 0.74), (0.78, 0.84, 0.74),
-             (0.82, 0.78, 0.72), (0.70, 0.72, 0.75)),
+             (0.82, 0.78, 0.72), (0.70, 0.72, 0.75), (0.62, 0.20, 0.17), (0.66, 0.24, 0.20)),   # the last: barn red
     STUCCO: ((1.0, 0.97, 0.90), (0.96, 0.88, 0.74), (0.93, 0.80, 0.68), (0.98, 0.95, 0.88), (0.88, 0.84, 0.78)),
 }
 for _m, _cs in list(ROOF_TINTS.items()) + list(WALL_TINTS.items()):
@@ -259,6 +262,9 @@ def plan(ring, attrs, neighbours=0, lat=None, lon=None, look=None):
     floor_h = FLOOR_M
     if industrial:
         floor_h = 4.5
+    barn = cls in BARN_CLASSES or (shed and area >= 150)
+    if barn:
+        floor_h = 5.5 if area >= 150 else 3.5          # one tall storey; the gable above it
     if h is None and nf is None:
         if shed:
             nf = 1
@@ -285,13 +291,15 @@ def plan(ring, attrs, neighbours=0, lat=None, lon=None, look=None):
         detached_house = (cls in HOUSE_CLASSES or (area < 260 and not shop and not row)) and not industrial
         if neighbours >= 1:
             roof = "flat"                           # attached: a pitched roof would show its gable to the neighbour
+        elif barn:
+            roof = "gabled"
         elif shed and area < 80:
             roof = "gabled" if seed > 0.4 else "flat"
         elif detached_house:
             roof = "gabled" if seed < 0.6 else "hipped"
         else:
             roof = "flat"
-    if roof != "flat" and (box_fill < 0.8 or hw < 2.0 or hw > 14.0):
+    if roof != "flat" and (box_fill < 0.8 or hw < 2.0 or hw > (18.0 if barn else 14.0)):
         roof = "flat"                               # pitched roofs only on near-rectangular footprints
     if h is None:
         h = nf * floor_h + (GROUND_FLOOR_SHOP_M - floor_h if shop and nf > 1 else 0.0) + (0.6 if roof == "flat" else 0.2)
@@ -304,7 +312,7 @@ def plan(ring, attrs, neighbours=0, lat=None, lon=None, look=None):
             nf = max(1, int(round(h / floor_h)))
     nf = max(1, min(nf, 120))
     floor_h = h / nf
-    if shed:
+    if shed or barn:
         facade, band, plain = SIDING, None, True
     else:
         tall = nf >= 7
@@ -338,7 +346,14 @@ def plan(ring, attrs, neighbours=0, lat=None, lon=None, look=None):
             wall = f"{kind}|{int(_hash01(seed, 'wc') * len(WALL_TINTS[kind]))}"
             facade = wall
     roof_mat = ROOF_FLAT if roof == "flat" else (ROOF_SLATE if seed < 0.5 else ROOF_SHINGLE)
+    if (barn or shed) and roof != "flat":
+        roof_mat = ROOF_METAL
     roof_mat = f"{roof_mat}|{int(_hash01(seed, 'roof') * len(ROOF_TINTS[roof_mat]))}"
+    if barn or shed:                    # plain walls tinted: barns half barn red, sheds the siding colours
+        tints = WALL_TINTS[SIDING]
+        k = (len(tints) - 1 - int(_hash01(seed, "red") * 2)) if barn and _hash01(seed, "barn") < 0.5 else \
+            int(_hash01(seed, "sc") * (len(tints) - 2))
+        facade = f"{SIDING}|{k}"
     return Spec(ring=ring, floors=nf, floor_h=floor_h, height=h, roof=roof, roof_mat=roof_mat, facade=facade,
                 band=band, shop=shop and not shed and nf >= 1, plain=plain, seed=seed, min_h=0.0, wall=wall)
 
