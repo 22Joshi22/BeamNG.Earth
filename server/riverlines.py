@@ -38,6 +38,7 @@ WIDTH_MAX_M = 2000.0        # m: wide rivers (the Susquehanna at Harrisburg: ~1 
 WIDTH_STEP_M = 4.0          # the banks searched this finely
 CHANNEL_PROBE_M = 3.0
 MEDIAN_N = 5
+SMOOTH_N = 7                # the centre and width also averaged over this many nodes
 SURFACE_ABOVE_M = 0.25      # m: the water's surface above the channel's DEM (where nothing is carved)
 CARVED_ABOVE_M = 0.05       # m: ... above the carved level (seacarve cuts the bed below it)
 DEPTH_M = (1.0, 8.0)        # the River's depth (its volume below the surface): width / 8, clamped
@@ -196,8 +197,10 @@ def _pieces(frame, ids, kind, pts, x, y, r, water_at, dem_at, outline_at, level_
         j = i
         while j + 1 < n and keep[j + 1] and tuple(sq[j + 1]) == tuple(sq[i]):
             j += 1
-        a, b = max(i - 1, 0) if keep[max(i - 1, 0)] else i, min(j + 1, n - 1) if (j + 1 < n and keep[j + 1]) else j
-        if b > a:                       # the piece and the first node of the next (they join)
+        # the piece and the first node of the next: they share a node, never a segment (two Rivers over
+        # the same stretch drew by turns as the camera moved, 2026-10-13)
+        a, b = i, (j + 1 if (j + 1 < n and keep[j + 1]) else j)
+        if b > a:
             nodes = tuple((float(centre[k, 0]), float(centre[k, 1]), float(z[k]), float(width[k]), float(depth[k]))
                           for k in range(a, b + 1))
             out.append(River(f"R{base}_{sq[i][0]}_{sq[i][1]}_{i}", kind, FLOW_MS[kind], nodes))
@@ -227,9 +230,20 @@ def _widths(frame, kind, pts, outline_at):
     measured = left + right
     w = np.where(here & (measured > 0), np.maximum(measured, WIDTH_M[kind] / 2), w)
     shift = np.where(here, (left - right) / 2, 0.0)
-    shift = _running_median(shift, MEDIAN_N)
+    shift = _smooth(shift)
     centre = pts + nrm * shift[:, None]
-    return np.clip(_running_median(w, MEDIAN_N), 1.0, WIDTH_MAX_M), centre
+    return np.clip(_smooth(w), 1.0, WIDTH_MAX_M), centre
+
+
+def _smooth(v):
+    """A running median, then a running mean over SMOOTH_N nodes: a centre or a width that changes from
+    node to node folds a River's surface over itself (stretched, streaky texture, 2026-10-13)."""
+    v = _running_median(v, MEDIAN_N)
+    if len(v) < 3:
+        return v
+    h = SMOOTH_N // 2
+    p = np.pad(v, h, mode="edge")
+    return np.convolve(p, np.ones(SMOOTH_N) / SMOOTH_N, mode="valid")
 
 
 def _lalo(frame, xy):

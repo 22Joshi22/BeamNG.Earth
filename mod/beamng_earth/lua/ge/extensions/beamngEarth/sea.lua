@@ -41,10 +41,12 @@ local FIELDS = {
   { 'foamDir', 0, '0 1' }, { 'foamDir', 1, '0 -1' }, { 'foamSpeed', 0, '0.01' }, { 'foamSpeed', 1, '0.01' },
   { 'foamOpacity', 1, '5' }, { 'foamTexScale', 1, '4 4' },
 }
--- Lakes and rivers (the server's "L..." keys): fresh water, greener and browner than the bay
+-- Lakes and rivers (the server's "L..." keys, and the Rivers): fresh water, greener and browner than the bay
 local INLAND = {
   { 'baseColor', 0, '44 74 60 255' }, { 'underwaterColor', 0, '52 78 58 240' }, { 'clarity', 0, '0.12' },
-  { 'overallWaveMagnitude', 0, '0.04' }, { 'overallRippleMagnitude', 0, '0.12' },
+  { 'overallWaveMagnitude', 0, '0.15' }, { 'overallRippleMagnitude', 0, '0.6' },
+  -- the ripples drift visibly (with 0.12 and the bay's slow speeds a lake looked frozen, 2026-10-13)
+  { 'rippleSpeed', 0, '0.03' }, { 'rippleSpeed', 1, '0.09' }, { 'rippleSpeed', 2, '0.012' },
 }
 -- Rivers along centrelines: no foam (with the bay's 0.75 m foam depth a stream drew as a white ribbon,
 -- and their shallow edges as white fringes, 2026-10-13)

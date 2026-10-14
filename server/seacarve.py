@@ -31,7 +31,7 @@ import mapcells
 
 log = logging.getLogger("earthd.seacarve")
 
-VERSION = 11
+VERSION = 12
 SEA_E = 0.0                 # m: the sea surface (the DEMs' heights are above mean sea level)
 DEPTH_SLOPE = 0.15          # floor depth per metre from the shoreline (1 : 6.7)
 DEPTH_CAP = 6.0             # m: the floor's depth away from the shore without bathymetry (Chesapeake mean
@@ -264,8 +264,12 @@ class SeaCarver:
         lake[sea] = -1                  # the sea wins where they overlap
         river &= ~sea & (lake < 0)
         outline = river.copy()          # every river outline (riverlines.py measures widths across it)
+        through = self._river_line_px(x, y, ox, oy, n) if (self.dem is not None and lake_ids) else None
         for k in range(len(lake_ids)):
             m = lake == k
+            if through is not None and (m & through).any():
+                river |= m              # a river runs through it (a pool behind a dam, water=river): it
+                continue                # flows, as the river (River objects), not a still lake tile
             lv = self._lake_level(m, ox, oy, px)
             if lv is None:
                 continue
@@ -386,6 +390,37 @@ class SeaCarver:
                             self._carve_line(np.stack([mx - ox, my - oy], -1), kind, ox, oy, n, px, depth, level,
                                              held, drawn, o_dist)
         outline |= drawn
+
+    def _river_line_px(self, x, y, ox, oy, n):
+        """The pixels the centrelines of class river (not streams) of the 5 x 5 cells around cross."""
+        import riverlines
+        out = np.zeros((n, n), bool)
+        seen = set()
+        for dy in range(-LINE_CELLS, LINE_CELLS + 1):
+            for dx in range(-LINE_CELLS, LINE_CELLS + 1):
+                f = self._water((mapcells.ZOOM, x + dx, y + dy))
+                if f is None:
+                    continue
+                cls = f.attrs.get("class", np.full(len(f.kind), "", object))
+                for i in np.flatnonzero(f.kind == 2):
+                    gid = str(f.ids[i])
+                    if gid in seen or riverlines._kind(str(f.attrs["subtype"][i]), str(cls[i])) != "river":
+                        continue
+                    seen.add(gid)
+                    for part in f.parts(i):
+                        for ring in part:
+                            mx, my = _merc(ring[:, 1], ring[:, 0])
+                            q = np.stack([mx - ox, my - oy], -1)
+                            seg = np.hypot(*np.diff(q, axis=0).T)
+                            t = np.r_[0.0, np.cumsum(seg)]
+                            if t[-1] <= 0:
+                                continue
+                            u = np.arange(0.0, t[-1], 0.5)
+                            ii = np.floor(np.interp(u, t, q[:, 0])).astype(np.int64)
+                            jj = np.floor(np.interp(u, t, q[:, 1])).astype(np.int64)
+                            ok = (ii >= 0) & (ii < n) & (jj >= 0) & (jj < n)
+                            out[jj[ok], ii[ok]] = True
+        return out
 
     def _carve_line(self, pts, kind, ox, oy, n, px, depth, level, held, drawn, o_dist):
         import riverlines
