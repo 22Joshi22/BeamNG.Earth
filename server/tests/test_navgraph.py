@@ -53,7 +53,6 @@ class GraphTest(unittest.TestCase):
         ys = {round(n[1]) for n in g["nodes"].values()}
         self.assertEqual(ys, {20}, "only the residential street in the window")
 
-
     def test_nodes_on_a_bridge_take_its_deck(self):
         f = features([[(0, 0), (200, 0)]], ["primary"])
         f.rules["connectors"] = rules([(0, "A", 0.0, 0.0), (0, "B", 1.0, 1.0)])
