@@ -359,8 +359,8 @@ wall or a filled-in bump depending on the source.
   gameplay_parking as a sites object and starts trafficParkedAmount cars; lot stalls too. 16 cars: ~1 ms.
 - AI traffic on our navgraph: done 2026-10-14 behind `--traffic on` (server navgraph.py, mod navgraph.lua;
   ARCHITECTURE "Parked cars and traffic"): the stock gameplay_traffic drives our roads, clipped to the block,
-  edge guard, teleports. 7 cars: ~1.6 ms. Next: working signals (core_trafficSignals at our junction_props
-  signals), bridge decks in the graph, left-hand traffic by country, default on once the user has driven it.
+  edge guard, teleports. 7 cars: ~1.6 ms. Working signals and stop signs with switchable heads (same day).
+  Next: bridge decks in the graph, left-hand traffic by country, default on once the user has driven it.
 - Traffic lights / stop signs from OSM via `core_trafficSignals` (scriptable at runtime), stock
   light and sign props; street lights.
 

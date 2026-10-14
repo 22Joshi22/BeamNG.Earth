@@ -1572,5 +1572,16 @@ file through `path.getPathLevelInfo`, every vehicle is told to fetch the graph (
 starts `trafficAmount` cars (`gameplay_traffic.setupTraffic`); a guard respawns cars near the block's edge;
 teleports hold them inactive until the new graph is in, then `forceTeleportAll`. Cost (7 cars): ~1.6 ms a frame.
 The level's `supportsTraffic` stays false, so freeroam's own start-up does not try traffic before our graph exists.
-Not yet: working traffic signals (`core_trafficSignals`; our signal heads are static props), bridges' deck heights in
-the graph, left-hand-traffic countries (`rules.rightHandDrive`).
+**Signals and stop signs.** The graph carries the junctions that `furniture.junction_controls` controls (the same
+rule that stands the props, so the AI's controls are where the booms and stop signs are): per incoming approach the
+stop point (2 m before the junction's widest road edge, on the right half of the lane, where `map.findClosestRoad`
+finds that approach), the travel direction, the phase (by axis) and the head's prop transform. The frame after a
+`map.reset`, `navgraph.lua` builds them with `core_trafficSignals`: a two-phase `lightsBasic` sequence per signalled
+junction (green / yellow from the approach speed, `autoSetTimings`), one shared `signStop` controller, and a
+switchable stock boom (`createSignalObject`, the instanced_trafficlight material) per approach in place of the road
+tile's static one (trees.lua's signal group hides while they exist; heads are kept across applies by instance
+name). Vehicles that hold signals read the state mailbox every frame and throw on one never written, so an empty
+update is written first. Fells Point: 51 junctions, 132 approaches, cars stop 2-5 m before the line on red.
+Cost per new graph: ~7 ms (map.reset; the UI's NavigationMapChanged dump is dropped) + ~5 ms (signals) in two
+frames; the first graph of an anchor ~10 + ~22 ms (all heads made).
+Not yet: bridges' deck heights in the graph, left-hand-traffic countries (`rules.rightHandDrive`), EU signal timings.
