@@ -744,7 +744,7 @@ def extras(spec, pts, lon):
             for side in (1, -1):
                 for k in range(1, n):
                     out.append((LANE_LINE, LANE_LINE["w"], offset_polyline(pts, side * k * lw)))
-    if kind == "paved" and not urban and cls in EDGE_LINE_CLASSES:
+    if kind == "paved" and (not urban or not has_sidewalks(spec)) and cls in EDGE_LINE_CLASSES:   # no curb: edge lines
         for side in (1, -1):
             out.append((EDGE_LINE, EDGE_LINE["w"], offset_polyline(pts, side * (w / 2 - EDGE_LINE["inset"]))))
     return out
