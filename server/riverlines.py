@@ -203,7 +203,9 @@ def _pieces(frame, ids, kind, pts, x, y, r, water_at, dem_at, outline_at, level_
         if b > a:
             nodes = tuple((float(centre[k, 0]), float(centre[k, 1]), float(z[k]), float(width[k]), float(depth[k]))
                           for k in range(a, b + 1))
-            out.append(River(f"R{base}_{sq[i][0]}_{sq[i][1]}_{i}", kind, FLOW_MS[kind], nodes))
+            # the key names the piece and its nodes: a piece whose nodes changed is made again by the mod
+            h = hashlib.sha1(repr([tuple(round(v, 1) for v in nd) for nd in nodes]).encode()).hexdigest()[:6]
+            out.append(River(f"R{base}_{sq[i][0]}_{sq[i][1]}_{i}_{h}", kind, FLOW_MS[kind], nodes))
         i = j + 1
     return out
 
