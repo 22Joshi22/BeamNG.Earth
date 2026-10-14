@@ -1270,6 +1270,13 @@ def coverage(items, tile=256.0):
     return sum(_area2(s.ring) / 2 for s, _, _ in items if (s.min_h or 0) <= 0.5) / (tile * tile)
 
 
+def centres(items, tx, ty):
+    """The anchor-frame (x, y) centres of a road tile's buildings (road_tile_items' rings are tile-local)."""
+    import roads
+    x0, y0, _, _ = roads.tile_bbox(tx, ty)
+    return [(float(s.ring[:, 0].mean() + x0), float(s.ring[:, 1].mean() + y0)) for s, _, _ in items]
+
+
 def road_tile(frame, tx, ty, md, ground, lines=None, props=None, items=None):
     """The buildings of road tile (tx, ty) (roads.TILE squares of the anchor frame): (mesh, collider boxes) or
     None. md: mapdata.MapData; ground(lat, lon): the physics ground without the road lift. lines (the road

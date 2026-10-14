@@ -1210,7 +1210,7 @@ def drains(run, side, caps, walk_w=None):
 
 
 def build_tile(frame, tx, ty, cells, elev, urban_fn=None, walks=None, bridges=None, widths=None, props=None,
-               lines=None, wires=None, town=None, park=None, left_hand=False):
+               lines=None, wires=None, town=None, park=None, left_hand=False, structures=()):
     """The chunks of one tile. cells: the mapgeom.Features of the "roads" layer of every cell touching
     the tile; elev(lat, lon) -> metres (the DEM); urban_fn: as road_specs. Features in several cells are
     taken once (by id). The carriageways, then each road's sidewalks / gutters / markings (extras), cut
@@ -1274,6 +1274,21 @@ def build_tile(frame, tx, ty, cells, elev, urban_fn=None, walks=None, bridges=No
         junctions.find(roads, has_sidewalks, None, PARKING_M,
                        lambda sp: sp.urban and sp.cls in PARKING_CLASSES and sp.kind in BUILT and not sp.oneway
                        and sp.width >= STYLE.get(sp.cls, STYLE["unknown"])[0] + 2 * PARKING_M - 0.1)
+    # small road loops (roundabouts, turnaround loops): no sidewalks facing their inside, a curbed island instead
+    import islands
+    isl = islands.find(roads, structures=structures) if walks is not None else []
+    inner = islands.inner_sides(isl)
+    if walks is not None:
+        for f in isl:
+            if f["ring"] is None:
+                continue
+            ring = np.vstack([f["ring"], f["ring"][:1]])
+            band = offset_polyline(ring, islands.ISLAND_BAND_M / 2)
+            for piece in clip_polyline(band, *exact):
+                run = densify(simplify(piece))
+                if len(run) >= 2:
+                    walks.append({"pts": run, "side": 1, "caps": (False, False), "ramps": [],
+                                  "w": islands.ISLAND_BAND_M, "fid": "island"})
     cornered = set()                            # road pairs whose sidewalks meet at a curb return
     if walks is not None:
         for (fid, side), cl in jcuts.items():
@@ -1283,6 +1298,8 @@ def build_tile(frame, tx, ty, cells, elev, urban_fn=None, walks=None, bridges=No
                         cornered.add((fid, f2))
         for c in corners:                       # each corner / crosswalk made by the tile it is in
             p = c["arc"][len(c["arc"]) // 2]
+            if isl and islands.in_island(isl, p[:2]):
+                continue                        # a curb return inside a loop: its island has its own curb
             if x0 <= p[0] < x1 and y0 <= p[1] < y1:
                 walks.append({"corner": c})
                 if c["fill"] is not None:
@@ -1303,6 +1320,8 @@ def build_tile(frame, tx, ty, cells, elev, urban_fn=None, walks=None, bridges=No
         for look, w, line in ex:
             walk = look["m"] == SIDEWALK["m"]
             side = look.get("side")
+            if (walk or look["m"] == GUTTER["m"]) and (fid, side) in inner:
+                continue                        # facing a traffic island: no sidewalk there
             if walk and walks is not None:
                 for piece in clip_polyline(line, *exact):
                     for cpiece, (j0, j1) in junctions.apply_cuts(piece, jcuts.get((fid, side), [])):
