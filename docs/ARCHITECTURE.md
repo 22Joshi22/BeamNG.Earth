@@ -1419,3 +1419,34 @@ position; vehicles see water they drive into, but not water that appears around 
 - **Drive cost (Fells Point east along the waterfront, 30 m/s, 6 km, 2026-10-13):** 75.7 fps with water,
   79.3 without; p99 22.4 vs 21.9 ms, worst frame 55 vs 53 ms.
 - Tests: `server/tests/test_seacarve.py`, `mod/tests/test_sea.lua`.
+
+## Trees, bushes and rocks (`server/vegetation.py`, mod `trees.lua`; 2026-10-13, `--trees on`, default off)
+
+The user asked for "trees, rocks and other decoration" (ROADMAP v1.9 "Cities & nature").
+- **Per map-data cell (deterministic, cached in `<cache>/vegetation/v1/<release>/<x>/<y>.npz`):**
+  - Trees are the tops of Meta/WRI's CHMv2 (1.2 m canopy heights, z17 grid): local maxima of the 3 x 3
+    smoothed heights in a disc that grows with the height (r = 1-4 px for bushes to > 15 m trees), then
+    one per crown (the tallest first, removing tops within 0.8 (0.12 h + 1) m).
+  - None on buildings (the CHM counts roofs and solar panels), road corridors (half width by class +
+    1.5 m: overhanging canopy would put a trunk in the lane) or water; the neighbours' features too.
+  - Bushes: tops of 1-3 m, and a hashed scatter on a 6 m grid over shrubland (WorldCover 20).
+  - Rocks: the same scatter over bare land (60), thinly over shrubs and grass.
+  - Every choice hashes the item's global pixel: species group (deciduous / conifer by a regional share
+    and height, shrub, rock), yaw, size variation, and a fixed rank for thinning.
+  - Cost: ~3.5 s per cell the first time (Patterson Park 5,074 trees; Loch Raven woods 10,387; an
+    Arizona desert cell 13,000 rocks).
+- **Tiles:** 256 m tiles like the road tiles, sent within 768 m and dropped beyond 1024 m (`veg_tile` /
+  `veg_drop`), each a JSON of [group, x, y, z, yaw, scale, height, rank] in the anchor frame. z is the
+  block's ground (`Server.ground`: runways, carved water); items in water are left out.
+- **Mod (`trees.lua`):**
+  - One `Forest` (`bngEarthForest`) of East Coast USA's stock shapes: oaks, beeches, aspens, Douglas firs,
+    bushes and rocks, with their measured heights (they have LODs, billboards and collision meshes).
+  - Each item takes the variant nearest its height (within 0.8-1.25, else 0.6-1.6, picked by its rank),
+    scaled to it.
+  - Item types are TSForestItemData made with `worldEditorCppApi.createObject` (plain `createObject`
+    returns nil for datablocks), after loading the shapes' `main.materials.json`.
+  - A tile shows the items whose rank is under its distance's threshold: all within 300 m, half to
+    550 m, a quarter beyond.
+  - Up to 300 items are made or removed per frame (~19 us each, 2026-10-13 probe: 1024 items in 19 ms).
+- Tests: `server/tests/test_vegetation.py`, `mod/tests/test_trees.lua`.
+

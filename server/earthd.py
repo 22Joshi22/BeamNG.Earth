@@ -101,6 +101,7 @@ import airportgrade as airportgrademod  # noqa: E402
 import airports as airportsmod  # noqa: E402
 import seacarve as seacarvemod  # noqa: E402
 import seatiles as seatilesmod  # noqa: E402
+import vegetation as vegetationmod  # noqa: E402
 import riverlines as riverlinesmod  # noqa: E402
 import groundahead as groundaheadmod  # noqa: E402
 import heightmap  # noqa: E402
@@ -427,7 +428,7 @@ class Server:
                  block=BLOCK_DEFAULT, horizon=False, deshadow="off", weather=None, gravity=None, net=None,
                  colormatch="off", credits=None, cache=None, retex_rate=RETEX_RATE, surface=None,
                  mapdata=None, grading=False, road_widths=False, block_pools=(), sidewalks=True, far_pool=None,
-                 road_pool=None, airports_db=None, sea=None):
+                 road_pool=None, airports_db=None, sea=None, vegetation=None):
         """kfun: K(L) for every level (default: the layout's K table); near_radii: the min-level
         radii (default: the layout's); cells: 32 (v1.3.1) or 64 (M1, mesh mode only); tex: texture
         px per level from the finest (default: tex_near, tex_near, tex_far with 32 cells,
@@ -477,6 +478,7 @@ class Server:
         # runways graded in (--airports on: main() loads the OurAirports copy before the worker processes)
         self.airports = airportgrademod.AirportGrader(airports_db, self.dem) if airports_db is not None else None
         self.sea = sea              # seacarve.SeaCarver (--sea on): the sea floor carved, the water tiles
+        self.veg = vegetation       # vegetation.Vegetation (--trees on): trees, bushes, rocks per cell
         if sea is not None and sea.dem is None:
             sea.dem = self.dem      # the lakes' levels
         # Satellite imagery (§A); None = --imagery off (v3-style palette tiles).
@@ -789,6 +791,20 @@ class Server:
 
     def hm_vfs(self, key):
         return f"{self.vfs_dir}/{self.hm_name(key)}"
+
+    def build_veg_tile(self, aid, tx, ty):
+        """vegetation.py: one vegetation tile of anchor aid written to the session folder: (vfs path, n) or
+        None. Worker threads (builds the map cells it lacks, ~3.5 s each the first time)."""
+        anchor = self.anchors.get(aid)
+        if anchor is None or self.veg is None:
+            return None
+        zoom = anchor.zooms[0]
+        rows = vegetationmod.tile_items(anchor.frame, tx, ty, self.veg, lambda k: True,
+                                        lambda la, lo: self.ground(anchor.frame, la, lo, self.dem.sample(la, lo, zoom)),
+                                        self.sea)
+        if rows is None:
+            return None
+        return vegetationmod.write_tile(self.out_dir, self.vfs_dir, aid, tx, ty, rows)
 
     def build_roads_tile(self, aid, tx, ty):
         """roads.py: one road tile of anchor aid, written to the session folder. Returns (vfs path,
@@ -1617,6 +1633,7 @@ class Connection:
         self.zmax_region = None
         self.weather = weathermod.Tracker()     # real weather: fetch rule, last message sent
         self.roads = roadsmod.Tracker()         # road tiles sent to the mod (--roads on)
+        self.veg = vegetationmod.Tracker()      # vegetation tiles sent to the mod (--trees on)
         self.gravity = gravitymod.Tracker()     # real gravity: recompute rule, last message sent
         self.credits = creditsmod.Tracker()     # data credits: throttle, last message sent (--credits on)
         self.ground_busy = False                # a groundahead job is running (one at a time)
@@ -1996,6 +2013,8 @@ class Connection:
             self.base_refresh(aid)
         if self.s.mapdata is not None and aid == self.active:
             self.roads.on_pose(self, aid, *self.focus, asyncio.get_running_loop(), self.s.build_roads_tile)
+        if self.s.veg is not None and aid == self.active:
+            self.veg.on_pose(self, aid, *self.focus, asyncio.get_running_loop(), self.s.build_veg_tile)
         self.refresh_status()
         self.credits.poke(self)             # the player moved: the near / far credits may change
 
@@ -2434,7 +2453,7 @@ async def main_async(args):
     disk = cachemod.Cache(args.cache_dir, args.cache_cap)
     # map data (mapdata.py): land cover for the surfaces, roads; one instance shares its cache locks
     mapdata = (mapdatamod.MapData(args.cache_dir, fetcher=net)
-               if "on" in (args.surface, args.roads, args.sea) else None)
+               if "on" in (args.surface, args.roads, args.sea, args.trees) else None)
     pacer.DUTY = args.background_duty
     global DETAIL_RING_M
     DETAIL_RING_M = args.detail_ring
@@ -2486,7 +2505,8 @@ async def main_async(args):
                     road_widths=args.road_widths == "on" and args.roads == "on",
                     sidewalks=args.sidewalks == "on",
                     block_pools=block_pools, far_pool=far_pool, road_pool=road_pool, airports_db=airports_db,
-                    sea=seacarvemod.SeaCarver(mapdata, args.cache_dir) if args.sea == "on" else None)
+                    sea=seacarvemod.SeaCarver(mapdata, args.cache_dir) if args.sea == "on" else None,
+                    vegetation=(vegetationmod.Vegetation(mapdata, args.cache_dir) if args.trees == "on" else None))
 
     async def net_log():
         while True:
@@ -2672,6 +2692,9 @@ def main():
     ap.add_argument("--sea", choices=("on", "off"), default="off",
                     help="sea and lake water (seacarve.py, seatiles.py): the ground carved under Overture's ocean "
                          "and lake polygons and the mod's WaterBlock tiles that follow the Earth's curve")
+    ap.add_argument("--trees", choices=("on", "off"), default="off",
+                    help="trees, bushes and rocks near the player (vegetation.py): from the canopy height model and "
+                         "land cover, Forest items of stock shapes in the mod")
     ap.add_argument("--road-processes", type=int, default=ROAD_PROCESSES,
                     help="processes building the road tiles (--block-process on); 0 = threads in the server")
     ap.add_argument("--detail-ring", type=float, default=DETAIL_RING_M,

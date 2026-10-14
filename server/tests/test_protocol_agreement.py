@@ -163,6 +163,9 @@ SERVER_TO_MOD = {
     # road tiles near the player (roads.py; additive, with map data only): a JSON file of DecalRoad chunks
     "roads_tile": {"anchorId": F(int), "key": F(str), "path": F(str), "n": F(int)},
     "roads_drop": {"anchorId": F(int), "key": F(str)},
+    # trees, bushes and rocks of a tile (vegetation.py, --trees on): a JSON file of items
+    "veg_tile": {"anchorId": F(int), "key": F(str), "path": F(str), "n": F(int)},
+    "veg_drop": {"anchorId": F(int), "key": F(str)},
     # the download cache's usage (cache.py; additive, with a Cache only): after hello and every mod 'cache'
     "cache": {"v": F(int), "usedBytes": F(int), "capBytes": F(int), "files": F(int), "ready": F(bool),
               "managed": F(bool), "clearedBytes": F(int, OPT)},
@@ -172,7 +175,8 @@ WEATHER_NESTED = {"cover": {"total", "low", "mid", "high"}, "wind": {"ms", "from
 # message types the plain session cannot produce (each has its own session test below)
 EXERCISED_ELSEWHERE = {"far_retex", "roads_tile", "roads_drop",   # roads: needs map data (roads tests)
                        "block_base",                                 # a lazy imagery source (test_detail)
-                       "sea"}                                        # --sea on: needs map data (test_seacarve)
+                       "sea",                                        # --sea on: needs map data (test_seacarve)
+                       "veg_tile", "veg_drop"}                       # --trees on: needs map data
 # events the mod's net.lua makes up itself (not on the wire)
 MOD_INTERNAL = {"_connected": set(), "_disconnected": {"error"}}
 
