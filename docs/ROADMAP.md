@@ -775,6 +775,9 @@ Next, from the photo comparisons (docs/research/streetview/fp*, base_*):
 - Town ground at street level has a whitish-blue sheen at grazing angles (Bishop, Ocean City, 2026-10-14)
   although the photo is a plain grey: sky reflections. 2026-10-14: base roughness 206 -> 240 and the macro
   roughness off near the camera ([0, 0.8]), as West Coast USA's terrain materials; check it is gone.
+- Tried 2026-10-14: a denser, taller humid understory (0.5 per 6 m cell, 1-3.5 m): +24 % items, +2.4 ms at
+  Columbia, and the extra bushes land mostly on cleared "tree cover" ground (reads as scrub, not forest).
+  Reverted. The forest look needs crowns that close (sizes / spacing) more than ground scatter.
 - Forest edges along roads (humid country) get a thicket band of bigger bushes (vegetation.py EDGE_*);
   watch the frame time on wooded roads (about +20k bushes per z14 cell).
 
