@@ -754,7 +754,13 @@ Next, from the photo comparisons (docs/research/streetview/fp*, base_*):
   sea tiles), for the water work.
 - Road widths: urban trunks / primaries not lined by buildings default to 4 lanes since 2026-10-14
   (Moab's Main Street); real lane counts would need OSM `lanes` (Overture has none).
-- Curb ramps: the pad is the first 0.6 m of the slope since 2026-10-14; tint it yellow / red.
+- Curb ramps: the pad is the first 0.6 m of the slope since 2026-10-14, West Coast USA's yellow tactile
+  material (seen yellow from the air at Ocean City).
+- Ocean City's yards and park read as pale sand: its imagery is late-season (dormant grass the colour of
+  pavement, excess green ~2 on both), so photo_lawns keeps 2 % of the lawn candidates. A season-proof
+  lawn test (texture, or imagery from another date) would be needed; left as is.
+- Divided town arterials (Overture one-way trunks at 45 mph or less: Coastal Highway) get a sidewalk on the
+  curb side since 2026-10-14; expressway trunks (faster or no limit) none.
 - Building heights stay predicted where Overture has none (Baltimore 98 %): the canopy height model
   masks buildings (~0 m on roofs, checked 2026-10-14), so it cannot fill them.
 - Near ground looked pale grey in towns: built-up land was the asphalt layer (the dirt layer since
