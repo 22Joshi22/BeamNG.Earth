@@ -1005,6 +1005,8 @@ end
 local function onUpdate(dtReal, dtSim)
   dtReal = dtReal or 0
   postfx.update(st.inOurLevel)
+  local stg = rawget(_G, 'beamngEarth_settings')
+  if stg and stg.redirectBigMap then stg.redirectBigMap(st.inOurLevel) end
   seasonlook.update(st.inOurLevel, st.anchor and st.anchor.lat)
   local frameMs = frameTimer and frameTimer:stopAndReset() or dtReal * 1000
   local cf = st.commitFrames
@@ -1149,6 +1151,7 @@ end
 
 local function onClientEndMission()
   postfx.restore()
+  do local stg = rawget(_G, 'beamngEarth_settings') if stg and stg.redirectBigMap then stg.redirectBigMap(false) end end
   seasonlook.restore()
   -- runs before the level deletes its objects (server/server.lua:19 vs :34): delete the far tiles
   -- ourselves first, so their per-tile materials (not level objects) can go after them

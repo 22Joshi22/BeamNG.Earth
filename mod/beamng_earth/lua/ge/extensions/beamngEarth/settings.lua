@@ -493,6 +493,26 @@ end
 ------------------------------------------------------------------------------------------
 -- extension hooks
 
+-- The game's own map (the user, 2026-10-14: "replace the default map, via the keybind or the pause menu"): the M key
+-- (toggleBigMap) and the pause menu's Map entry (enterBigMap) both go through freeroam_bigMapMode; in our level they
+-- open this map instead (the stock big map is a 3D overhead view of a stock level). Career keeps its own; leaving
+-- the level puts the stock functions back.
+M.replaceBigMap = true
+local bigMapOrig = nil
+function M.redirectBigMap(inOurLevel)
+  local bm = rawget(_G, 'freeroam_bigMapMode')
+  local career = rawget(_G, 'career_career')
+  local want = M.replaceBigMap and inOurLevel and bm ~= nil and not (career and career.isActive and career.isActive())
+  if want and not bigMapOrig then
+    bigMapOrig = { bm = bm, enter = bm.enterBigMap, toggle = bm.toggleBigMap }
+    bm.toggleBigMap = function() M.toggleMap() end
+    bm.enterBigMap = function() if not mapOpen then M.toggleMap() end end
+  elseif not want and bigMapOrig then
+    bigMapOrig.bm.enterBigMap, bigMapOrig.bm.toggleBigMap = bigMapOrig.enter, bigMapOrig.toggle
+    bigMapOrig = nil
+  end
+end
+
 function M.onExtensionLoaded()
   M.load()
   M.applyAll()
