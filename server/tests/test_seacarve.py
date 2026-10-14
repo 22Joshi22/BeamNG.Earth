@@ -1,5 +1,5 @@
 """seacarve: the sea floor carved under ocean polygons, deterministic and continuous across the shoreline
-and across cells; land lifted above the anchor's sea plane; near()."""
+and across cells; the far tiles' DEM sea sunk; which water-tile samples are sea; near()."""
 import math
 import sys
 import tempfile
@@ -9,7 +9,6 @@ from pathlib import Path
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-import geodesy  # noqa: E402
 import mapcells  # noqa: E402
 import seacarve  # noqa: E402
 
@@ -111,19 +110,33 @@ class SeaCarveTest(unittest.TestCase):
         self.assertFalse(self.sc.near(south(-5000), LON0, 2000))
 
 
-class LiftTest(unittest.TestCase):
-    def test_land_kept_above_the_plane(self):
-        f = geodesy.EnuFrame(LAT0, LON0)
-        lat = LAT0 + np.array([0.0, 0.0, 0.0, 0.0, 0.0])
-        lon = LON0 + np.array([0.0, 0.1, 0.1, 0.1, 0.6]) / math.cos(math.radians(LAT0))   # 0, ~11 km, ~67 km
-        e = np.array([0.5, 0.5, 0.0, 40.0, 0.5])
-        out = seacarve.lift(f, lat, lon, e)
-        z = f.geodetic_to_enu(lat, lon, out)[2]
-        self.assertEqual(out[0], 0.5, "at the anchor: unchanged")
-        self.assertAlmostEqual(z[1], seacarve.LIFT_Z, places=3)
-        self.assertEqual(out[2], 0.0, "the sea itself stays under the plane")
-        self.assertEqual(out[3], 40.0, "land high enough: unchanged")
-        self.assertEqual(out[4], 0.5, "beyond LIFT_RADIUS_M: unchanged")
+class SinkTest(unittest.TestCase):
+    def test_dem_sea_sunk_land_kept(self):
+        e = np.array([0.0, 0.25, -0.4, 0.5, 40.0, -3.0])
+        out = seacarve.sink(e)
+        np.testing.assert_array_equal(out[:3], [-seacarve.SINK_M] * 3)
+        np.testing.assert_array_equal(out[3:], e[3:])
+
+    def test_sea_dem(self):
+        class Flat:
+            def sample(self, lat, lon, zoom, progress=None):
+                return np.zeros(np.shape(lat))
+        sc = seacarve.SeaCarver(FakeMapData(), None)
+        lat, lon = np.array([south(-50), south(50)]), np.full(2, LON0)
+        np.testing.assert_allclose(seacarve.SeaDem(Flat(), sc).sample(lat, lon, 15), [0.0, -seacarve.DEPTH_CAP])
+        np.testing.assert_allclose(seacarve.SeaDem(Flat()).sample(lat, lon, 15), [-seacarve.SINK_M] * 2)
+
+
+class SeaAtTest(unittest.TestCase):
+    def test_polygons_near_dem_band_far(self):
+        class Dem:
+            def sample(self, lat, lon, zoom, progress=None):
+                return np.where(np.asarray(lon) > LON0, 0.1, 25.0)     # east: sea level, west: land
+        sc = seacarve.SeaCarver(FakeMapData(), None)
+        lat = np.array([south(-500), south(-500), south(500)])
+        lon = np.array([LON0 + 0.01, LON0 - 0.01, LON0 - 0.01])
+        self.assertEqual(list(sc.sea_at(Dem(), lat, lon, 512.0)), [False, False, True], "small: the polygons")
+        self.assertEqual(list(sc.sea_at(Dem(), lat, lon, 4096.0)), [True, False, False], "large: the DEM band")
 
 
 if __name__ == "__main__":

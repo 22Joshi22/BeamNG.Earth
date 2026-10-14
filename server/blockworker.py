@@ -42,7 +42,7 @@ class _State:
         # runways graded in (--airports on): the copy the server loaded, never refreshed here
         self.airports = load_airports(cache_dir, self.dem) if airports else None
         md = mapdatamod.MapData(cache_dir, fetcher=net) if (roads or surface or sea) else None
-        # the sea floor carved in and land kept above the mod's sea plane (--sea on)
+        # the sea floor carved in (--sea on)
         self.sea = seacarvemod.SeaCarver(md, cache_dir) if sea else None
         self.md = md if roads else None
         self.grading = bool(grading) and self.md is not None
@@ -146,11 +146,11 @@ def _warm_loop():
 
 def ground(frame, la, lo, z):
     """The DEM heights z at (la, lo) shaped before the road grading: runways graded in (--airports on),
-    the sea floor carved in and land kept above the sea plane (--sea on)."""
+    the sea floor carved in (--sea on)."""
     if _s.airports is not None:
         z = _s.airports.apply(la, lo, z)
     if _s.sea is not None:
-        z = seacarvemod.lift(frame, la, lo, _s.sea.carve(la, lo, z))
+        z = _s.sea.carve(la, lo, z)
     return z
 
 
@@ -243,7 +243,7 @@ def far_geometry(aid, lat, lon, tile, zoom, q, ref_zoom, with_sink, layout):
     frame = geodesy.EnuFrame(lat, lon)
     base = _s.airports.wrap(_s.dem) if _s.airports is not None else _s.dem
     if _s.sea is not None:
-        base = seacarvemod.SeaDem(base, _s.sea if tile.level <= seacarvemod.CARVE_MAX_LEVEL else None, frame)
+        base = seacarvemod.SeaDem(base, _s.sea if tile.level <= seacarvemod.CARVE_MAX_LEVEL else None)
     src = gradingmod.GradedDem(base, g) if (g is not None and tile.level <= 0) else base
     return farfield.build_tile(frame, src, tile, zoom, q, ref_zoom, with_sink=with_sink,
                                layout=layout)

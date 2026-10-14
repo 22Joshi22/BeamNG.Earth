@@ -52,7 +52,7 @@ local banner = require('beamngEarth/banner') -- the connection banner (docs/DEVT
 local edgeguard = require('beamngEarth/edgeguard') -- never fall off the last block (docs/ROADMAP.md)
 local groundcover = require('beamngEarth/groundcover') -- grass on the surface layers (docs/ROADMAP.md v1.5)
 local roads = require('beamngEarth/roads') -- DecalRoads from the server's road tiles (docs/ROADMAP.md v1.6)
-local sea = require('beamngEarth/sea') -- the sea-level WaterPlane near the coast (server seacarve.py)
+local sea = require('beamngEarth/sea') -- the sea's WaterBlock tiles (server seatiles.py)
 
 local LEVEL_ID = 'beamng_earth'
 local MOD_VERSION = '0.4.0'
@@ -674,7 +674,7 @@ local function onMessage(msg)
     -- the highest ground near the player's path (server groundahead.py): the altitude rule (follow.lua)
     if tonumber(msg.z) then st.groundAhead = { anchorId = msg.anchorId, z = tonumber(msg.z), at = st.clock } end
   elseif t == 'sea' then
-    -- sea water near the player (server seacarve.py, --sea on): the sea-level WaterPlane (sea.lua)
+    -- the sea's water tiles near the player (server seatiles.py, --sea on): sea.lua
     sea.onMessage(msg)
   elseif t == 'credits' then
     -- the sources around the player (server credits.py): msg.near, msg.far, drawn by credits.lua
@@ -1027,7 +1027,7 @@ local function onUpdate(dtReal, dtSim)
     updateWorld(dtReal)
     farfield.update(gov, (gov.w1 or dtReal * 1000) / 1000, st.cam, st.player)
     roads.update(gov, st.anchorId)
-    sea.update(st.anchorId, st.player and st.player.z)
+    sea.update(st.anchorId, st.player)
     updateSky(dtReal)
     updateGuard()
   end

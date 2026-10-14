@@ -3,9 +3,8 @@ sea and bays first, roughly real depths, cars sink; docs/research/2026-10-13-wat
 
     sc = SeaCarver(md, cache_dir)                 # md: mapdata.MapData
     z = sc.carve(lat, lon, z_dem)                 # the DEM with the sea floor carved in
-    e = lift(frame, lat, lon, e)                  # land raised above the sea plane (far tiles, block)
-    src = SeaDem(dem, sc, frame)                  # a dem.Dem-like sampler doing both
-    sc.near(lat, lon, radius_m)                   # any sea within radius_m of the point
+    src = SeaDem(dem, sc)                         # a dem.Dem-like sampler (carver None: sink only)
+    sc.sea_at(dem, lat, lon, size)                # which points of a water tile are sea (seatiles.py)
 
 The sea is Overture's `ocean` polygons (OSM's coastline: open sea, bays, tidal rivers). Per map-data
 cell (mapcells z14) it is rasterised on the z16 Web-Mercator pixel grid (~1.9 m at 39 N) with a margin
@@ -14,11 +13,8 @@ from the neighbouring cells, and the floor depth grows from the shoreline at DEP
 so the floor is continuous across the shoreline and across cells; a point's carved height depends
 only on its position and the map data (deterministic, the same in every process).
 
-The mod draws one flat WaterPlane at sea level near the player. The Earth curves away below a plane
-(d^2 / 2R: 0.3 m at 2 km, 7.8 m at 10 km), so land lower than the plane in the anchor frame would be
-drawn under water; lift() raises such land (DEM above LAND_MIN_E) to LIFT_Z above the anchor's sea
-level, within LIFT_RADIUS_M of the anchor. Seen from the ground it lies within a pixel of the horizon
-either way; the mod drops the plane at altitude.
+The mod draws the sea as WaterBlock tiles that follow the Earth's curve (seatiles.py). Beyond the
+carved levels the far tiles' DEM sea (SEA_LO..SEA_HI) is sunk SINK_M so it never shows through them.
 """
 import logging
 import math
@@ -41,11 +37,13 @@ PX_ZOOM = 16                # raster pixels: Web-Mercator z16 (256 px tiles): 10
 CELL_PX = 256 << (PX_ZOOM - mapcells.ZOOM)      # raster pixels per cell edge (1024)
 PAD_PX = 32                 # margin rasterised from the neighbouring cells (> the cap's distance)
 SEA_SUBTYPES = ("ocean",)
-LIFT_Z = 0.3                # m above the anchor's sea level: land never lower in the anchor frame
-LAND_MIN_E = 0.3            # m: DEM heights above this are land for lift()
-LIFT_RADIUS_M = 30000.0     # lift() only this close to the anchor (the plane's reach that matters)
+SEA_LO, SEA_HI = -0.5, 0.3  # m: DEM heights in this band are the sea where no polygons are at hand (far
+                            # tiles, the large water tiles): the DEMs' sea surfaces are flat at ~0
+SINK_M = 1.5                # m: such ground sunk below the surface (no flicker through the water tiles)
+POLY_TILE_MAX = 1024.0      # water tiles up to this size are placed from the polygons, larger ones by
+                            # the DEM band (map data is fetched near the player only)
 CARVE_MAX_LEVEL = 1         # far tiles up to this level are carved (their map data is near the player);
-                            # coarser ones keep the DEM's sea (~0 m, under the plane) and are only lifted
+                            # coarser ones have the DEM's sea sunk (sink)
 MEM_CELLS = 24              # rasters kept per process
 EARTH_R = 6371000.0
 
@@ -226,34 +224,36 @@ class SeaCarver:
         lo = lon + E[inside] / (111320.0 * math.cos(math.radians(lat)))
         return bool((self.depth(la, lo) > 0).any())
 
+    def sea_at(self, dem, lat, lon, size):
+        """Which points of a water tile of `size` m are sea (seatiles.plan): the polygons for the small
+        tiles near the player, the DEM band for larger ones."""
+        if size <= POLY_TILE_MAX:
+            return self.depth(lat, lon) > 0
+        import dem as demmod
+        lat = np.asarray(lat, np.float64)
+        z = demmod.zoom_for(float(np.mean(lat)), size / 16.0)
+        z = min(max(z, getattr(demmod, "MIN_ZOOM", 0)), demmod.MAX_ZOOM)
+        e = np.asarray(dem.sample(lat, np.asarray(lon, np.float64), z), np.float64)
+        return (e >= SEA_LO) & (e <= SEA_HI)
 
-def lift(frame, lat, lon, e):
-    """Elevations e raised so that land (e > LAND_MIN_E) within LIFT_RADIUS_M of the frame's origin is
-    never below LIFT_Z in the frame (the sea plane's level is <= 0 there)."""
+
+def sink(e):
+    """Far-tile elevations with the DEM's sea (SEA_LO..SEA_HI m) sunk SINK_M below the surface, so the
+    far tiles never show through the mod's water tiles (levels without the carved polygons)."""
     e = np.asarray(e, np.float64)
-    if e.size == 0:
-        return e
-    lat = np.asarray(lat, np.float64)
-    lon = np.asarray(lon, np.float64)
-    x, y, z0 = frame.geodetic_to_enu(lat, lon, np.zeros_like(e))     # z0: the frame z of sea level
-    need = (e > LAND_MIN_E) & (e + np.asarray(z0) < LIFT_Z) & (np.hypot(x, y) <= LIFT_RADIUS_M)
-    if not need.any():
-        return e
-    return np.where(need, LIFT_Z - np.asarray(z0), e)
+    return np.where((e >= SEA_LO) & (e <= SEA_HI), np.minimum(e, SEA_E - SINK_M), e)
 
 
 class SeaDem:
-    """A dem.Dem-like sampler with the sea carved in (carver None: not) and (with a frame) land lifted
-    above the plane."""
+    """A dem.Dem-like sampler with the sea floor carved in (carver) or, for the far levels without map
+    data (carver None), the DEM's sea sunk (sink)."""
 
-    def __init__(self, dem, carver, frame=None):
-        self.dem, self.carver, self.frame = dem, carver, frame
+    def __init__(self, dem, carver=None):
+        self.dem, self.carver = dem, carver
 
     def sample(self, lat, lon, zoom, progress=None):
         z = self.dem.sample(lat, lon, zoom, progress) if progress is not None else self.dem.sample(lat, lon, zoom)
-        if self.carver is not None:
-            z = self.carver.carve(lat, lon, z)
-        return lift(self.frame, lat, lon, z) if self.frame is not None else z
+        return self.carver.carve(lat, lon, z) if self.carver is not None else sink(z)
 
     def __getattr__(self, name):
         return getattr(self.dem, name)

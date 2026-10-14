@@ -1309,11 +1309,11 @@ host policy `netfetch.POLICIES["davidmegginson.github.io"]` and `airports` in `c
 - Tests: `server/tests/test_airports.py`, `test_runwaygeom.py`, `test_runwaymarks.py`, `test_airportgrade.py` (synthetic files from
   `airportfixtures.py`, synthetic DEMs, fake netfetch transport and wall clock; no network).
 
-## Sea water (`server/seacarve.py`, mod `sea.lua`; 2026-10-13, `--sea on`, default off)
+## Sea water (`server/seacarve.py`, `seatiles.py`, mod `sea.lua`; 2026-10-13, `--sea on`, default off)
 
 User's choices (2026-10-13): sea and bays first, roughly real depths and sinking cars, glossy far tiles
-later. Engine facts: docs/research/2026-10-13-water-probe.md (a runtime WaterBlock neither draws nor
-floats anything in our level; a WaterPlane does both).
+later. Engine facts: docs/research/2026-10-13-water-probe.md. A WaterBlock's surface is at its
+position; vehicles see water they drive into, but not water that appears around them while parked.
 - **Where:** Overture `base/water` polygons with subtype `ocean` (OSM's coastline: the open sea, bays,
   tidal rivers such as Baltimore's harbour). Per map-data cell they are rasterised on the z16 Web-Mercator
   grid (~1.9 m) with a 32 px margin from the neighbouring cells, then the floor depth grows from the
@@ -1322,16 +1322,22 @@ floats anything in our level; a WaterPlane does both).
   small marker file). A point's depth is the bilinear sample, so the floor is continuous across the shore
   and the cells and the same in every process.
 - **Ground:** `blockworker.ground` / `Server.ground` shape the DEM before the road grading: runways
-  (`--airports on`), then `SeaCarver.carve` (z = min(z, -depth) where the depth is > 0), then `lift`.
-  The block, the road tiles and the far tiles up to L1 are carved; coarser far tiles keep the DEM's sea
-  (~0 m, under the plane) and are only lifted.
-- **The plane and the curve:** the mod's WaterPlane is flat at the sea level under the player, but the
-  ground curves away below it (d^2 / 2R). `lift` raises land (DEM > 0.3 m) that would be lower than
-  0.3 m above the anchor's sea level, within 30 km of the anchor. Seen from the ground that land lies
-  within a pixel of the horizon either way; the mod removes the plane 300 m above the sea.
-- **Message:** `sea` {anchorId, on, z}: sea within 4 km of the player (`SeaCarver.near`, a 250 m grid),
-  and the sea level's z under the player in the anchor frame; checked after 200 m or 5 s, sent on a
-  change (z by more than 5 cm).
-- **Mod (`sea.lua`):** one WaterPlane named `bngEarthSea` with East Coast USA's ocean settings (murkier
-  colours), created / moved / removed by `update(anchorId, playerZ)`; cleared on disconnect and unload.
+  (`--airports on`), then `SeaCarver.carve` (z = min(z, -depth) where the depth is > 0). The block, the
+  road tiles and the far tiles up to L1 are carved. Coarser far tiles have no map data: their DEM sea
+  (-0.5..0.3 m) is sunk 1.5 m (`sink`), so it never shows through the water tiles.
+- **Water tiles (`seatiles.plan`):** a quadtree on an 8192 m lattice in the anchor frame, planned from the
+  centre of the player's 512 m square (the set changes only when the player crosses into another one):
+  a square closer than 0.75 x its size is split, down to 512 m, out to 8192 m. That gives <= 76 tiles over
+  open sea. A tile is kept when one of its 16 x 16 samples is sea: the polygon depth for tiles up to
+  1024 m, the DEM band for larger ones. Its surface is the sea level at its centre in the anchor frame and
+  its normal the local vertical there (tilt cx / R, cy / R), so it follows the Earth's curve: 5 mm off at
+  the corners of 512 m tiles, 1.3 m at those of 8192 m ones (>= 6 km away). No land is moved for it.
+- **Message:** `sea` {anchorId, tiles: [[key, x, y, z, size, nx, ny], ...]}: planned in the ground pool
+  after 128 m or 5 s, sent when the set changed.
+- **Mod (`sea.lua`):** one WaterBlock per tile (`bngEarthSea_<key>`): position = the surface, scale
+  (size, size, 40) (water to 20 m down), `rotation` the tilt, East Coast USA's ocean look (murkier),
+  `gridElementSize` size / 64. Four made per frame; changed keys only. A car slower than 1 m/s inside a
+  new tile is re-placed where it is (`setPositionRotation`), since a parked car does not notice water
+  that appears around it. Cleared on disconnect, a new anchor and unload.
+- **Cost (Sandy Point, 83 tiles, 2026-10-13):** 99 vs 102 fps at eye level, 108 vs 119 from 200 m.
 - Tests: `server/tests/test_seacarve.py`, `mod/tests/test_sea.lua`.
