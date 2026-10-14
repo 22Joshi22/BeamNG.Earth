@@ -119,7 +119,8 @@ SERVER_TO_MOD = {
               "blockSize": F(int, OPT),         # v1.4 M4: terrain block size, only when not 1024 (--block 512)
               "horizon": F(bool, OPT),          # v1.4 M1h: true with --horizon only
               "deshadow": F(str, OPT),          # --deshadow lambert|full only (the settings page shows it)
-              "colormatch": F(str, OPT)},       # --colormatch s2 only (likewise)
+              "colormatch": F(str, OPT),        # --colormatch s2 only (likewise)
+              "mapPort": F(int, OPT)},          # the world map's tile endpoint on 127.0.0.1 (maptiles.py)
     "status": {"text": F(str),
                "backlog": F(int),           # v1.4 M0: desired - shown far tiles of the current anchor
                "radius": F(NUM, OPT)},      # v1.4 M1h: the far-field radius (m), --horizon only
@@ -846,6 +847,22 @@ class ColormatchHelloTest(test_server.ServerHarness):
         self.assertEqual(m["colormatch"], "s2")
         self.assertIn("colormatch", SERVER_TO_MOD["hello"])
         self.assertIn(m["colormatch"], colormatchmod.MODES)
+
+
+class MapPortHelloTest(test_server.ServerHarness):
+    """hello.mapPort: absent without the map tile endpoint (the default hello is unchanged), its port
+    otherwise; the mod keeps it for the world map (core.lua st.mapPort)."""
+
+    def test_hello_map_port(self):
+        self.c.send({"type": "hello", "protocol": 4, "format": self.MOD_FORMAT, "modVersion": "0.4.0"})
+        m, _ = self.c.until(lambda m: m["type"] == "hello", 10)
+        self.assertNotIn("mapPort", m)
+        self.server.map_port = 47999
+        self.c.send({"type": "hello", "protocol": 4, "format": self.MOD_FORMAT, "modVersion": "0.4.0"})
+        m, _ = self.c.until(lambda m: m["type"] == "hello", 10)
+        self.assertEqual(m["mapPort"], 47999)
+        self.assertIn("mapPort", SERVER_TO_MOD["hello"])
+        self.assertIn("msg.mapPort", (LUA / "core.lua").read_text())
 
 
 class RetexMessagesTest(ServerMessagesTest):
