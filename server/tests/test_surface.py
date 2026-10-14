@@ -47,10 +47,34 @@ class ClassifyTest(unittest.TestCase):
             idx = sf.classify(np.full(la.shape, 50, np.uint8), np.zeros(la.shape), 2.0, la, lo)
             self.assertTrue(np.isin(idx, (sf.LAWN, sf.DIRT)).all())
             return float((idx == sf.LAWN).mean())
-        self.assertGreater(share(39.28, -76.60), 0.6, "Baltimore")
-        self.assertLess(share(38.57, -109.56), 0.4, "Moab")
+        east, moab = share(39.28, -76.60), share(38.57, -109.56)
+        self.assertGreater(east, 0.8, "Baltimore")
+        self.assertLess(moab, east - 0.05, "Moab: fewer (the photo decides in detail mode: photo_lawns)")
         grass = np.full((2, 2), 30, np.uint8)
         self.assertTrue((sf.classify(grass, np.zeros((2, 2)), 2.0, np.full((2, 2), 39.3), np.full((2, 2), -76.6)) == sf.GRASS).all())
+
+    def test_photo_lawns_only_where_the_photo_is_green(self):
+        import tempfile
+        n = 16
+        idx = np.full((n, n), sf.LAWN, np.uint8)
+        idx[:, :4] = sf.ASPHALT
+        rgb = np.zeros((64, 64, 3), np.uint8)
+        rgb[:] = (190, 188, 180)                    # pale paving ...
+        rgb[:32] = (70, 110, 50)                    # ... the north half a lawn
+        with tempfile.TemporaryDirectory() as d:
+            sf.write_ter(d, "b.ter", np.zeros((n, n), np.uint16), idx)
+            names = sf.write_masks(idx[::-1], d, "b")
+            changed = sf.photo_lawns(d, "b.ter", names, rgb)
+            with open(os.path.join(d, "b.ter"), "rb") as f:
+                lay = np.frombuffer(f.read()[5 + 2 * n * n:5 + 3 * n * n], np.uint8).reshape(n, n)
+            inner = lay[1:-1, 4:-1]                 # (the edge ring is holes)
+            self.assertTrue((inner[: n // 2 - 1] == sf.DIRT).all(), "south half: paved")
+            self.assertTrue((inner[n // 2:] == sf.LAWN).all(), "north half: lawn")
+            self.assertTrue((lay[1:-1, 1:4] == sf.ASPHALT).all())
+            self.assertGreater(changed, 0)
+            lawn_mask = np.array(Image.open(os.path.join(d, names[sf.LAWN])))
+            self.assertEqual(lawn_mask[1, 8], 255)
+            self.assertEqual(lawn_mask[-2, 8], 0)
 
 
 class WarpTest(unittest.TestCase):

@@ -18,6 +18,7 @@ the same every time.
 import logging
 import math
 import os
+import struct
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -61,8 +62,8 @@ CLASS_MATERIAL = {0: DIRT, 10: GRASS, 20: DUSTY, 30: GRASS, 40: DIRT, 50: DIRT, 
 # buildings is mostly mown grass, which the dirt layer drew pale and bare. A share of it is LAWN, in patches
 # of smooth noise on a fixed world grid: most of it where the climate is humid, less in the dry West (yards
 # of gravel and dirt there). The rest stays dirt (lots, gravel, bare yards); roads and lots paint over both.
-LAWN_SHARE_HUMID = 0.75
-LAWN_SHARE_DRY = 0.3
+LAWN_SHARE_HUMID = 0.9
+LAWN_SHARE_DRY = 0.75
 LAWN_PATCH_M = 30.0
 ROCK_SLOPE_DEG = 35.0       # steeper ground is rock (cliffs, scree), except snow
 # Organic borders (user 2026-10-11: rectangular grass in Monument Valley). WorldCover's 10 m square
@@ -94,7 +95,7 @@ def lawns(lat, lon):
     n = 0.65 * _value_noise(xm / LAWN_PATCH_M, ym / LAWN_PATCH_M, 5) \
         + 0.35 * _value_noise(xm / (LAWN_PATCH_M / 3), ym / (LAWN_PATCH_M / 3), 6)
     share = np.where(dry_west(lat, lon), LAWN_SHARE_DRY, LAWN_SHARE_HUMID)
-    # threshold near the noise sum's share quantile (measured: 0.79 humid, 0.25 dry)
+    # threshold near the noise sum's share quantile (see the test)
     return n > (0.5 - share) * 1.1
 
 
@@ -266,6 +267,48 @@ def write_masks(idx, out_dir, stem):
         Image.fromarray(np.where(idx == i, 255, 0).astype(np.uint8), "L").save(tmp, format="PNG", compress_level=1)
         os.replace(tmp, path)
     return names
+
+
+LAWN_GREEN = 10             # 2g - r - b of the ground photo above which a lawn candidate stays a lawn
+
+
+def photo_lawns(out_dir, ter_name, mask_names_, rgb):
+    """Detail mode: the block's LAWN samples where the ground photo (rgb (px, px, 3), row 0 = north, the
+    block's footprint) is not green turn DIRT (paved yards, lots and driveways: the grass layer's blades
+    over a pale photo looked like snow, Lancaster 2026-10-14). Patches the .ter's layer map and the two
+    masks in place, atomically. Returns the number of samples changed."""
+    path = os.path.join(out_dir, ter_name)
+    with open(path, "rb") as f:
+        data = bytearray(f.read())
+    n = struct.unpack_from("<I", data, 1)[0]
+    off = 5 + 2 * n * n
+    lay = np.frombuffer(bytes(data[off:off + n * n]), np.uint8).reshape(n, n)       # row 0 = south
+    lawn = lay == LAWN
+    if not lawn.any():
+        return 0
+    px = rgb.shape[0]
+    rows = np.clip(((n - 1 - np.arange(n)) + 0.5) * px / n, 0, px - 1).astype(np.int64)
+    cols = np.clip((np.arange(n) + 0.5) * px / n, 0, px - 1).astype(np.int64)
+    c = rgb.astype(np.int32)
+    exg = 2 * c[:, :, 1] - c[:, :, 0] - c[:, :, 2]
+    green = exg[rows[:, None], cols[None, :]] > LAWN_GREEN
+    bare = lawn & ~green
+    k = int(bare.sum())
+    if not k:
+        return 0
+    lay = lay.copy()
+    lay[bare] = DIRT
+    data[off:off + n * n] = lay.tobytes()
+    with open(path + ".tmp", "wb") as f:
+        f.write(data)
+    os.replace(path + ".tmp", path)
+    north = lay[::-1]
+    for i in (LAWN, DIRT):
+        p = os.path.join(out_dir, mask_names_[i])
+        Image.fromarray(np.where(north == i, 255, 0).astype(np.uint8), "L").save(p + ".tmp", format="PNG",
+                                                                                  compress_level=1)
+        os.replace(p + ".tmp", p)
+    return k
 
 
 def write_ter(out_dir, name, qgrid, idx):

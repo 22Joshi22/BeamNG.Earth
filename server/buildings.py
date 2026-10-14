@@ -78,6 +78,15 @@ WALL_TINTS = {               # houses with plain walls and laid-over windows: th
 for _m, _cs in list(ROOF_TINTS.items()) + list(WALL_TINTS.items()):
     for _k, _c in enumerate(_cs):
         LOOKS[f"{_m}|{_k}"] = (_m, _c)
+# Shop signs (Bishop's and Moab's main streets: a painted sign band over every shopfront, each shop its own
+# colour): boxes over the ground floor of a shop's street wall, a colour per shop width (hashed).
+SIGN_TINTS = ((0.62, 0.16, 0.14), (0.16, 0.22, 0.42), (0.18, 0.36, 0.24), (0.95, 0.90, 0.75), (0.42, 0.30, 0.22),
+              (0.85, 0.65, 0.20), (0.13, 0.13, 0.14), (0.96, 0.96, 0.96), (0.15, 0.45, 0.48))
+for _k, _c in enumerate(SIGN_TINTS):
+    LOOKS[f"sign|{_k}"] = (FACADE, _c)
+SIGN_H = 0.9                # m, the band's height (its top 0.15 m under the ground floor's top)
+SIGN_OUT = 0.18             # m out from the wall
+SIGN_SHOP_M = (6.0, 11.0)   # one shop's width (hashed in this range)
 BARN_REDS = 2               # the last siding tints are barn red (barns only)
 JITTER = 0.06               # a building's colour varies this much (one factor, hashed)
 
@@ -226,7 +235,7 @@ def oriented_box(p):
 class Spec:
     """What is built for one footprint (decided by plan())."""
     __slots__ = ("ring", "floors", "floor_h", "height", "roof", "roof_mat", "facade", "band", "shop", "plain", "min_h", "wall", "door", "windows", "front", "steeple", "stoop",
-                 "seed")
+                 "sign", "seed")
 
     def __init__(self, **kw):
         for k in self.__slots__:
@@ -616,6 +625,28 @@ def _box(m, c, u, hx, hy, z0, z1, mat):
     m.quad(*[(p[0], p[1], z1) for p in k], *uv, mat)
 
 
+def _signs(m, spec, ring, z_top, mat_idx):
+    """The sign band over a shop's street wall (spec.sign: its edge), shop by shop, a few without one."""
+    edge = spec.sign
+    a, b = ring[edge], ring[(edge + 1) % len(ring)]
+    L = float(math.hypot(*(b - a)))
+    if L < 3.0:
+        return
+    d = (b - a) / L
+    out = np.array([d[1], -d[0]])
+    t, k = 0.3, 0
+    while t < L - 1.5:
+        w = SIGN_SHOP_M[0] + (SIGN_SHOP_M[1] - SIGN_SHOP_M[0]) * _hash01(spec.seed, "signw", k)
+        t1 = min(L - 0.3, t + w)
+        if L - 0.3 - t1 < 2.5:                         # no sliver of a shop at the end
+            t1 = L - 0.3
+        if _hash01(spec.seed, "signon", k) < 0.85:
+            c = a + d * ((t + t1) / 2) + out * (SIGN_OUT / 2)
+            look = f"sign|{int(_hash01(spec.seed, 'signc', k) * len(SIGN_TINTS))}"
+            _box(m, c, d, (t1 - t) / 2 - 0.15, SIGN_OUT / 2, z_top - 0.15 - SIGN_H, z_top - 0.15, mat_idx[look])
+        t, k = t1, k + 1
+
+
 def _stoop(m, spec, ring, base, mat_idx):
     """Two white steps out from the front door (spec.stoop: (edge, distance along it))."""
     edge, sd = spec.stoop
@@ -748,6 +779,8 @@ def build(specs_and_ground, lite=False):
             _steeple(m, spec, z_eave, mat_idx)
         if spec.stoop and not lite:
             _stoop(m, spec, ring, gmax, mat_idx)
+        if spec.sign is not None and spec.shop and spec.roof == "flat" and not lite:
+            _signs(m, spec, ring, z_eave - (spec.floors - 1) * spec.floor_h if spec.floors > 1 else z_eave, mat_idx)
     if m.n == 0:
         return None
     P, UV, T, M, C = m.arrays()
@@ -1005,10 +1038,14 @@ def doors(items, lines, x0, y0, drives=None):
             spec.front = edge                   # a big box: its storefront faces the road
             continue
         if spec.shop:
+            if spec.roof == "flat" and not spec.plain and not spec.wall:
+                spec.sign = edge                # the sign band over the street wall's shopfront
             continue
         if on_main and not spec.wall and spec.roof == "flat" \
                 and _hash01(spec.seed, "shop") < MAIN_STREET_SHOPS:
             spec.shop = True                    # a main street's ground floor: a shopfront, no house door
+            if not spec.plain:
+                spec.sign = edge
             continue
         narrow = Le < 9.0
         f = (0.22 if _hash01(spec.seed, "door") < 0.5 else 0.78) if narrow else 0.5

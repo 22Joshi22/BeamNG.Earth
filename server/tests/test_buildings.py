@@ -125,7 +125,7 @@ class DoorTest(unittest.TestCase):
         self.assertAlmostEqual(yaw, 0.0)                               # the wall runs +x
 
     def test_main_street_shopfronts(self):
-        shops = 0
+        shops = signed = 0
         for k in range(20):
             spec = bld.plan(rect(k * 30, 0, 10, 14), {"class": ""}, 2, 39.4, -77.4)
             street = (np.array([(-50.0, -7.0), (900.0, -7.0)]), 6.0, "tertiary", True)
@@ -133,7 +133,17 @@ class DoorTest(unittest.TestCase):
             if spec.shop:
                 shops += 1
                 self.assertEqual(rows, [], "a shopfront, no house door")
+                if not spec.plain:
+                    self.assertEqual(spec.sign, 0, "the sign band over the street (south) wall")
+                    m = bld.Mesh()
+                    bld._signs(m, spec, spec.ring, 4.2, bld._Looks(spec.seed))
+                    if m.n:                     # a few shops have none (hashed)
+                        signed += 1
+                        ys = np.array(m.P)[:, 1]
+                        self.assertTrue((ys < 0.01).all() and (ys > -bld.SIGN_OUT - 0.01).all(),
+                                        "boxes just out from the south wall")
         self.assertGreater(shops, 8)
+        self.assertGreater(signed, shops // 2)
 
     def test_driveway_to_the_road(self):
         for k in range(40):                                  # a house with a siding wall (hashed)

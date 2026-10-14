@@ -1015,8 +1015,14 @@ class Server:
         the timings."""
         if self.near_visual == "detail" and self.imagery is not None:
             t1 = time.perf_counter()
-            info["base"] = self.write_base(anchor, cx, cy, pool)
+            photo = []
+            info["base"] = self.write_base(anchor, cx, cy, pool, photo=photo)
             info["stages"]["base"] = time.perf_counter() - t1
+            if photo and info.get("layers") and info.get("ter"):
+                try:                # lawns only where the photo is green (before the game reads the block)
+                    surfacemod.photo_lawns(self.out_dir, info["ter"], info["layers"], photo[0])
+                except Exception as e:
+                    log.info("photo lawns %s: %s", (anchor.id, cx, cy), e)
         info["seconds"] = time.perf_counter() - t0
         info["zoom"] = anchor.hm_zoom
         return info
@@ -1024,7 +1030,7 @@ class Server:
     def base_name(self, key, rev=0):
         return self.hm_name(key)[:-4] + ("_base.png" if not rev else f"_base_r{rev}.png")
 
-    def write_base(self, anchor, cx, cy, pool=None, rev=0):
+    def write_base(self, anchor, cx, cy, pool=None, rev=0, photo=None):
         """Detail mode: the block footprint's aerial photo (BASE_PX² PNG, row 0 = north, the same imagery
         chain and corrections as the far tiles), the drawn block's base colour. The game would pack it into
         BC7 on its main thread (1.5 s for a new 1024² photo); terraincache writes that packed texture into
@@ -1060,6 +1066,8 @@ class Server:
             self.base_stale.discard(key)
         else:
             self.base_stale.add(key)
+        if photo is not None:
+            photo.append(rgb)
         t1 = time.perf_counter()
         Image.fromarray(rgb, "RGB").save(path + ".tmp", format="PNG", compress_level=1)
         os.replace(path + ".tmp", path)
