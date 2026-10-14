@@ -46,6 +46,17 @@ class LampTest(unittest.TestCase):
         xs = sorted(x[1] for x in a + b if x[0] == furniture.G_LAMP)
         self.assertTrue(np.allclose(np.diff(xs), furniture.LAMP_SPACING["residential"][0], atol=0.5))
 
+    def test_town_streets_get_wired_poles(self):
+        r = road("t", "residential", True)
+        rows, wires = [], []
+        for side in (1, -1):
+            rows += furniture.place([r], self.walks(r, side), (0, 0, 256, 256), wires=wires, town=True)
+        groups = [x[0] for x in rows]
+        self.assertNotIn(furniture.G_LAMP, groups)
+        self.assertGreaterEqual(groups.count(furniture.G_POLE), 5)
+        self.assertGreaterEqual(groups.count(furniture.G_POLELAMP), 2)
+        self.assertTrue(wires)
+
     def test_hydrants_on_town_streets(self):
         r = road("h", "residential", True, x0=-300, x1=900)
         rows = []

@@ -197,6 +197,10 @@ def junction_props(roads, box, curb_h=0.15):
 
 
 G_HYDRANT, G_BENCH, G_BIN = "hydrant", "bench", "bin"
+G_POLELAMP = "polelamp"     # a cobra-head arm on a utility pole (East Coast USA's electrical_pole_lamp)
+TOWN_POLE_CLASSES = {"residential", "tertiary", "unclassified", "secondary", "living_street"}
+TOWN_POLE_SPACING = 40.0
+POLE_LAMP_Z = 7.0           # m above the pole's base
 HYDRANT_SPACING = 120.0
 BENCH_SPACING = 140.0
 BIN_SPACING = 90.0
@@ -224,7 +228,7 @@ def _stations(run, line, spacing, phase, clear, side):
     return out
 
 
-def place(roads, walks, box, curb_h=0.15, wires=None):
+def place(roads, walks, box, curb_h=0.15, wires=None, town=False):
     """Rows [group, x, y, z, yaw, scale, height, rank] (trees.lua's tile rows) of the lamps and poles of a
     tile box (x0, y0, x1, y1). roads: build_tile's (fid, spec, centreline (k, 3), lon); walks: its sidewalk
     runs (dicts with fid, pts, side, w)."""
@@ -251,6 +255,27 @@ def place(roads, walks, box, curb_h=0.15, wires=None):
                     rows.append([group, round(float(q[0]), 2), round(float(q[1]), 2), round(float(p[2] + curb_h), 2),
                                  round(yaw_fn(out), 1), 1.0, height, 0.0])
         rule = LAMP_SPACING.get(spec.cls)
+        if town and spec.cls in TOWN_POLE_CLASSES:
+            # towns and suburbs: wooden utility poles along one side, wired, a cobra-head lamp on every other
+            pole_side = 1 if _h01(fid, "side") < 0.5 else -1
+            if side == pole_side:
+                lit.add(fid)
+                run_poles = []
+                ph = _h01(fid, "tphase") * TOWN_POLE_SPACING
+                for p, out in _stations(run, line, TOWN_POLE_SPACING, ph, END_CLEAR_M, side):
+                    q = p[:2] - out * (w / 2 - 0.6)
+                    yaw = _yaw(out[0], out[1])
+                    run_poles.append((float(q[0]), float(q[1]), float(p[2]), yaw))
+                    if x0 <= q[0] < x1 and y0 <= q[1] < y1:
+                        rows.append([G_POLE, round(float(q[0]), 2), round(float(q[1]), 2), round(float(p[2]), 2),
+                                     round(yaw, 1), 1.0, 9.2, 0.0])
+                        k = int(round((float(_project(line, q[None])[0]) - ph) / TOWN_POLE_SPACING))
+                        if k % 2 == 0:
+                            rows.append([G_POLELAMP, round(float(q[0]), 2), round(float(q[1]), 2),
+                                         round(float(p[2]) + POLE_LAMP_Z, 2), round(yaw, 1), 1.0, 1.1, 0.0])
+                if wires is not None and len(run_poles) > 1:
+                    wires.extend(_own_spans(run_poles, box))
+            rule = None
         if rule is not None:
             spacing, both = rule
             lamp_side = 1 if _h01(fid, "side") < 0.5 else -1

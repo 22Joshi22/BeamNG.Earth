@@ -914,16 +914,33 @@ def doors(items, lines, x0, y0):
     return rows
 
 
-def road_tile(frame, tx, ty, md, ground, lines=None, props=None):
-    """The buildings of road tile (tx, ty) (roads.TILE squares of the anchor frame): (mesh, collider boxes) or
-    None. md: mapdata.MapData; ground(lat, lon): the physics ground without the road lift. lines (the road
-    centrelines, roads.build_tile) and props (its prop rows): the houses' front doors are added to props."""
+def road_tile_items(frame, tx, ty, md, ground):
+    """tile_buildings of road tile (tx, ty), from the map cells under it."""
     import roads
     x0, y0, x1, y1 = roads.tile_bbox(tx, ty)
     cds = [md.cell(k, layers=("buildings", "building_parts"), kind="demand")
            for k in roads.cells_of_tile(frame, tx, ty, margin=0.0)]
-    items = tile_buildings(frame, x0, y0, x1, y1, [c.layers.get("buildings") for c in cds], ground,
-                           part_layers=[c.layers.get("building_parts") for c in cds])
+    return tile_buildings(frame, x0, y0, x1, y1, [c.layers.get("buildings") for c in cds], ground,
+                          part_layers=[c.layers.get("building_parts") for c in cds])
+
+
+TOWN_COVERAGE = 0.16        # a tile whose footprints cover less than this share is a town / suburb (furniture)
+
+
+def coverage(items, tile=256.0):
+    """The share of the tile covered by building footprints."""
+    return sum(_area2(s.ring) / 2 for s, _, _ in items if (s.min_h or 0) <= 0.5) / (tile * tile)
+
+
+def road_tile(frame, tx, ty, md, ground, lines=None, props=None, items=None):
+    """The buildings of road tile (tx, ty) (roads.TILE squares of the anchor frame): (mesh, collider boxes) or
+    None. md: mapdata.MapData; ground(lat, lon): the physics ground without the road lift. lines (the road
+    centrelines, roads.build_tile) and props (its prop rows): the houses' front doors are added to props.
+    items: road_tile_items' result when the caller has it."""
+    import roads
+    x0, y0, x1, y1 = roads.tile_bbox(tx, ty)
+    if items is None:
+        items = road_tile_items(frame, tx, ty, md, ground)
     if props is not None and lines:
         props.extend(doors(items, lines, x0, y0))
     mesh = build(items)
