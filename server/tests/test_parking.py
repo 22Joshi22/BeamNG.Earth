@@ -85,5 +85,31 @@ class CurbTest(unittest.TestCase):
             self.assertGreaterEqual(math.hypot(s[0] - h[0], s[1] - 56.0), parking.HYDRANT_CLEAR_M)
 
 
+class LotTest(unittest.TestCase):
+    LOT = np.array([(0.0, 0.0), (60.0, 0.0), (60.0, 40.0), (0.0, 40.0)])
+
+    def test_rows_of_stalls_inside_the_lot(self):
+        spots = parking.lot_spots([self.LOT], (0, 0, 256, 256), lambda x, y: np.full(len(x), 3.0))
+        self.assertGreater(len(spots), 60)
+        for x, y, z, h, kind in spots:
+            self.assertEqual(kind, 1)
+            self.assertEqual(z, 3.0)
+            self.assertTrue(1.0 < x < 59.0 and 2.5 < y < 37.5)
+            self.assertIn(round(h) % 180, (90,), "stalls across the long side (nose north or south)")
+        rows = sorted({round(s[1], 1) for s in spots})
+        self.assertEqual(len(rows), len(parking._lot_rows(20.0)))
+        xs = sorted(s[0] for s in spots if round(s[1], 1) == rows[0])
+        self.assertTrue(np.allclose(np.diff(xs), parking.LOT_SPOT_W_M))
+
+    def test_buildings_block_and_tiles_split(self):
+        garage = np.array([(0.0, 0.0), (30.0, 0.0), (30.0, 40.0), (0.0, 40.0)])
+        z = lambda x, y: np.zeros(len(x))
+        spots = parking.lot_spots([self.LOT], (0, 0, 256, 256), z, [garage])
+        self.assertTrue(spots and all(s[0] > 30 for s in spots))
+        a = parking.lot_spots([self.LOT], (0, 0, 30, 256), z)
+        b = parking.lot_spots([self.LOT], (30, 0, 256, 256), z)
+        self.assertEqual(len(a) + len(b), len(parking.lot_spots([self.LOT], (0, 0, 256, 256), z)))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -1,15 +1,18 @@
 """Parking spots for BeamNG's own parked cars (gameplay_parking, the player's traffic settings): curbside
-spots along town and city streets, from the sidewalk runs of a road tile (roads.build_tile).
+spots along town and city streets, from the sidewalk runs of a road tile (roads.build_tile), and rows of
+spots in the mapped parking lots (Overture infrastructure polygons of class "parking").
 
 The stock system spawns its parked cars onto the spots of a sites object and moves them to spots near the
 player as the player drives (the mod's parking.lua feeds it these). Each spot is a row [x, y, z, heading]:
 the anchor frame's position of the spot's centre on the road surface, and the direction the parked car
-faces (degrees, counter-clockwise from +x). Cars park along the curb facing the traffic on their side
+faces (degrees, counter-clockwise from +x); lot spots carry a fifth value, 1 (the mod tags them as lot
+spots: either way in, no "street" tracking). Cars park along the curb facing the traffic on their side
 (right-hand traffic). Deterministic: the stations are arc lengths along the road, as furniture.py's.
 """
 import math
 
 import numpy as np
+from matplotlib.path import Path
 
 import furniture
 
@@ -77,3 +80,122 @@ def clear_of(spots, props, drives):
     dist = np.hypot(s[:, None, 0] - b[None, :, 0], s[:, None, 1] - b[None, :, 1])
     keep = (dist >= b[None, :, 2]).all(1)
     return [r for r, k in zip(spots, keep) if k]
+
+
+LOT_SPOT_W_M = 2.6          # a lot's stall: width along its row ...
+LOT_SPOT_D_M = 5.5          # ... and depth (US: 8.5-9 ft x 18 ft)
+LOT_AISLE_M = 7.0           # the driving aisle between rows (two-way, 90-degree stalls: ~24 ft)
+LOT_MARGIN_M = 0.8          # kept in from the lot's edge
+LOT_MAX_PER_TILE = 500
+LOT_CLASSES = {"parking"}   # (surface.PARKING_CLASSES: the lots painted asphalt)
+
+
+def _lot_rows(hw):
+    """Offsets across a lot (from its -v edge, which is at -hw) of its stall rows' centres and the side their
+    noses point (-1: toward -v), for a lot 2 * hw wide: a single row along the -v edge, then double rows
+    back to back, an aisle before each."""
+    out = []
+    o = LOT_MARGIN_M + LOT_SPOT_D_M / 2
+    width = 2 * hw - LOT_MARGIN_M
+    if o + LOT_SPOT_D_M / 2 > width:
+        return out
+    out.append((o, -1))
+    o += LOT_SPOT_D_M / 2 + LOT_AISLE_M + LOT_SPOT_D_M / 2
+    while o + LOT_SPOT_D_M / 2 <= width:
+        out.append((o, 1))
+        if o + LOT_SPOT_D_M * 1.5 <= width:
+            out.append((o + LOT_SPOT_D_M, -1))
+        o += 2 * LOT_SPOT_D_M + LOT_AISLE_M
+    return out
+
+
+def lot_spots(rings, box, z_at, blockers=()):
+    """Rows [x, y, z, heading, 1] of the stalls of parking lots (rings: (k, 2) arrays in the anchor frame)
+    whose centres are in the tile box: rows along each lot's long side, every stall wholly inside the lot and
+    its centre in none of the blockers (building footprints: a garage's ground floor). z_at(x, y) -> the
+    ground (arrays). Deterministic."""
+    import buildings
+    x0, y0, x1, y1 = box
+    cand = []
+    for ring in rings:
+        ring = np.asarray(ring, np.float64)
+        if len(ring) < 3:
+            continue
+        if ring[:, 0].max() < x0 or ring[:, 0].min() >= x1 or ring[:, 1].max() < y0 or ring[:, 1].min() >= y1:
+            continue
+        c, u, hl, hw = buildings.oriented_box(ring)
+        if hw < LOT_SPOT_D_M / 2 or hl < LOT_SPOT_W_M:
+            continue
+        v = np.array([-u[1], u[0]])
+        path = Path(ring)
+        n_along = int((2 * hl - 2 * LOT_MARGIN_M) // LOT_SPOT_W_M)
+        if n_along < 1:
+            continue
+        along = (np.arange(n_along) - (n_along - 1) / 2) * LOT_SPOT_W_M
+        for off, nose in _lot_rows(hw):
+            centres = c[None] + along[:, None] * u[None] + (off - hw) * v[None]
+            hx, hy = u * (LOT_SPOT_W_M / 2 - 0.1), v * (LOT_SPOT_D_M / 2 - 0.1)
+            ok = np.ones(len(centres), bool)
+            for sx, sy in ((-1, -1), (1, -1), (1, 1), (-1, 1)):
+                ok &= path.contains_points(centres + sx * hx + sy * hy)
+            heading = math.degrees(math.atan2(nose * v[1], nose * v[0])) % 360.0
+            for q in centres[ok]:
+                if x0 <= q[0] < x1 and y0 <= q[1] < y1:
+                    cand.append((float(q[0]), float(q[1]), heading))
+    if not cand:
+        return []
+    pts = np.array([(x, y) for x, y, _ in cand])
+    keep = np.ones(len(cand), bool)
+    for b in blockers:
+        b = np.asarray(b, np.float64)
+        if len(b) >= 3:
+            keep &= ~Path(b).contains_points(pts)
+    cand = [cnd for cnd, k in zip(cand, keep) if k][:LOT_MAX_PER_TILE]
+    if not cand:
+        return []
+    z = np.asarray(z_at(np.array([x for x, _, _ in cand]), np.array([y for _, y, _ in cand])), np.float64)
+    return [[round(x, 2), round(y, 2), round(float(zz), 2), round(h, 1), 1] for (x, y, h), zz in zip(cand, z)]
+
+
+def lot_rings(frame, feats_list):
+    """The parking lot polygons (outer rings) of Overture infrastructure Features, in the anchor frame."""
+    out, seen = [], set()
+    for f in feats_list:
+        if f is None or len(f) == 0:
+            continue
+        cls = f.attrs.get("class")
+        if cls is None:
+            continue
+        for i in np.flatnonzero(np.isin(cls.astype(str), list(LOT_CLASSES)) & (f.kind == 3)):
+            fid = f.ids[i]
+            if fid in seen:
+                continue
+            seen.add(fid)
+            for part in f.parts(i):
+                if part and len(part[0]) >= 3:
+                    ll = np.asarray(part[0], np.float64)
+                    e, n, _ = frame.geodetic_to_enu(ll[:, 1], ll[:, 0], 0.0)
+                    out.append(np.stack([e, n], 1))
+    return out
+
+
+def tile_lot_spots(frame, tx, ty, md, elev, items=None):
+    """lot_spots of road tile (tx, ty): the lots of the map cells under it (md: mapdata.MapData), the tile's
+    buildings (items: buildings.road_tile_items' result, rings tile-local) as blockers, elev(lat, lon) the
+    ground. Returns [] when the lots cannot be read."""
+    import roads
+    box = roads.tile_bbox(tx, ty)
+    try:
+        feats = [md.cell(k, layers=("infrastructure",), kind="demand").layers.get("infrastructure")
+                 for k in roads.cells_of_tile(frame, tx, ty, margin=0.0)]
+    except Exception:
+        return []
+    rings = lot_rings(frame, feats)
+    if not rings:
+        return []
+    blockers = [spec.ring + np.array(box[:2]) for spec, *_ in (items or ())]
+
+    def z_at(x, y):
+        la, lo, _ = frame.enu_to_geodetic(x, y, 0.0)
+        return elev(la, lo)
+    return lot_spots(rings, box, z_at, blockers)

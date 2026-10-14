@@ -1,5 +1,5 @@
 -- Parked cars (the user, 2026-10-14: "BeamNG handles spawning traffic and parked cars pretty well"): the
--- road tiles carry curbside parking spots (server/parking.py: rows {x, y, z, heading} in the anchor frame)
+-- road tiles carry curbside spots and lot stalls (server/parking.py: rows {x, y, z, heading[, 1 = lot]})
 -- and this module hands them to BeamNG's own parking system (gameplay_parking) as a sites object, the way a
 -- stock level's city.sites.json does. The stock system spawns the player's parked-car amount (Options >
 -- Gameplay > Traffic, trafficParkedAmount) and keeps moving them to free spots near the player as the
@@ -66,8 +66,10 @@ local function makeSpot(r)
   local h = math.rad(r[4])
   ps:set(vec3(r[1], r[2], r[3]), quatFromDir(vec3(math.cos(h), math.sin(h), 0), vec3(0, 0, 1)),
     vec3(M.SPOT_SCL[1], M.SPOT_SCL[2], M.SPOT_SCL[3]))
-  ps.customFields:addTag('street')        -- mapmgr tracks the car (traffic dodges it)
-  ps.customFields:addTag('forwards')      -- parallel parking: nose in the direction of travel
+  if r[5] ~= 1 then                       -- curbside (lot stalls: either way in, not on a street)
+    ps.customFields:addTag('street')      -- mapmgr tracks the car (traffic dodges it)
+    ps.customFields:addTag('forwards')    -- parallel parking: nose in the direction of travel
+  end
   return ps
 end
 

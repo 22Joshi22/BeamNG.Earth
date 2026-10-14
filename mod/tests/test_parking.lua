@@ -58,6 +58,15 @@ local s1 = given.parkingSpots.sorted[1]
 T.check(s1.scl.x == 2.5 and s1.scl.y == 6.0 and s1.customFields.tags.street and s1.customFields.tags.forwards,
   'stock spot size, street + forwards tags')
 T.check(setupCalls == 1, 'parked cars started (trafficParkedAmount 16)')
+P.onRows(1, '1:0_1', { { 50, 50, 1.0, 0, 1 } })
+clock = clock + 3
+P.update(1, player)
+local lot
+for _, ps in pairs(given.parkingSpots.objects) do if ps.pos.x == 50 then lot = ps end end
+T.check(lot and not lot.customFields.tags.street and not lot.customFields.tags.forwards, 'a lot stall: no street / forwards tags')
+P.dropKey('1:0_1')
+clock = clock + 3
+P.update(1, player)
 
 -- rebuilds keep the same spot objects (a car's spot stays its spot)
 local ids = {}
