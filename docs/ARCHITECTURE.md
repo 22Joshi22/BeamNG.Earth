@@ -1025,6 +1025,9 @@ three days of testing: dem 741 MB / 7.5k files, imagery 1.4 GB / 35k, deshadow 7
   take ~0.5 s and blocks 1.6-2.4 s.
 
 ### Road look updates (2026-10-14, from the street photo comparisons)
+- Divided urban trunks (one-way carriageways) get a sidewalk on the curb side only (`walk_sides`: right of
+  the travel direction, left where traffic keeps left) when they are town arterials: a limit of 45 mph or
+  less, or with no limit a junction every 150 m or less (`Spec.kmh`, `Spec.gap`); expressways none.
 - Two-way urban trunks (town main streets on state highways) get sidewalks, lamps; urban trunks not
   lined by buildings default to 4 lanes (13.2 m); white dashed lane lines where the driving width holds
   2+ lanes a direction; white edge lines on urban roads without curbs too.
@@ -1504,6 +1507,11 @@ The user: "make the world look alive ... look like a professionally made map".
     storefront band on the wall facing the road; barns gabled with metal roofs, barn red or white;
     shopfronts on the ground floors along urban main streets; towns (< 16 % footprint cover) mostly
     1-2 storeys; airport terminals / hangars / parking garages by name (Overture names them, no class).
+  - small towns of the arid West (`district_town`: the footprint share of the 1 km disc around a tile,
+    from per-cell centroid / area arrays, below 0.18; Bishop 0.14, Moab 0.11, Frederick 0.21, Fells Point
+    0.28): 75 % one storey, attached buildings are shops (not row houses), a 1.2 m false front on one-storey
+    shops. A tile's own share cannot tell (a main-street block is as dense as a city's). Near and far
+    building tiles both ask, so they agree.
   - driveways (asphalt strips in the road mesh) from siding / stucco houses to the road's edge.
   - churches (class or name): a tall gabled nave and a square tower with a slate spire; brick row houses
     get white marble stoops (two steps, the door raised to them); in dense cores (> 35 % cover) small
