@@ -1,0 +1,288 @@
+#!/usr/bin/env python3
+"""BeamNG.Earth installer (Windows and Linux; Python 3.10+, standard library only).
+
+What it does:
+  1. finds your BeamNG.drive user folder (or takes --user-dir),
+  2. copies the mod (mod/beamng_earth/) to <user folder>/mods/unpacked/beamng_earth,
+  3. makes a Python virtual environment in .venv and installs the server's packages into it,
+  4. remembers the user folder in .beamng_earth.json for start.py and the run_server launchers.
+
+Run it again at any time: it only changes what is out of date.
+
+    python install.py                 (Windows: py install.py also works)
+    python install.py --user-dir "D:\\BeamNG user folder\\current" --yes
+    python install.py --no-venv       (only the mod)
+    python install.py --dry-run       (show what would happen, change nothing)
+"""
+
+import argparse
+import glob
+import hashlib
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+
+ROOT = os.path.dirname(os.path.abspath(__file__))
+MOD_SRC = os.path.join(ROOT, "mod", "beamng_earth")
+MOD_NAME = "beamng_earth"
+VENV = os.path.join(ROOT, ".venv")
+REQUIREMENTS = os.path.join(ROOT, "server", "requirements.txt")
+CONFIG = os.path.join(ROOT, ".beamng_earth.json")
+STEAM_APP_ID = "284160"
+MIN_PY = (3, 10)
+IS_WIN = os.name == "nt"
+
+
+def say(msg=""):
+    print(msg, flush=True)
+
+
+def fail(msg, code=1):
+    say("")
+    say("ERROR: " + msg)
+    sys.exit(code)
+
+
+def version():
+    try:
+        with open(os.path.join(ROOT, "VERSION"), encoding="utf-8") as f:
+            return f.read().strip()
+    except OSError:
+        return "unknown"
+
+
+# --- finding the BeamNG.drive user folder -------------------------------------------------------
+
+def _steam_roots():
+    home = os.path.expanduser("~")
+    roots = [
+        os.path.join(home, ".steam", "steam"),
+        os.path.join(home, ".steam", "root"),
+        os.path.join(home, ".local", "share", "Steam"),
+        os.path.join(home, ".var", "app", "com.valvesoftware.Steam", ".local", "share", "Steam"),  # Flatpak
+        os.path.join(home, "snap", "steam", "common", ".local", "share", "Steam"),
+    ]
+    libs = []
+    for r in roots:
+        if not os.path.isdir(r):
+            continue
+        libs.append(r)
+        vdf = os.path.join(r, "steamapps", "libraryfolders.vdf")
+        try:
+            with open(vdf, encoding="utf-8", errors="replace") as f:
+                libs += re.findall(r'"path"\s+"([^"]+)"', f.read())
+        except OSError:
+            pass
+    out, seen = [], set()
+    for lib in libs:
+        lib = lib.replace("\\\\", "\\")
+        key = os.path.realpath(lib)
+        if key not in seen and os.path.isdir(lib):
+            seen.add(key)
+            out.append(lib)
+    return out
+
+
+def candidate_user_dirs():
+    """Every BeamNG.drive user folder that exists on this machine, best first."""
+    cands = []
+    if IS_WIN:
+        local = os.environ.get("LOCALAPPDATA") or os.path.join(os.path.expanduser("~"), "AppData", "Local")
+        cands.append(os.path.join(local, "BeamNG", "BeamNG.drive", "current"))     # 0.32 and later
+        old = sorted(glob.glob(os.path.join(local, "BeamNG.drive", "[0-9]*")), reverse=True)
+        cands += [d for d in old if os.path.isdir(d)]                               # before 0.32: one per version
+    else:
+        cands.append(os.path.join(os.path.expanduser("~"), ".local", "share", "BeamNG", "BeamNG.drive", "current"))
+        for lib in _steam_roots():                                                  # Windows build under Proton
+            pfx = os.path.join(lib, "steamapps", "compatdata", STEAM_APP_ID, "pfx", "drive_c", "users", "steamuser",
+                               "AppData", "Local")
+            cands.append(os.path.join(pfx, "BeamNG", "BeamNG.drive", "current"))
+            cands += sorted(glob.glob(os.path.join(pfx, "BeamNG.drive", "[0-9]*")), reverse=True)
+    out, seen = [], set()
+    for c in cands:
+        key = os.path.realpath(c)
+        if os.path.isdir(c) and key not in seen:
+            seen.add(key)
+            out.append(c)
+    return out
+
+
+def ask(prompt, assume_yes):
+    if assume_yes:
+        say(prompt + " yes (--yes)")
+        return True
+    try:
+        return input(prompt + " [y/N] ").strip().lower() in ("y", "yes")
+    except EOFError:
+        return False
+
+
+def choose_user_dir(args):
+    if args.user_dir:
+        d = os.path.abspath(os.path.expanduser(args.user_dir))
+        if not os.path.isdir(d):
+            if args.dry_run:
+                say(f"(dry run) the folder {d} does not exist yet; it would be created.")
+            elif ask(f"The folder {d} does not exist. Create it?", args.yes):
+                os.makedirs(d, exist_ok=True)
+            else:
+                fail("no BeamNG.drive user folder.")
+        return d
+    found = candidate_user_dirs()
+    if not found:
+        where = (r"%LOCALAPPDATA%\BeamNG\BeamNG.drive\current" if IS_WIN else
+                 "~/.local/share/BeamNG/BeamNG.drive/current (native) or Steam's "
+                 f"compatdata/{STEAM_APP_ID}/pfx/.../AppData/Local/BeamNG/BeamNG.drive/current (Proton)")
+        fail("could not find your BeamNG.drive user folder.\n"
+             "  Start BeamNG.drive once (it creates the folder), then run this again.\n"
+             f"  It is usually {where}.\n"
+             "  In the game: Options > Other > 'User folder' shows where it is; or pass it with\n"
+             '  python install.py --user-dir "<that folder>"')
+    if len(found) == 1:
+        say(f"BeamNG.drive user folder: {found[0]}")
+        return found[0]
+    say("Found more than one BeamNG.drive user folder:")
+    for i, d in enumerate(found, 1):
+        say(f"  {i}. {d}")
+    if args.yes:
+        say(f"Using the first one (--yes): {found[0]}")
+        return found[0]
+    while True:
+        try:
+            pick = input(f"Which one does your game use? [1-{len(found)}, Enter = 1] ").strip() or "1"
+        except EOFError:
+            pick = "1"
+        if pick.isdigit() and 1 <= int(pick) <= len(found):
+            return found[int(pick) - 1]
+        say("Please type one of the numbers.")
+
+
+# --- the mod ------------------------------------------------------------------------------------
+
+def tree_hash(path):
+    h = hashlib.sha256()
+    for dirpath, dirnames, filenames in os.walk(path):
+        dirnames.sort()
+        for name in sorted(filenames):
+            full = os.path.join(dirpath, name)
+            h.update(os.path.relpath(full, path).replace(os.sep, "/").encode())
+            with open(full, "rb") as f:
+                h.update(hashlib.sha256(f.read()).digest())
+    return h.hexdigest()
+
+
+def install_mod(user_dir, assume_yes, dry_run):
+    if not os.path.isdir(MOD_SRC):
+        fail(f"the mod folder is missing: {MOD_SRC}\n  Run install.py from the unzipped BeamNG.Earth folder.")
+    dest = os.path.join(user_dir, "mods", "unpacked", MOD_NAME)
+    packed = os.path.join(user_dir, "mods", MOD_NAME + ".zip")
+    if os.path.isfile(packed):
+        say(f"Note: there is also a zipped copy at {packed}; remove it so the game does not load two versions.")
+    if os.path.isdir(dest):
+        if tree_hash(dest) == tree_hash(MOD_SRC):
+            say(f"Mod: already up to date in {dest}")
+            return
+        if not ask(f"Mod: an older copy is installed in {dest}. Replace it?", assume_yes):
+            say("Mod: kept the installed copy (it may not match this server version).")
+            return
+        if dry_run:
+            say(f"(dry run) would replace {dest}")
+            return
+        shutil.rmtree(dest)
+    elif dry_run:
+        say(f"(dry run) would copy the mod to {dest}")
+        return
+    os.makedirs(os.path.dirname(dest), exist_ok=True)
+    shutil.copytree(MOD_SRC, dest, ignore=shutil.ignore_patterns("__pycache__", "*.pyc", ".DS_Store"))
+    say(f"Mod: installed to {dest}")
+
+
+# --- the server's Python environment ------------------------------------------------------------
+
+def venv_python():
+    return os.path.join(VENV, "Scripts", "python.exe") if IS_WIN else os.path.join(VENV, "bin", "python")
+
+
+def setup_venv(dry_run):
+    py = venv_python()
+    if dry_run:
+        say(f"(dry run) would {'reuse' if os.path.isfile(py) else 'create'} the virtual environment {VENV} "
+            f"and pip-install {os.path.relpath(REQUIREMENTS, ROOT)}")
+        return
+    if not os.path.isfile(py):
+        say(f"Python packages: creating a virtual environment in {VENV} ...")
+        r = subprocess.run([sys.executable, "-m", "venv", VENV])
+        if r.returncode != 0 or not os.path.isfile(py):
+            hint = ("On Debian/Ubuntu: sudo apt install python3-venv" if not IS_WIN else
+                    "Reinstall Python from python.org (keep the default options, tick 'Add python.exe to PATH').")
+            fail("could not create the virtual environment. " + hint)
+    say("Python packages: installing the server's requirements (numpy, Pillow, duckdb, fsspec) ...")
+    r = subprocess.run([py, "-m", "pip", "install", "--disable-pip-version-check", "-r", REQUIREMENTS])
+    if r.returncode != 0:
+        fail("pip could not install the packages (see the messages above).\n"
+             "  Check your internet connection (and proxy/firewall), then run install.py again.\n"
+             "  The mod is installed already; only the server's packages are missing.")
+    r = subprocess.run([py, "-c", "import numpy, PIL; print('numpy', numpy.__version__, '/ Pillow', PIL.__version__)"],
+                       capture_output=True, text=True)
+    if r.returncode != 0:
+        fail("the packages were installed but do not import:\n" + r.stderr)
+    say("Python packages: ready (" + r.stdout.strip() + ")")
+
+
+def save_config(user_dir, dry_run):
+    cfg = {"user_dir": user_dir, "version": version()}
+    if dry_run:
+        say(f"(dry run) would write {CONFIG}: {cfg}")
+        return
+    with open(CONFIG, "w", encoding="utf-8") as f:
+        json.dump(cfg, f, indent=2)
+
+
+def load_config():
+    try:
+        with open(CONFIG, encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return {}
+
+
+def main():
+    ap = argparse.ArgumentParser(description=f"Install BeamNG.Earth {version()}: the mod into BeamNG.drive and "
+                                             "the companion server's Python packages into .venv.")
+    ap.add_argument("--user-dir", help="BeamNG.drive user folder (default: found automatically)")
+    ap.add_argument("--yes", "-y", action="store_true", help="answer yes to every question (replace an older mod copy, "
+                                                             "pick the first user folder found)")
+    ap.add_argument("--no-venv", action="store_true", help="only install the mod; skip the Python environment")
+    ap.add_argument("--dry-run", action="store_true", help="show what would be done without changing anything")
+    args = ap.parse_args()
+
+    if sys.version_info < MIN_PY:
+        fail(f"Python {MIN_PY[0]}.{MIN_PY[1]} or newer is needed (this is {sys.version.split()[0]}). "
+             "Get it from https://www.python.org/downloads/")
+    say(f"BeamNG.Earth {version()} installer")
+    say("")
+    user_dir = choose_user_dir(args)
+    try:
+        install_mod(user_dir, args.yes, args.dry_run)
+    except OSError as e:
+        fail(f"could not copy the mod: {e}\n  Close BeamNG.drive if it is running and try again.")
+    if args.no_venv:
+        say("Python packages: skipped (--no-venv)")
+    else:
+        setup_venv(args.dry_run)
+    save_config(user_dir, args.dry_run)
+
+    launcher = "run_server.bat (double-click it)" if IS_WIN else "./run_server.sh"
+    say("")
+    say("Done. Next:")
+    say(f"  1. Start the world server: {launcher}   (or: python start.py)")
+    say("     Leave its window open while you play.")
+    say("  2. Start BeamNG.drive, open Freeroam and pick the 'BeamNG.Earth' level.")
+    say("  More help: docs/QUICKSTART.md")
+
+
+if __name__ == "__main__":
+    main()
