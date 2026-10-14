@@ -29,7 +29,7 @@ import mapcells
 
 log = logging.getLogger("earthd.seacarve")
 
-VERSION = 2
+VERSION = 3
 SEA_E = 0.0                 # m: the sea surface (the DEMs' heights are above mean sea level)
 DEPTH_SLOPE = 0.15          # floor depth per metre from the shoreline (1 : 6.7)
 DEPTH_CAP = 6.0             # m: the floor's depth away from the shore (Chesapeake mean ~6.4 m)
@@ -46,6 +46,12 @@ CARVE_MAX_LEVEL = 2         # far tiles up to this level are carved (their map d
                             # L2 reaches ~3 km, past the lakes' water tiles, seatiles.LAKE_RADIUS_M);
                             # coarser ones have the DEM's sea sunk (sink)
 LAKE_SUBTYPES = ("lake", "reservoir", "pond", "water")
+RIVER_SUBTYPES = ("river", "stream")  # polygons whose level follows the DEM, pixel by pixel (canals with
+                                      # locks break into many tiny tiles: later, as River objects)
+RIVER_SKIP_CLASSES = ("drain", "ditch")
+RIVER_DEPTH_CAP = 3.0       # m
+RIVER_DEM_STEP = 4          # river levels: the DEM every 4th pixel (~7.5 m), the lowest of 3 x 3 such
+                            # samples (the flattened surface, not a bank)
 LAKE_SKIP_CLASSES = ("fountain", "swimming_pool", "wastewater", "basin", "drain", "fish_pass")
 LAKE_DEPTH_CAP = 4.0        # m: lakes and ponds (no bathymetry); the slope is DEPTH_SLOPE
 LAKE_MIN_PX = 100           # a lake smaller than this in the 3 x 3 cells' raster (~350 m^2) is left out
@@ -169,11 +175,13 @@ class SeaCarver:
     def _build(self, x, y):
         own = self._water((mapcells.ZOOM, x, y))
         if own is None or not (np.isin(own.attrs["subtype"], SEA_SUBTYPES).any()
-                               or (self.dem is not None and self._lake_rows(own).size)):
+                               or (self.dem is not None and (self._lake_rows(own).size
+                                                             or self._river_rows(own).size))):
             return None                 # no water in the cell itself: nothing to carve here
         n = CELL_PX + 2 * PAD_PX
         ox, oy = x * CELL_PX - PAD_PX, y * CELL_PX - PAD_PX      # z16 pixel of the raster's corner
         sea = np.zeros((n, n), bool)
+        river = np.zeros((n, n), bool)
         lake = np.full((n, n), -1, np.int32)
         lake_ids = []
         for dy in (-1, 0, 1):
@@ -184,6 +192,8 @@ class SeaCarver:
                 for i in np.flatnonzero(np.isin(f.attrs["subtype"], SEA_SUBTYPES) & (f.kind == 3)):
                     self._rasterise(f, i, sea, ox, oy)
                 if self.dem is not None:
+                    for i in self._river_rows(f):
+                        self._rasterise(f, i, river, ox, oy)
                     for i in self._lake_rows(f):
                         gid = str(f.ids[i])
                         if gid not in lake_ids:
@@ -196,15 +206,29 @@ class SeaCarver:
         level = np.full((n, n), np.nan, np.float32)
         depth = np.zeros((n, n), np.float32)
         lake[sea] = -1                  # the sea wins where they overlap
+        river &= ~sea & (lake < 0)
         for k in range(len(lake_ids)):
             m = lake == k
             lv = self._lake_level(m, ox, oy, px)
             if lv is None:
                 continue
+            if lv <= SEA_HI:            # a lagoon, a tidal pond: part of the sea
+                sea |= m
+                continue
             kmax = int(math.ceil(LAKE_DEPTH_CAP / DEPTH_SLOPE / px)) + 2
             st = shore_steps(m, kmax).astype(np.float32)
             depth[m] = np.minimum(LAKE_DEPTH_CAP, DEPTH_SLOPE * (st[m] - 0.5) * px)
             level[m] = lv
+        if river.any():
+            rl = self._river_levels(river, ox, oy)
+            if rl is not None:
+                tidal = river & (rl <= SEA_HI)
+                sea |= tidal            # a tidal river: the sea
+                river &= ~tidal & np.isfinite(rl)
+                kmax = int(math.ceil(RIVER_DEPTH_CAP / DEPTH_SLOPE / px)) + 2
+                st = shore_steps(river, kmax).astype(np.float32)
+                depth[river] = np.minimum(RIVER_DEPTH_CAP, DEPTH_SLOPE * (st[river] - 0.5) * px)
+                level[river] = rl[river]
         if sea.any():
             kmax = int(math.ceil(DEPTH_CAP / DEPTH_SLOPE / px)) + 2
             st = shore_steps(sea, kmax).astype(np.float32)
@@ -222,16 +246,48 @@ class SeaCarver:
         return depth[c, c].copy(), level[c, c].copy()
 
     @staticmethod
+    def _river_rows(f):
+        sub = f.attrs["subtype"]
+        cls = f.attrs.get("class", np.full(len(sub), "", object))
+        inter = f.attrs.get("is_intermittent", np.zeros(len(sub), bool))
+        ok = np.isin(sub, RIVER_SUBTYPES) & ~np.isin(cls, RIVER_SKIP_CLASSES) & (f.kind == 3)
+        return np.flatnonzero(ok & ~np.asarray(inter, bool))
+
+    def _river_levels(self, m, ox, oy):
+        """The water level of every river pixel (m): the DEM every RIVER_DEM_STEP pixels, the lowest of
+        the 3 x 3 samples around (the flattened surface rather than a bank), quantised to LEVEL_Q;
+        NaN elsewhere. None without a DEM."""
+        jj, ii = np.nonzero(m)
+        k = RIVER_DEM_STEP
+        j0, j1 = jj.min() // k, jj.max() // k + 1
+        i0, i1 = ii.min() // k, ii.max() // k + 1
+        gj, gi = np.meshgrid(np.arange(j0, j1 + 1), np.arange(i0, i1 + 1), indexing="ij")
+        lat, lon = _lonlat(ox + gi * k + k / 2, oy + gj * k + k / 2)
+        try:
+            e = np.asarray(self.dem.sample(lat.ravel(), lon.ravel(), LAKE_DEM_ZOOM), np.float64).reshape(gj.shape)
+        except Exception as ex:
+            log.debug("river levels: %s", ex)
+            return None
+        p = np.pad(e, 1, mode="edge")
+        lo = np.min(np.stack([p[a:a + e.shape[0], b:b + e.shape[1]] for a in range(3) for b in range(3)]), axis=0)
+        out = np.full(m.shape, np.nan, np.float32)
+        out[jj, ii] = np.round(lo[jj // k - j0, ii // k - i0] / LEVEL_Q) * LEVEL_Q
+        return out
+
+    @staticmethod
     def _lake_rows(f):
         sub = f.attrs["subtype"]
         cls = f.attrs.get("class", np.full(len(sub), "", object))
         inter = f.attrs.get("is_intermittent", np.zeros(len(sub), bool))
-        ok = np.isin(sub, LAKE_SUBTYPES) & ~np.isin(cls, LAKE_SKIP_CLASSES) & (f.kind == 3)
+        name = f.attrs.get("name", np.full(len(sub), "", object))
+        fountain = np.array(["fountain" in str(v).lower() for v in name], bool)
+        ok = np.isin(sub, LAKE_SUBTYPES) & ~np.isin(cls, LAKE_SKIP_CLASSES) & (f.kind == 3) & ~fountain
         return np.flatnonzero(ok & ~np.asarray(inter, bool))
 
     def _lake_level(self, m, ox, oy, px):
         """The water level of a lake (its pixels m): the median DEM height inside, away from the banks,
-        quantised to LEVEL_Q; None if it is too small, not flat (a river, bad data) or at sea level."""
+        quantised to LEVEL_Q (SEA_E at sea level: it joins the sea); None if it is too small or not flat
+        (a river, bad data)."""
         cnt = int(m.sum())
         if cnt < LAKE_MIN_PX:
             return None
@@ -247,9 +303,9 @@ class SeaCarver:
             log.debug("lake level: %s", ex)
             return None
         p10, p50, p90 = np.percentile(e, [10, 50, 90])
-        if p90 - p10 > LAKE_FLAT_M or p50 <= SEA_HI:
+        if p90 - p10 > LAKE_FLAT_M:
             return None
-        return float(round(p50 / LEVEL_Q) * LEVEL_Q)
+        return SEA_E if p50 <= SEA_HI else float(round(p50 / LEVEL_Q) * LEVEL_Q)
 
     @staticmethod
     def _rasterise(f, i, water, ox, oy):
@@ -317,7 +373,8 @@ class SeaCarver:
         return np.where(wet, np.minimum(z, np.where(wet, lv, 0.0) - d), z)
 
     def lake_at(self, lat, lon):
-        """The lake level at the points (NaN on land, at sea and away from lakes)."""
+        """The level of the inland water (lakes, rivers above sea level) at the points (NaN on land, at
+        sea and away from water)."""
         d, lv = self.water(lat, lon)
         return np.where((d > 0) & (lv > SEA_HI), lv, np.nan)
 

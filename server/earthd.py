@@ -159,8 +159,8 @@ NEAR_VISUALS = ("mesh", "terrain", "detail")
 # as in terrain mode. MESH_LAYOUT: the modes on the mesh-mode tile layout; BLOCK_DRAWN: the block is seen.
 MESH_LAYOUT = ("mesh", "detail")
 BLOCK_DRAWN = ("terrain", "detail")
-SEA_CHECK_M, SEA_CHECK_S = 128.0, 5.0     # sea (--sea on): the water tiles planned again after this much
-                                          # movement or this long (seatiles.py)
+SEA_CHECK_S = 30.0          # sea (--sea on): the water tiles planned again when the player enters another
+                            # 512 m square, or after this long (map data that arrived late; seatiles.py)
 GROUND_RESEND_M, GROUND_RESEND_S = 1.0, 1.5   # ground_ahead: sent on a change, else this often (the mod's
                                                # follow.GROUND_STALE_S is 3 s)
 DETAIL_RING_M = 128.0           # detail mode: L-1 tiles this far beyond the block (forced())
@@ -1618,7 +1618,7 @@ class Connection:
         self.credits = creditsmod.Tracker()     # data credits: throttle, last message sent (--credits on)
         self.ground_busy = False                # a groundahead job is running (one at a time)
         self.sea_busy = False                   # a water-tile plan is running (sea_tiles)
-        self.sea_checked = None                 # (anchor id, x, y, monotonic) of the last plan
+        self.sea_checked = None                 # (anchor id, 512 m square, monotonic) of the last plan
         self.sea_sent = None                    # (anchor id, tiles) of the last "sea" message
         self.base_busy = False                  # a base photo refresh is running (base_refresh)
         self.ground_sent = None                 # (anchor id, z, monotonic) of the last ground_ahead sent
@@ -2056,14 +2056,14 @@ class Connection:
         self.spawn(run())
 
     def sea_tiles(self, aid, x, y):
-        """Send the mod the sea's water tiles around the player (seatiles.plan; its sea.lua), planned again
-        after SEA_CHECK_M or SEA_CHECK_S and sent when the set changed."""
+        """Send the mod the water tiles around the player (seatiles.plan and plan_lakes; its sea.lua),
+        planned again in another 512 m square or after SEA_CHECK_S, sent when the set changed."""
         last, now = self.sea_checked, time.monotonic()
-        if self.sea_busy or (last is not None and last[0] == aid and math.hypot(x - last[1], y - last[2]) < SEA_CHECK_M
-                             and now - last[3] < SEA_CHECK_S):
+        sq = seatilesmod.square_of(x, y)        # the plan is the same anywhere in this square
+        if self.sea_busy or (last is not None and last[0] == aid and last[1] == sq and now - last[2] < SEA_CHECK_S):
             return
         self.sea_busy = True
-        self.sea_checked = (aid, x, y, now)
+        self.sea_checked = (aid, sq, now)
         frame = self.s.anchors[aid].frame
         sea, dem = self.s.sea, self.s.dem
 

@@ -229,8 +229,10 @@ Manhattan cell: 4.8 s cold, peak RSS 381 MB. Next:
 - **Sea: done 2026-10-13** (`--sea on`, default off; docs/ARCHITECTURE.md "Sea water"): the ground
   carved under Overture's ocean polygons; WaterBlock tiles that follow the Earth's curve near the player
   (a flat WaterPlane flooded distant shores from altitude). The user tried the first version: "the water
-  is working". Next: glossy far tiles (beyond 8 km), lakes and rivers (WaterBlocks at their own levels,
-  River objects), bathymetry (NOAA CUDEM, GEBCO), fewer tiles (merge neighbours), default on.
+  is working". Lakes and rivers followed the same night (WaterBlocks at their own levels; rivers follow
+  the DEM's fall). Next: canals and narrow streams (River objects), bathymetry (NOAA CUDEM, GEBCO),
+  fewer tiles (merge neighbours), water colours per kind, default on. Glossy far tiles: little visible
+  gain at Sandy Point (the tiles reach the horizon there), parked.
 - Where: OSM/Overture water polygons + river lines (with width), ESA WorldCover water class as
   fallback. Surface height: the DEM at the shoreline (DEMs usually show the water surface, flat).
 - Depth (bathymetry): GEBCO global grid (~450 m, public) for oceans and big lakes; NOAA coastal

@@ -180,6 +180,61 @@ class LakeTest(unittest.TestCase):
             self.assertAlmostEqual(t.z, float(f.geodetic_to_enu(la, lo, 50.0)[2]), places=5)
 
 
+RIV_LAT, RIV_LON = 39.33, -76.62           # a 100 m wide, 1.2 km long river falling west to east, then a
+W = 100 / 111320.0                          # tidal one at sea level south of it
+L = 1200 / (111320.0 * math.cos(math.radians(39.33)))
+
+
+class RiverMapData(FakeMapData):
+    def cell(self, key, layers=None, kind="demand"):
+        self.calls += 1
+        rect = lambda la, lo: [(lo, la), (lo + L, la), (lo + L, la + W), (lo, la + W), (lo, la)]   # noqa: E731
+        return Cell(LakeWater([("river", rect(RIV_LAT, RIV_LON)), ("river", rect(RIV_LAT - 3 * W, RIV_LON))],
+                              ["r", "t"]))
+
+
+class RiverDem:
+    """The upper river's surface at 30 m falling 0.5 m per 100 m eastwards, banks 5 m higher; the tidal
+    river at 0.1 m."""
+
+    def sample(self, lat, lon, zoom, progress=None):
+        lat, lon = np.asarray(lat, np.float64), np.asarray(lon, np.float64)
+        fall = (lon - RIV_LON) / L * 6.0
+        upper = (lat > RIV_LAT) & (lat < RIV_LAT + W)
+        tidal = (lat > RIV_LAT - 3 * W) & (lat < RIV_LAT - 2 * W)
+        return np.where(upper, 30.0 - fall, np.where(tidal, 0.1, 35.0 - fall))
+
+
+class RiverTest(unittest.TestCase):
+    def setUp(self):
+        self.sc = seacarve.SeaCarver(RiverMapData(), None, dem=RiverDem())
+
+    def test_level_follows_the_fall(self):
+        la = np.full(5, RIV_LAT + W / 2)
+        lo = RIV_LON + np.array([0.1, 0.3, 0.5, 0.7, 0.9]) * L
+        lv = self.sc.lake_at(la, lo)
+        self.assertTrue(np.all(np.isfinite(lv)))
+        np.testing.assert_allclose(lv, 30.0 - np.array([0.1, 0.3, 0.5, 0.7, 0.9]) * 6.0, atol=0.25)
+        self.assertTrue(np.all(np.diff(lv) < 0), "falls downstream")
+
+    def test_tidal_river_is_sea(self):
+        p = (np.array([RIV_LAT - 2.5 * W]), np.array([RIV_LON + L / 2]))
+        d, lv = self.sc.water(*p)
+        self.assertGreater(float(d[0]), 0.0)
+        self.assertEqual(float(lv[0]), seacarve.SEA_E)
+        self.assertTrue(np.isnan(self.sc.lake_at(*p)[0]))
+
+    def test_tiles_step_down(self):
+        import seatiles
+        f = geodesy.EnuFrame(RIV_LAT + W / 2, RIV_LON + L / 2)
+        dem = RiverDem()
+        tiles = seatiles.plan_lakes(f, 0.0, 0.0, self.sc.lake_at, lambda la, lo: dem.sample(la, lo, 15))
+        self.assertTrue(tiles)
+        west = min(tiles, key=lambda t: t.x)
+        east = max(tiles, key=lambda t: t.x)
+        self.assertGreater(west.z - east.z, 3.0, "the tiles follow the river down")
+
+
 class SinkTest(unittest.TestCase):
     def test_dem_sea_sunk_land_kept(self):
         e = np.array([0.0, 0.25, -0.4, 0.5, 40.0, -3.0])

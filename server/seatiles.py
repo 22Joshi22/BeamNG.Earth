@@ -45,6 +45,11 @@ def _dist(x, y, x0, y0, s):
     return math.hypot(dx, dy)
 
 
+def square_of(x, y):
+    """The TILE_MIN square the plans start from (the same plan anywhere inside it)."""
+    return math.floor(x / TILE_MIN), math.floor(y / TILE_MIN)
+
+
 def squares(x, y, radius=None):
     """The quadtree leaves around (x, y): [(x0, y0, size)], every point within `radius` (default
     RADIUS_M) of the centre of (x, y)'s TILE_MIN square in exactly one of them."""
@@ -105,23 +110,25 @@ def plan(frame, x, y, sea_at, radius=None):
     return out
 
 
-# --- lakes ----------------------------------------------------------------------------------------
+# --- lakes and rivers ----------------------------------------------------------------------------------------
 LAKE_RADIUS_M = 2500.0      # lake tiles within this of the player (the far tiles carved: L <= 2)
 LAKE_TILE_MAX = 512.0
 LAKE_TILE_MIN = 16.0
 LAKE_SAMPLES = 24           # samples per tile edge when checking a lake tile
 LAKE_FLOOD_M = 1.0          # land inside a lake tile lower than the lake by more than this splits it
                             # (a valley below a dam; the banks themselves are ~ at the lake's level)
-LAKE_MAX_TILES = 80         # nearest first
+LAKE_MAX_TILES = 60         # nearest first
 LAKE_DEM_ZOOM = 15
+LEVEL_TOL_M = 0.3            # a tile spans at most this much of a river's fall (else it is split)
 
 
 def plan_lakes(frame, x, y, lake_at, ground_at, radius=None):
-    """Water tiles for the lakes around (x, y): lake_at(lat, lon) -> the lake level at the points (NaN
-    away from lakes, seacarve.SeaCarver.lake_at), ground_at(lat, lon) -> the DEM there. A square of the
+    """Water tiles for the lakes and rivers around (x, y): lake_at(lat, lon) -> the inland water's level at
+    the points (NaN away from it, seacarve.SeaCarver.lake_at), ground_at(lat, lon) -> the DEM there. A square of the
     LAKE_TILE_MAX lattice holding lake water becomes one tile at that level when every other point in it
-    is land no lower than the lake by more than LAKE_FLOOD_M, else it is split, down to LAKE_TILE_MIN (kept there when
-    at least half of it is lake). So a reservoir's tile never floods the valley below its dam. Tilted to
+    is land no lower than the lake by more than LAKE_FLOOD_M and its water spans at most LEVEL_TOL_M of
+    level (a river's fall), else it is split, down to LAKE_TILE_MIN (kept there when at least half of
+    it is water; at the median level). So a reservoir's tile never floods the valley below its dam. Tilted to
     the local vertical like the sea's tiles."""
     r = LAKE_RADIUS_M if radius is None else radius
     x = (math.floor(x / TILE_MIN) + 0.5) * TILE_MIN
@@ -158,7 +165,7 @@ def plan_lakes(frame, x, y, lake_at, ground_at, radius=None):
         for (x0, y0), l, gr in zip(todo, lv, g):
             wet = np.isfinite(l)
             level = float(np.median(l[wet]))
-            one_level = np.all(np.abs(l[wet] - level) < 0.05)
+            one_level = np.ptp(l[wet]) <= LEVEL_TOL_M
             clear = np.all(gr[~wet] >= level - LAKE_FLOOD_M)
             if (one_level and clear) or (s <= LAKE_TILE_MIN and wet.mean() >= 0.5 and one_level):
                 out.append((x0, y0, s, level))

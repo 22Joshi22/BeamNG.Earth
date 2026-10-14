@@ -1349,5 +1349,15 @@ position; vehicles see water they drive into, but not water that appears around 
   from the shore at 0.15 m/m to 4 m. The far tiles up to L2 are carved (L2 reaches ~3 km).
   `seatiles.plan_lakes` gives the water tiles within 2.5 km: 512 m squares holding lake water, split down
   to 16 m while one holds land more than 1 m lower than the lake (a valley below a dam) or two levels;
-  at most 80, nearest first. Loch Raven: 61 tiles, Patterson Park's boat lake: 21; 0.1-0.2 s per plan.
+  at most 60, nearest first. Loch Raven: 61 tiles (before the cap), Patterson Park's boat lake: 21.
+- **Rivers (2026-10-13):** Overture `river` / `stream` polygons (not drains or ditches; canals with
+  locks broke into dozens of 16 m tiles, so they wait for River objects). Their level follows the DEM
+  pixel by pixel: the DEM every 4th pixel, the lowest of the 3 x 3 samples around (the flattened
+  surface, not a bank), quantised to 0.1 m. Floors carved to 3 m. Lake and river pixels at sea level
+  (<= 0.3 m: lagoons, tidal rivers such as the Potomac at Georgetown) join the sea. Their tiles come
+  from `plan_lakes`, split until one spans at most 0.3 m of the river's fall. Susquehanna at
+  Harrisburg: 89.8 m down to 89.2 m across the area. Plans: 0.4-1 s warm, so the server plans again
+  only when the player enters another 512 m square, or every 30 s (late map data).
+- **Drive cost (Fells Point east along the waterfront, 30 m/s, 6 km, 2026-10-13):** 75.7 fps with water,
+  79.3 without; p99 22.4 vs 21.9 ms, worst frame 55 vs 53 ms.
 - Tests: `server/tests/test_seacarve.py`, `mod/tests/test_sea.lua`.
