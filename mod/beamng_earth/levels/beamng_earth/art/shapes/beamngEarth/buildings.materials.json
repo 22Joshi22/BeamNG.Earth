@@ -90,9 +90,6 @@
   "Stages": [
    {
     "baseColorMap": "/assets/materials/tileable/roofing/asphalt_roof/t_asphalt_roof_b.color.png",
-    "normalMap": "/assets/materials/tileable/roofing/asphalt_roof/t_asphalt_roof_nm.normal.png",
-    "roughnessMap": "/assets/materials/tileable/roofing/asphalt_roof/t_asphalt_roof_r.data.png",
-    "ambientOcclusionMap": "/assets/materials/tileable/roofing/asphalt_roof/t_asphalt_roof_ao.data.png",
     "metallicFactor": 0,
     "baseColorFactor": [
      1,
@@ -100,7 +97,8 @@
      1,
      1
     ],
-    "vertColor": true
+    "vertColor": true,
+    "roughnessFactor": 0.9
    },
    {},
    {},
