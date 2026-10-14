@@ -4,7 +4,7 @@ A 1:1 scale, streamed Earth for [BeamNG.drive](https://www.beamng.com/): drive a
 planet on real elevation data and satellite imagery, with distance-based level of detail and the
 real curvature of the Earth.
 
-Status: early development (v1.3.1). Tested on BeamNG.drive 0.39.4 on Linux (Vulkan). See
+Status: early development (see VERSION; a preview). Tested on BeamNG.drive 0.39.4 on Linux (Vulkan). See
 [docs/ROADMAP.md](docs/ROADMAP.md) for what is coming (high-speed streaming, real view distance,
 roads, water, navigation, traffic, cities).
 
@@ -18,13 +18,21 @@ roads, water, navigation, traffic, cities).
 - Design and measurements: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md),
   [docs/V1_4_SPEC.md](docs/V1_4_SPEC.md), research notes in [docs/research/](docs/research/).
 
-## Running it (developer setup)
-1. Python 3.11+ with `numpy` and `Pillow`.
+## Running it
+Players: follow [docs/QUICKSTART.md](docs/QUICKSTART.md) (download, `install.py`, then
+`run_server.bat` / `run_server.sh` and the BeamNG.Earth level).
+
+### Developer setup
+`python3 install.py` also works from a checkout (mod copy, `.venv`, then `python3 start.py`); by hand:
+1. Python 3.10+ with the packages in `server/requirements.txt`.
 2. Copy (or sync) `mod/beamng_earth/` to
    `<BeamNG user folder>/current/mods/unpacked/beamng_earth/`.
 3. Start the server: `python3 server/earthd.py`
 4. Start BeamNG.drive and load the **BeamNG.Earth** level. The mod connects to the server and
    streams the world; the BeamNG.Earth window shows the status and lets you teleport.
+
+Release zip for sharing: `python3 tools/package.py` (writes `dist/BeamNG.Earth-<VERSION>.zip`;
+the version is the `VERSION` file).
 
 Tests: `cd server && python3 -m unittest discover -s tests -p "test_*.py"` and
 `cd mod/tests && for f in test_*.lua; do luajit $f; done`.

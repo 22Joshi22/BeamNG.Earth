@@ -22,3 +22,8 @@ docs/research/*.jsonl
 tools/gcpatch/build/
 docs/research/streetview/
 docs/research/ortho/
+
+# install.py / tools/package.py output
+.venv/
+.beamng_earth.json
+dist/
