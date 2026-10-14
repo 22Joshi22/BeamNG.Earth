@@ -90,7 +90,7 @@ function M.onMessage(msg, currentAnchor)
   local ok, g = pcall(jsonDecode, readFile(msg.path) or '')
   if not ok or type(g) ~= 'table' or type(g.nodes) ~= 'table' or type(g.edges) ~= 'table' then return false end
   graph = { anchor = msg.anchorId, serial = msg.serial, nodes = g.nodes, edges = g.edges,
-            signals = type(g.signals) == 'table' and g.signals or {} }
+            signals = type(g.signals) == 'table' and g.signals or {}, rules = type(g.rules) == 'table' and g.rules or nil }
   dirty = true
   return true
 end
@@ -192,6 +192,12 @@ local function signalsSystem()
 end
 
 local function apply(b)
+  -- the country's rules (server navgraph.road_rules): driving side, turn on red, red+yellow before green
+  local r = graph.rules
+  if r then
+    M.rules = { rightHandDrive = r.rightHandDrive and true or false, turnOnRed = r.turnOnRed and true or false }
+    M.SIGNAL_TYPE = r.redYellow and 'lightsBasicEU' or 'lightsBasic'
+  end
   local nodes, nn, ne = M.toNodes(graph, b, M.EDGE_M, M.rules.rightHandDrive)
   local ts = signalsSystem()
   -- before the reset: its onNavgraphReloaded would place the old instances on the new graph (research §2.8)

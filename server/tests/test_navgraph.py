@@ -66,5 +66,17 @@ class GraphTest(unittest.TestCase):
         self.assertTrue(all(n[2] == 10.0 for n in off), "the ground (flat 10 m) off the bridge")
 
 
+
+class RulesTest(unittest.TestCase):
+    def test_driving_side_and_signals_by_country(self):
+        self.assertEqual(navgraph.road_rules("US"), {"rightHandDrive": False, "turnOnRed": True, "redYellow": False,
+                                                     "country": "US"})
+        self.assertTrue(navgraph.road_rules("gb")["rightHandDrive"], "the game's name: true = driving on the left")
+        self.assertTrue(navgraph.road_rules("GB")["redYellow"])
+        self.assertFalse(navgraph.road_rules("DE")["rightHandDrive"])
+        self.assertTrue(navgraph.road_rules("JP")["rightHandDrive"])
+        self.assertFalse(navgraph.road_rules(None)["rightHandDrive"], "unknown: US rules")
+
+
 if __name__ == "__main__":
     unittest.main()

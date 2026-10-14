@@ -480,6 +480,7 @@ class Server:
         self.dem = demmod.Dem(os.path.join(cache_dir, "dem"), fetcher=self.net)
         # runways graded in (--airports on: main() loads the OurAirports copy before the worker processes)
         self.airports = airportgrademod.AirportGrader(airports_db, self.dem) if airports_db is not None else None
+        self.airports_db = airports_db  # (also the road rules' country: navgraph.country_near)
         self.sea = sea              # seacarve.SeaCarver (--sea on): the sea floor carved, the water tiles
         self.veg = vegetation       # vegetation.Vegetation (--trees on): trees, bushes, rocks per cell
         if sea is not None and sea.dem is None:
@@ -840,6 +841,8 @@ class Server:
         except Exception as e:          # no decks: the graph follows the ground under bridges
             log.debug("navgraph decks: %s: %s", type(e).__name__, e)
         graph = navgraphmod.build(anchor.frame, feats, elev, (x, y), urban, decks=decks)
+        cla, clo, _ = anchor.frame.enu_to_geodetic(x, y, 0.0)
+        graph["rules"] = navgraphmod.road_rules(navgraphmod.country_near(self.airports_db, float(cla), float(clo)))
         for old in glob.glob(os.path.join(self.out_dir, f"navgraph_{aid}_*.json")):    # one file at a time
             try:
                 os.remove(old)

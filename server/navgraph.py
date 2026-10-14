@@ -263,6 +263,36 @@ def _signals(arms, nodes):
     return out
 
 
+# Road rules by country (ISO 3166-1 alpha-2; the nearest airport's, AirportDB: a stand-in until a border map)
+LEFT_HAND = {"GB", "IE", "IM", "JE", "GG", "MT", "CY", "IN", "PK", "BD", "LK", "NP", "BT", "MV", "JP", "ID", "MY",
+             "SG", "BN", "TH", "TL", "HK", "MO", "AU", "NZ", "PG", "FJ", "WS", "TO", "KI", "SB", "TV", "NR", "NU",
+             "CK", "ZA", "NA", "BW", "ZW", "ZM", "MZ", "MW", "KE", "TZ", "UG", "LS", "SZ", "MU", "SC", "SH", "FK",
+             "JM", "BS", "BB", "TT", "GY", "SR", "AG", "DM", "GD", "KN", "LC", "VC", "VG", "VI", "AI", "KY", "TC",
+             "BM", "MS", "PN"}
+TURN_ON_RED = {"US", "CA"}
+RED_YELLOW = {"GB", "IE", "DE", "AT", "CH", "LI", "NL", "BE", "LU", "DK", "NO", "SE", "FI", "IS", "PL", "CZ", "SK",
+              "HU", "SI", "HR", "BA", "RS", "ME", "MK", "AL", "RO", "BG", "LT", "LV", "EE", "UA", "BY", "RU", "IL"}
+
+
+def road_rules(country):
+    """{"rightHandDrive" (the game's name: true = driving on the LEFT), "turnOnRed", "redYellow"} of a country
+    (US rules for an unknown one)."""
+    c = (country or "US").upper()
+    return {"rightHandDrive": c in LEFT_HAND, "turnOnRed": c in TURN_ON_RED, "redYellow": c in RED_YELLOW,
+            "country": c}
+
+
+def country_near(db, lat, lon):
+    """The country of the airport nearest (lat, lon) in airports.AirportDB db, or None."""
+    if db is None or not getattr(db, "runways", None):
+        return None
+    import airports
+    d = airports._hav(lat, lon, db._mid[:, 0], db._mid[:, 1])
+    rw = db.runways[int(np.argmin(d))]
+    ap = db.airports.get(rw.airport_ident)
+    return getattr(ap, "country", None) or getattr(rw, "country", None) or None
+
+
 REBUILD_M = 400.0           # a new graph once the player is this far from the last one's centre
 
 
