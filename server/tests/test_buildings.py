@@ -54,6 +54,20 @@ class PlanTest(unittest.TestCase):
         P, UV, T, M, mats, C = bld.build([(s, 0.0, 0.0)])
         self.assertIn(bld.MATERIALS.index(bld.SHOP), set(M.tolist()))
 
+    def test_named_kinds(self):
+        big = rect(0, 0, 200, 60)
+        t = bld.plan(big, {"class": "", "name": "Main Terminal"}, 0, 39.17, -76.67)
+        self.assertEqual((t.floors, t.facade), (2, bld.OFFICE))
+        g = bld.plan(big, {"class": "", "name": "Hourly Garage"}, 0, 39.17, -76.67)
+        self.assertIn(g.floors, (4, 5))
+        self.assertLess(g.height, 18.0)
+        h = bld.plan(big, {"class": "", "name": "Hangar 4"}, 0, 39.17, -76.67)
+        self.assertTrue(h.wall.startswith(bld.METALWALL))
+        c = bld.plan(rect(0, 0, 30, 14), {"class": "church"}, 0, 37.36, -118.39)
+        self.assertTrue(c.steeple)
+        P = bld.build([(c, 0.0, 0.0)])[0]
+        self.assertGreater(P[:, 2].max(), 25.0, "a spire over the nave")
+
     def test_barn_gabled_metal(self):
         s = bld.plan(rect(0, 0, 30, 15), {"class": "barn"}, 0, 40.0, -76.1)
         self.assertEqual(s.roof, "gabled")
