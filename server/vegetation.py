@@ -31,7 +31,7 @@ import mapcells
 
 log = logging.getLogger("earthd.vegetation")
 
-VERSION = 5
+VERSION = 6
 TREE_MIN_M = 3.0
 CROWN_SPACING = 0.5          # tops kept this many crown radii apart (0.8 looked sparse: the user, 2026-10-13)
 BUSH_MIN_M = 1.0
@@ -45,7 +45,10 @@ ROAD_HALF_WIDTH_M = {"motorway": 7.0, "trunk": 6.0, "primary": 5.5, "secondary":
                      "residential": 4.0, "service": 3.0, "unclassified": 3.5, "living_street": 3.0}
 ROAD_HALF_DEFAULT_M = 2.5
 SCATTER_CELL_M = 6.0        # the hashed scatter's grid (one candidate per cell)
-SCATTER_P = {20: (0.10, 0.04), 30: (0.01, 0.003), 60: (0.0, 0.08), 100: (0.02, 0.02)}   # class: (bush, rock)
+# class: (bush, rock). Tree cover (10) gets an understory (Columbia's photos: forest edges are thickets
+# of shrubs and vines under the trees; ours were bare ground between trunks), also under the canopy.
+SCATTER_P = {10: (0.30, 0.0), 20: (0.10, 0.04), 30: (0.01, 0.003), 60: (0.0, 0.08), 100: (0.02, 0.02)}
+UNDERSTORY = 10
 MEM_CELLS = 16
 WARM_M = 1200.0              # cells within this of the player are built ahead (warm_around)
 WC = {"tree": 10, "shrub": 20, "grass": 30, "crop": 40, "built": 50, "bare": 60, "snow": 70,
@@ -339,7 +342,7 @@ class Vegetation:
         r_ = np.floor((chm.y0 - py) / chm.dy).astype(np.int64)
         ok = (c_ >= 0) & (c_ < hs.shape[1]) & (r_ >= 0) & (r_ < hs.shape[0])
         free = np.zeros(len(px), bool)
-        free[ok] = ~blocked[r_[ok], c_[ok]] & (hs[r_[ok], c_[ok]] < BUSH_MIN_M)
+        free[ok] = ~blocked[r_[ok], c_[ok]] & ((hs[r_[ok], c_[ok]] < BUSH_MIN_M) | (cls[ok] == UNDERSTORY))
         rock = free & (u < pr)
         bush = free & ~rock & (u < pr + pb)
         sel = rock | bush
