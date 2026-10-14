@@ -1480,6 +1480,21 @@ The user: "make the world look alive ... look like a professionally made map".
     West), tinted variants (`buildings.materials.json`, own names pointing at the shared textures);
   - floors stand on the footprint's highest ground; below it a plain plinth down to 0.6 m under the lowest.
   - every choice hashes the footprint's position: the same building from any anchor.
+  - colours per building by vertex colour (`cdae.encode(colors=)`, materials with `vertColor`): one
+    material per look (window sheet, shop, office, 3 roofs, siding, stucco), each building its tint and a
+    +-6 % brightness; roofs in 4-5 colours per material.
+  - detached houses (2026-10-14): siding (East / South) or stucco (West) walls, world-scaled, with sash
+    windows cut from the sheet laid 3 cm over them, one per 3.4 m bay and floor; brick far less often
+    than for row houses.
+  - Overture `building_part` (new map layer `building_parts`): a building with parts is drawn as them,
+    each from its bottom to its top (podiums, setbacks, towers), one look; a part without a height
+    takes the building's; raised parts get an underside.
+  - cornices on flat roofs up to 6 storeys, boxes on flat roofs over 250 m2, front doors (Building
+    Architect kit, Forest items) on the wall facing the nearest road.
+- **Far tiles** (`bldfar_tile` / `bldfar_drop`, 256 m squares to 1600 m): the same buildings, lite mesh (no
+  cornices, boxes, per-bay quads), render-only; `roads.lua` hides one while the road tile of its square
+  shows its own colliding buildings, and makes them only once the near meshes are all made (they share
+  the roadWalk budget: Frederick once had 50 near meshes waiting).
 - **Cost:** ~0.5 s per tile to plan, 5-13k triangles (Fells Point).
 - Tests: `server/tests/test_buildings.py`.
 
@@ -1493,4 +1508,9 @@ The user: "make the world look alive ... look like a professionally made map".
   deterministic across tiles and anchors.
 - Sent in the road tile (`"props": {groups, items}`, trees.lua rows) and drawn by `trees.lua` as Forest
   items (`onRows`, key `p<tx>_<ty>`, dropped with the road tile).
+- Utility pole wires: three sagging wires per span (two crossed ribbons per 5 m segment), the spans that
+  start in the tile, render-only `wire_<a>_<tx>_<ty>.cdae` ("wire" in the road tile).
+- Junctions (road ends meeting, 3+ arms, all urban): boom signals on every arm where 3+ major roads (or
+  2 at a four-way) meet; stop signs on minor arms meeting a major road, the stem of a minor T and half
+  the minor four-ways (hashed); on each approach's right, facing its drivers.
 
