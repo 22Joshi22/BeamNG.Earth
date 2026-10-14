@@ -235,7 +235,7 @@ def oriented_box(p):
 class Spec:
     """What is built for one footprint (decided by plan())."""
     __slots__ = ("ring", "floors", "floor_h", "height", "roof", "roof_mat", "facade", "band", "shop", "plain", "min_h", "wall", "door", "windows", "front", "steeple", "stoop",
-                 "sign", "porch", "seed")
+                 "sign", "porch", "cls", "seed")
 
     def __init__(self, **kw):
         for k in self.__slots__:
@@ -412,7 +412,7 @@ def plan(ring, attrs, neighbours=0, lat=None, lon=None, look=None, town=False, d
              and _hash01(seed, "porch") < (PORCH_SHARE_WEST if west else PORCH_SHARE))
     return Spec(ring=ring, floors=nf, floor_h=floor_h, height=h, roof=roof, roof_mat=roof_mat, facade=facade,
                 band=band, shop=shop and not shed and nf >= 1, plain=plain, seed=seed, min_h=0.0, wall=wall,
-                windows=windows, steeple=church and roof == "gabled" and area < 2500, porch=porch)
+                windows=windows, steeple=church and roof == "gabled" and area < 2500, porch=porch, cls=cls)
 
 
 class Mesh:
@@ -1088,7 +1088,10 @@ def doors(items, lines, x0, y0, drives=None):
             spec.front = edge                   # a big box: its storefront faces the road
             if storefront:
                 spec.sign = edge
+            rows.extend(_wall_sign(spec, a, d, Le, out, gmax))
             continue
+        if spec.cls in RESTAURANT_CLASSES and spec.floors == 1:
+            rows.extend(_wall_sign(spec, a, d, Le, out, gmax))
         if spec.shop:
             if storefront and not spec.wall:
                 spec.sign = edge                # the sign band over the street wall's shopfront
@@ -1130,6 +1133,37 @@ def doors(items, lines, x0, y0, drives=None):
                      round(math.degrees(math.atan2(d[1], d[0])) % 360.0, 1), 1.0, 2.2,
                      round(_hash01(spec.seed, "dv"), 3)])
     return rows
+
+
+# Company signs on walls (West Coast USA's, for its fictional firms): (prop group, width m, height m, panel thin
+# along its local x (True) or y (False)). Warehouses: Logistics or Rentabox; big retail boxes: Lemon; one-storey
+# restaurants: Turboburger.
+WALL_SIGNS = {"logistics": ("wallsign_logistics", 10.8, 5.8, True), "rentabox": ("wallsign_rentabox", 8.2, 5.7, True),
+              "lemon": ("wallsign_lemon", 11.5, 3.6, True), "burger": ("wallsign_turboburger", 5.8, 2.4, False)}
+WALL_SIGN_SHARE = 0.6
+RESTAURANT_CLASSES = {"restaurant", "fast_food", "cafe"}
+
+
+def _wall_sign(spec, a, d, Le, out, gmax):
+    """A company sign centred high on a big box's or restaurant's street wall (WALL_SIGNS), if it fits."""
+    if _hash01(spec.seed, "wallsign") >= WALL_SIGN_SHARE:
+        return []
+    if spec.cls in RESTAURANT_CLASSES:
+        key = "burger"
+    elif spec.wall and str(spec.wall).startswith(METALWALL):
+        key = "logistics" if _hash01(spec.seed, "ws") < 0.5 else "rentabox"
+    else:
+        key = "lemon"
+    group, w, h0, thin_x = WALL_SIGNS[key]
+    h = min(h0, spec.height * 0.45)                     # scaled down to the wall (trees.lua scales to the height)
+    w *= h / h0
+    if h < 1.8 or Le < w + 2.0:
+        return []
+    zc = gmax + spec.height - 0.6 - h / 2               # its top 0.6 m under the parapet
+    p = a + d * (Le / 2) + out * 0.35
+    yaw = math.degrees(math.atan2(out[1], out[0])) - (0.0 if thin_x else 90.0)
+    return [[group, round(float(p[0]), 2), round(float(p[1]), 2), round(float(zc), 2), round(yaw % 360.0, 1), 1.0,
+             round(h, 2), 0.0]]
 
 
 G_FENCE = "fence"           # trees.lua: East Coast USA's low wooden fence (eca_bld_wood_fence_c, 5.4 m, along x)

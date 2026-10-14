@@ -190,6 +190,21 @@ class DoorTest(unittest.TestCase):
                                           np.array([-100.0, 0.0]), np.array([300.0, 0.0]), 300.0 ** 2, 4.0, 1.5,
                                           False), [], "no fence without a front yard")
 
+    def test_company_sign_on_a_warehouse_front(self):
+        seen = 0
+        for k in range(30):
+            spec = bld.plan(rect(k * 200, 0, 60, 40), {"class": "industrial"}, 0, 39.4, -77.4)
+            if spec.windows is not False:
+                continue
+            rows = bld.doors([(spec, 0.0, 0.0)], [(np.array([(-50.0, -10.0), (9000.0, -10.0)]), 6.0, "primary", True)],
+                             0.0, 0.0)
+            for g, x, y, z, yaw, sc, h, r in rows:
+                if g.startswith("wallsign"):
+                    seen += 1
+                    self.assertAlmostEqual(y, -0.35, places=2, msg="on the south (street) wall")
+                    self.assertLess(z + h / 2, spec.height + 0.01)
+        self.assertGreater(seen, 3)
+
     def test_no_door_without_a_road(self):
         spec = bld.plan(rect(0, 0, 10, 8), {"class": "house"})
         self.assertEqual(bld.doors([(spec, 0.0, 0.0)], [(np.array([(500.0, 0), (600.0, 0)]), 4.0)], 0, 0), [])

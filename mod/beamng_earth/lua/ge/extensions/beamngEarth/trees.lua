@@ -12,7 +12,8 @@ M.RINGS = { { 300, 1.0 }, { 550, 0.5 }, { 900, 0.25 }, { 1e9, 0.12 } }   -- tile
 -- small props only near the player (2026-10-14, Fells Point at street level: ~10 ms a frame for the Forest
 -- with a door on every house out to 300 m): the tile distance (m) beyond which a group is not shown
 M.GROUP_MAX_M = { door = 120, hydrant = 200, bin = 200, bench = 200, polelamp = 400, stop = 300, signal = 500,
-  fence = 150, speed30 = 300, speed40 = 300, speed50 = 300, speed60 = 300, speed70 = 300 }
+  fence = 150, wallsign_logistics = 800, wallsign_rentabox = 800, wallsign_lemon = 800, wallsign_turboburger = 500,
+  speed30 = 300, speed40 = 300, speed50 = 300, speed60 = 300, speed70 = 300 }
 M.FOREST_NAME = 'bngEarthForest'
 
 local ECA = '/levels/east_coast_usa/art/shapes/'
@@ -93,6 +94,9 @@ M.CATALOG = {
   stop = { { '/levels/east_coast_usa/art/shapes/signs_usa/sign_stop', 3.0 } },
   -- a low wooden yard fence, 5.4 m along its x (server buildings._front_fence)
   fence = { { ECA .. 'buildings/eca_bld_wood_fence_c', 1.3 } },
+  -- company signs on big boxes, warehouses and restaurants (server buildings._wall_sign; West Coast USA's firms)
+  wallsign_logistics = { { WCA .. 'objects/sign_logistics', 5.8 } }, wallsign_rentabox = { { WCA .. 'objects/sign_rentabox', 5.7 } },
+  wallsign_lemon = { { WCA .. 'objects/sign_lemon', 3.6 } }, wallsign_turboburger = { { WCA .. 'objects/sign_turboburger', 2.4 } },
   -- speed-limit signs (server furniture.speed_signs: the road graph's limit, where a model exists)
   speed30 = { { UT .. 'ut_roadsigns/ut_30_speed_limit', 2.6 } }, speed40 = { { UT .. 'ut_roadsigns/ut_40_speed_limit', 2.6 } },
   speed50 = { { UT .. 'ut_roadsigns/ut_50_speed_limit', 2.6 } }, speed60 = { { UT .. 'ut_roadsigns/ut_60_speed_limit', 2.6 } },
