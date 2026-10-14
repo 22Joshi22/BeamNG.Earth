@@ -130,5 +130,21 @@ class LotTest(unittest.TestCase):
         self.assertEqual(len(a) + len(b), len(parking.lot_spots([self.LOT], (0, 0, 256, 256), z)))
 
 
+class AisleTest(unittest.TestCase):
+    def test_stalls_both_sides_nose_out(self):
+        aisle = ("a", roads.Spec(6.0, "paved", True, "service", False), np.array([(0.0, 50.0, 0.0), (80.0, 50.0, 0.0)]), 0.0)
+        spots = parking.aisle_spots([aisle], {"a"}, (0, 0, 256, 256))
+        north = [s for s in spots if s[1] > 50]
+        south = [s for s in spots if s[1] < 50]
+        self.assertTrue(len(north) > 20 and len(north) == len(south))
+        self.assertTrue(all(abs(s[1] - (53.0 + parking.LOT_SPOT_D_M / 2)) < 0.01 and abs(s[3] - 90) < 0.5 for s in north))
+        self.assertTrue(all(parking.AISLE_END_M - 0.01 <= s[0] <= 80 - parking.AISLE_END_M + 0.01 for s in spots))
+        # a street crossing it clears its corridor; non-aisles get none
+        street = ("s", roads.Spec(8.0, "paved", True, "residential", False), np.array([(40.0, 0.0, 0.0), (40.0, 100.0, 0.0)]), 0.0)
+        crossed = parking.aisle_spots([aisle, street], {"a"}, (0, 0, 256, 256))
+        self.assertTrue(all(abs(s[0] - 40.0) > 4.0 for s in crossed))
+        self.assertEqual(parking.aisle_spots([street], {"a"}, (0, 0, 256, 256)), [])
+
+
 if __name__ == "__main__":
     unittest.main()

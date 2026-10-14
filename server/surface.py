@@ -206,6 +206,8 @@ def paint_roads(idx, lat, lon, feats_list, square, urban_fn=None, widths=None):
                 continue
             seen.add(fid)
             width, kind = specs[i].width, specs[i].kind
+            if kind == "paved" and roadsmod._rule_value(feats.rules.get("subclass"), i) == "parking_aisle":
+                width += 2 * AISLE_STALLS_M         # the stalls either side (parking.aisle_spots): no grass under cars
             px = max(1, int(round(width / square)))
             for ring in roadsmod.ground_parts(feats, i):      # not bridges / tunnels
                 c, r = to_px(ring[:, 0], ring[:, 1])
@@ -219,6 +221,7 @@ def paint_roads(idx, lat, lon, feats_list, square, urban_fn=None, widths=None):
     return out
 
 
+AISLE_STALLS_M = 5.5        # a parking aisle's stall rows (parking.LOT_SPOT_D_M), painted with it
 PARKING_CLASSES = {"parking"}     # Overture infrastructure (transit) polygons drawn as asphalt: no grass on a lot
 
 

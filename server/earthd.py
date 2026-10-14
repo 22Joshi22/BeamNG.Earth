@@ -920,7 +920,7 @@ class Server:
             props.extend(buildingsmod.doors(items, lines, x0, y0, drives))
             chunks += drives
             park = parkingmod.clear_of(park, props, drives)
-            park += parkingmod.tile_lot_spots(anchor.frame, tx, ty, self.mapdata, elev, items)
+            park = parkingmod.tile_lot_spots(anchor.frame, tx, ty, self.mapdata, elev, items, park)
             buildingsmod.brick_walks(walks, items, anchor.lat, anchor.lon)
         mesh = roadmeshmod.build(anchor.frame, chunks, elev, (x0, y0, 0.0),
                                  DETAIL_ROAD_LIFT if self.near_visual == "detail" else 0.0)

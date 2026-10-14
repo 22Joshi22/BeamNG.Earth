@@ -183,23 +183,70 @@ def lot_rings(frame, feats_list):
     return out
 
 
-def tile_lot_spots(frame, tx, ty, md, elev, items=None):
-    """lot_spots of road tile (tx, ty): the lots of the map cells under it (md: mapdata.MapData), the tile's
-    buildings (items: buildings.road_tile_items' result, rings tile-local) as blockers, elev(lat, lon) the
-    ground. Returns [] when the lots cannot be read."""
+def tile_lot_spots(frame, tx, ty, md, elev, items=None, existing=None):
+    """existing (the tile's other spots) with its lot stalls (aisle_spots' rows, kind 1) inside a building or a
+    mapped lot dropped, plus lot_spots of road tile (tx, ty): the lots of the map cells under it (md:
+    mapdata.MapData), the tile's buildings (items: buildings.road_tile_items' result, rings tile-local) as blockers,
+    elev(lat, lon) the ground."""
     import roads
+    existing = list(existing or [])
     box = roads.tile_bbox(tx, ty)
+    blockers = [spec.ring + np.array(box[:2]) for spec, *_ in (items or ())]
     try:
         feats = [md.cell(k, layers=("infrastructure",), kind="demand").layers.get("infrastructure")
                  for k in roads.cells_of_tile(frame, tx, ty, margin=0.0)]
+        rings = lot_rings(frame, feats)
     except Exception:
-        return []
-    rings = lot_rings(frame, feats)
+        rings = []
+    paths = [Path(np.asarray(b, np.float64)) for b in blockers + rings if len(b) >= 3]
+    if paths and existing:
+        pts = np.array([r[:2] for r in existing], np.float64)
+        drop = np.zeros(len(existing), bool)
+        for pa in paths:
+            drop |= pa.contains_points(pts)
+        existing = [r for r, d in zip(existing, drop) if not (d and len(r) > 4 and r[4] == 1)]
     if not rings:
-        return []
-    blockers = [spec.ring + np.array(box[:2]) for spec, *_ in (items or ())]
+        return existing
 
     def z_at(x, y):
         la, lo, _ = frame.enu_to_geodetic(x, y, 0.0)
         return elev(la, lo)
-    return lot_spots(rings, box, z_at, blockers)
+    return existing + lot_spots(rings, box, z_at, blockers)
+
+
+AISLE_END_M = 6.0           # stalls kept this far from an aisle's ends (its junctions)
+
+
+def aisle_spots(roads, aisles, box, blockers=(), lots=()):
+    """Rows [x, y, z, heading, 1] of 90-degree stalls along both sides of the parking aisles (aisles: their
+    fids; Overture maps many lots by their aisles alone), LOT_SPOT_W_M apart at stations of the aisle, clear
+    of its ends, of other roads, of buildings (blockers) and of mapped lots (lots: lot_spots covers those);
+    nose in, away from the aisle."""
+    x0, y0, x1, y1 = box
+    others = [(fid, spec.width / 2, pts) for fid, spec, pts, _ in roads if fid not in aisles]
+    paths = [Path(np.asarray(b, np.float64)) for b in list(blockers) + list(lots) if len(b) >= 3]
+    out = []
+    for fid, spec, line, _ in roads:
+        if fid not in aisles or len(line) < 2:
+            continue
+        L = furniture._arclen(line)[-1]
+        if L < 2 * AISLE_END_M + LOT_SPOT_W_M:
+            continue
+        phase = furniture._h01(fid, "aisle") * LOT_SPOT_W_M
+        st = np.arange(AISLE_END_M + phase, L - AISLE_END_M, LOT_SPOT_W_M)
+        if not len(st):
+            continue
+        P, D = furniture._at(line, st)
+        for side in (1.0, -1.0):
+            n = np.stack([-D[:, 1], D[:, 0]], 1) * side
+            Q = P[:, :2] + n * (spec.width / 2 + LOT_SPOT_D_M / 2)
+            for q, nn, p in zip(Q, n, P):
+                if not (x0 <= q[0] < x1 and y0 <= q[1] < y1):
+                    continue
+                if not furniture._clear(np.array([q[0], q[1], p[2]]), others, fid):
+                    continue
+                if any(pa.contains_point(q) for pa in paths):
+                    continue
+                out.append([round(float(q[0]), 2), round(float(q[1]), 2), round(float(p[2]), 2),
+                            round(math.degrees(math.atan2(nn[1], nn[0])) % 360.0, 1), 1])
+    return out
