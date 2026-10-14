@@ -855,7 +855,7 @@ class Server:
             items = buildingsmod.road_tile_items(
                 anchor.frame, tx, ty, self.mapdata,
                 lambda la, lo: self.ground(anchor.frame, la, lo, self.dem.sample(la, lo, zoom)))
-            town = buildingsmod.coverage(items) < buildingsmod.TOWN_COVERAGE
+            town = buildingsmod.coverage(items) < buildingsmod.POLES_COVERAGE
         chunks = roadsmod.build_tile(anchor.frame, tx, ty, cells, elev, urban, walks=walks, bridges=anchor.bridges,
                                      widths=self.road_widths, props=props, lines=lines, wires=wires, town=town)
         if self.airports is not None:   # runway markings, drawn by the road mesh like the lane lines

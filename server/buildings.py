@@ -947,7 +947,9 @@ def road_tile_items(frame, tx, ty, md, ground):
                           part_layers=[c.layers.get("building_parts") for c in cds])
 
 
-TOWN_COVERAGE = 0.16        # a tile whose footprints cover less than this share is a town / suburb (furniture)
+TOWN_COVERAGE = 0.16        # a tile whose footprints cover less than this share is a town / suburb (heights)
+POLES_COVERAGE = 0.30       # ... and its streets get wired wooden poles (furniture; Ocean City's photos: poles
+                            # everywhere; Fells Point's dense core ~0.45 keeps lamp posts)
 
 
 def coverage(items, tile=256.0):
