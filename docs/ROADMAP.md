@@ -359,8 +359,13 @@ wall or a filled-in bump depending on the source.
   gameplay_parking as a sites object and starts trafficParkedAmount cars; lot stalls too. 16 cars: ~1 ms.
 - AI traffic on our navgraph: done 2026-10-14 behind `--traffic on` (server navgraph.py, mod navgraph.lua;
   ARCHITECTURE "Parked cars and traffic"): the stock gameplay_traffic drives our roads, clipped to the block,
-  edge guard, teleports. 7 cars: ~1.6 ms. Working signals and stop signs with switchable heads (same day).
-  Next: bridge decks in the graph, left-hand traffic by country, default on once the user has driven it.
+  edge guard, teleports. 7 cars: ~1.6 ms. Working signals and stop signs with switchable heads, bridge decks,
+  tunnels left out, road rules by country (left-hand traffic, turn on red, EU red+yellow) (same day).
+  Next: default on once the user has driven it; a border map for the country (nearest airport now); parked-car
+  density (16 stock cars over thousands of spots look sparse next to the photos' full curbs).
+- Street life (2026-10-14): porches, front-yard fences, speed-limit signs (30-70 mph models only), company
+  wall signs (the game's fictional firms), shop sign bands, parking-aisle stalls. Next: mailboxes (ECA prefab),
+  street-name blades (no stock model), pole-mounted business signs.
 - Traffic lights / stop signs from OSM via `core_trafficSignals` (scriptable at runtime), stock
   light and sign props; street lights.
 
