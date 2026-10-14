@@ -1132,6 +1132,14 @@ local function onClientStartMission()
   onLevelStart()
 end
 
+-- Before the level loads (freeroam spawns its traffic at camera-ready, which can come before our
+-- onClientStartMission): the player's traffic choice, for our level only.
+local function onClientPreStartMission(levelPath)
+  if type(levelPath) == 'string' and levelPath:find('/' .. LEVEL_ID .. '/', 1, true) then
+    navgraph.takeChoice(rawget(_G, 'freeroam_freeroam') and freeroam_freeroam.spawningOptionsHelper)
+  end
+end
+
 local function onClientEndMission()
   postfx.restore()
   seasonlook.restore()
@@ -1342,6 +1350,7 @@ M.onUpdate = onUpdate
 M.onPreRender = onPreRender
 M.onUiChangedState = onUiChangedState
 M.onClientStartMission = onClientStartMission
+M.onClientPreStartMission = onClientPreStartMission
 M.onNavgraphReloaded = function() navgraph.onReloaded() end
 M.onClientEndMission = onClientEndMission
 M.onExtensionLoaded = onExtensionLoaded

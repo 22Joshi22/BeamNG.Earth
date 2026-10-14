@@ -350,7 +350,21 @@ M.choice = { traffic = false, parked = false, police = false, trafficAmount = -1
 
 -- Pure on its argument: the choice in freeroam's spawning options `o`, which are then set to disabled: freeroam would
 -- spawn at camera-ready, before our first road graph is in the map; we start them once it is.
+local heldOpts = nil    -- { options table, its traffic values } until freeroam's spawn time has passed
+
+-- The player's options back as they chose them (the level-start configurator shows them as the current choice next
+-- time): once our cars started, and when the level ends.
+function M.restoreChoice()
+  if not heldOpts then return end
+  local o, v = heldOpts[1], heldOpts[2]
+  o.trafficMode, o.trafficParked, o.trafficPolice = v[1], v[2], v[3]
+  heldOpts = nil
+end
+
 function M.takeChoice(o)
+  -- level start runs twice (seen 2026-10-14): the second would read the options we just disabled
+  if heldOpts and heldOpts[1] == o then return M.choice end
+  heldOpts = nil
   if type(o) ~= 'table' then
     M.choice = { traffic = false, parked = false, police = false, trafficAmount = -1, parkedAmount = -1 }
     return M.choice
@@ -358,12 +372,19 @@ function M.takeChoice(o)
   M.choice = { traffic = o.trafficMode == 'enabled', parked = o.trafficParked == 'enabled',
                police = o.trafficPolice == 'enabled', trafficAmount = tonumber(o.trafficAmount) or -1,
                parkedAmount = tonumber(o.trafficParkedAmount) or -1 }
+  if log then
+    log('I', 'beamngEarth', string.format('traffic choice: traffic %s, parked %s, police %s (freeroam %s / %s)',
+      tostring(M.choice.traffic), tostring(M.choice.parked), tostring(M.choice.police), tostring(o.trafficMode),
+      tostring(o.trafficParked)))
+  end
+  heldOpts = { o, { o.trafficMode, o.trafficParked, o.trafficPolice } }
   o.trafficMode, o.trafficParked, o.trafficPolice = 'disabled', 'disabled', 'disabled'
   return M.choice
 end
 
 local function startTraffic()
   started = true
+  M.restoreChoice()       -- freeroam's own spawn time has passed
   local c = M.choice
   local gt = c.traffic and trafficSystem() or nil
   if gt and gt.getState() ~= 'on' then
@@ -448,6 +469,7 @@ function M.reset()
   started, respawnAll, lastGuard, heldActive = false, false, -math.huge, nil
   pendingSignals = nil
   stillSince = {}
+  M.restoreChoice()
   stats = { applies = 0, lastMs = 0, nodes = 0, edges = 0 }
 end
 
