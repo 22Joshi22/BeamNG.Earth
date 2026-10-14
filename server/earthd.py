@@ -823,9 +823,23 @@ class Server:
         feats = [self.mapdata.cell(k, layers=("roads",), kind="demand").layers.get("roads") for k in keys]
         zoom = anchor.zooms[0]
         urban = self.surface.urban if self.surface is not None else None
-        graph = navgraphmod.build(anchor.frame, feats,
-                                  lambda la_, lo_: self.ground(anchor.frame, la_, lo_, self.dem.sample(la_, lo_, zoom)),
-                                  (x, y), urban)
+        g = self.grader_for(anchor)
+
+        def elev(la_, lo_):         # the physics ground, lifted under roads (as the road tiles')
+            z = self.ground(anchor.frame, la_, lo_, self.dem.sample(la_, lo_, zoom))
+            return g.apply(la_, lo_, z, gradingmod.ROAD_LIFT) if g is not None else z
+        decks = {}
+        try:            # the bridges' deck heights (the road tiles' BridgeProfiles, one per anchor)
+            with self.grader_lock:
+                if anchor.bridges is None:
+                    anchor.bridges = roadsmod.BridgeProfiles(
+                        anchor.frame,
+                        lambda key: self.mapdata.cell(key, layers=("roads",), kind="demand").layers.get("roads"), elev)
+            for fid, _spec, xy, z, _lon in anchor.bridges.parts(feats, (x - w, y - w, x + w, y + w)):
+                decks.setdefault(fid, []).append((np.asarray(xy, np.float64)[:, :2], np.asarray(z, np.float64)))
+        except Exception as e:          # no decks: the graph follows the ground under bridges
+            log.debug("navgraph decks: %s: %s", type(e).__name__, e)
+        graph = navgraphmod.build(anchor.frame, feats, elev, (x, y), urban, decks=decks)
         for old in glob.glob(os.path.join(self.out_dir, f"navgraph_{aid}_*.json")):    # one file at a time
             try:
                 os.remove(old)

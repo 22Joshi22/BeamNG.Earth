@@ -56,19 +56,41 @@ def _lanes(width, oneway):
     return (n + 1) // 2, n // 2
 
 
-def build(frame, feats_list, elev, centre, urban_fn=None, window=WINDOW_M):
+def _deck_z(decks, fid, x, y):
+    """The deck height at (x, y) of feature fid's bridge parts (decks: fid -> [(xy (k, 2), z (k,))]), or None
+    when the point is not on one (more than 1.5 m off its line)."""
+    best = None
+    for xy, z in decks.get(fid, ()):
+        a, b = xy[:-1], xy[1:]
+        d = b - a
+        L2 = np.maximum((d * d).sum(1), 1e-12)
+        t = np.clip(((np.array([x, y]) - a) * d).sum(1) / L2, 0, 1)
+        q = a + t[:, None] * d
+        dist = np.hypot(q[:, 0] - x, q[:, 1] - y)
+        k = int(dist.argmin())
+        if dist[k] < 1.5 and (best is None or dist[k] < best[0]):
+            best = (float(dist[k]), float(z[k] + t[k] * (z[k + 1] - z[k])))
+    return None if best is None else best[1]
+
+
+def build(frame, feats_list, elev, centre, urban_fn=None, window=WINDOW_M, decks=None):
     """{"nodes": {name: [x, y, z, radius]}, "edges": [[in, out, oneway, lanes_out, lanes_in, speed m/s,
     drivability, radius]]} of the drivable roads in the square of half size `window` around centre (x, y) of
     the anchor frame. feats_list: the "roads" mapgeom.Features of the cells around (duplicates across cells
-    are taken once). elev(lat, lon) -> metres."""
+    are taken once). elev(lat, lon) -> metres. decks: fid -> [(xy, z)] of the bridge parts (roads.BridgeProfiles):
+    nodes on a bridge take its deck height (else traffic would spawn on the ground under it), and roads that are
+    bridge all along are in the graph (road_specs leaves them to the bridge builder)."""
     cx, cy = centre
     nodes, edges, seen = {}, [], set()
     arms = {}               # connector name -> [(fid, spec, unit vector away, point, neighbour, incoming)]
     pending = {}            # name -> (x, y) of nodes whose z is still to sample
+    node_fid = {}           # name -> the feature it was made on (its deck, if any)
     for feats in feats_list:
         if feats is None or len(feats) == 0:
             continue
         specs = roads.road_specs(feats, urban_fn)
+        bspecs = roads.bridge_specs(feats)
+        specs = [sp if sp is not None else bs for sp, bs in zip(specs, bspecs)]
         rules = feats.rules
         sub = rules.get("subclass")
         con = rules.get("connectors")
@@ -165,6 +187,7 @@ def build(frame, feats_list, elev, centre, urban_fn=None, window=WINDOW_M):
                 for nm, q in ((a, pa), (b, pb)):
                     if nm not in nodes and nm not in pending:
                         pending[nm] = (float(q[0]), float(q[1]))
+                        node_fid[nm] = fid
                 edges.append([a, b, 1 if direction else 0, lo, li, round(v, 2), driv, round(w / 2, 2)])
     # keep the edges with both ends in the window; z of their nodes from the ground
     inside = {nm for nm, (x, y) in pending.items() if abs(x - cx) <= window and abs(y - cy) <= window}
@@ -174,7 +197,12 @@ def build(frame, feats_list, elev, centre, urban_fn=None, window=WINDOW_M):
         X = np.array([pending[nm][0] for nm in used])
         Y = np.array([pending[nm][1] for nm in used])
         la, lo, _ = frame.enu_to_geodetic(X, Y, 0.0)
-        Z = np.asarray(elev(la, lo), np.float64)
+        Z = np.asarray(elev(la, lo), np.float64).copy()
+        if decks:
+            for k, nm in enumerate(used):
+                dz = _deck_z(decks, node_fid.get(nm), X[k], Y[k])
+                if dz is not None:
+                    Z[k] = dz
         radius = {}
         for e in edges:
             for nm in e[:2]:

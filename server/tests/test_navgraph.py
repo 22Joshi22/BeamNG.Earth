@@ -54,5 +54,18 @@ class GraphTest(unittest.TestCase):
         self.assertEqual(ys, {20}, "only the residential street in the window")
 
 
+    def test_nodes_on_a_bridge_take_its_deck(self):
+        f = features([[(0, 0), (200, 0)]], ["primary"])
+        f.rules["connectors"] = rules([(0, "A", 0.0, 0.0), (0, "B", 1.0, 1.0)])
+        decks = {"id000": [(np.array([(50.0, 0.0), (150.0, 0.0)]), np.array([10.0, 14.0]))]}
+        g = navgraph.build(FRAME, [f], flat, (0.0, 0.0), decks=decks)
+        on = [n for n in g["nodes"].values() if 55 < n[0] < 145]
+        off = [n for n in g["nodes"].values() if n[0] < 40 or n[0] > 160]
+        self.assertTrue(on and off)
+        for n in on:
+            self.assertAlmostEqual(n[2], 10.0 + 4.0 * (n[0] - 50.0) / 100.0, delta=0.05)
+        self.assertTrue(all(n[2] == 10.0 for n in off), "the ground (flat 10 m) off the bridge")
+
+
 if __name__ == "__main__":
     unittest.main()
