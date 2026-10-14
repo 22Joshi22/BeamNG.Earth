@@ -846,11 +846,16 @@ MAIN_STREET_SETBACK_M = 7.0  # m from a main street's edge within which a front 
 MAIN_STREET_SHOPS = 0.75     # the share of such buildings that do
 
 
-def doors(items, lines, x0, y0):
+DRIVEWAY_W = 3.2            # m
+DRIVEWAY = {"m": "road_asphalt_2lane", "tl": 11.0, "p": 19}     # a road tile chunk's look (roads.LOOK)
+
+
+def doors(items, lines, x0, y0, drives=None):
     """Prop rows (trees.lua rows, group "door") of a front door per house: on the wall whose middle is
     nearest a road and faces it, a row house's to one side, others' in the middle. lines: [(centreline
     (k, 2) in the anchor frame, half width[, class, urban])]. A building close to an urban main street gets
-    a shopfront ground floor instead (spec.shop, most of them)."""
+    a shopfront ground floor instead (spec.shop, most of them). drives (a list) gets a driveway chunk (road
+    tile chunk dicts, draped by roadmesh) from each detached house's front to the road's edge."""
     if not lines:
         return []
     segs, smain, shalf = [], [], []
@@ -893,10 +898,11 @@ def doors(items, lines, x0, y0):
             if float(np.dot(q[k] - mid, out)) <= 0:
                 continue                                 # the wall faces away from that road
             if best is None or dist[k] < best[0]:
-                best = (dist[k], a, e / Le, Le, out, i, bool(SMAIN[k]) and dist[k] < SHALF[k] + MAIN_STREET_SETBACK_M)
+                best = (dist[k], a, e / Le, Le, out, i, bool(SMAIN[k]) and dist[k] < SHALF[k] + MAIN_STREET_SETBACK_M,
+                        k)
         if best is None:
             continue
-        _, a, d, Le, out, edge, on_main = best
+        _, a, d, Le, out, edge, on_main, kseg = best
         if spec.shop:
             continue
         if on_main and not spec.wall and spec.roof == "flat" and spec.floors >= 2 \
@@ -906,6 +912,20 @@ def doors(items, lines, x0, y0):
         narrow = Le < 9.0
         f = (0.22 if _hash01(spec.seed, "door") < 0.5 else 0.78) if narrow else 0.5
         spec.door = (edge, Le * f)          # _walls leaves the ground floor's band plain there
+        if drives is not None and spec.wall and Le >= 7.0:
+            # the driveway beside the door, straight out to the road's edge
+            g = 0.82 if f <= 0.5 else 0.18
+            p0 = a + d * (Le * g) + out * 0.2
+            t = float(np.clip(((p0 - A[kseg]) * D[kseg]).sum() / L2[kseg], 0, 1))
+            q = A[kseg] + t * D[kseg]
+            v = p0 - q
+            dl = float(np.hypot(*v))
+            if SHALF[kseg] + 1.0 < dl < DOOR_ROAD_M:
+                p1 = q + v / dl * (SHALF[kseg] + 0.1)
+                n = max(2, int(dl // 4.0) + 1)
+                pts = [p0 + (p1 - p0) * (j / (n - 1)) for j in range(n)]
+                drives.append({"m": DRIVEWAY["m"], "w": DRIVEWAY_W, "tl": DRIVEWAY["tl"], "p": DRIVEWAY["p"],
+                               "n": [[round(float(pp[0]), 3), round(float(pp[1]), 3), 0.0] for pp in pts]})
         p = a + d * (Le * f) + out * 0.03
         base = gmax                                      # the ground floor (_walls: floors from the highest ground)
         rows.append([G_DOOR, round(float(p[0]), 2), round(float(p[1]), 2), round(base, 2),

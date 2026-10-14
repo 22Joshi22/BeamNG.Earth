@@ -106,6 +106,20 @@ class DoorTest(unittest.TestCase):
                 self.assertEqual(rows, [], "a shopfront, no house door")
         self.assertGreater(shops, 8)
 
+    def test_driveway_to_the_road(self):
+        for k in range(40):                                  # a house with a siding wall (hashed)
+            spec = bld.plan(rect(k * 40, 20, 12, 9), {"class": "house"}, 0, 39.2, -76.9)
+            if spec.wall:
+                break
+        self.assertIsNotNone(spec.wall)
+        drives = []
+        bld.doors([(spec, 0.0, 0.0)], [(np.array([(-50.0, 6.0), (2000.0, 6.0)]), 4.0, "residential", True)], 0.0, 0.0,
+                  drives)
+        self.assertEqual(len(drives), 1)
+        n = np.array(drives[0]["n"])
+        self.assertAlmostEqual(n[0, 1], 19.8, delta=0.3, msg="from the front wall")
+        self.assertAlmostEqual(n[-1, 1], 10.1, delta=0.3, msg="to the road's edge")
+
     def test_no_door_without_a_road(self):
         spec = bld.plan(rect(0, 0, 10, 8), {"class": "house"})
         self.assertEqual(bld.doors([(spec, 0.0, 0.0)], [(np.array([(500.0, 0), (600.0, 0)]), 4.0)], 0, 0), [])
