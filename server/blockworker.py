@@ -207,6 +207,7 @@ def roads_tile(aid, lat, lon, zoom, tx, ty, out_dir, vfs_dir, sidewalks, lift, b
     written; returns roads.write_tile's (vfs path, chunks). In the server's process its Python made up
     ~80 % of the main process's busy threads (in-game profile 2026-10-13): the block photos and far
     textures waited for the GIL."""
+    import parking as parkingmod
     import roadmesh as roadmeshmod
     import roads as roadsmod
     g, _ = _s.anchor(aid, lat, lon)
@@ -229,6 +230,7 @@ def roads_tile(aid, lat, lon, zoom, tx, ty, out_dir, vfs_dir, sidewalks, lift, b
     props = [] if buildings else None
     lines = [] if buildings else None
     wires = [] if buildings else None
+    park = [] if buildings else None
     items = town = None
     if buildings:
         import buildings as buildingsmod
@@ -236,7 +238,7 @@ def roads_tile(aid, lat, lon, zoom, tx, ty, out_dir, vfs_dir, sidewalks, lift, b
                                              lambda la, lo: ground(frame, la, lo, _s.dem.sample(la, lo, zoom)))
         town = buildingsmod.coverage(items) < buildingsmod.POLES_COVERAGE
     chunks = roadsmod.build_tile(frame, tx, ty, cells, elev, urban, walks=walks, bridges=bridges, widths=_s.widths,
-                                 props=props, lines=lines, wires=wires, town=town)
+                                 props=props, lines=lines, wires=wires, town=town, park=park)
     if _s.airports is not None:         # runway markings, drawn by the road mesh like the lane lines
         chunks += _s.airports.tile_chunks(frame, tx, ty, elev, roadsmod.tile_bbox)
     x0, y0, _, _ = roadsmod.tile_bbox(tx, ty)
@@ -244,6 +246,7 @@ def roads_tile(aid, lat, lon, zoom, tx, ty, out_dir, vfs_dir, sidewalks, lift, b
         drives = []
         props.extend(buildingsmod.doors(items, lines, x0, y0, drives))
         chunks += drives
+        park = parkingmod.clear_of(park, props, drives)
         buildingsmod.brick_walks(walks, items, lat, lon)
     mesh = roadmeshmod.build(frame, chunks, elev, (x0, y0, 0.0), lift)
     dmesh = roadmeshmod.deck(chunks, (x0, y0, 0.0))
@@ -254,7 +257,7 @@ def roads_tile(aid, lat, lon, zoom, tx, ty, out_dir, vfs_dir, sidewalks, lift, b
                                      lambda la, lo: ground(frame, la, lo, _s.dem.sample(la, lo, zoom)), None, None,
                                      items)
     return roadsmod.write_tile(out_dir, vfs_dir, aid, tx, ty, chunks, walks if sidewalks else None, mesh, dmesh,
-                               bld, props, wires)
+                               bld, props, wires, park)
 
 
 def far_buildings_tile(aid, lat, lon, zoom, tx, ty, out_dir, vfs_dir):

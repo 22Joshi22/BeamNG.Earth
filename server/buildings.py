@@ -779,8 +779,12 @@ def build(specs_and_ground, lite=False):
             _steeple(m, spec, z_eave, mat_idx)
         if spec.stoop and not lite:
             _stoop(m, spec, ring, gmax, mat_idx)
-        if spec.sign is not None and spec.shop and spec.roof == "flat" and not lite:
-            _signs(m, spec, ring, z_eave - (spec.floors - 1) * spec.floor_h if spec.floors > 1 else z_eave, mat_idx)
+        if spec.sign is not None and spec.roof == "flat" and not lite:
+            if spec.windows is False:           # a big box: over its storefront band (_plain_wall_with_windows)
+                z_top = min(gmax + GROUND_FLOOR_SHOP_M + 1.15, z_eave)
+            else:
+                z_top = z_eave - (spec.floors - 1) * spec.floor_h if spec.floors > 1 else z_eave
+            _signs(m, spec, ring, z_top, mat_idx)
     if m.n == 0:
         return None
     P, UV, T, M, C = m.arrays()
@@ -973,6 +977,7 @@ FAR_PER_POSE = 4
 
 
 MAIN_STREET_CLASSES = {"primary", "secondary", "tertiary"}
+BACK_ROAD_CLASSES = {"service", "track", "path", "footway", "cycleway", "pedestrian", "steps", "alley"}
 MAIN_STREET_SETBACK_M = 7.0  # m from a main street's edge within which a front wall has a shopfront
 MAIN_STREET_SHOPS = 0.75     # the share of such buildings that do
 
@@ -989,7 +994,7 @@ def doors(items, lines, x0, y0, drives=None):
     tile chunk dicts, draped by roadmesh) from each detached house's front to the road's edge."""
     if not lines:
         return []
-    segs, smain, shalf = [], [], []
+    segs, smain, shalf, sminor = [], [], [], []
     for ln in lines:
         pts, half = ln[0], ln[1]
         main = len(ln) > 3 and ln[3] and ln[2] in MAIN_STREET_CLASSES     # an urban main street
@@ -998,18 +1003,24 @@ def doors(items, lines, x0, y0, drives=None):
             segs.append(np.concatenate([p[:-1], p[1:]], 1))
             smain.append(np.full(len(p) - 1, bool(main)))
             shalf.append(np.full(len(p) - 1, float(half)))
+            sminor.append(np.full(len(p) - 1, len(ln) > 2 and ln[2] in BACK_ROAD_CLASSES))
     if not segs:
         return []
     S = np.concatenate(segs)                             # (n, 4) x0 y0 x1 y1
-    SMAIN, SHALF = np.concatenate(smain), np.concatenate(shalf)
+    SMAIN, SHALF, SMINOR = np.concatenate(smain), np.concatenate(shalf), np.concatenate(sminor)
     A, B = S[:, :2], S[:, 2:]
     D = B - A
     L2 = np.maximum((D * D).sum(1), 1e-12)
     rows = []
     for spec, gmin, gmax in items:
+        no_door = False
         if spec.plain or spec.floors >= 7 or spec.band in (BAND_OFFICE, BAND_OFFICE2) or spec.wall:
             if not spec.wall or spec.plain or spec.floors >= 7:
-                continue
+                no_door = True
+        # shops and big boxes: their sign faces the street, not the alley or the parking aisle behind
+        storefront = (spec.shop or spec.windows is False) and not spec.plain and spec.roof == "flat"
+        if no_door and not storefront:
+            continue
         ring = spec.ring + np.array([x0, y0])
         best = None
         for i in range(len(ring)):
@@ -1028,18 +1039,23 @@ def doors(items, lines, x0, y0, drives=None):
             out = np.array([e[1], -e[0]]) / Le
             if float(np.dot(q[k] - mid, out)) <= 0:
                 continue                                 # the wall faces away from that road
-            if best is None or dist[k] < best[0]:
-                best = (dist[k], a, e / Le, Le, out, i, bool(SMAIN[k]) and dist[k] < SHALF[k] + MAIN_STREET_SETBACK_M,
+            rank = (bool(SMINOR[k]) if storefront else False, float(dist[k]))
+            if best is None or rank < best[0]:
+                best = (rank, a, e / Le, Le, out, i, bool(SMAIN[k]) and dist[k] < SHALF[k] + MAIN_STREET_SETBACK_M,
                         k)
         if best is None:
             continue
         _, a, d, Le, out, edge, on_main, kseg = best
         if spec.windows is False:
             spec.front = edge                   # a big box: its storefront faces the road
+            if storefront:
+                spec.sign = edge
             continue
         if spec.shop:
-            if spec.roof == "flat" and not spec.plain and not spec.wall:
+            if storefront and not spec.wall:
                 spec.sign = edge                # the sign band over the street wall's shopfront
+            continue
+        if no_door:
             continue
         if on_main and not spec.wall and spec.roof == "flat" \
                 and _hash01(spec.seed, "shop") < MAIN_STREET_SHOPS:

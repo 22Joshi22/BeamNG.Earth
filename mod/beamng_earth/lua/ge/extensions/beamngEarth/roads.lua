@@ -117,6 +117,7 @@ local function dropTile(key)
   if t.bld then deleteQ[#deleteQ + 1] = t.bld end
   if t.wire then deleteQ[#deleteQ + 1] = t.wire end
   if t.props then require('beamngEarth/trees').dropKey((key:gsub(':', ':p', 1))) end
+  if t.park then require('beamngEarth/parking').dropKey(key) end
   tiles[key] = nil
 end
 
@@ -204,6 +205,10 @@ function M.onTile(msg, currentAnchor)
   if type(data.props) == 'table' and type(data.props.items) == 'table' then   -- street lights, poles (trees.lua)
     require('beamngEarth/trees').onRows(msg.anchorId, 'p' .. tostring(msg.key), data.props.items, data.props.groups)
     tiles[key].props = true
+  end
+  if type(data.park) == 'table' and data.park[1] then      -- curbside parking spots (parking.lua)
+    require('beamngEarth/parking').onRows(msg.anchorId, key, data.park)
+    tiles[key].park = true
   end
   if type(data.wire) == 'table' and data.wire.shape and type(data.wire.pos) == 'table' then    -- pole wires
     walkQ[#walkQ + 1] = { key = key, walk = data.wire, what = 'wire' }

@@ -1,0 +1,79 @@
+"""Parking spots for BeamNG's own parked cars (gameplay_parking, the player's traffic settings): curbside
+spots along town and city streets, from the sidewalk runs of a road tile (roads.build_tile).
+
+The stock system spawns its parked cars onto the spots of a sites object and moves them to spots near the
+player as the player drives (the mod's parking.lua feeds it these). Each spot is a row [x, y, z, heading]:
+the anchor frame's position of the spot's centre on the road surface, and the direction the parked car
+faces (degrees, counter-clockwise from +x). Cars park along the curb facing the traffic on their side
+(right-hand traffic). Deterministic: the stations are arc lengths along the road, as furniture.py's.
+"""
+import math
+
+import numpy as np
+
+import furniture
+
+PARK_CLASSES = {"residential", "tertiary", "secondary", "unclassified", "living_street"}
+SPOT_LEN_M = 6.5            # a spot's length along the curb (US parallel parking: 6-7 m)
+SPOT_W_M = 2.5              # the stock spot size (city.sites.json: 2.5 x 6 x 3)
+CURB_OFF_M = 1.25           # the spot's centre this far from the curb into the road
+MIN_WIDTH_M = 7.0           # narrower streets: no parking lane
+BOTH_SIDES_M = 9.0          # wider streets park on both sides, narrower ones on one (hashed per street)
+STREET_SHARE = 0.85         # the share of eligible streets with curbside parking (hashed per street)
+CORNER_CLEAR_M = 9.0        # m kept clear of a run's ends (corners, crosswalks; US: 20 ft from a crosswalk)
+HYDRANT_CLEAR_M = 4.6       # m kept clear of a hydrant (US: 15 ft)
+DRIVE_CLEAR_M = 4.2         # m from a driveway's mouth to a spot's centre
+
+
+def curb_spots(roads, walks, box):
+    """Rows [x, y, z, heading] of the curbside spots of a tile box (x0, y0, x1, y1). roads: build_tile's
+    (fid, spec, centreline (k, 3), lon); walks: its sidewalk runs (dicts with fid, pts, side, w)."""
+    x0, y0, x1, y1 = box
+    by_fid = {fid: (spec, pts) for fid, spec, pts, _ in roads}
+    out = []
+    for wk in walks:
+        fid = wk.get("fid")
+        if fid is None or "pts" not in wk or fid not in by_fid:
+            continue
+        spec, line = by_fid[fid]
+        if not spec.urban or spec.cls not in PARK_CLASSES or spec.width < MIN_WIDTH_M:
+            continue
+        if furniture._h01(fid, "park") >= STREET_SHARE:
+            continue
+        side = wk["side"]
+        if spec.width < BOTH_SIDES_M and side != (1 if furniture._h01(fid, "parkside") < 0.5 else -1):
+            continue
+        run = np.asarray(wk["pts"], np.float64)
+        if len(run) < 2:
+            continue
+        w = wk.get("w", 2.5)
+        phase = furniture._h01(fid, side, "parkph") * SPOT_LEN_M
+        for p, away in furniture._stations(run, line, SPOT_LEN_M, phase, CORNER_CLEAR_M, side):
+            q = p[:2] - away * (w / 2 + CURB_OFF_M)          # from the sidewalk's middle past the curb
+            if not (x0 <= q[0] < x1 and y0 <= q[1] < y1):
+                continue
+            # the car's right side to the curb: heading h with right(h) = (h_y, -h_x) = away
+            if spec.oneway:
+                _, d = furniture._at(line, furniture._project(line, q[None]))
+                h = d[0]
+            else:
+                h = np.array([-away[1], away[0]])
+            out.append([round(float(q[0]), 2), round(float(q[1]), 2), round(float(p[2]), 2),
+                        round(math.degrees(math.atan2(h[1], h[0])) % 360.0, 1)])
+    return out
+
+
+def clear_of(spots, props, drives):
+    """The spots not in front of a hydrant (props rows of group furniture.G_HYDRANT) or a driveway's mouth
+    (drives: buildings.doors' driveway chunks, "n" points from the house to the road's edge)."""
+    if not spots:
+        return spots
+    block = [(r[1], r[2], HYDRANT_CLEAR_M) for r in (props or ()) if r[0] == furniture.G_HYDRANT]
+    block += [(d["n"][-1][0], d["n"][-1][1], DRIVE_CLEAR_M) for d in (drives or ()) if d.get("n")]
+    if not block:
+        return spots
+    b = np.array(block, np.float64)
+    s = np.array([r[:2] for r in spots], np.float64)
+    dist = np.hypot(s[:, None, 0] - b[None, :, 0], s[:, None, 1] - b[None, :, 1])
+    keep = (dist >= b[None, :, 2]).all(1)
+    return [r for r, k in zip(spots, keep) if k]

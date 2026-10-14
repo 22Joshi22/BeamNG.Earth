@@ -1155,7 +1155,7 @@ def drains(run, side, caps, walk_w=None):
 
 
 def build_tile(frame, tx, ty, cells, elev, urban_fn=None, walks=None, bridges=None, widths=None, props=None,
-               lines=None, wires=None, town=None):
+               lines=None, wires=None, town=None, park=None):
     """The chunks of one tile. cells: the mapgeom.Features of the "roads" layer of every cell touching
     the tile; elev(lat, lon) -> metres (the DEM); urban_fn: as road_specs. Features in several cells are
     taken once (by id). The carriageways, then each road's sidewalks / gutters / markings (extras), cut
@@ -1279,6 +1279,9 @@ def build_tile(frame, tx, ty, cells, elev, urban_fn=None, walks=None, bridges=No
     if props is not None and walks is not None:     # street lights and utility poles (furniture.py)
         import furniture
         props.extend(furniture.place(roads, walks, (x0, y0, x1, y1), wires=wires, town=bool(town)))
+    if park is not None and walks is not None:      # curbside parking spots (parking.py)
+        import parking
+        park.extend(parking.curb_spots(roads, walks, (x0, y0, x1, y1)))
     return chunks
 
 
@@ -1323,7 +1326,7 @@ class Tracker:
 
 
 def write_tile(out_dir, vfs_dir, aid, tx, ty, chunks, walks=None, road_mesh=None, deck_mesh=None, bld=None,
-               props=None, wires=None):
+               props=None, wires=None, park=None):
     """Write a tile's chunks (atomically), its sidewalk mesh (walks: build_tile's runs, if any:
     `walks_<a>_<tx>_<ty>.cdae`, announced in the tile as "walk": {shape, pos}) and its road mesh
     (road_mesh: roadmesh.build's result: `road_<a>_<tx>_<ty>.cdae`, "road": {shape, pos}; the mod then
@@ -1382,6 +1385,8 @@ def write_tile(out_dir, vfs_dir, aid, tx, ty, chunks, walks=None, road_mesh=None
     if props:                       # furniture.place's rows: Forest items (trees.lua), groups by index
         groups = sorted({r[0] for r in props})
         data["props"] = {"groups": groups, "items": [[groups.index(r[0])] + r[1:] for r in props]}
+    if park:                        # parking.py's spots [x, y, z, heading] for the stock parked cars (parking.lua)
+        data["park"] = park
     tmp = path + ".tmp"
     with open(tmp, "w") as f:
         json.dump(data, f, separators=(",", ":"))

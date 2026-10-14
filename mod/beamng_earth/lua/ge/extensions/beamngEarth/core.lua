@@ -54,6 +54,7 @@ local groundcover = require('beamngEarth/groundcover') -- grass on the surface l
 local roads = require('beamngEarth/roads') -- DecalRoads from the server's road tiles (docs/ROADMAP.md v1.6)
 local sea = require('beamngEarth/sea') -- the sea's WaterBlock tiles (server seatiles.py)
 local trees = require('beamngEarth/trees') -- trees, bushes, rocks (server vegetation.py)
+local parking = require('beamngEarth/parking') -- parked cars on the road tiles' spots (stock gameplay_parking)
 
 local LEVEL_ID = 'beamng_earth'
 local MOD_VERSION = '0.4.0'
@@ -1041,6 +1042,7 @@ local function onUpdate(dtReal, dtSim)
     roads.update(gov, st.anchorId)
     sea.update(st.anchorId, st.player)
     trees.update(st.anchorId, st.player)
+    parking.update(st.anchorId, st.player)
     updateSky(dtReal)
     updateGuard()
   end
@@ -1121,6 +1123,7 @@ local function onClientEndMission()
   roads.reset()
   sea.reset()
   trees.reset()
+  parking.reset()
   local sessionId, nextRequestId = st.sessionId, st.nextRequestId
   resetState()
   st.sessionId, st.nextRequestId = sessionId, nextRequestId
@@ -1158,6 +1161,7 @@ teleportTo = function(lat, lon, name, kind)
   ui.setLatLon(lat, lon)
   if requestAnchor(lat, lon, 'teleport') then
     setStatus(string.format('Preparing terrain at %.5f, %.5f ...', lat, lon))
+    parking.onTeleport()
     if kind ~= 'tool' then
       local ok, err = pcall(places.noteTeleport, lat, lon, name, kind)
       if not ok then log('W', 'beamngEarth', 'recent places: ' .. tostring(err)) end
