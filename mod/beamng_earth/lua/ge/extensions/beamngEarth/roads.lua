@@ -35,7 +35,12 @@ M.enabled = true
 -- engine's frame metrics), and while driving new sidewalk tiles arrive all the time. They arrive ~640 m
 -- ahead (11 s at 58 m/s), so a few seconds before they collide do not matter. A terrain commit rebuilds
 -- collision anyway: M.collisionRebuilt() clears the pending rebuild.
-M.RELOAD_EVERY_S = 3
+-- 2026-10-14: a rebuild had grown to ~56 ms (1.1 M collision vertices with the buildings) and ran every 3 s
+-- while driving, most of the hitches of a 34 mph drive: new colliders now wait up to 6 s (still 11 s of margin
+-- at 130 mph), and colliders deleted far behind the car (their stale collision harms nobody) up to 30 s.
+M.RELOAD_EVERY_S = 6
+M.RELOAD_DELETES_S = 30
+M.DELETE_NEAR_M = 200       -- a collider deleted this close to the player counts as new (no ghost walls)
 
 local newColliders = {}    -- { id, walkQ entry } of the colliders made since the last reloadCollision
 local held = {}            -- walkQ entries of colliding meshes held while the player is in their boxes
@@ -53,6 +58,7 @@ local lastError = nil
 local sinceChange = stopwatch.new()  -- ms since a tile arrived / went or a road was made / deleted
 local sinceReload = stopwatch.new()
 local collisionDirty = false
+local deletesDirty = false  -- only far colliders deleted since the last rebuild (RELOAD_DELETES_S)
 
 -- Every road object lives in one SimGroup. A Lua reload (Lua:requestReload) rebuilds the VM without
 -- unloading the extensions, so nothing deletes the old objects: 2026-10-11, after a few reloads, 3,558
@@ -287,7 +293,9 @@ function M.update(gov, currentAnchor)
     local t0 = now()
     local o = scenetree.findObjectById(table.remove(deleteQ))
     if o then
-      if isCollider(o) then collisionDirty = true end
+      if isCollider(o) then
+        if M.nearPlayer(o:getPosition(), M.DELETE_NEAR_M) then collisionDirty = true else deletesDirty = true end
+      end
       o:delete()
     end
     gov:charge('roadDelete', now() - t0)
@@ -327,11 +335,12 @@ function M.update(gov, currentAnchor)
     end
   end
   updateFar(gov)                -- far buildings: only with the near meshes all made (they share the budget)
-  if collisionDirty and sinceReload() > M.RELOAD_EVERY_S * 1000 then
+  if (collisionDirty and sinceReload() > M.RELOAD_EVERY_S * 1000)
+      or (deletesDirty and sinceReload() > M.RELOAD_DELETES_S * 1000) then
     local t0 = now()
     noteNewColliders()
     be:reloadCollision()
-    collisionDirty, sinceReload = false, stopwatch.new()
+    collisionDirty, deletesDirty, sinceReload = false, false, stopwatch.new()
     gov:charge('roadWalk', now() - t0)
   end
 end
@@ -342,6 +351,15 @@ end
 -- the last reloadCollision, is removed again before it, and made once the car is clear.
 M.PLAYER_R = 3.0    -- m around the player's position (half a car's length, and some)
 M.PLAYER_DZ = 2.5   -- m above / below
+
+-- Is world position p within r m (horizontally) of the player's car? (no car: yes, to be safe)
+function M.nearPlayer(p, r)
+  local veh = getPlayerVehicle and getPlayerVehicle(0)
+  if not veh or not p then return true end
+  local q = veh:getPosition()
+  local dx, dy = p.x - q.x, p.y - q.y
+  return dx * dx + dy * dy <= r * r
+end
 
 playerIn = function(boxes)
   if type(boxes) ~= 'table' or #boxes == 0 then return false end
@@ -396,7 +414,7 @@ function M.hasWork() return #createQ > 0 or #deleteQ > 0 or #walkQ > 0 or #farQ 
 function M.collisionRebuilt()
   -- that rebuild already made them solid: one held now leaves the physics at the next one
   local removed = noteNewColliders()
-  collisionDirty, sinceReload = removed > 0, stopwatch.new()
+  collisionDirty, deletesDirty, sinceReload = removed > 0, false, stopwatch.new()
 end
 
 -- Every road removed now (setting off, mod unload).
@@ -421,7 +439,7 @@ end
 function M.reset()
   tiles, createQ, deleteQ, walkQ, anchorId, loadedMaterials = {}, {}, {}, {}, nil, false
   far, farQ = {}, {}
-  collisionDirty = false
+  collisionDirty, deletesDirty = false, false
 end
 
 -- On / off (the settings page, through core.setRoadsEnabled, which asks the server for the tiles
