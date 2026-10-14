@@ -27,6 +27,10 @@ in a few minutes. No programming needed.
    - Start BeamNG.drive, go to **Freeroam** and pick the **BeamNG.Earth** level.
 
 ## Going places
+- Press **Alt+M** for the **world map**: satellite imagery, your car's position and heading, and your
+  saved places. Drag to pan, scroll to zoom, click anywhere (or a saved place) and confirm to
+  teleport there. The search box finds saved places or a typed "latitude, longitude". Alt+M or Esc
+  closes it. (Plain M is still the game's own map.)
 - Press **Esc**, open the **Mods** tab and click **BeamNG.Earth**. The **Places** section lets you
   type (or paste from Google Maps) a "latitude, longitude" and press **Go**, save your favourite
   spots, and jump back to recent ones.
