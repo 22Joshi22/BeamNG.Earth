@@ -1249,7 +1249,7 @@ def build_tile(frame, tx, ty, cells, elev, urban_fn=None, walks=None, bridges=No
                         if len(c) >= 2:
                             chunks.append(_chunk(look, w, c))
     if lines is not None:                           # the centrelines near the tile (buildings' front doors)
-        lines.extend((pts[:, :2], spec.width / 2) for _, spec, pts, _ in roads)
+        lines.extend((pts[:, :2], spec.width / 2, spec.cls, spec.urban) for _, spec, pts, _ in roads)
     if props is not None and walks is not None:     # street lights and utility poles (furniture.py)
         import furniture
         props.extend(furniture.place(roads, walks, (x0, y0, x1, y1), wires=wires))

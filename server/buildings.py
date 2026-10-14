@@ -840,27 +840,39 @@ FAR_DROP_M = 1900.0         # ... dropped beyond
 FAR_PER_POSE = 4
 
 
+MAIN_STREET_CLASSES = {"primary", "secondary", "tertiary"}
+MAIN_STREET_SETBACK_M = 7.0  # m from a main street's edge within which a front wall has a shopfront
+MAIN_STREET_SHOPS = 0.75     # the share of such buildings that do
+
+
 def doors(items, lines, x0, y0):
     """Prop rows (trees.lua rows, group "door") of a front door per house: on the wall whose middle is
     nearest a road and faces it, a row house's to one side, others' in the middle. lines: [(centreline
-    (k, 2) in the anchor frame, half width)]."""
+    (k, 2) in the anchor frame, half width[, class, urban])]. A building close to an urban main street gets
+    a shopfront ground floor instead (spec.shop, most of them)."""
     if not lines:
         return []
-    segs = []
-    for pts, half in lines:
+    segs, smain, shalf = [], [], []
+    for ln in lines:
+        pts, half = ln[0], ln[1]
+        main = len(ln) > 3 and ln[3] and ln[2] in MAIN_STREET_CLASSES     # an urban main street
         p = np.asarray(pts, np.float64)
         if len(p) >= 2:
             segs.append(np.concatenate([p[:-1], p[1:]], 1))
+            smain.append(np.full(len(p) - 1, bool(main)))
+            shalf.append(np.full(len(p) - 1, float(half)))
     if not segs:
         return []
     S = np.concatenate(segs)                             # (n, 4) x0 y0 x1 y1
+    SMAIN, SHALF = np.concatenate(smain), np.concatenate(shalf)
     A, B = S[:, :2], S[:, 2:]
     D = B - A
     L2 = np.maximum((D * D).sum(1), 1e-12)
     rows = []
     for spec, gmin, gmax in items:
-        if spec.plain or spec.shop or spec.floors >= 7 or spec.band in (BAND_OFFICE, BAND_OFFICE2):
-            continue
+        if spec.plain or spec.floors >= 7 or spec.band in (BAND_OFFICE, BAND_OFFICE2) or spec.wall:
+            if not spec.wall or spec.plain or spec.floors >= 7:
+                continue
         ring = spec.ring + np.array([x0, y0])
         best = None
         for i in range(len(ring)):
@@ -880,10 +892,16 @@ def doors(items, lines, x0, y0):
             if float(np.dot(q[k] - mid, out)) <= 0:
                 continue                                 # the wall faces away from that road
             if best is None or dist[k] < best[0]:
-                best = (dist[k], a, e / Le, Le, out, i)
+                best = (dist[k], a, e / Le, Le, out, i, bool(SMAIN[k]) and dist[k] < SHALF[k] + MAIN_STREET_SETBACK_M)
         if best is None:
             continue
-        _, a, d, Le, out, edge = best
+        _, a, d, Le, out, edge, on_main = best
+        if spec.shop:
+            continue
+        if on_main and not spec.wall and spec.roof == "flat" and spec.floors >= 2 \
+                and _hash01(spec.seed, "shop") < MAIN_STREET_SHOPS:
+            spec.shop = True                    # a main street's ground floor: a shopfront, no house door
+            continue
         narrow = Le < 9.0
         f = (0.22 if _hash01(spec.seed, "door") < 0.5 else 0.78) if narrow else 0.5
         spec.door = (edge, Le * f)          # _walls leaves the ground floor's band plain there

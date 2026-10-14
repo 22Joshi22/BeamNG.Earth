@@ -95,6 +95,17 @@ class DoorTest(unittest.TestCase):
         self.assertAlmostEqual(y, -0.03, places=2)                     # on the south wall
         self.assertAlmostEqual(yaw, 0.0)                               # the wall runs +x
 
+    def test_main_street_shopfronts(self):
+        shops = 0
+        for k in range(20):
+            spec = bld.plan(rect(k * 30, 0, 10, 14), {"class": ""}, 2, 39.4, -77.4)
+            street = (np.array([(-50.0, -7.0), (900.0, -7.0)]), 6.0, "tertiary", True)
+            rows = bld.doors([(spec, 0.0, 0.0)], [street], 0.0, 0.0)
+            if spec.shop:
+                shops += 1
+                self.assertEqual(rows, [], "a shopfront, no house door")
+        self.assertGreater(shops, 8)
+
     def test_no_door_without_a_road(self):
         spec = bld.plan(rect(0, 0, 10, 8), {"class": "house"})
         self.assertEqual(bld.doors([(spec, 0.0, 0.0)], [(np.array([(500.0, 0), (600.0, 0)]), 4.0)], 0, 0), [])
