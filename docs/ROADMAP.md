@@ -354,7 +354,13 @@ wall or a filled-in bump depending on the source.
   probe first), click to teleport / set destination.
 
 ## v1.8 "Alive"
-- AI traffic on our navgraph (spawn clipped to the physics block, edge guard).
+- Parked cars: done 2026-10-14 through the stock parking system (user's choice: BeamNG's traffic system and
+  its player settings). server/parking.py curbside spots on the road tiles, mod parking.lua hands them to
+  gameplay_parking as a sites object and starts trafficParkedAmount cars. Next: rows in mapped parking lots
+  (Overture infrastructure "parking"), the radial menu's traffic entries (they need supportsTraffic, which
+  also starts moving traffic: only with the navgraph below), frame time with 16 / 32 cars.
+- AI traffic on our navgraph (spawn clipped to the physics block, edge guard); the stock traffic system
+  (gameplay_traffic) once map.lua has our roads.
 - Traffic lights / stop signs from OSM via `core_trafficSignals` (scriptable at runtime), stock
   light and sign props; street lights.
 
