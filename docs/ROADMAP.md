@@ -742,6 +742,10 @@ Next, from the photo comparisons (docs/research/streetview/fp*, base_*):
 - Road widths on through-town highways (Moab's Main Street, US-191: 4 lanes + a turn lane; ours 2):
   Overture has no lane counts; options: OSM `lanes` for the segment's source record, or a wider
   default for urban primary / trunk roads checked against more photos.
+- Curb ramps: the whole 1.8 m slope is the (near white) tactile texture; real US ramps are concrete
+  with a 0.6 m yellow / red truncated-dome pad at the curb (split the slope strip, tint the pad).
+- Building heights stay predicted where Overture has none (Baltimore 98 %): the canopy height model
+  masks buildings (~0 m on roofs, checked 2026-10-14), so it cannot fill them.
 - Near ground looks pale (Moab, Frederick photos: grey-white where lawns are green): inspect the
   detail-mode ground material and the NAIP base photo there.
 
