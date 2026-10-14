@@ -1515,6 +1515,11 @@ The user: "make the world look alive ... look like a professionally made map".
 - **Cost:** ~0.5 s per tile to plan, 5-13k triangles (Fells Point).
 - Tests: `server/tests/test_buildings.py`.
 
+Front porches (2026-10-14): pitched-roof houses under 300 m² get one on the front door's wall (55 % in the East,
+25 % west of 102° W, hashed): a white deck 0.35 m high, three posts and a 2.2 m deep roof in the roof's colour;
+the door stands on the deck. Shop signs: a coloured band (9 tints, a few shops without) over each shop's street
+wall, shop by shop (6-11 m); storefronts take the wall facing a street, not a service road.
+
 ## Street furniture (`server/furniture.py`; 2026-10-14, with `--buildings on`)
 
 - Towns (road tiles under 30 % footprint cover): wired wooden utility poles every 40 m on one side with
@@ -1584,4 +1589,10 @@ name). Vehicles that hold signals read the state mailbox every frame and throw o
 update is written first. Fells Point: 51 junctions, 132 approaches, cars stop 2-5 m before the line on red.
 Cost per new graph: ~7 ms (map.reset; the UI's NavigationMapChanged dump is dropped) + ~5 ms (signals) in two
 frames; the first graph of an anchor ~10 + ~22 ms (all heads made).
-Not yet: bridges' deck heights in the graph, left-hand-traffic countries (`rules.rightHandDrive`), EU signal timings.
+**Bridges, widths, countries.** Roads that are bridge all along (left to the bridge builder by `road_specs`) are
+in the graph with their `bridge_specs`, and nodes on a bridge part take its deck height (the anchor's
+`BridgeProfiles`). Edge widths are the road tiles' measured ones (`roadwidth.py`): with class defaults the AI's
+lanes ran over London's kerbs. The road rules come from the nearest airport's country (OurAirports;
+`navgraph.road_rules`): left-hand traffic (the game's `rightHandDrive = true`) in ~70 countries, turn on red in the
+US and Canada, `lightsBasicEU` where red+yellow precedes green; the same per-anchor flag turns the parked cars,
+signal booms, stop signs and stop points to the left side (road tiles in both the main process and the pool).
