@@ -94,6 +94,12 @@ class JunctionTest(unittest.TestCase):
         for r in rows:              # on the approach's right, outside the carriageways
             self.assertGreater(max(abs(r[1] - 100), abs(r[2] - 100)), 5.0)
 
+    def test_left_hand_traffic_stands_them_on_the_left(self):
+        rs = [self.arm("e", "residential", 1, 0), self.arm("w", "residential", -1, 0), self.arm("s", "residential", 0, -1)]
+        rows = furniture.junction_props(rs, (0, 0, 256, 256), left_hand=True)
+        self.assertEqual(len(rows), 1)
+        self.assertLess(rows[0][1], 100.0, "on the left of northbound drivers (west side)")
+
     def test_stop_on_the_stem_of_a_minor_t(self):
         rs = [self.arm("e", "residential", 1, 0), self.arm("w", "residential", -1, 0), self.arm("s", "residential", 0, -1)]
         rows = furniture.junction_props(rs, (0, 0, 256, 256))

@@ -812,6 +812,14 @@ class Server:
             return None
         return vegetationmod.write_tile(self.out_dir, self.vfs_dir, aid, tx, ty, rows)
 
+    def left_hand(self, anchor):
+        """Whether traffic drives on the left at the anchor (its country's road rules, navgraph.road_rules)."""
+        lh = getattr(anchor, "_left_hand", None)
+        if lh is None:
+            lh = navgraphmod.road_rules(navgraphmod.country_near(self.airports_db, anchor.lat, anchor.lon))["rightHandDrive"]
+            anchor._left_hand = lh
+        return lh
+
     def build_navgraph(self, aid, x, y, serial):
         """navgraph.py: the AI road graph around (x, y) of anchor aid, written to the session folder (the
         anchor's earlier graphs deleted): (vfs path, nodes, edges) or None. Worker threads."""
@@ -840,7 +848,8 @@ class Server:
                 decks.setdefault(fid, []).append((np.asarray(xy, np.float64)[:, :2], np.asarray(z, np.float64)))
         except Exception as e:          # no decks: the graph follows the ground under bridges
             log.debug("navgraph decks: %s: %s", type(e).__name__, e)
-        graph = navgraphmod.build(anchor.frame, feats, elev, (x, y), urban, decks=decks, widths=self.road_widths)
+        graph = navgraphmod.build(anchor.frame, feats, elev, (x, y), urban, decks=decks, widths=self.road_widths,
+                                  left_hand=self.left_hand(anchor))
         cla, clo, _ = anchor.frame.enu_to_geodetic(x, y, 0.0)
         graph["rules"] = navgraphmod.road_rules(navgraphmod.country_near(self.airports_db, float(cla), float(clo)))
         for old in glob.glob(os.path.join(self.out_dir, f"navgraph_{aid}_*.json")):    # one file at a time
@@ -874,7 +883,7 @@ class Server:
             return self.road_pool.submit(
                 blockworker.roads_tile, aid, anchor.lat, anchor.lon, anchor.zooms[0], tx, ty, self.out_dir,
                 self.vfs_dir, self.sidewalks, DETAIL_ROAD_LIFT if self.near_visual == "detail" else 0.0,
-                self.buildings).result()
+                self.buildings, self.left_hand(anchor)).result()
         cells = [self.mapdata.cell(k, layers=("roads",), kind="demand").layers.get("roads")
                  for k in roadsmod.cells_of_tile(anchor.frame, tx, ty)]
         zoom = anchor.zooms[0]
@@ -901,7 +910,8 @@ class Server:
                 lambda la, lo: self.ground(anchor.frame, la, lo, self.dem.sample(la, lo, zoom)))
             town = buildingsmod.coverage(items) < buildingsmod.POLES_COVERAGE
         chunks = roadsmod.build_tile(anchor.frame, tx, ty, cells, elev, urban, walks=walks, bridges=anchor.bridges,
-                                     widths=self.road_widths, props=props, lines=lines, wires=wires, town=town, park=park)
+                                     widths=self.road_widths, props=props, lines=lines, wires=wires, town=town, park=park,
+                                     left_hand=self.left_hand(anchor))
         if self.airports is not None:   # runway markings, drawn by the road mesh like the lane lines
             chunks += self.airports.tile_chunks(anchor.frame, tx, ty, elev, roadsmod.tile_bbox)
         x0, y0, _, _ = roadsmod.tile_bbox(tx, ty)

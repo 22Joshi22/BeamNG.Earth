@@ -1155,7 +1155,7 @@ def drains(run, side, caps, walk_w=None):
 
 
 def build_tile(frame, tx, ty, cells, elev, urban_fn=None, walks=None, bridges=None, widths=None, props=None,
-               lines=None, wires=None, town=None, park=None):
+               lines=None, wires=None, town=None, park=None, left_hand=False):
     """The chunks of one tile. cells: the mapgeom.Features of the "roads" layer of every cell touching
     the tile; elev(lat, lon) -> metres (the DEM); urban_fn: as road_specs. Features in several cells are
     taken once (by id). The carriageways, then each road's sidewalks / gutters / markings (extras), cut
@@ -1278,10 +1278,10 @@ def build_tile(frame, tx, ty, cells, elev, urban_fn=None, walks=None, bridges=No
         lines.extend((pts[:, :2], spec.width / 2, spec.cls, spec.urban) for _, spec, pts, _ in roads)
     if props is not None and walks is not None:     # street lights and utility poles (furniture.py)
         import furniture
-        props.extend(furniture.place(roads, walks, (x0, y0, x1, y1), wires=wires, town=bool(town)))
+        props.extend(furniture.place(roads, walks, (x0, y0, x1, y1), wires=wires, town=bool(town), left_hand=left_hand))
     if park is not None and walks is not None:      # curbside parking spots (parking.py)
         import parking
-        park.extend(parking.curb_spots(roads, walks, (x0, y0, x1, y1)))
+        park.extend(parking.curb_spots(roads, walks, (x0, y0, x1, y1), left_hand))
     return chunks
 
 

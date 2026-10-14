@@ -52,6 +52,15 @@ class CurbTest(unittest.TestCase):
         xs = sorted(s[0] for s in north)
         self.assertTrue(np.allclose(np.diff(xs), parking.SPOT_LEN_M, atol=0.05))
 
+    def test_left_hand_traffic_parks_the_other_way(self):
+        r = eligible()
+        spots = parking.curb_spots([r], walks(r), (0, 0, 256, 256), left_hand=True)
+        for s in spots:
+            if s[1] > 50:   # north side: eastbound traffic keeps left there
+                self.assertAlmostEqual(min(s[3], 360 - s[3]), 0.0, places=0)
+            else:
+                self.assertAlmostEqual(s[3], 180.0, places=0)
+
     def test_same_spots_from_neighbouring_tiles(self):
         r = eligible()
         a = parking.curb_spots([r], walks(r), (0, 0, 128, 256))

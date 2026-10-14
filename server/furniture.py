@@ -175,10 +175,11 @@ def junction_controls(arms, k):
     return [(a, G_STOP) for a in minor] if _h01("allway", k) < 0.5 else []
 
 
-def junction_props(roads, box, curb_h=0.15):
+def junction_props(roads, box, curb_h=0.15, left_hand=False):
     """Signals at urban junctions of two or more major roads (every arm), stop signs at urban junctions
     of minor roads (the minor arms meeting a major road; the stem of a T; half the four-way ones, hashed).
-    Each on the approach's right (US), at the junction's edge, facing the drivers who come in."""
+    Each on the approach's right (its left where traffic drives on the left), at the junction's edge, facing
+    the drivers who come in."""
     x0, y0, x1, y1 = box
     rows = []
     for k, arms in _arms(roads).items():
@@ -194,7 +195,7 @@ def junction_props(roads, box, curb_h=0.15):
         for (fid, spec, u, c), what in put:
             # the approach comes in along -u; its right is (-u_y, u_x)... rotated: right of travel (-u)
             inc = -u
-            right = np.array([inc[1], -inc[0]])
+            right = np.array([inc[1], -inc[0]]) * (-1 if left_hand else 1)     # the kerb side of the approach
             q = c[:2] + u * (wide + 2.5) + right * (spec.width / 2 + 1.0)
             if not (x0 - 20 <= q[0] < x1 + 20 and y0 - 20 <= q[1] < y1 + 20):
                 continue
@@ -240,7 +241,7 @@ def _stations(run, line, spacing, phase, clear, side):
     return out
 
 
-def place(roads, walks, box, curb_h=0.15, wires=None, town=False):
+def place(roads, walks, box, curb_h=0.15, wires=None, town=False, left_hand=False):
     """Rows [group, x, y, z, yaw, scale, height, rank] (trees.lua's tile rows) of the lamps and poles of a
     tile box (x0, y0, x1, y1). roads: build_tile's (fid, spec, centreline (k, 3), lon); walks: its sidewalk
     runs (dicts with fid, pts, side, w)."""
@@ -315,7 +316,7 @@ def place(roads, walks, box, curb_h=0.15, wires=None, town=False):
             put(G_BENCH, BENCH_SPACING, _h01(fid, side, "bench") * BENCH_SPACING, w - 0.45, 0.9,
                 lambda out: _yaw(-out[0], -out[1]) + BENCH_YAW)
             put(G_BIN, BIN_SPACING, _h01(fid, side, "bin") * BIN_SPACING, 0.7, 1.1, lambda out: _yaw(-out[0], -out[1]))
-    rows.extend(junction_props(roads, box, curb_h))
+    rows.extend(junction_props(roads, box, curb_h, left_hand))
     for fid, spec, line, _ in roads:
         if spec.urban or fid in lit or spec.cls not in POLE_CLASSES or len(line) < 2:
             continue

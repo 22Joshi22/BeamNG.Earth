@@ -73,7 +73,7 @@ def _deck_z(decks, fid, x, y):
     return None if best is None else best[1]
 
 
-def build(frame, feats_list, elev, centre, urban_fn=None, window=WINDOW_M, decks=None, widths=None):
+def build(frame, feats_list, elev, centre, urban_fn=None, window=WINDOW_M, decks=None, widths=None, left_hand=False):
     """{"nodes": {name: [x, y, z, radius]}, "edges": [[in, out, oneway, lanes_out, lanes_in, speed m/s,
     drivability, radius]]} of the drivable roads in the square of half size `window` around centre (x, y) of
     the anchor frame. feats_list: the "roads" mapgeom.Features of the cells around (duplicates across cells
@@ -210,7 +210,7 @@ def build(frame, feats_list, elev, centre, urban_fn=None, window=WINDOW_M, decks
                 radius[nm] = max(radius.get(nm, 0.0), e[7])
         for nm, x, y, z in zip(used, X, Y, Z):
             nodes[nm] = [round(float(x), 2), round(float(y), 2), round(float(z), 2), radius[nm]]
-    signals = _signals(arms, nodes)
+    signals = _signals(arms, nodes, left_hand)
     # one edge per node pair (two segments joining the same connectors: keep the first)
     uniq, pairs = [], set()
     for e in edges:
@@ -224,7 +224,7 @@ def build(frame, feats_list, elev, centre, urban_fn=None, window=WINDOW_M, decks
 STOP_BACK_M = 2.0           # the stop point: this far before the junction's widest road edge
 
 
-def _signals(arms, nodes):
+def _signals(arms, nodes, left_hand=False):
     """[{"j": junction node, "kind": "signal" | "stop", "app": [[approach node, x, y, z, dir x, dir y, phase]]}] of
     the urban junctions furniture.junction_controls controls: per incoming approach, its stop point on the right
     half of the approach (where the AI's closest-edge search finds that approach) and the travel direction; the
@@ -250,7 +250,7 @@ def _signals(arms, nodes):
             if not incoming or nb not in nodes:
                 continue
             inc = -u
-            right = np.array([inc[1], -inc[0]])
+            right = np.array([inc[1], -inc[0]]) * (-1 if left_hand else 1)     # the side traffic keeps to
             q = np.array([jx, jy]) + u * (wide + STOP_BACK_M) + right * (spec.width / 4)
             phase = 0 if abs(float(u @ axis)) > 0.7 else 1
             # the head's prop where furniture.junction_props stands it (the switchable stock boom replaces it)
