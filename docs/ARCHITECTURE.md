@@ -1537,3 +1537,40 @@ The user: "make the world look alive ... look like a professionally made map".
   2 at a four-way) meet; stop signs on minor arms meeting a major road, the stem of a minor T and half
   the minor four-ways (hashed); on each approach's right, facing its drivers.
 
+
+## Parked cars and traffic (`server/parking.py`, `navgraph.py`; mod `parking.lua`, `navgraph.lua`; 2026-10-14)
+The user's choice (2026-10-14): BeamNG's own traffic system, which spawns and recycles traffic and parked cars and
+has the player's settings (Options > Gameplay > Traffic). We only feed it what a stock level's files would.
+
+**Parked cars** (with `--buildings on`). `parking.curb_spots` puts parallel-parking spots along the sidewalk runs of
+urban residential / tertiary / secondary / unclassified streets of a road tile: both sides of streets 9 m or wider,
+one side (hashed) of narrower ones, none under 7 m; 6.5 m apart at stations of the road (furniture.py's, so every
+tile and anchor agrees), 9 m clear of a run's ends, facing the traffic on their side (right-hand traffic; one-way
+streets: their direction). `clear_of` drops spots in front of hydrants (4.6 m) and driveway mouths (4.2 m).
+`lot_spots` fills the mapped lots (Overture infrastructure `parking` polygons) with 90-degree stalls (2.6 x 5.5 m,
+7 m aisles) along each lot's long side, off building footprints (garages). The road tile carries them as `"park"`
+rows `[x, y, z, heading(, 1 = lot)]`. The mod's `parking.lua` keeps one sites object (`gameplay/sites/sites.lua`,
+as `city.sites.json` builds), its spot objects kept by position across rebuilds, rebuilt at most every 2 s from the
+spots within 900 m of the player and 80 m inside the terrain block (the only collidable ground), and hands it to
+`gameplay_parking.setSites`. Once 24 spots are near it starts `trafficParkedAmount` cars (`setupVehicles`, which
+needs `core_multiSpawn`: our level loads no traffic extensions). A guard every 0.5 s moves a parked car that is
+within 30 m of the block's edge or falling to a spot near the player. Teleports: the cars go inactive
+(`setActiveAmount(0)`), and once the new place has spots the stock system is told to look again (its cached spot
+list is in the old frame) and the cars are scattered onto them. Cost (Fells Point, 16 cars): ~0.7 ms render,
+0.25 ms physics.
+
+**Traffic** (`--traffic on`, default off). `navgraph.build` turns the drivable roads within 1100 m of the player into
+the stock map's graph: Overture connectors are the nodes (`c<id>`, the same name in every window and anchor and
+shared at junctions), plus simplified shape points and splits of edges over 80 m; edges carry half width, lanes
+per direction (3.3 m lanes), one-way direction and speed limit (mapped, else US class defaults, town arterials
+capped). Driveways, parking aisles, sidewalks and crossings are left out. A new graph every 400 m (`navgraph`
+message, a JSON file). The mod's `navgraph.lua` clips it to the block (60 m in) and applies it with
+`map.reset(customNodes)` (docs/research/2026-10-10-navgraph-traffic-signals.md), handling the custom path's
+pitfalls: the node table object stays the same (gameplay_traffic caches it), the US road rules come from our own
+file through `path.getPathLevelInfo`, every vehicle is told to fetch the graph (`mapmgr.requestMap`), a foreign
+`map.reset()` is undone next frame. ~600 nodes per 512² block at Fells Point, applied in ~9 ms. The first graph
+starts `trafficAmount` cars (`gameplay_traffic.setupTraffic`); a guard respawns cars near the block's edge;
+teleports hold them inactive until the new graph is in, then `forceTeleportAll`. Cost (7 cars): ~1.6 ms a frame.
+The level's `supportsTraffic` stays false, so freeroam's own start-up does not try traffic before our graph exists.
+Not yet: working traffic signals (`core_trafficSignals`; our signal heads are static props), bridges' deck heights in
+the graph, left-hand-traffic countries (`rules.rightHandDrive`).
