@@ -225,7 +225,7 @@ def oriented_box(p):
 
 class Spec:
     """What is built for one footprint (decided by plan())."""
-    __slots__ = ("ring", "floors", "floor_h", "height", "roof", "roof_mat", "facade", "band", "shop", "plain", "min_h", "wall", "door", "windows", "front", "steeple",
+    __slots__ = ("ring", "floors", "floor_h", "height", "roof", "roof_mat", "facade", "band", "shop", "plain", "min_h", "wall", "door", "windows", "front", "steeple", "stoop",
                  "seed")
 
     def __init__(self, **kw):
@@ -614,6 +614,22 @@ def _box(m, c, u, hx, hy, z0, z1, mat):
     m.quad(*[(p[0], p[1], z1) for p in k], *uv, mat)
 
 
+def _stoop(m, spec, ring, base, mat_idx):
+    """Two white steps out from the front door (spec.stoop: (edge, distance along it))."""
+    edge, sd = spec.stoop
+    a, b = ring[edge], ring[(edge + 1) % len(ring)]
+    L = float(math.hypot(*(b - a)))
+    if L < 1e-6:
+        return
+    d = (b - a) / L
+    out = np.array([d[1], -d[0]])
+    c = a + d * sd
+    white = mat_idx["bne_bld_fac_white"]
+    for k, (depth, z1) in enumerate(((0.9, STOOP_H), (0.45, STOOP_H / 2))):
+        p = c + out * (0.9 + depth / 2) if k == 1 else c + out * depth / 2
+        _box(m, p, d, 0.8, depth / 2, base - 0.3, base + z1, white)
+
+
 def _steeple(m, spec, z_eave, mat_idx):
     """A church's square tower with a pyramid spire, at one end of its nave (hashed)."""
     c, u, hl, hw = oriented_box(spec.ring)
@@ -728,6 +744,8 @@ def build(specs_and_ground, lite=False):
             _clutter(m, spec, ring, z_eave, mat_idx)
         if spec.steeple:
             _steeple(m, spec, z_eave, mat_idx)
+        if spec.stoop and not lite:
+            _stoop(m, spec, ring, gmax, mat_idx)
     if m.n == 0:
         return None
     P, UV, T, M, C = m.arrays()
@@ -908,6 +926,8 @@ def write(path, mesh):
     return cdae.write(path, P, T, uvs=UV, material=list(mats), tri_materials=M, object_name="buildings", colors=C)
 
 
+STOOP_SHARE = 0.8           # row houses with a front stoop (Baltimore's white marble steps)
+STOOP_H = 0.36              # m: two steps up to the door
 DOOR_ROAD_M = 30.0          # a front door on the wall facing the nearest road within this
 DOOR_CLASSES_SKIP = SHED_CLASSES | INDUSTRIAL_CLASSES
 G_DOOR = "door"
@@ -990,6 +1010,9 @@ def doors(items, lines, x0, y0, drives=None):
         narrow = Le < 9.0
         f = (0.22 if _hash01(spec.seed, "door") < 0.5 else 0.78) if narrow else 0.5
         spec.door = (edge, Le * f)          # _walls leaves the ground floor's band plain there
+        # brick row houses (an eastern city's): white marble steps up to the door
+        if narrow and spec.band == BAND_BRICK and spec.roof == "flat" and _hash01(spec.seed, "stoop") < STOOP_SHARE:
+            spec.stoop = (edge, Le * f)
         if drives is not None and spec.wall and Le >= 7.0:
             # the driveway beside the door, straight out to the road's edge
             g = 0.82 if f <= 0.5 else 0.18
@@ -1005,7 +1028,7 @@ def doors(items, lines, x0, y0, drives=None):
                 drives.append({"m": DRIVEWAY["m"], "w": DRIVEWAY_W, "tl": DRIVEWAY["tl"], "p": DRIVEWAY["p"],
                                "n": [[round(float(pp[0]), 3), round(float(pp[1]), 3), 0.0] for pp in pts]})
         p = a + d * (Le * f) + out * 0.03
-        base = gmax                                      # the ground floor (_walls: floors from the highest ground)
+        base = gmax + (STOOP_H if spec.stoop else 0.0)   # the ground floor (_walls: floors from the highest ground)
         rows.append([G_DOOR, round(float(p[0]), 2), round(float(p[1]), 2), round(base, 2),
                      round(math.degrees(math.atan2(d[1], d[0])) % 360.0, 1), 1.0, 2.2,
                      round(_hash01(spec.seed, "dv"), 3)])
