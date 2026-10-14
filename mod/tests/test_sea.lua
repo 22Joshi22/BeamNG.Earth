@@ -42,7 +42,7 @@ sea.update(1, player)
 local b = blocks()
 T.check(count(b) == 6 and sea.status().tiles == 6, 'all made over the next frames')
 local t0 = b[sea.PREFIX .. '512_0_0']
-T.check(t0 and t0.pos.x == 256 and t0.pos.z == 0 and t0.scale.x == 512 and t0.scale.z == sea.DEPTH_M,
+T.check(t0 and t0.pos.x == 256 and t0.pos.z == 0 and t0.scale.x == 512 + sea.TILE_OVERLAP_M and t0.scale.z == sea.DEPTH_M,
   'surface at the position, the tile\'s size, DEPTH_M deep')
 T.check(t0.canSave == false and t0.fields.baseColor ~= nil and t0.fields.rotation ~= nil, 'not saved, styled, tilted')
 sea.onMessage({ type = 'sea', anchorId = 1, tiles = { six[1], tile('L512_0_0_895', 256, 256, 89.5, 512) } })

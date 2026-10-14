@@ -31,7 +31,7 @@ import mapcells
 
 log = logging.getLogger("earthd.seacarve")
 
-VERSION = 12
+VERSION = 14
 SEA_E = 0.0                 # m: the sea surface (the DEMs' heights are above mean sea level)
 DEPTH_SLOPE = 0.15          # floor depth per metre from the shoreline (1 : 6.7)
 DEPTH_CAP = 6.0             # m: the floor's depth away from the shore without bathymetry (Chesapeake mean
@@ -64,6 +64,7 @@ RIVER_SKIP_CLASSES = ("drain", "ditch")
 RIVER_DEPTH_CAP = 3.0       # m
 RIVER_DEM_STEP = 4          # river levels: the DEM every 4th pixel (~7.5 m), the lowest of 3 x 3 such
                             # samples (the flattened surface, not a bank),
+WIDE_RIVER_M = 120.0        # a flattened river this wide or more is tiles (area water), narrower Rivers
 OUTLINE_PAD_PX = 2          # the river mask spread this far past the river's water
 LINE_CELLS = 2              # stream / river lines from the 5 x 5 cells around (a way is owned by one cell)
 LINE_STEP_PX = 4            # a level every 4 px (~7.5 m) along them
@@ -71,6 +72,7 @@ LINE_PROBE_MAX_M = 15.0     # the level: the lowest DEM within half the width, a
 LINE_DEPTH_M = (0.6, 3.0)   # the bed's depth in the middle: width / 6, clamped
 LINE_BANK_M = 4.0           # the bank beyond the half width ...
 LINE_BANK_SLOPE = 1.0       # ... kept below level + its distance (1:1)
+RIVER_SMOOTH = 3            # flattened river levels: the mean of the river's samples within 3 (~22 m)
 RIVER_FLAT_M = 0.25         # a river whose samples stand more than this above its surface (p90) is not
                             # flattened by the DEM: left out (rough creeks; River objects later)
 WATER_BANK_M = 1.0          # m: a lake / river pixel whose DEM is higher than its level by more is dry
@@ -118,6 +120,21 @@ def shore_steps(water, kmax):
         cur = nxt
     out[cur] = kmax
     return out
+
+
+def _box_mean(v, w, r):
+    """The w-weighted mean of v over the (2r+1)^2 box around each cell (integral images); NaN where the
+    box has no weight."""
+    def box(a):
+        c = np.pad(np.cumsum(np.cumsum(a, 0), 1), ((1, 0), (1, 0)))
+        n, m = a.shape
+        j, i = np.arange(n), np.arange(m)
+        j0, j1 = np.clip(j - r, 0, n), np.clip(j + r + 1, 0, n)
+        i0, i1 = np.clip(i - r, 0, m), np.clip(i + r + 1, 0, m)
+        return c[j1][:, i1] - c[j0][:, i1] - c[j1][:, i0] + c[j0][:, i0]
+    sw = box(w)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        return np.where(sw > 0, box(v * w) / sw, np.nan)
 
 
 def _components(mask):
@@ -292,6 +309,15 @@ class SeaCarver:
                 st = shore_steps(river, kmax).astype(np.float32)
                 depth[river] = np.minimum(RIVER_DEPTH_CAP, DEPTH_SLOPE * (st[river] - 0.5) * px)
                 level[river] = rl[river]
+                # wide stretches (a half width of WIDE_RIVER_M / 2 or more somewhere: the Susquehanna) are
+                # area water like a lake, tiles fitted to its fall; one River ribbon that wide folded over
+                # itself at bends and islands (holes, 2026-10-13). Narrow ones stay Rivers (the outline).
+                core_k = int(math.ceil(WIDE_RIVER_M / 2 / px))
+                wide = shore_steps(river, core_k) >= core_k
+                for _ in range(core_k):                 # the core grown back over its own river
+                    q = np.pad(wide, 1)
+                    wide = (q[1:-1, 1:-1] | q[:-2, 1:-1] | q[2:, 1:-1] | q[1:-1, :-2] | q[1:-1, 2:]) & river
+                outline &= ~wide
         if self.dem is not None:        # streams and the rivers the DEM does not flatten: their lines
             self._carve_lines(x, y, ox, oy, n, px, depth, level, outline)
         complete = True
@@ -523,8 +549,12 @@ class SeaCarver:
             core = inner[comp]          # judged away from its edge (the outline's cells there read the banks)
             if core.any() and np.percentile((e[comp] - lo[comp])[core], 90) <= RIVER_FLAT_M:
                 flat[comp] = True
-        lvl = np.round(lo[cj, ci] / LEVEL_Q) * LEVEL_Q
-        ok = flat[cj, ci] & (e[cj, ci] <= lvl + WATER_BANK_M)
+        # the surface smoothed over the river's own samples (a flattened DEM still steps by ~0.6 m within
+        # 128 m below a dam: tiles fitted to it split into dozens of small ones, 2026-10-13)
+        sm = _box_mean(np.where(cm & np.isfinite(lo), lo, 0.0), (cm & np.isfinite(lo)).astype(np.float64),
+                       RIVER_SMOOTH)
+        lvl = np.round(sm[cj, ci] / LEVEL_Q) * LEVEL_Q
+        ok = flat[cj, ci] & (e[cj, ci] <= lvl + WATER_BANK_M) & np.isfinite(lvl)
         out = np.full(m.shape, np.nan, np.float32)
         out[jj, ii] = np.where(ok, lvl, np.nan)
         return out

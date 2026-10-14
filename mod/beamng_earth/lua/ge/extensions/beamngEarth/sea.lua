@@ -14,6 +14,7 @@ M.PREFIX = 'bngEarthSea_'
 -- between two tiles only the nodes over one of them were in water). So one more block, not drawn,
 -- PHYS_SIZE m square around the player at the level of the tile under it, is made again after any
 -- new tile (it must be the newest) and when the player nears its edge or the level under it changes.
+M.TILE_OVERLAP_M = 1.0  -- each tile this much larger than its square (half each side)
 M.PHYS_SIZE = 256
 M.PHYS_MARGIN = 64      -- m: made again around the player when it is closer than this to its edge
 M.PHYS_NAME = 'bngEarthSeaPhys'
@@ -187,7 +188,8 @@ local function create(key, t)
     o:setField('rotation', 0, string.format('%.9f %.9f 0 %.6f', -t.ny / n, t.nx / n, math.deg(math.asin(math.min(n, 1)))))
   end
   o:setPosition(vec3(t.x, t.y, t.z))
-  o:setScale(vec3(t.size, t.size, M.DEPTH_M))
+  -- a little larger than its square: tilted neighbours meet without a hairline gap (2026-10-13)
+  o:setScale(vec3(t.size + M.TILE_OVERLAP_M, t.size + M.TILE_OVERLAP_M, M.DEPTH_M))
   o.canSave = false
   o:registerObject(M.PREFIX .. key)
   if scenetree.MissionGroup then scenetree.MissionGroup:addObject(o) end

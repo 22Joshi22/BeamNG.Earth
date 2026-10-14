@@ -112,15 +112,15 @@ def plan(frame, x, y, sea_at, radius=None):
 
 
 # --- lakes and rivers ----------------------------------------------------------------------------------------
-LAKE_RADIUS_M = 2500.0      # lake tiles within this of the player (the far tiles carved: L <= 2)
+LAKE_RADIUS_M = 2000.0      # lake tiles within this of the player (the far tiles carved: L <= 2)
 LAKE_TILE_MAX = 512.0
-LAKE_TILE_MIN = 16.0
+LAKE_TILE_MIN = 64.0
 LAKE_SAMPLES = 24           # samples per tile edge when checking a lake tile
 LAKE_FLOOD_M = 1.0          # land inside a lake tile lower than the lake by more than this splits it
                             # (a valley below a dam; the banks themselves are ~ at the lake's level)
-LAKE_MAX_TILES = 60         # nearest first
+LAKE_MAX_TILES = 120        # nearest first (lakes and wide rivers)
 LAKE_DEM_ZOOM = 15
-LEVEL_TOL_M = 0.15           # a tile's water is at most this far from its plane (else it is split)
+LEVEL_TOL_M = 0.4            # a tile's water is at most this far from its plane (else it is split)
 
 
 def _plane(u, v, z):

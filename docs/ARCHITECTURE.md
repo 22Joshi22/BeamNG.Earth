@@ -1387,6 +1387,15 @@ position; vehicles see water they drive into, but not water that appears around 
   outlines keep their own carving. Those pixels join the outline mask. The Rivers' nodes take that level
   + 0.05 m (`level_at`), each node moved midway between the outline's banks with the outline's width
   (up to 2 km). The Harrisburg creek: one 28-48 m River dropping 91.7 -> 88.5 m in its cut channel.
+- **Sections by shape (2026-10-13, the user: "treat each river branch / lake as an isolated section"):**
+  a River ribbon 1 km wide folded over itself at bends and islands (backfacing triangles: holes in the
+  Susquehanna). So a flattened river with a half width >= 60 m somewhere (`WIDE_RIVER_M`) is area water
+  like a lake: its pixels leave the outline mask and `plan_lakes` tiles it, each tile a least-squares
+  plane (the river's fall; tolerance 0.4 m; the levels smoothed over ~22 m first, a flattened DEM still
+  stepped 0.6 m within 128 m below the Dock Street Dam), 64-512 m, <= 120 within 2 km. Narrow rivers and
+  streams stay Rivers; a narrower one entering a wider one or tiled water ends one node inside it. The
+  water engine can't cross-fade objects, so sections meet by a small overlap: tiles are drawn 1 m larger
+  than their squares (no hairline gaps between tilted neighbours).
 - **River objects along centrelines (`server/riverlines.py`, 2026-10-13):** after the user's look at the
   "Downhill Mayhem" map (each of its two rivers is one River with 24-130 nodes, 5 m deep, the surface
   following the valley, `flowMagnitudePhysics` 35 / 100 m/s pushing cars). Overture water lines (river /
