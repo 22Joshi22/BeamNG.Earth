@@ -133,5 +133,14 @@ class RegionalTest(unittest.TestCase):
         self.assertEqual(self.g(veg.G_DECIDUOUS, 9, 25.8, -80.2, 50, u=0.9), veg.G_DECIDUOUS)
 
 
+class DilateTest(unittest.TestCase):
+    def test_grows_by_r_in_both_axes(self):
+        m = np.zeros((9, 9), bool)
+        m[4, 4] = True
+        d = veg._dilate(m, 2)
+        self.assertEqual(int(d.sum()), 25)
+        self.assertTrue(d[2:7, 2:7].all())
+
+
 if __name__ == "__main__":
     unittest.main()

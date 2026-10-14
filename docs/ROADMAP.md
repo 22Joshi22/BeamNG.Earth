@@ -747,9 +747,12 @@ Next, from the photo comparisons (docs/research/streetview/fp*, base_*):
 - Building heights stay predicted where Overture has none (Baltimore 98 %): the canopy height model
   masks buildings (~0 m on roofs, checked 2026-10-14), so it cannot fill them.
 - Near ground looked pale grey in towns: built-up land was the asphalt layer (the dirt layer since
-  2026-10-14; check more places).
-- Town ground at street level has a whitish-blue sheen at grazing angles (Bishop, 2026-10-14) although
-  the photo is a plain grey: suspect the layers' roughness (sky reflections); tune with in-game A/B.
+  2026-10-14, and a share of it the mown-lawn layer: surface.py LAWN_*).
+- Town ground at street level has a whitish-blue sheen at grazing angles (Bishop, Ocean City, 2026-10-14)
+  although the photo is a plain grey: sky reflections. 2026-10-14: base roughness 206 -> 240 and the macro
+  roughness off near the camera ([0, 0.8]), as West Coast USA's terrain materials; check it is gone.
+- Forest edges along roads (humid country) get a thicket band of bigger bushes (vegetation.py EDGE_*);
+  watch the frame time on wooded roads (about +20k bushes per z14 cell).
 
 ## Bugs to look at (reported, not fixed yet)
 - **Rain particles "spazzing out"** (user, 2026-10-11): some raindrops jump around or streak across the

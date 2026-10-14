@@ -65,8 +65,8 @@
     ],
     "roughnessDetailTex": "/assets/materials/terrain/soil/dirt_crumbly/t_dirt_crumbly_r.png",
     "roughnessMacroStrength": [
-      0.5,
-      1
+      0,
+      0.8
     ],
     "roughnessMacroTex": "/assets/materials/terrain/soil/macro_clumply/t_macro_clumpy_r.png",
     "roughnessMacroTexSize": 64
@@ -114,8 +114,8 @@
       0.3
     ],
     "roughnessMacroStrength": [
-      0.5,
-      0.5
+      0,
+      0.8
     ],
     "baseColorBaseTex": "/levels/beamng_earth/art/terrains/bngEarth_base_b.png",
     "baseColorBaseTexSize": 128,
@@ -191,8 +191,8 @@
       0.3
     ],
     "roughnessMacroStrength": [
-      0.5,
-      0.5
+      0,
+      0.8
     ],
     "baseColorBaseTex": "/levels/beamng_earth/art/terrains/bngEarth_base_b.png",
     "baseColorBaseTexSize": 128,
@@ -268,8 +268,8 @@
       0.3
     ],
     "roughnessMacroStrength": [
-      0.5,
-      0.5
+      0,
+      0.8
     ],
     "baseColorBaseTex": "/levels/beamng_earth/art/terrains/bngEarth_base_b.png",
     "baseColorBaseTexSize": 128,
@@ -345,8 +345,8 @@
       0.3
     ],
     "roughnessMacroStrength": [
-      0.5,
-      0.5
+      0,
+      0.8
     ],
     "baseColorBaseTex": "/levels/beamng_earth/art/terrains/bngEarth_base_b.png",
     "baseColorBaseTexSize": 128,
@@ -422,8 +422,8 @@
       0.3
     ],
     "roughnessMacroStrength": [
-      0.5,
-      0.5
+      0,
+      0.8
     ],
     "baseColorBaseTex": "/levels/beamng_earth/art/terrains/bngEarth_base_b.png",
     "baseColorBaseTexSize": 128,
@@ -499,8 +499,8 @@
       0.3
     ],
     "roughnessMacroStrength": [
-      0.5,
-      0.5
+      0,
+      0.8
     ],
     "baseColorBaseTex": "/levels/beamng_earth/art/terrains/bngEarth_base_b.png",
     "baseColorBaseTexSize": 128,
@@ -576,8 +576,8 @@
       0.3
     ],
     "roughnessMacroStrength": [
-      0.5,
-      0.5
+      0,
+      0.8
     ],
     "baseColorBaseTex": "/levels/beamng_earth/art/terrains/bngEarth_base_b.png",
     "baseColorBaseTexSize": 128,
@@ -653,8 +653,8 @@
       0.3
     ],
     "roughnessMacroStrength": [
-      0.5,
-      0.5
+      0,
+      0.8
     ],
     "baseColorBaseTex": "/levels/beamng_earth/art/terrains/bngEarth_base_b.png",
     "baseColorBaseTexSize": 128,
@@ -730,8 +730,8 @@
       0.3
     ],
     "roughnessMacroStrength": [
-      0.5,
-      0.5
+      0,
+      0.8
     ],
     "baseColorBaseTex": "/levels/beamng_earth/art/terrains/bngEarth_base_b.png",
     "baseColorBaseTexSize": 128,

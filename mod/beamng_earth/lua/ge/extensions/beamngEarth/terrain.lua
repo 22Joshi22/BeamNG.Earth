@@ -75,7 +75,7 @@ local function look(detail, dsize, macro, msize, strength)
   -- colour: the photo carries it, the detail only adds grain (West Coast USA: 0.25 / 0.1)
   l.baseColorDetailStrength = (strength or 0.25) .. ' 0.08'
   l.normalDetailStrength, l.roughnessDetailStrength, l.aoDetailStrength = '1 0.3', '1 0.4', '0.8 0.2'
-  l.baseColorMacroStrength, l.normalMacroStrength, l.roughnessMacroStrength = '0.12 0.08', '0.5 0.3', '0.5 0.5'
+  l.baseColorMacroStrength, l.normalMacroStrength, l.roughnessMacroStrength = '0.12 0.08', '0.5 0.3', '0 0.8'
   return l
 end
 M.LOOKS = {

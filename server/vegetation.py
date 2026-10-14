@@ -31,7 +31,7 @@ import mapcells
 
 log = logging.getLogger("earthd.vegetation")
 
-VERSION = 6
+VERSION = 7
 TREE_MIN_M = 3.0
 CROWN_SPACING = 0.5          # tops kept this many crown radii apart (0.8 looked sparse: the user, 2026-10-13)
 BUSH_MIN_M = 1.0
@@ -49,6 +49,11 @@ SCATTER_CELL_M = 6.0        # the hashed scatter's grid (one candidate per cell)
 # of shrubs and vines under the trees; ours were bare ground between trunks), also under the canopy.
 SCATTER_P = {10: (0.30, 0.0), 20: (0.10, 0.04), 30: (0.01, 0.003), 60: (0.0, 0.08), 100: (0.02, 0.02)}
 UNDERSTORY = 10
+# Forest edges along roads in humid country (Columbia's photos: a wall of shrubs, saplings and vines from the
+# ground up, where ours showed bare trunks over grass): a denser band of bigger bushes within EDGE_M of a road.
+EDGE_M = 7.0
+EDGE_CELL_M = 3.0
+EDGE_P = 0.4
 MEM_CELLS = 16
 WARM_M = 1200.0              # cells within this of the player are built ahead (warm_around)
 WC = {"tree": 10, "shrub": 20, "grass": 30, "crop": 40, "built": 50, "bare": 60, "snow": 70,
@@ -98,6 +103,25 @@ def _shift_max(a, r):
     return out
 
 
+def _dilate(m, r):
+    """Bool mask grown by r pixels (a square window, separable)."""
+    out = m.copy()
+    for axis in (0, 1):
+        acc = out.copy()
+        for k in range(1, r + 1):
+            acc[tuple(slice(k, None) if a == axis else slice(None) for a in range(2))] |= \
+                out[tuple(slice(None, -k) if a == axis else slice(None) for a in range(2))]
+            acc[tuple(slice(None, -k) if a == axis else slice(None) for a in range(2))] |= \
+                out[tuple(slice(k, None) if a == axis else slice(None) for a in range(2))]
+        out = acc
+    return out
+
+
+def _dry_west(lat, lon):
+    lat, lon = np.asarray(lat), np.asarray(lon)
+    return (lon < -102.0) & (lat > 25.0) & (lat < 46.0) & ~((lon < -121.0) & (lat > 37.0))
+
+
 def regional(group, height, lat, lon, lcls, u):
     """The groups of a region (the stock maps' species: West Coast USA's pines, oaks and palms, Utah's junipers
     and desert bushes, Johnson Valley's rocks, Jungle Rock Island's palms and tropical trees) from the generic
@@ -106,7 +130,7 @@ def regional(group, height, lat, lon, lcls, u):
     g = np.asarray(group).copy()
     lat, lon, h, lcls = np.asarray(lat), np.asarray(lon), np.asarray(height), np.asarray(lcls)
     west_coast = (lon < -114.0) & (lat > 32.0) & (lat < 49.5)
-    dry_west = (lon < -102.0) & (lat > 25.0) & (lat < 46.0) & ~((lon < -121.0) & (lat > 37.0))
+    dry_west = _dry_west(lat, lon)
     open_dry = dry_west & np.isin(lcls, (WC["shrub"], WC["bare"], WC["grass"]))
     tropics = np.abs(lat) < 23.5
     warm_coast = ((lat < 30.5) & (lon > -100.0) & (lon < -79.0)) | ((lat < 34.6) & (lon < -114.0) & (lat > 20.0))
@@ -311,7 +335,49 @@ class Vegetation:
                      _hash01(gx, gy, 5).astype(np.float32), (u2 * 360.0).astype(np.float32),
                      (0.85 + 0.3 * _hash01(gx, gy, 6)).astype(np.float32))
         scatter = self._scatter(cd, lc, blocked, chm, hs)
-        return _concat(tree, scatter)
+        edge = self._edge(cd, lc, blocked, road, chm, hs)
+        return _concat(_concat(tree, scatter), edge)
+
+    def _edge(self, cd, lc, blocked, road, chm, hs):
+        """The thicket along forest edges beside roads (EDGE_*), outside the dry West."""
+        if lc is None or not road.any():
+            return _empty()
+        lon0, lat0, lon1, lat1 = cd.bounds
+        if _dry_west(np.array([(lat0 + lat1) / 2]), np.array([(lon0 + lon1) / 2]))[0]:
+            return _empty()
+        band = _dilate(road, max(1, int(round(EDGE_M / chm.dx)))) & ~blocked
+        if not band.any():
+            return _empty()
+        ex0, ey0 = _to3857(lon0, lat0)
+        ex1, ey1 = _to3857(lon1, lat1)
+        s = EDGE_CELL_M
+        GI, GJ = np.meshgrid(np.arange(math.floor(ex0 / s), math.ceil(ex1 / s)),
+                             np.arange(math.floor(ey0 / s), math.ceil(ey1 / s)))
+        GI, GJ = GI.ravel(), GJ.ravel()
+        px = (GI + _hash01(GI, GJ, 21)) * s
+        py = (GJ + _hash01(GI, GJ, 22)) * s
+        c_ = np.floor((px - chm.x0) / chm.dx).astype(np.int64)
+        r_ = np.floor((chm.y0 - py) / chm.dy).astype(np.int64)
+        ok = (px >= ex0) & (px < ex1) & (py >= ey0) & (py < ey1) & (c_ >= 0) & (c_ < hs.shape[1]) \
+            & (r_ >= 0) & (r_ < hs.shape[0])
+        ok[ok] &= band[r_[ok], c_[ok]] & (hs[r_[ok], c_[ok]] >= TREE_MIN_M)     # under the forest's canopy
+        ok &= _hash01(GI, GJ, 23) < EDGE_P
+        if not ok.any():
+            return _empty()
+        GI, GJ, px, py = GI[ok], GJ[ok], px[ok], py[ok]
+        lon, lat = _to4326(px, py)
+        cls = lc.sample(lon, lat)
+        forest = cls == WC["tree"]          # not under street trees in town
+        if not forest.any():
+            return _empty()
+        GI, GJ, lon, lat, cls = GI[forest], GJ[forest], lon[forest], lat[forest], cls[forest]
+        size = 1.2 + 1.8 * _hash01(GI, GJ, 24)
+        n = len(lon)
+        return Items(lon, lat, size.astype(np.float32), (size * 0.6).astype(np.float32),
+                     np.full(n, KIND_BUSH, np.uint8),
+                     regional(np.full(n, G_SHRUB, np.uint8), size, lat, lon, cls, _hash01(GI, GJ, 25)),
+                     _hash01(GI, GJ, 26).astype(np.float32), (_hash01(GI, GJ, 27) * 360.0).astype(np.float32),
+                     (0.8 + 0.4 * _hash01(GI, GJ, 28)).astype(np.float32))
 
     def _scatter(self, cd, lc, blocked, chm, hs):
         """Bushes and rocks on a hashed SCATTER_CELL_M grid over shrubland, grass and bare ground."""
