@@ -1129,7 +1129,7 @@ def drains(run, side, caps, walk_w=None):
 
 
 def build_tile(frame, tx, ty, cells, elev, urban_fn=None, walks=None, bridges=None, widths=None, props=None,
-               lines=None):
+               lines=None, wires=None):
     """The chunks of one tile. cells: the mapgeom.Features of the "roads" layer of every cell touching
     the tile; elev(lat, lon) -> metres (the DEM); urban_fn: as road_specs. Features in several cells are
     taken once (by id). The carriageways, then each road's sidewalks / gutters / markings (extras), cut
@@ -1252,7 +1252,7 @@ def build_tile(frame, tx, ty, cells, elev, urban_fn=None, walks=None, bridges=No
         lines.extend((pts[:, :2], spec.width / 2) for _, spec, pts, _ in roads)
     if props is not None and walks is not None:     # street lights and utility poles (furniture.py)
         import furniture
-        props.extend(furniture.place(roads, walks, (x0, y0, x1, y1)))
+        props.extend(furniture.place(roads, walks, (x0, y0, x1, y1), wires=wires))
     return chunks
 
 
@@ -1297,7 +1297,7 @@ class Tracker:
 
 
 def write_tile(out_dir, vfs_dir, aid, tx, ty, chunks, walks=None, road_mesh=None, deck_mesh=None, bld=None,
-               props=None):
+               props=None, wires=None):
     """Write a tile's chunks (atomically), its sidewalk mesh (walks: build_tile's runs, if any:
     `walks_<a>_<tx>_<ty>.cdae`, announced in the tile as "walk": {shape, pos}) and its road mesh
     (road_mesh: roadmesh.build's result: `road_<a>_<tx>_<ty>.cdae`, "road": {shape, pos}; the mod then
@@ -1343,6 +1343,15 @@ def write_tile(out_dir, vfs_dir, aid, tx, ty, chunks, walks=None, road_mesh=None
         boxes["bld"] = bld[1]
     if boxes:
         data["colliders"] = boxes
+    if wires:                       # utility pole wires (furniture.wire_mesh), render-only
+        import cdae
+        import furniture
+        x0, y0, _, _ = tile_bbox(tx, ty)
+        wm = furniture.wire_mesh(wires, (x0, y0, 0.0))
+        if wm is not None:
+            shape = f"wire_{aid}_{tx}_{ty}.cdae"
+            cdae.write(os.path.join(out_dir, shape), wm[0], wm[1], uvs=wm[2], material="bne_wire", object_name="wires")
+            data["wire"] = {"shape": f"{vfs_dir}/{shape}", "pos": [x0, y0, 0.0]}
     if props:                       # furniture.place's rows: Forest items (trees.lua), groups by index
         groups = sorted({r[0] for r in props})
         data["props"] = {"groups": groups, "items": [[groups.index(r[0])] + r[1:] for r in props]}

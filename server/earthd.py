@@ -849,8 +849,9 @@ class Server:
                     elev)
         props = [] if self.buildings else None
         lines = [] if self.buildings else None
+        wires = [] if self.buildings else None
         chunks = roadsmod.build_tile(anchor.frame, tx, ty, cells, elev, urban, walks=walks, bridges=anchor.bridges,
-                                     widths=self.road_widths, props=props, lines=lines)
+                                     widths=self.road_widths, props=props, lines=lines, wires=wires)
         if self.airports is not None:   # runway markings, drawn by the road mesh like the lane lines
             chunks += self.airports.tile_chunks(anchor.frame, tx, ty, elev, roadsmod.tile_bbox)
         x0, y0, _, _ = roadsmod.tile_bbox(tx, ty)
@@ -863,7 +864,7 @@ class Server:
                                          lambda la, lo: self.ground(anchor.frame, la, lo, self.dem.sample(la, lo, zoom)),
                                          lines, props)
         return roadsmod.write_tile(self.out_dir, self.vfs_dir, aid, tx, ty, chunks, walks if self.sidewalks else None,
-                                   mesh, dmesh, bld, props)
+                                   mesh, dmesh, bld, props, wires)
 
     def ground(self, frame, la, lo, z):
         """blockworker.ground here: runways graded in, the sea floor carved."""

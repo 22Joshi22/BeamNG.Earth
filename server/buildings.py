@@ -36,6 +36,7 @@ CORNICE_UP_M = 0.2
 # Materials (mod/.../art/shapes/beamngEarth/buildings.materials.json): the window sheets in a few tints, the
 # shop / office sheet, roofs, plain walls.
 FACADE_TINTS = ("bne_bld_fac_white", "bne_bld_fac_cream", "bne_bld_fac_sand", "bne_bld_fac_grey")
+PAINT_TINTS = ("bne_bld_fac_blue", "bne_bld_fac_green", "bne_bld_fac_rose", "bne_bld_fac_yellow")   # painted houses
 BRICK_TINTS = ("bne_bld_fac_white", "bne_bld_fac_brickdark", "bne_bld_fac_brickwarm")   # the brick band's
 SHOP = "bne_bld_shop"
 OFFICE = "bne_bld_office"
@@ -43,7 +44,7 @@ ROOF_FLAT = "bne_bld_roof_flat"
 ROOF_SLATE = "bne_bld_roof_slate"
 ROOF_SHINGLE = "bne_bld_roof_shingle"
 SIDING = "bne_bld_siding"
-MATERIALS = FACADE_TINTS + BRICK_TINTS[1:] + (SHOP, OFFICE, ROOF_FLAT, ROOF_SLATE, ROOF_SHINGLE, SIDING)
+MATERIALS = FACADE_TINTS + BRICK_TINTS[1:] + PAINT_TINTS + (SHOP, OFFICE, ROOF_FLAT, ROOF_SLATE, ROOF_SHINGLE, SIDING)
 
 # The window sheets' bands, top of the image first (v in Collada convention: v = 1 at the image top).
 # (sheet, band index, bays per 1024 px)
@@ -281,6 +282,8 @@ def plan(ring, attrs, neighbours=0, lat=None, lon=None):
                 facade = BRICK_TINTS[int(seed * 7919) % len(BRICK_TINTS)]
             else:
                 facade = FACADE_TINTS[int(seed * 7919) % len(FACADE_TINTS)]
+                if (row or cls in HOUSE_CLASSES) and _hash01(seed, "paint") < 0.3:
+                    facade = PAINT_TINTS[int(_hash01(seed, "pc") * len(PAINT_TINTS))]
                 if row or cls in HOUSE_CLASSES or roof != "flat":
                     band = BAND_SASH if seed < 0.7 else BAND_PANEL
                 else:

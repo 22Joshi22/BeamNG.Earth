@@ -82,7 +82,57 @@ def _clear(p, others, own):
     return True
 
 
-def place(roads, walks, box, curb_h=0.15):
+WIRE_ARMS = (-0.8, 0.0, 0.8)    # m along the cross-arm (the pole's local x) of the three wires
+WIRE_Z = 7.9                    # m above the pole's base (s_powerpole_3wire: 8.2 m tall above its origin)
+WIRE_SAG = 0.012                # sag per metre of span
+WIRE_SEG_M = 5.0
+WIRE_R = 0.012                  # m half width of a wire's ribbons
+
+
+def wire_lines(poles):
+    """Polylines (k, 3) of the wires between consecutive poles [(x, y, z, yaw_deg)] of one road side."""
+    out = []
+    for (x0, y0, z0, w0), (x1, y1, z1, w1) in zip(poles[:-1], poles[1:]):
+        span = math.hypot(x1 - x0, y1 - y0)
+        if span < 5.0 or span > 80.0:
+            continue
+        k = max(2, int(math.ceil(span / WIRE_SEG_M)))
+        t = np.linspace(0.0, 1.0, k + 1)
+        for off in WIRE_ARMS:
+            a = np.array([x0 + math.cos(math.radians(w0)) * off, y0 + math.sin(math.radians(w0)) * off, z0 + WIRE_Z])
+            b = np.array([x1 + math.cos(math.radians(w1)) * off, y1 + math.sin(math.radians(w1)) * off, z1 + WIRE_Z])
+            p = a[None] + (b - a)[None] * t[:, None]
+            p[:, 2] -= 4.0 * WIRE_SAG * span * t * (1.0 - t)
+            out.append(p)
+    return out
+
+
+def wire_mesh(lines, origin):
+    """A mesh of the wires: two crossed ribbons per segment (seen from any side): (positions, tris, uvs)."""
+    P, T = [], []
+    ox, oy, oz = origin
+    for line in lines:
+        for a, b in zip(line[:-1], line[1:]):
+            d = b - a
+            L = float(np.linalg.norm(d))
+            if L < 1e-6:
+                continue
+            d /= L
+            side = np.cross(d, [0.0, 0.0, 1.0])
+            side = side / (np.linalg.norm(side) or 1.0) * WIRE_R
+            up = np.cross(side, d)
+            up = up / (np.linalg.norm(up) or 1.0) * WIRE_R
+            for v in (side, up):
+                i = len(P)
+                P += [a - v, b - v, b + v, a + v]
+                T += [(i, i + 1, i + 2), (i, i + 2, i + 3), (i, i + 2, i + 1), (i, i + 3, i + 2)]
+    if not P:
+        return None
+    P = np.array(P) - np.array([ox, oy, oz])
+    return P, np.array(T, np.int64), np.zeros((len(P), 2))
+
+
+def place(roads, walks, box, curb_h=0.15, wires=None):
     """Rows [group, x, y, z, yaw, scale, height, rank] (trees.lua's tile rows) of the lamps and poles of a
     tile box (x0, y0, x1, y1). roads: build_tile's (fid, spec, centreline (k, 3), lon); walks: its sidewalk
     runs (dicts with fid, pts, side, w)."""
@@ -141,14 +191,32 @@ def place(roads, walks, box, curb_h=0.15):
         if not len(s):
             continue
         P, D = _at(line, s)
+        run = []
         for p, d in zip(P, D):
             n = np.array([-d[1], d[0]]) * side
             q = p[:2] + n * (spec.width / 2 + POLE_OFF_M)
-            if not (x0 <= q[0] < x1 and y0 <= q[1] < y1):
-                continue
+            inside = x0 <= q[0] < x1 and y0 <= q[1] < y1
             if not _clear(np.array([q[0], q[1], p[2]]), others, fid):
+                if len(run) > 1 and wires is not None:
+                    wires.extend(_own_spans(run, box))
+                run = []
                 continue
             # the cross-arm (local x) across the road, the wires (local y) along it
-            rows.append([G_POLE, round(float(q[0]), 2), round(float(q[1]), 2), round(float(p[2]), 2),
-                         round(_yaw(n[0], n[1]), 1), 1.0, 9.2, 0.0])
+            yaw = _yaw(n[0], n[1])
+            run.append((float(q[0]), float(q[1]), float(p[2]), yaw))
+            if inside:
+                rows.append([G_POLE, round(float(q[0]), 2), round(float(q[1]), 2), round(float(p[2]), 2),
+                             round(yaw, 1), 1.0, 9.2, 0.0])
+        if len(run) > 1 and wires is not None:
+            wires.extend(_own_spans(run, box))
     return rows
+
+
+def _own_spans(run, box):
+    """The wires of the spans of a run of poles that start in the tile (each span drawn by one tile)."""
+    x0, y0, x1, y1 = box
+    out = []
+    for a, b in zip(run[:-1], run[1:]):
+        if x0 <= a[0] < x1 and y0 <= a[1] < y1:
+            out.extend(wire_lines([a, b]))
+    return out

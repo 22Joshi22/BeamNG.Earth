@@ -315,5 +315,136 @@
    {}
   ],
   "translucent": false
+ },
+ "bne_bld_fac_blue": {
+  "name": "bne_bld_fac_blue",
+  "mapTo": "bne_bld_fac_blue",
+  "class": "Material",
+  "version": 1.5,
+  "persistentId": "719f5327-955c-5abb-8799-3c656e5544d4",
+  "Stages": [
+   {
+    "baseColorMap": "/assets/materials/trim/plaster/t_highrise_plaster/t_highrise_plaster_b.color.png",
+    "normalMap": "/assets/materials/trim/plaster/t_highrise_plaster/t_highrise_plaster_nm.normal.png",
+    "roughnessMap": "/assets/materials/trim/plaster/t_highrise_plaster/t_highrise_plaster_r.data.png",
+    "ambientOcclusionMap": "/assets/materials/trim/plaster/t_highrise_plaster/t_highrise_plaster_ao.data.png",
+    "metallicMap": "/assets/materials/trim/plaster/t_highrise_plaster/t_highrise_plaster_m.data.png",
+    "baseColorFactor": [
+     0.8,
+     0.87,
+     0.96,
+     1
+    ],
+    "emissiveMap": "/assets/materials/trim/plaster/t_highrise_plaster/t_highrise_plaster_e.color.png"
+   },
+   {},
+   {},
+   {}
+  ],
+  "translucent": false
+ },
+ "bne_bld_fac_green": {
+  "name": "bne_bld_fac_green",
+  "mapTo": "bne_bld_fac_green",
+  "class": "Material",
+  "version": 1.5,
+  "persistentId": "639f1afe-f33f-5251-90d5-da5cd5296233",
+  "Stages": [
+   {
+    "baseColorMap": "/assets/materials/trim/plaster/t_highrise_plaster/t_highrise_plaster_b.color.png",
+    "normalMap": "/assets/materials/trim/plaster/t_highrise_plaster/t_highrise_plaster_nm.normal.png",
+    "roughnessMap": "/assets/materials/trim/plaster/t_highrise_plaster/t_highrise_plaster_r.data.png",
+    "ambientOcclusionMap": "/assets/materials/trim/plaster/t_highrise_plaster/t_highrise_plaster_ao.data.png",
+    "metallicMap": "/assets/materials/trim/plaster/t_highrise_plaster/t_highrise_plaster_m.data.png",
+    "baseColorFactor": [
+     0.84,
+     0.92,
+     0.82,
+     1
+    ],
+    "emissiveMap": "/assets/materials/trim/plaster/t_highrise_plaster/t_highrise_plaster_e.color.png"
+   },
+   {},
+   {},
+   {}
+  ],
+  "translucent": false
+ },
+ "bne_bld_fac_rose": {
+  "name": "bne_bld_fac_rose",
+  "mapTo": "bne_bld_fac_rose",
+  "class": "Material",
+  "version": 1.5,
+  "persistentId": "a010714e-b06a-586c-927f-6b02a37b681c",
+  "Stages": [
+   {
+    "baseColorMap": "/assets/materials/trim/plaster/t_highrise_plaster/t_highrise_plaster_b.color.png",
+    "normalMap": "/assets/materials/trim/plaster/t_highrise_plaster/t_highrise_plaster_nm.normal.png",
+    "roughnessMap": "/assets/materials/trim/plaster/t_highrise_plaster/t_highrise_plaster_r.data.png",
+    "ambientOcclusionMap": "/assets/materials/trim/plaster/t_highrise_plaster/t_highrise_plaster_ao.data.png",
+    "metallicMap": "/assets/materials/trim/plaster/t_highrise_plaster/t_highrise_plaster_m.data.png",
+    "baseColorFactor": [
+     0.99,
+     0.86,
+     0.82,
+     1
+    ],
+    "emissiveMap": "/assets/materials/trim/plaster/t_highrise_plaster/t_highrise_plaster_e.color.png"
+   },
+   {},
+   {},
+   {}
+  ],
+  "translucent": false
+ },
+ "bne_bld_fac_yellow": {
+  "name": "bne_bld_fac_yellow",
+  "mapTo": "bne_bld_fac_yellow",
+  "class": "Material",
+  "version": 1.5,
+  "persistentId": "9c97cc80-44f3-51ee-a4db-559e7e404937",
+  "Stages": [
+   {
+    "baseColorMap": "/assets/materials/trim/plaster/t_highrise_plaster/t_highrise_plaster_b.color.png",
+    "normalMap": "/assets/materials/trim/plaster/t_highrise_plaster/t_highrise_plaster_nm.normal.png",
+    "roughnessMap": "/assets/materials/trim/plaster/t_highrise_plaster/t_highrise_plaster_r.data.png",
+    "ambientOcclusionMap": "/assets/materials/trim/plaster/t_highrise_plaster/t_highrise_plaster_ao.data.png",
+    "metallicMap": "/assets/materials/trim/plaster/t_highrise_plaster/t_highrise_plaster_m.data.png",
+    "baseColorFactor": [
+     1.0,
+     0.95,
+     0.72,
+     1
+    ],
+    "emissiveMap": "/assets/materials/trim/plaster/t_highrise_plaster/t_highrise_plaster_e.color.png"
+   },
+   {},
+   {},
+   {}
+  ],
+  "translucent": false
+ },
+ "bne_wire": {
+  "name": "bne_wire",
+  "mapTo": "bne_wire",
+  "class": "Material",
+  "version": 1.5,
+  "persistentId": "4427f09c-97c9-58db-ac29-b44ed5fa5bac",
+  "Stages": [
+   {
+    "baseColorFactor": [
+     0.05,
+     0.05,
+     0.05,
+     1
+    ],
+    "roughnessFactor": 0.6,
+    "metallicFactor": 0
+   },
+   {},
+   {},
+   {}
+  ],
+  "translucent": false
  }
 }

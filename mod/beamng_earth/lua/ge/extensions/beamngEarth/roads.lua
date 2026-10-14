@@ -95,6 +95,7 @@ local function dropTile(key)
   if t.road then deleteQ[#deleteQ + 1] = t.road end
   if t.deck then deleteQ[#deleteQ + 1] = t.deck end
   if t.bld then deleteQ[#deleteQ + 1] = t.bld end
+  if t.wire then deleteQ[#deleteQ + 1] = t.wire end
   if t.props then require('beamngEarth/trees').dropKey((key:gsub(':', ':p', 1))) end
   tiles[key] = nil
 end
@@ -183,6 +184,9 @@ function M.onTile(msg, currentAnchor)
   if type(data.props) == 'table' and type(data.props.items) == 'table' then   -- street lights, poles (trees.lua)
     require('beamngEarth/trees').onRows(msg.anchorId, 'p' .. tostring(msg.key), data.props.items, data.props.groups)
     tiles[key].props = true
+  end
+  if type(data.wire) == 'table' and data.wire.shape and type(data.wire.pos) == 'table' then    -- pole wires
+    walkQ[#walkQ + 1] = { key = key, walk = data.wire, what = 'wire' }
   end
   for _, what in ipairs({ 'walk', 'deck', 'bld' }) do  -- sidewalks, bridge decks, buildings: colliding meshes
     local w = data[what]
@@ -298,10 +302,10 @@ function M.update(gov, currentAnchor)
         for _, f in ipairs(M.MATERIAL_FILES) do loadJsonMaterialsFile(f) end
         loadedMaterials = true
       end
-      local isRoad = q.what == 'road'
+      local isRoad = q.what == 'road' or q.what == 'wire'   -- render-only meshes
       local ok, id = pcall(createWalk, q.walk, not isRoad)
       if ok then
-        if isRoad then t.road = id else t[q.what] = id; collisionDirty = true; newColliders[#newColliders + 1] = { id, q } end
+        if isRoad then t[q.what] = id else t[q.what] = id; collisionDirty = true; newColliders[#newColliders + 1] = { id, q } end
       else lastError = tostring(id) end
       gov:charge('roadWalk', now() - t0)
       sinceChange = stopwatch.new()
