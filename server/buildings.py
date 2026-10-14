@@ -47,10 +47,13 @@ SIDING = "bne_bld_siding"
 FACADE = "bne_bld_facade"    # the plaster window sheet, tinted per building by vertex colour
 STUCCO = "bne_bld_stucco"   # plain stucco walls (windows laid over them from the sheet)
 ROOF_METAL = "bne_bld_roof_metal"   # standing-seam metal (barns, sheds, farm buildings)
+PANEL = "bne_bld_panel"     # precast concrete panels (big-box stores, strip malls)
+METALWALL = "bne_bld_metalwall"     # corrugated metal walls (warehouses, factories)
+BIG_BOX_M2 = 1200.0         # m2: a low commercial building this big is a big box (blank walls, one storefront)
 BARN_CLASSES = {"barn", "farm_auxiliary", "stable", "cowshed"}
 # The mesh's materials (vertColor: each building's colours are its vertices'); the names above are the
 # looks plan() picks, each one of these with a colour (LOOKS).
-MATERIALS = (FACADE, SHOP, OFFICE, ROOF_FLAT, ROOF_SLATE, ROOF_SHINGLE, SIDING, STUCCO, ROOF_METAL)
+MATERIALS = (FACADE, SHOP, OFFICE, ROOF_FLAT, ROOF_SLATE, ROOF_SHINGLE, SIDING, STUCCO, ROOF_METAL, PANEL, METALWALL)
 LOOKS = {
     "bne_bld_fac_white": (FACADE, (1.0, 1.0, 1.0)), "bne_bld_fac_cream": (FACADE, (1.0, 0.93, 0.80)),
     "bne_bld_fac_sand": (FACADE, (0.92, 0.82, 0.68)), "bne_bld_fac_grey": (FACADE, (0.80, 0.82, 0.84)),
@@ -69,6 +72,8 @@ WALL_TINTS = {               # houses with plain walls and laid-over windows: th
     SIDING: ((0.96, 0.95, 0.92), (0.90, 0.86, 0.76), (0.78, 0.84, 0.90), (0.95, 0.92, 0.74), (0.78, 0.84, 0.74),
              (0.82, 0.78, 0.72), (0.70, 0.72, 0.75), (0.62, 0.20, 0.17), (0.66, 0.24, 0.20)),   # the last: barn red
     STUCCO: ((1.0, 0.97, 0.90), (0.96, 0.88, 0.74), (0.93, 0.80, 0.68), (0.98, 0.95, 0.88), (0.88, 0.84, 0.78)),
+    PANEL: ((0.96, 0.94, 0.89), (0.86, 0.86, 0.86), (0.92, 0.85, 0.74), (0.78, 0.80, 0.82), (0.88, 0.78, 0.68)),
+    METALWALL: ((0.88, 0.89, 0.90), (0.72, 0.74, 0.77), (0.84, 0.80, 0.72), (0.66, 0.72, 0.78)),
 }
 for _m, _cs in list(ROOF_TINTS.items()) + list(WALL_TINTS.items()):
     for _k, _c in enumerate(_cs):
@@ -219,7 +224,7 @@ def oriented_box(p):
 
 class Spec:
     """What is built for one footprint (decided by plan())."""
-    __slots__ = ("ring", "floors", "floor_h", "height", "roof", "roof_mat", "facade", "band", "shop", "plain", "min_h", "wall", "door",
+    __slots__ = ("ring", "floors", "floor_h", "height", "roof", "roof_mat", "facade", "band", "shop", "plain", "min_h", "wall", "door", "windows", "front",
                  "seed")
 
     def __init__(self, **kw):
@@ -348,6 +353,12 @@ def plan(ring, attrs, neighbours=0, lat=None, lon=None, look=None, town=False):
         if kind is not None:
             wall = f"{kind}|{int(_hash01(seed, 'wc') * len(WALL_TINTS[kind]))}"
             facade = wall
+    windows = True
+    if not (shed or barn or row or house) and nf <= 2 and roof == "flat" and (area >= BIG_BOX_M2 or industrial) \
+            and cls not in HOUSE_CLASSES and cls != "apartments":
+        kind = METALWALL if industrial else PANEL
+        wall = f"{kind}|{int(_hash01(seed, 'wc') * len(WALL_TINTS[kind]))}"
+        facade, windows = wall, False
     roof_mat = ROOF_FLAT if roof == "flat" else (ROOF_SLATE if seed < 0.5 else ROOF_SHINGLE)
     if (barn or shed) and roof != "flat":
         roof_mat = ROOF_METAL
@@ -358,7 +369,8 @@ def plan(ring, attrs, neighbours=0, lat=None, lon=None, look=None, town=False):
             int(_hash01(seed, "sc") * (len(tints) - 2))
         facade = f"{SIDING}|{k}"
     return Spec(ring=ring, floors=nf, floor_h=floor_h, height=h, roof=roof, roof_mat=roof_mat, facade=facade,
-                band=band, shop=shop and not shed and nf >= 1, plain=plain, seed=seed, min_h=0.0, wall=wall)
+                band=band, shop=shop and not shed and nf >= 1, plain=plain, seed=seed, min_h=0.0, wall=wall,
+                windows=windows)
 
 
 class Mesh:
@@ -419,12 +431,25 @@ DOOR_GAP_M = 0.75           # m each side of a front door kept free of the groun
 WIN_OUT_M = 0.03            # m the window stands proud of its wall
 
 
-def _plain_wall_with_windows(m, spec, a, b, L, z0, z_eave, wallmat, mat_idx):
+def _plain_wall_with_windows(m, spec, a, b, L, z0, z_eave, wallmat, mat_idx, edge=None):
     """A wall of a plain tileable material (world-scaled UV) with sash windows laid over it, a whole
     number per floor centred in their bays."""
     su = SIDING_UV_M
     m.quad((a[0], a[1], z0), (b[0], b[1], z0), (b[0], b[1], z_eave), (a[0], a[1], z_eave),
            (0, z0 / su), (L / su, z0 / su), (L / su, z_eave / su), (0, z_eave / su), wallmat)
+    if spec.windows is False:
+        if spec.front is not None and spec.front == edge and L > 4.0:
+            # a big box's storefront: the shopfront band over the wall, a whole number of its bays
+            d = (b - a) / L
+            out = np.array([d[1], -d[0]]) * WIN_OUT_M
+            base = z_eave - spec.floors * spec.floor_h
+            zt = min(base + GROUND_FLOOR_SHOP_M, z_eave - 0.6)
+            nbs = max(1, int(round(L * 0.7 / (TILE_PX_M / BAND_SHOP[1]))))
+            v0, v1 = _band_v(BAND_SHOP, BAND_SHOP[0])
+            p, q = a + d * (L * 0.15) + out, a + d * (L * 0.85) + out
+            m.quad((p[0], p[1], base), (q[0], q[1], base), (q[0], q[1], zt), (p[0], p[1], zt),
+                   (0, v0), (nbs / BAND_SHOP[1], v0), (nbs / BAND_SHOP[1], v1), (0, v1), mat_idx[SHOP])
+        return
     nb = int(L // HOUSE_BAY_M)
     if nb < 1 or L < 2.0:
         return
@@ -456,7 +481,7 @@ def _walls(m, spec, ring, z0, z_eave, mat_idx, lite=False):
         if L < 0.05:
             continue
         if spec.wall:
-            _plain_wall_with_windows(m, spec, a, b, L, z0, z_eave, fac, mat_idx)
+            _plain_wall_with_windows(m, spec, a, b, L, z0, z_eave, fac, mat_idx, i)
             continue
         if spec.plain:
             u1 = L / SIDING_UV_M
@@ -906,6 +931,9 @@ def doors(items, lines, x0, y0, drives=None):
         if best is None:
             continue
         _, a, d, Le, out, edge, on_main, kseg = best
+        if spec.windows is False:
+            spec.front = edge                   # a big box: its storefront faces the road
+            continue
         if spec.shop:
             continue
         if on_main and not spec.wall and spec.roof == "flat" \

@@ -262,5 +262,55 @@
    {}
   ],
   "translucent": false
+ },
+ "bne_bld_panel": {
+  "name": "bne_bld_panel",
+  "mapTo": "bne_bld_panel",
+  "class": "Material",
+  "version": 1.5,
+  "persistentId": "65ccf532-3cd2-5fac-b635-1d06925aa72b",
+  "Stages": [
+   {
+    "baseColorMap": "/assets/materials/tileable/concrete/concrete_precast1/t_concrete_precast1_b.color.png",
+    "roughnessFactor": 0.85,
+    "metallicFactor": 0,
+    "baseColorFactor": [
+     1,
+     1,
+     1,
+     1
+    ],
+    "vertColor": true
+   },
+   {},
+   {},
+   {}
+  ],
+  "translucent": false
+ },
+ "bne_bld_metalwall": {
+  "name": "bne_bld_metalwall",
+  "mapTo": "bne_bld_metalwall",
+  "class": "Material",
+  "version": 1.5,
+  "persistentId": "963589b7-88d1-5d21-a5e3-96d1d8858c82",
+  "Stages": [
+   {
+    "baseColorMap": "/assets/materials/tileable/metal/m_metal_wall_corrugate/t_metal_wall_corrugated_b.color.png",
+    "roughnessFactor": 0.85,
+    "metallicFactor": 0,
+    "baseColorFactor": [
+     1,
+     1,
+     1,
+     1
+    ],
+    "vertColor": true
+   },
+   {},
+   {},
+   {}
+  ],
+  "translucent": false
  }
 }

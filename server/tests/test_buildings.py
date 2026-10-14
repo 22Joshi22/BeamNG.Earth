@@ -44,6 +44,16 @@ class PlanTest(unittest.TestCase):
         roofs = {bld.plan(rect(x * 50, 0, 10, 8), {"class": "house"}).roof for x in range(20)}
         self.assertEqual(roofs, {"gabled", "hipped"})
 
+    def test_big_box_blank_walls_one_storefront(self):
+        s = bld.plan(rect(0, 0, 60, 40), {"class": "retail"}, 0, 38.57, -109.55, town=True)
+        self.assertFalse(s.windows)
+        self.assertTrue(s.wall.startswith(bld.PANEL))
+        rows = bld.doors([(s, 0.0, 0.0)], [(np.array([(-50.0, -10.0), (200.0, -10.0)]), 6.0, "trunk", True)], 0.0, 0.0)
+        self.assertEqual(rows, [])
+        self.assertEqual(s.front, 0, "the south wall faces the road")
+        P, UV, T, M, mats, C = bld.build([(s, 0.0, 0.0)])
+        self.assertIn(bld.MATERIALS.index(bld.SHOP), set(M.tolist()))
+
     def test_barn_gabled_metal(self):
         s = bld.plan(rect(0, 0, 30, 15), {"class": "barn"}, 0, 40.0, -76.1)
         self.assertEqual(s.roof, "gabled")
