@@ -1339,6 +1339,14 @@ position; vehicles see water they drive into, but not water that appears around 
   `gridElementSize` size / 64. Four made per frame; changed keys only. A car slower than 1 m/s inside a
   new tile is re-placed where it is (`setPositionRotation`), since a parked car does not notice water
   that appears around it. Cleared on disconnect, a new anchor and unload.
+- **Physics block:** a vehicle takes one water object at a time, the newest one it is in (2026-10-13:
+  on the edge between two tiles only the nodes over one were in water, 495 / 950; re-creating either
+  block flipped which). So `sea.lua` keeps one more block, `bngEarthSeaPhys`, not drawn
+  (`setRenderEnabled(false)` keeps its physics; `setHidden` would not), 256 m square around the player
+  at the level of the tile under it, and makes it again (so it is the newest) after a batch of new
+  tiles, when the player is within 64 m of its edge, or when the level under it changes by > 5 cm.
+  A car in the water (below the level + 1 m) and slower than 1 m/s is then re-placed where it is.
+  Tile edges at Fells Point: 950 / 950 nodes in water.
 - **Cost (Sandy Point, 83 tiles, 2026-10-13):** 99 vs 102 fps at eye level, 108 vs 119 from 200 m.
 - **Lakes (2026-10-13):** Overture `lake`, `reservoir`, `pond` and `water` polygons (not fountains,
   pools, basins, drains or intermittent water) go into the same per-cell raster as the sea, which now

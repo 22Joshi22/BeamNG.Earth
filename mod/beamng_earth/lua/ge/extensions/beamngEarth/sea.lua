@@ -10,6 +10,13 @@ M.CREATE_PER_FRAME = 4  -- tiles made per frame (a full set of ~50 in under a se
 M.NUDGE_SPEED = 1.0     -- m/s: a car slower than this inside a new tile is re-placed where it is, so its
                         -- physics sees the water (a parked car only notices water when it moves)
 M.PREFIX = 'bngEarthSea_'
+-- A vehicle takes one water object at a time, the one made last that it is in (2026-10-13: on the edge
+-- between two tiles only the nodes over one of them were in water). So one more block, not drawn,
+-- PHYS_SIZE m square around the player at the level of the tile under it, is made again after any
+-- new tile (it must be the newest) and when the player nears its edge or the level under it changes.
+M.PHYS_SIZE = 256
+M.PHYS_MARGIN = 64      -- m: made again around the player when it is closer than this to its edge
+M.PHYS_NAME = 'bngEarthSeaPhys'
 
 -- East Coast USA's ocean ("Ocean", levels/east_coast_usa/main), its colours made murkier (a bay, not
 -- the open Atlantic); core textures where that level's own may be missing
@@ -44,10 +51,20 @@ local TEXTURES = {      -- field, East Coast's file, the core fallback
 local want = nil         -- { anchorId, tiles = { key -> tile } } from the server, or nil
 local made = {}         -- key -> { id, t }
 local madeAnchor = nil
-M.created, M.nudges = 0, 0
+local phys = nil        -- { id, x, y, z } of the physics block
+local physStale = false -- tiles were made since it was: made again once a frame makes none
+M.created, M.nudges, M.physMade = 0, 0, 0
 
 local function exists(p)
   return not FS or FS:fileExists(p)
+end
+
+local function removePhys()
+  if phys then
+    local o = scenetree.findObjectById(phys.id)
+    if o then o:delete() end
+    phys = nil
+  end
 end
 
 local function removeAll()
@@ -56,6 +73,34 @@ local function removeAll()
     if o then o:delete() end
   end
   made, madeAnchor = {}, nil
+  removePhys()
+end
+
+-- The tile of the server's set the point is in (the nearest centre if on an edge), or nil.
+local function tileAt(p)
+  local best, bd
+  for _, t in pairs(want and want.tiles or {}) do
+    if math.abs(p.x - t.x) <= t.size / 2 and math.abs(p.y - t.y) <= t.size / 2 then
+      local d = (p.x - t.x) ^ 2 + (p.y - t.y) ^ 2
+      if not bd or d < bd then best, bd = t, d end
+    end
+  end
+  return best
+end
+
+local function makePhys(p, z)
+  removePhys()
+  local o = createObject('WaterBlock')
+  for _, f in ipairs(FIELDS) do o:setField(f[1], f[2], f[3]) end
+  o:setField('gridElementSize', 0, tostring(M.PHYS_SIZE / 16))
+  o:setPosition(vec3(p.x, p.y, z))
+  o:setScale(vec3(M.PHYS_SIZE, M.PHYS_SIZE, M.DEPTH_M))
+  o.canSave = false
+  o:registerObject(M.PHYS_NAME)
+  if scenetree.MissionGroup then scenetree.MissionGroup:addObject(o) end
+  if o.setRenderEnabled then o:setRenderEnabled(false) end
+  phys = { id = o:getId(), x = p.x, y = p.y, z = z }
+  M.physMade = M.physMade + 1
 end
 
 local function create(key, t)
@@ -79,7 +124,7 @@ local function create(key, t)
 end
 
 local function inside(t, p)
-  return math.abs(p.x - t.x) <= t.size / 2 and math.abs(p.y - t.y) <= t.size / 2 and p.z < t.z + 5
+  return math.abs(p.x - t.x) <= t.size / 2 and math.abs(p.y - t.y) <= t.size / 2
 end
 
 -- A 'sea' message: { anchorId, tiles = { {key, x, y, z, size, nx, ny}, ... } }.
@@ -115,8 +160,20 @@ function M.update(anchorId, player)
       if n >= M.CREATE_PER_FRAME then break end
       create(key, t)
       n = n + 1
-      if player and inside(t, player) then nudge = true end
+      if player and inside(t, player) and player.z < t.z + 1 then nudge = true end
     end
+  end
+  if player then
+    local t = tileAt(player)
+    if not t then
+      if phys then removePhys() end
+    elseif (physStale and n == 0) or not phys or math.abs(player.x - phys.x) > M.PHYS_SIZE / 2 - M.PHYS_MARGIN
+        or math.abs(player.y - phys.y) > M.PHYS_SIZE / 2 - M.PHYS_MARGIN or math.abs(t.z - phys.z) > 0.05 then
+      makePhys(player, t.z)
+      physStale = false
+      if player.z < t.z + 1 then nudge = true end      -- in the water: its physics must take this one
+    end
+    if n > 0 then physStale = true end
   end
   if nudge and player then
     local speed = math.sqrt((player.vx or 0) ^ 2 + (player.vy or 0) ^ 2 + (player.vz or 0) ^ 2)
@@ -137,7 +194,7 @@ end
 
 -- Level end: the level deletes its objects itself.
 function M.reset()
-  want, made, madeAnchor = nil, {}, nil
+  want, made, madeAnchor, phys, physStale = nil, {}, nil, nil, false
 end
 
 function M.status()
@@ -145,7 +202,8 @@ function M.status()
   for _ in pairs(made) do n = n + 1 end
   local w = 0
   for _ in pairs(want and want.tiles or {}) do w = w + 1 end
-  return { tiles = n, want = w, created = M.created, nudges = M.nudges }
+  return { tiles = n, want = w, created = M.created, nudges = M.nudges, physMade = M.physMade,
+    phys = phys and phys.z or nil }
 end
 
 -- A reloaded module (extensions.reload) deletes the tiles (and the old WaterPlane) the old one left.
@@ -153,7 +211,7 @@ do
   if scenetree and scenetree.findClassObjects then
     for _, cls in ipairs({ 'WaterBlock', 'WaterPlane' }) do
       for _, name in ipairs(scenetree.findClassObjects(cls) or {}) do
-        if tostring(name):sub(1, #M.PREFIX) == M.PREFIX or name == 'bngEarthSea' then
+        if tostring(name):sub(1, #M.PREFIX) == M.PREFIX or name == 'bngEarthSea' or name == M.PHYS_NAME then
           local o = scenetree.findObject(name)
           if o then o:delete() end
         end
