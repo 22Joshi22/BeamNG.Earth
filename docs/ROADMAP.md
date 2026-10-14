@@ -694,6 +694,17 @@ Gameplay
 - **Generated challenges**: point-to-point time trials between real places, a timed Cannonball run
   with checkpoints, delivery jobs between real towns.
 
+## Water: paused 2026-10-13 (user: "still some issues but I want to move on, come back later")
+Built (`--sea on`, still default off): the sea (curved WaterBlock tiles, NOAA bathymetry), lakes and wide
+rivers (tiles fitted to the water, carved beds), narrow rivers and streams (River objects along the
+centrelines, carved channels, ripples flowing downstream, a current). Known issues to come back to:
+- Confluences and river mouths still look confused in places; holes reported in a lake and in places
+  along rivers; a faint darker seam where tiles overlap.
+- Water vanishing close to the camera seen again (River near mesh: SubdivideLength / vertex limits).
+- Stretched river textures at tight bends (the texture follows the centreline).
+- Up to 120 inland tiles near a big river (Harrisburg): measure the frame cost; merge tiles.
+- Canals with locks, intermittent streams, glossy far water, lava (volcanoes), default on.
+
 ## User requests 2026-10-13 (after water; in this order unless the user reorders)
 - **Lava (later, user idea):** River / WaterBlock objects with `liquidType` lava (the "Downhill Mayhem"
   map's lava pools: orange, emissive, density 10000) for volcanoes or other places with lava.
