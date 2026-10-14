@@ -106,6 +106,8 @@ jsonEncode = function(t) return t end            -- the test's Sim reads the tab
 Sim = { deserializeObjectFromText = function(def)
   local o = S.newObject('River')
   function o:getId() return self.id end
+  function o:reloadTextures() self.reloaded = true end
+  function o:regenerate() self.regenerated = true end
   o.def = def
   o:registerObject(def.name)
   defs[#defs + 1] = def
@@ -124,6 +126,7 @@ T.check(rv ~= nil and #rv.def.nodes == 3 and rv.def.nodes[2][3] == 9.8 and rv.de
   'a River along the nodes: their heights and widths')
 T.check(rv.def.nodes[1][8] == 1 and rv.fields.flowMagnitudePhysics == '0.6' and rv.canSave == false,
   'upright, flowing at the server\'s speed, not saved')
+T.check(rv.reloaded and rv.regenerated, 'textures and mesh built again after styling')
 T.check(sea.status().rivers == 1, 'counted')
 sea.update(3, player)
 T.check(sea.riversMade == 1, 'made once')

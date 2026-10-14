@@ -115,6 +115,10 @@ local function createRiver(key, r)
   o:setField('flowMagnitudePhysics', 0, tostring(r.flow))
   o.canSave = false
   if scenetree.MissionGroup and o.getGroup and not o:getGroup() then scenetree.MissionGroup:addObject(o) end
+  -- styled after it was made: its textures and its near (high-detail) mesh are built again now (without,
+  -- it drew "NO MATERIAL" and vanished within LowLODDistance of the camera, 2026-10-13)
+  if o.reloadTextures then o:reloadTextures() end
+  if o.regenerate then o:regenerate() end
   madeRivers[key] = o:getId()
   M.riversMade = M.riversMade + 1
 end
