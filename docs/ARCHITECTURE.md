@@ -1024,6 +1024,14 @@ three days of testing: dem 741 MB / 7.5k files, imagery 1.4 GB / 35k, deshadow 7
   took 6-8 s and physics blocks ~6 s (15-35 s under load, so the car outran its ground). Now tiles
   take ~0.5 s and blocks 1.6-2.4 s.
 
+### Road look updates (2026-10-14, from the street photo comparisons)
+- Two-way urban trunks (town main streets on state highways) get sidewalks, lamps; urban trunks not
+  lined by buildings default to 4 lanes (13.2 m); white dashed lane lines where the driving width holds
+  2+ lanes a direction; white edge lines on urban roads without curbs too.
+- Curb ramps: the tactile pad is the first 0.6 m of the slope (tinted yellow); brick sidewalks on 55 % of
+  the streets of dense brick-region cores; parking lots (Overture infrastructure `parking`) are the
+  asphalt ground layer (no grass); built-up land is the dirt layer.
+
 ### Raised sidewalks, curbs and storm drains (`server/sidewalks.py`; 2026-10-11)
 - Asked by the user ("will that include making the curbs and sidewalks 3d?"). A curb is a sharp
   15 cm step, which neither the height field (1 m+ samples) nor a decal can draw.
@@ -1492,6 +1500,11 @@ The user: "make the world look alive ... look like a professionally made map".
     takes the building's; raised parts get an underside.
   - cornices on flat roofs up to 6 storeys, boxes on flat roofs over 250 m2, front doors (Building
     Architect kit, Forest items) on the wall facing the nearest road.
+  - big boxes (low commercial, 1200 m2+) and warehouses: blank precast-panel / corrugated walls with one
+    storefront band on the wall facing the road; barns gabled with metal roofs, barn red or white;
+    shopfronts on the ground floors along urban main streets; towns (< 16 % footprint cover) mostly
+    1-2 storeys; airport terminals / hangars / parking garages by name (Overture names them, no class).
+  - driveways (asphalt strips in the road mesh) from siding / stucco houses to the road's edge.
 - **Far tiles** (`bldfar_tile` / `bldfar_drop`, 256 m squares to 1600 m): the same buildings, lite mesh (no
   cornices, boxes, per-bay quads), render-only; `roads.lua` hides one while the road tile of its square
   shows its own colliding buildings, and makes them only once the near meshes are all made (they share
@@ -1500,6 +1513,10 @@ The user: "make the world look alive ... look like a professionally made map".
 - Tests: `server/tests/test_buildings.py`.
 
 ## Street furniture (`server/furniture.py`; 2026-10-14, with `--buildings on`)
+
+- Towns (road tiles under 30 % footprint cover): wired wooden utility poles every 40 m on one side with
+  a cobra-head lamp on every other pole, instead of metal lamp posts; dense cores keep the posts.
+- Hydrants every 120 m on town streets (alternating sides), benches and bins on major ones.
 
 - Street lights on the sidewalk runs, 0.5 m from the curb, arm over the road (East Coast USA's
   `eca_lamppost`): residential streets one side every 40 m, tertiary / secondary / primary both sides
