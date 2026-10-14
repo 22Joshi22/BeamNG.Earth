@@ -55,7 +55,7 @@ only, nothing redistributed. Licence notes marked *(verify)* must be re-checked 
 | Pillow | image decoding and encoding | MIT-CMU (HPND) | in use |
 | LuaJIT | offline tests of the mod's Lua | MIT | in use (tests) |
 | GeographicLib (data files) | gravity model data | MIT (library) / NGA data public domain | in use |
-| Leaflet | world map page | BSD-2-Clause | planned |
+| Leaflet | world map page | BSD-2-Clause | not used: the in-game world map (`EarthMap.vue`, `mapmath.js`) is our own code. Its tiles come from the imagery chain above (USGS, EOX Sentinel-2 cloudless 2023 / 2016) through `server/maptiles.py` on 127.0.0.1 and show that same attribution; no new source, no online geocoding |
 | DuckDB | reading Overture GeoParquet (`server/overture.py`; no extensions) | MIT | branch (feature/mapdata) |
 | fsspec | the filesystem interface DuckDB reads the remote files through (`server/rangeread.py`) | BSD-3-Clause | branch (feature/mapdata) |
 | Git, GitHub, GitHub CLI | version control and hosting | GPL-2.0 (git) / MIT (gh) | in use |

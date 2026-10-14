@@ -109,6 +109,7 @@ import riverlines as riverlinesmod  # noqa: E402
 import groundahead as groundaheadmod  # noqa: E402
 import heightmap  # noqa: E402
 import imagery as imagerymod  # noqa: E402
+import maptiles as maptilesmod  # noqa: E402
 import netfetch  # noqa: E402
 import protocol  # noqa: E402
 import weather as weathermod  # noqa: E402
@@ -513,6 +514,7 @@ class Server:
                                            leaf_on=leaf_on, season_mode=season_mode)
                         if imagery else None)
         self.imagery_failures = 0           # tiles that fell back to the palette (network trouble)
+        self.map_port = None                # the in-game map's tile endpoint (maptiles.py), hello.mapPort
         # (anchorId, key) of cached tiles built with the palette because the imagery failed; shown in
         # the status note (re-texturing them once the host is back is a ROADMAP follow-up)
         self.degraded = set()
@@ -1860,6 +1862,8 @@ class Connection:
             season_mode = getattr(self.s.imagery, "season_mode", "off") if self.s.imagery is not None else "off"
             if season_mode not in (None, "off"):    # --season: the mod tints the trees' leaves to match (seasonlook.lua)
                 m["season"] = season_mode
+            if self.s.map_port:                 # the world map's tiles (maptiles.py; --map-tiles on)
+                m["mapPort"] = self.s.map_port
             # a game that outlived its server: keep the session folders its tiles still use
             self.s.claim_sessions(self, msg.get("sessions"))
             self.send(m)
@@ -2687,6 +2691,14 @@ async def main_async(args):
             except Exception:           # a file-system error must not stop the sweeps (or the server)
                 log.exception("session sweep failed")
     sweeper = asyncio.create_task(sessions())
+    map_srv = None
+    if getattr(args, "map_tiles", "on") == "on" and server.imagery is not None:
+        try:                        # the world map's tiles, 127.0.0.1 only (a failure only loses the map)
+            map_srv, server.map_port = await maptilesmod.MapTiles(server.imagery).start(
+                getattr(args, "map_port", 0))
+            log.info("map tiles on http://127.0.0.1:%d/tiles/{z}/{x}/{y}.jpg", server.map_port)
+        except OSError as e:
+            log.warning("map tiles off: %s", e)
     srv = await asyncio.start_server(
         lambda r, w: Connection(server, r, w).run(), "127.0.0.1", args.port)
     port = srv.sockets[0].getsockname()[1]
@@ -2708,6 +2720,8 @@ async def main_async(args):
         ticker.cancel()
         lagger.cancel()
         sweeper.cancel()
+        if map_srv is not None:
+            map_srv.close()
         net.close()                 # today's request counters
         disk.close()                # the cache's last uses
 
@@ -2870,6 +2884,11 @@ def main():
                     help="ground models under the physics block from ESA WorldCover land cover and the slope "
                          "(surface.py: asphalt, grass, dusty / loose dirt, rock, snow, mud, dirt), imported as 8 "
                          "terrain layers with each block (the mod's grass grows on them); off = dirt everywhere")
+    ap.add_argument("--map-tiles", choices=("on", "off"), default="on",
+                    help="serve the in-game world map's tiles (the imagery chain, z/x/y JPEG) over HTTP on "
+                         "127.0.0.1; its port goes in hello.mapPort (needs imagery)")
+    ap.add_argument("--map-port", type=int, default=0,
+                    help="port of the map tile endpoint (default 0: any free port, sent in hello.mapPort)")
     ap.add_argument("--credits", choices=("on", "off"), default="on",
                     help="'credits' messages: the imagery / elevation / weather sources of the tiles within 2 km "
                          "of the player and of the far field, for the mod's on-screen data credits (on change, "

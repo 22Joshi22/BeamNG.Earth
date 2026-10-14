@@ -404,6 +404,67 @@ function M.uiPlaceGoText(text) return placesCall(places.uiGoText, text) end
 function M.uiPlaceGoRecent(i, lat, lon) return placesCall(places.uiGoRecent, i, lat, lon) end
 
 ------------------------------------------------------------------------------------------
+-- The world map (ui/ui-vue/mods/beamngEarth/EarthMap.vue: a route of its own, and a pause-menu
+-- button; tiles from the server's 127.0.0.1 endpoint, server/maptiles.py, port in hello.mapPort).
+
+M.MAP_ROUTE = 'beamngEarthMap' -- index.js registers the route under this name
+local mapOpen = false
+
+-- The player's heading in degrees clockwise from north (the bubble's +y is north, +x east), or nil.
+local function playerHeading()
+  local gpv = rawget(_G, 'getPlayerVehicle')
+  local veh = gpv and gpv(0)
+  if not veh then return nil end
+  local ok, dir = pcall(function() return veh:getDirectionVector() end)
+  if not ok or not dir then return nil end
+  if math.abs(dir.x) + math.abs(dir.y) < 1e-6 then return nil end
+  return (math.deg(math.atan2(dir.x, dir.y)) + 360) % 360
+end
+
+-- What the map polls every second: the player, the places, the tile endpoint, the credits.
+function M.uiMapState()
+  local core = ext('beamngEarth_core')
+  local st = core and core._state and core._state() or nil
+  local pl = st and st.player
+  local ok, ps = pcall(places.uiState)
+  if not ok then ps = { places = {}, recent = {} } end
+  return {
+    connected = net.isConnected(), connection = net.state(),
+    mapPort = net.isConnected() and st and st.mapPort or nil,
+    player = (pl and pl.lat) and { lat = pl.lat, lon = pl.lon, heading = playerHeading(), speed = pl.speed } or nil,
+    places = ps.places, recent = ps.recent, cannotGo = ps.cannotGo,
+    attribution = core and core.attribution and core.attribution() or '',
+  }
+end
+
+-- Teleport from the map (the page asked "Teleport here?" first); recorded in the recent places.
+function M.uiMapTeleport(lat, lon, name)
+  local ok, why = places.goTo(lat, lon, name)
+  return { ok = ok and true or false, error = (not ok) and why or nil }
+end
+
+-- "lat, lon" typed in the map's search box -> { lat, lon } or { error }.
+function M.uiMapParse(text)
+  local lat, lon = places.parseLatLon(text)
+  if not lat then return { error = lon } end
+  return { lat = lat, lon = lon }
+end
+
+function M.mapOpened(on) mapOpen = on and true or false end
+
+-- The key binding (actions/beamngEarth.json, Alt+M): open the map, or close it back to driving.
+function M.toggleMap()
+  local gh = rawget(_G, 'guihooks')
+  if not gh then return end
+  if mapOpen then
+    gh.trigger('ChangeState', { state = 'play' })
+    mapOpen = false
+  else
+    gh.trigger('ChangeState', { state = M.MAP_ROUTE })
+  end
+end
+
+------------------------------------------------------------------------------------------
 -- extension hooks
 
 function M.onExtensionLoaded()

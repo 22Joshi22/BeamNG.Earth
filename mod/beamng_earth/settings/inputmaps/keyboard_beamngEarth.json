@@ -1,6 +1,8 @@
 {
+  "displayName": "Keyboard",
   "bindings":[
     {"control":"ctrl shift n", "action":"beamngEarth_reportNote"},
-    {"control":"ctrl shift b", "action":"beamngEarth_reportBench"}
+    {"control":"ctrl shift b", "action":"beamngEarth_reportBench"},
+    {"control": "alt m", "action": "beamngEarth_mapToggle"}
   ]
 }
