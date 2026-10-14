@@ -85,6 +85,27 @@ class GraphTest(unittest.TestCase):
 
 
 
+class SignalsTest(unittest.TestCase):
+    def test_no_stop_on_a_link_inside_one_intersection(self):
+        import roads
+        sp = roads.Spec(8.0, "paved", True, "residential", False)
+        nodes = {"cJ": [0.0, 0.0, 0.0, 4], "cK": [0.0, 8.0, 0.0, 4], "s1": [0.0, -40.0, 0.0, 2],
+                 "cW": [-40.0, 0.0, 0.0, 2], "cE": [40.0, 0.0, 0.0, 2]}
+        arms = {"cJ": [("n", sp, np.array([0.0, 1.0]), 0.0, 1), ("s", sp, np.array([0.0, -1.0]), 0.0, 0),
+                       ("w", sp, np.array([-1.0, 0.0]), 0.0, 1), ("e", sp, np.array([1.0, 0.0]), 0.0, 0)]}
+        approaches = {("cJ", "n", 1): ("cK", True), ("cJ", "s", 0): ("s1", True), ("cJ", "w", 1): ("cW", True),
+                      ("cJ", "e", 0): ("cE", True)}
+        import furniture
+        orig = furniture.junction_controls
+        furniture.junction_controls = lambda a, k: [(x, furniture.G_STOP) for x in a]     # an all-way stop
+        try:
+            out = navgraph._signals(arms, approaches, nodes)
+        finally:
+            furniture.junction_controls = orig
+        got = {ap[0] for ap in out[0]["app"]}
+        self.assertEqual(got, {"s1", "cW", "cE"}, "the 8 m link from the next connector gets no stop")
+
+
 class RulesTest(unittest.TestCase):
     def test_driving_side_and_signals_by_country(self):
         self.assertEqual(navgraph.road_rules("US"), {"rightHandDrive": False, "turnOnRed": True, "redYellow": False,

@@ -257,6 +257,10 @@ def build(frame, feats_list, elev, centre, urban_fn=None, window=WINDOW_M, decks
 
 
 STOP_BACK_M = 2.0           # the stop point: this far before the junction's widest road edge
+# An approach this short is a link inside one intersection (offset streets split it into connectors a few metres
+# apart: Fells Point): no stop or signal on it. A car that had stopped at the first node met the next one's stop
+# line behind it and waited forever (in game 2026-10-14, a queue of four at an all-way stop).
+SHORT_APPROACH_M = 15.0
 
 
 def _signals(arms, approaches, nodes, left_hand=False):
@@ -284,6 +288,9 @@ def _signals(arms, approaches, nodes, left_hand=False):
             nb, incoming = approaches.get((name, fid, end), (None, False))
             if not incoming or nb not in nodes:
                 continue
+            if str(nb).startswith("c") and math.hypot(nodes[nb][0] - nodes[name][0],
+                                                      nodes[nb][1] - nodes[name][1]) < SHORT_APPROACH_M:
+                continue            # from another connector a few metres away (a road vertex there is no reason)
             inc = -u
             right = np.array([inc[1], -inc[0]]) * (-1 if left_hand else 1)     # the side traffic keeps to
             q = np.array([jx, jy]) + u * (wide + STOP_BACK_M) + right * (spec.width / 4)
