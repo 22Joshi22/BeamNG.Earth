@@ -89,6 +89,9 @@ MEASURE_MAX = 3.0               # a measured carriageway at most this times the 
 SIDEWALK_CLASSES = {"residential", "tertiary", "secondary", "primary", "unclassified", "living_street"}
 CENTRE_CLASSES = {"primary", "secondary", "tertiary", "trunk"}
 EDGE_LINE_CLASSES = {"primary", "secondary", "tertiary", "trunk", "motorway"}
+LANE_CLASSES = {"primary", "secondary", "tertiary", "trunk", "motorway"}
+LANE_M = 3.3            # m per lane when counting the lanes a carriageway holds
+LANE_LINE = {"m": "line_dashed_long", "tl": 12.0, "p": 6, "w": 0.12}     # West Coast USA's 3 m dash, 9 m gap
 CUT_MARGIN = 0.5                # m: a sidewalk / line stops this far outside a crossing road's carriageway
 MIN_PIECE_M = 3.0               # shorter sidewalk / line pieces are dropped
 NEAR_M = 40.0                   # roads this far outside the tile still cut its sidewalks / lines
@@ -718,6 +721,20 @@ def extras(spec, pts, lon):
         look = {"m": centre_colour(lon), "tl": CENTRE["tl"], "p": CENTRE["p"]}
         for side in (1, -1):
             out.append((look, CENTRE["w"], offset_polyline(pts, side * CENTRE["gap"])))
+    if kind == "paved" and cls in LANE_CLASSES:
+        # lane lines (white dashes) where the driving width holds two or more lanes a direction
+        drive = w - (2 * PARKING_M if urban and not spec.oneway else PARKING_M if urban else 0.0)
+        lanes = int(drive // LANE_M)
+        if spec.oneway and lanes >= 2:
+            lw = drive / lanes
+            for k in range(1, lanes):
+                out.append((LANE_LINE, LANE_LINE["w"], offset_polyline(pts, -drive / 2 + k * lw)))
+        elif not spec.oneway and lanes >= 4:
+            n = lanes // 2
+            lw = drive / 2 / n
+            for side in (1, -1):
+                for k in range(1, n):
+                    out.append((LANE_LINE, LANE_LINE["w"], offset_polyline(pts, side * k * lw)))
     if kind == "paved" and not urban and cls in EDGE_LINE_CLASSES:
         for side in (1, -1):
             out.append((EDGE_LINE, EDGE_LINE["w"], offset_polyline(pts, side * (w / 2 - EDGE_LINE["inset"]))))
