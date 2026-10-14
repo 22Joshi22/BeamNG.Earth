@@ -264,7 +264,8 @@ def plan(ring, attrs, neighbours=0, lat=None, lon=None, look=None, town=False, d
         "garage" in name and area > 800)
     narrow = hw < 4.2 and hl > 2.2 * hw                 # a row house: ~4-8 m wide, deep
     # in a dense core small buildings are row houses even where the footprints leave gaps (Fells Point)
-    row = cls in ROW_CLASSES or (narrow and (neighbours >= 1 or dense)) or (dense and area < 260 and not shop)
+    row = cls in ROW_CLASSES or (narrow and (neighbours >= 1 or dense)) or (
+        dense and area < 260 and cls not in SHOP_CLASSES)
     shed = cls in SHED_CLASSES or (area < 40 and not row)
     shop = cls in SHOP_CLASSES
     industrial = cls in INDUSTRIAL_CLASSES or (area > 2500 and cls in ("", "commercial"))

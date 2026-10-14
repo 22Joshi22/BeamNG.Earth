@@ -68,6 +68,11 @@ class PlanTest(unittest.TestCase):
         P = bld.build([(c, 0.0, 0.0)])[0]
         self.assertGreater(P[:, 2].max(), 25.0, "a spire over the nave")
 
+    def test_dense_core_small_buildings_are_row_houses(self):
+        s = bld.plan(rect(0, 0, 8, 12), {"class": "house"}, 0, 39.28, -76.59, dense=True)
+        self.assertEqual(s.roof, "flat")
+        self.assertIsNone(s.wall)
+
     def test_barn_gabled_metal(self):
         s = bld.plan(rect(0, 0, 30, 15), {"class": "barn"}, 0, 40.0, -76.1)
         self.assertEqual(s.roof, "gabled")
