@@ -30,7 +30,12 @@ in a few minutes. No programming needed.
 - Press **Alt+M** for the **world map**: satellite imagery, your car's position and heading, and your
   saved places. Drag to pan, scroll to zoom, click anywhere (or a saved place) and confirm to
   teleport there. The search box finds saved places or a typed "latitude, longitude". Alt+M or Esc
-  closes it. (Plain M is still the game's own map.)
+  closes it. In the BeamNG.Earth level the game's own map key (**M**) and the pause menu's **Map**
+  open this map too.
+- **Right-click** the map for a menu: **Teleport here**, **Set GPS destination** or **Save this
+  place**. The GPS uses the game's own route arrows on the road. The road network only exists
+  around you, so far destinations are routed in steps that update as you drive; the map shows the
+  remaining distance (**Clear** stops it).
 - The map's **Places** panel (on the right; "Places ›" hides it) lets you save where you are, type
   (or paste from Google Maps) a "latitude, longitude" and press **Go**, go to, rename or delete your
   saved places, and jump back to recent ones. Click a place's name to see it on the map.

@@ -460,6 +460,7 @@ function M.uiMapState()
     player = (pl and pl.lat) and { lat = pl.lat, lon = pl.lon, heading = playerHeading(), speed = pl.speed } or nil,
     places = ps.places, recent = ps.recent, cannotGo = ps.cannotGo,
     attribution = core and core.attribution and core.attribution() or '',
+    gps = require('beamngEarth/gps').status(),
   }
 end
 
@@ -467,6 +468,13 @@ end
 function M.uiMapTeleport(lat, lon, name)
   local ok, why = places.goTo(lat, lon, name)
   return { ok = ok and true or false, error = (not ok) and why or nil }
+end
+
+-- The map's right-click "Set GPS destination" / "Clear GPS" (gps.lua: the game's own route arrows).
+function M.uiMapGps(lat, lon, name)
+  local gps = require('beamngEarth/gps')
+  if lat == nil then gps.clear() return { ok = true } end
+  return { ok = gps.setDestination(lat, lon, name) }
 end
 
 -- "lat, lon" typed in the map's search box -> { lat, lon } or { error }.

@@ -57,6 +57,7 @@ local trees = require('beamngEarth/trees') -- trees, bushes, rocks (server veget
 local parking = require('beamngEarth/parking') -- parked cars on the road tiles' spots (stock gameplay_parking)
 local navgraph = require('beamngEarth/navgraph')
 local postfx = require('beamngEarth/postfx')       -- no far depth-of-field blur in our level
+local gps = require('beamngEarth/gps')               -- the game's GPS route to a place picked on the world map
 local seasonlook = require('beamngEarth/seasonlook')   -- the trees' leaves in the season (hello.season) -- the AI road graph for the stock traffic and AI (map.reset)
 
 local LEVEL_ID = 'beamng_earth'
@@ -1007,6 +1008,7 @@ local function onUpdate(dtReal, dtSim)
   postfx.update(st.inOurLevel)
   local stg = rawget(_G, 'beamngEarth_settings')
   if stg and stg.redirectBigMap then stg.redirectBigMap(st.inOurLevel) end
+  if st.inOurLevel then gps.update(st.anchor, st.player) end
   seasonlook.update(st.inOurLevel, st.anchor and st.anchor.lat)
   local frameMs = frameTimer and frameTimer:stopAndReset() or dtReal * 1000
   local cf = st.commitFrames
@@ -1151,6 +1153,7 @@ end
 
 local function onClientEndMission()
   postfx.restore()
+  gps.reset()
   do local stg = rawget(_G, 'beamngEarth_settings') if stg and stg.redirectBigMap then stg.redirectBigMap(false) end end
   seasonlook.restore()
   -- runs before the level deletes its objects (server/server.lua:19 vs :34): delete the far tiles

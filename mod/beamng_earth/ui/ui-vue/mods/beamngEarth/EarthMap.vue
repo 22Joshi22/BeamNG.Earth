@@ -7,6 +7,7 @@
       @mousedown="onDown"
       @wheel.prevent="onWheel"
       @dblclick.prevent="onDblClick"
+      @contextmenu.prevent="onContext"
     >
       <img
         v-for="t in tiles"
@@ -35,6 +36,10 @@
       >
         <div class="pin"></div>
         <div class="marker-label">{{ p.name }}</div>
+      </div>
+      <!-- the GPS destination -->
+      <div v-if="gpsScreen" class="marker gps" :style="{ left: gpsScreen.x + 'px', top: gpsScreen.y + 'px' }">
+        <div class="flag"></div>
       </div>
       <!-- the pending target -->
       <div v-if="target" class="marker target" :style="{ left: targetScreen.x + 'px', top: targetScreen.y + 'px' }">
@@ -75,6 +80,23 @@
 
     <!-- status: tiles unavailable / not connected -->
     <div v-if="notice" class="map-notice">{{ notice }}</div>
+
+    <!-- right-click menu -->
+    <div v-if="ctx" class="ctx-menu" :style="{ left: ctx.x + 'px', top: ctx.y + 'px' }" @mousedown.stop @contextmenu.prevent>
+      <div class="ctx-where">{{ fmtLatLon(ctx.lat, ctx.lon) }}</div>
+      <div class="ctx-item" :class="{ disabled: !!state.cannotGo }" @click="ctxTeleport">Teleport here</div>
+      <div class="ctx-item" @click="ctxGps">Set GPS destination</div>
+      <div class="ctx-item" @click="ctxSave">Save this place</div>
+      <div v-if="state.gps" class="ctx-item" @click="clearGps">Clear GPS</div>
+    </div>
+
+    <!-- the GPS destination -->
+    <div v-if="state.gps" class="gps-chip" @mousedown.stop>
+      <span>GPS: {{ state.gps.name || fmtLatLon(state.gps.lat, state.gps.lon) }}</span>
+      <span v-if="state.gps.dist != null" class="gps-dist">{{ fmtMiles(state.gps.dist) }}</span>
+      <button class="map-btn small" @click="showOnMap(state.gps)">Show</button>
+      <button class="map-btn small" @click="clearGps">Clear</button>
+    </div>
 
     <!-- the confirmation -->
     <div v-if="target" class="confirm" @mousedown.stop>
@@ -308,6 +330,7 @@ function localXY(ev) {
 
 function onDown(ev) {
   if (ev.button !== 0) return
+  if (ctx.value) { closeCtx(); return }
   results.value = []
   const p = localXY(ev)
   drag = { x: p.x, y: p.y, sx: p.x, sy: p.y, moved: false }
@@ -456,6 +479,54 @@ function goRecent(r) {
 function saveRecent(r) {
   const ll = `${Number(r.lat).toFixed(6)}, ${Number(r.lon).toFixed(6)}`
   placesCall(`uiPlaceAdd(${luaStr(r.name || "")}, ${luaStr(ll)})`, "Saved")
+}
+
+// ---- right-click menu: teleport / GPS / save at a point ---------------------------------------
+const ctx = ref(null)       // { x, y, lat, lon }
+function onContext(ev) {
+  const p = localXY(ev)
+  const v = view.value
+  const ll = mm.fromScreen(p.x, p.y, v.lat, v.lon, v.z, w.value, h.value)
+  ctx.value = { x: Math.min(p.x, w.value - 210), y: Math.min(p.y, h.value - 170), lat: ll.lat, lon: ll.lon }
+}
+function closeCtx() { ctx.value = null }
+function ctxTeleport() {
+  if (!ctx.value || state.value.cannotGo) return
+  const c = ctx.value
+  closeCtx()
+  askTeleport(c.lat, c.lon, "")
+}
+function ctxSave() {
+  if (!ctx.value) return
+  const c = ctx.value
+  closeCtx()
+  panelOpen.value = true
+  placesCall(`uiPlaceAdd("", ${luaStr(`${c.lat.toFixed(6)}, ${c.lon.toFixed(6)}`)})`, "Saved")
+}
+function ctxGps() {
+  if (!ctx.value) return
+  const c = ctx.value
+  closeCtx()
+  setGps(c.lat, c.lon, "")
+}
+function setGps(lat, lon, name) {
+  engineLua(`beamngEarth_settings and beamngEarth_settings.uiMapGps(${luaNum(lat)}, ${luaNum(lon)}, ${luaStr(name || "")}) or nil`, r => {
+    if (r && r.ok) state.value = { ...state.value, gps: { lat, lon, name } }
+  })
+}
+function clearGps() {
+  closeCtx()
+  engineLua("beamngEarth_settings and beamngEarth_settings.uiMapGps(nil) or nil", () => {
+    state.value = { ...state.value, gps: null }
+  })
+}
+const gpsScreen = computed(() => {
+  const g = state.value.gps
+  return g ? screen(g.lat, g.lon) : null
+})
+function fmtMiles(m) {
+  const mi = m / 1609.344
+  return mi < 0.1 ? `${Math.round(m * 3.28084)} ft` : `${mi < 10 ? mi.toFixed(1) : Math.round(mi)} mi`
 }
 
 // ---- search --------------------------------------------------------------------------------
@@ -678,6 +749,26 @@ const fmtLatLon = mm.fmtLatLon
 .item-sub { font-size: 11px; color: #9aa4ae; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .item-btns { display: flex; gap: 4px; flex-shrink: 0; }
 .panel-empty { padding: 6px 4px; font-size: 12px; color: #9aa4ae; }
+
+.ctx-menu {
+  position: absolute; z-index: 10; min-width: 190px; padding: 4px 0; background: rgba(15, 18, 22, 0.95);
+  border: 1px solid rgba(255, 255, 255, 0.2); border-radius: 5px; box-shadow: 0 3px 12px rgba(0, 0, 0, 0.5);
+}
+.ctx-where { padding: 4px 12px 6px; font-size: 11px; color: #9aa4ae; border-bottom: 1px solid rgba(255, 255, 255, 0.1); }
+.ctx-item { padding: 7px 12px; font-size: 13px; cursor: pointer; }
+.ctx-item:hover { background: rgba(224, 118, 28, 0.85); }
+.ctx-item.disabled { opacity: 0.45; cursor: default; }
+.ctx-item.disabled:hover { background: none; }
+.gps-chip {
+  position: absolute; left: 10px; top: 56px; z-index: 6; display: flex; gap: 8px; align-items: center;
+  padding: 5px 8px 5px 12px; font-size: 13px; background: rgba(15, 18, 22, 0.88); border: 1px solid #36a3ff; border-radius: 5px;
+}
+.gps-dist { color: #9fd3ff; }
+.marker.gps { z-index: 3; }
+.marker.gps .flag {
+  position: absolute; left: -9px; top: -9px; width: 18px; height: 18px; border-radius: 50% 50% 50% 0;
+  transform: rotate(-45deg); background: #36a3ff; border: 2px solid #fff; box-shadow: 0 1px 4px rgba(0, 0, 0, 0.6);
+}
 
 .map-notice {
   position: absolute; left: 50%; top: 60px; transform: translateX(-50%); z-index: 9;
