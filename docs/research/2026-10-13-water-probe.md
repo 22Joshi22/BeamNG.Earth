@@ -83,3 +83,33 @@ So the plan stays the roadmap's: bounded water per area near the player (blocks 
 - **WaterPlane hidden** with `setHidden(true)`: 0 of 950 (no physics). With "transparent" fields (baseColor alpha 0, no foam / ripples / waves) it still draws a grey sheet with sun glint, and keeps its physics.
 - **Curvature with the plane, from altitude:** 200 m above Sandy Point the plane covered Kent Island (8 km east, lifted to only 0.3 m above the plane) and the Eastern Shore (30-40 km, beyond the 30 km lift radius). The engine's own help text says the WaterPlane "is primarily designed to be viewed from ground level".
 - Sources: the BeamNG water doc (above), the Torque3D environment sources, the Flood mod (github.com/daniel-w0/beamng-flood: moves an existing WaterPlane; hides Rivers / WaterBlocks with `isRenderEnabled = false`).
+
+## Rivers: how the engine builds them, and the stock maps' values (2026-10-13 research + in-game)
+
+From Torque3D's `Engine/source/environment/river.cpp` / `waterObject.cpp` / `waterV.hlsl` (BeamNG's
+water derives from them) and the stock levels' files:
+- **Mesh:** the nodes make a Catmull-Rom spline. Each span is cut into slices every `SegmentLength`
+  (default 10). The near mesh is a grid of ceil(widest node / `SubdivideLength`) columns per segment.
+  The far mesh is two triangles per segment. A segment within `LowLODDistance` (default 50) of the camera
+  uses the near mesh, and the waves fade out at that distance.
+  - In game, a 48 m creek's near mesh was not drawn at all with SubdivideLength 3 (the creek vanished up
+    to the camera along a line that moved with it); it drew at 6 and 10. So `sea.lua` sets
+    SubdivideLength = max(6, widest / 8).
+- **Building after styling:** a River made from a definition and styled afterwards needs `reloadTextures()`
+  (else "NO MATERIAL" and white bands) and `regenerate()` (else no near mesh).
+- **Texture:** no UV channel. x is the offset across the river in metres; y is the distance along the
+  centreline. So the outer bank of a bend is stretched and an inner edge with a radius under half the
+  width folds over. Smooth centres and widths, and short slices.
+- **Flow:** `flowMagnitudePhysics` only pushes physics objects. The visible flow is the ripple layers:
+  coord = pos / rippleTexScale - rippleDir * t * rippleSpeed (tiles per second).
+  - Stock rivers: rippleDir (0, 1) along the flow; Italy uses speeds 1 / 0.25 / 0.02 on tiles 2 / 5 / 20 m.
+  - Stock flowMagnitudePhysics: 2-4 (waterfalls 5-8).
+- **Stock values:**
+  - Node spacing: 20-57 m (East Coast streams 2-12 m).
+  - Depth: 5 m.
+  - LowLODDistance: 80-150 where it is set.
+  - SegmentLength: 2-5 on Jungle Rock Island.
+  - Waves: small (0.002-0.5).
+  - Lakes (WaterBlocks): ripple speeds 0.001-0.065 in three directions.
+  - fullReflect is off everywhere.
+- **Overlapping Rivers** drew by turns as the camera moved: the pieces now share a node, never a segment.
