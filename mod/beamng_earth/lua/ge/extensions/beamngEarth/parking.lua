@@ -17,6 +17,12 @@ M.KEEP_M = 900          -- spots this close to the player are in the sites
 M.START_M = 400         -- the parked cars start / scatter once this many spots are within START_M ...
 M.START_MIN = 24        -- ... at least this many
 M.SPOT_SCL = { 2.5, 6.0, 3.0 }      -- the stock spot size (city.sites.json)
+-- The only collidable ground is the terrain block (core: lattice.groundBox), which follows the player: spots
+-- this far inside its edge only, and a parked car the block left behind (within GUARD_M of the edge or past
+-- it) goes to a spot near the player before it can fall (checked every GUARD_S).
+M.EDGE_M = 80
+M.GUARD_M = 30
+M.GUARD_S = 0.5
 M.enabled = true
 
 local spots = {}        -- tile key -> { anchor, rows }
@@ -25,6 +31,8 @@ local anchorId = nil
 local dirty = false
 local lastBuild = -math.huge   -- os.clock() of the last rebuild
 local sites = nil
+local box = nil          -- the block's ground box {x0, y0, x1, y1} the sites were built for
+local lastGuard = -math.huge
 local started = false   -- the parked cars were started once this level (the player may remove them)
 local scatterPending = false
 
@@ -73,6 +81,11 @@ local function makeSpot(r)
   return ps
 end
 
+-- Pure: point (x, y) inside box {x0, y0, x1, y1} shrunk by m.
+function M.inside(b, x, y, m)
+  return not b or (x >= b[1] + m and x <= b[3] - m and y >= b[2] + m and y <= b[4] - m)
+end
+
 -- Rebuilds the sites from the spots near the player; returns the number of spots within START_M.
 local function rebuild(player)
   sites = sites or newSites()
@@ -84,7 +97,7 @@ local function rebuild(player)
       for _, r in ipairs(t.rows) do
         local dx, dy = r[1] - player.x, r[2] - player.y
         local d2 = dx * dx + dy * dy
-        if d2 < k2 then
+        if d2 < k2 and M.inside(box, r[1], r[2], M.EDGE_M) then
           local key = M.spotKey(r)
           keep[key] = objs[key] or makeSpot(r)
           if d2 < s2 then near = near + 1 end
@@ -105,11 +118,36 @@ local function rebuild(player)
   return near
 end
 
-function M.update(aid, player)
+-- Parked cars the block left behind go to a spot near the player (gameplay_parking.forceTeleport).
+local function guard(player)
+  local gp = gameplay_parking
+  if not box or not gp or not gp.getState() then return end
+  for _, id in ipairs(gp.getParkedCarsList() or {}) do
+    local o = getObjectByID(id)
+    if o and o:getActive() then
+      local p = o:getPosition()
+      if not M.inside(box, p.x, p.y, M.GUARD_M) then
+        pcall(gp.forceTeleport, id, vec3(player.x, player.y, player.z), 0, M.START_M)
+      end
+    end
+  end
+end
+
+-- blk: the block's ground box {x0, y0, x1, y1} (nil: no limit).
+function M.update(aid, player, blk)
   if aid ~= anchorId then
     anchorId = aid
     objs = {}
     dirty = true
+  end
+  if blk and (not box or blk[1] ~= box[1] or blk[2] ~= box[2]) then
+    box = { blk[1], blk[2], blk[3], blk[4] }
+    dirty = true
+  end
+  if player and os.clock() - lastGuard >= M.GUARD_S then
+    lastGuard = os.clock()
+    local okG, errG = pcall(guard, player)
+    if not okG then log('W', 'beamngEarth', 'parking guard: ' .. tostring(errG)) end
   end
   if not M.enabled or not player or not dirty or not next(spots) then return end
   local t = os.clock()
@@ -146,6 +184,7 @@ end
 -- The level ended: the stock system forgets our sites with it.
 function M.reset()
   spots, objs, anchorId, dirty, lastBuild, sites = {}, {}, nil, false, -math.huge, nil
+  box, lastGuard = nil, -math.huge
   started, scatterPending = false, false
 end
 

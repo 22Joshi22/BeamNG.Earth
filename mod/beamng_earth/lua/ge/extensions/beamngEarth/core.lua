@@ -1042,7 +1042,13 @@ local function onUpdate(dtReal, dtSim)
     roads.update(gov, st.anchorId)
     sea.update(st.anchorId, st.player)
     trees.update(st.anchorId, st.player)
-    parking.update(st.anchorId, st.player)
+    local pb = nil
+    if st.block then
+      pb = st.parkBox or {}
+      st.parkBox = pb
+      pb[1], pb[2], pb[3], pb[4] = lattice.groundBox(st.block.cx, st.block.cy)
+    end
+    parking.update(st.anchorId, st.player, pb)
     updateSky(dtReal)
     updateGuard()
   end

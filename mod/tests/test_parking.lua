@@ -32,6 +32,7 @@ gameplay_parking = {
   getState = function() return active end,
   setupVehicles = function() setupCalls = setupCalls + 1; active = true end,
   scatterParkedCars = function() scatterCalls = scatterCalls + 1 end,
+  getParkedCarsList = function() return {} end,
 }
 settings = { getValue = function(k) return k == 'trafficParkedAmount' and 16 or nil end }
 local clock = 0
@@ -101,6 +102,16 @@ clock = clock + 3
 P.update(2, player)
 T.check(#given.parkingSpots.sorted == 40, 'a new anchor: only its spots')
 T.check(scatterCalls == 1, 'parked cars scattered onto them')
+
+-- the block: spots EDGE_M inside its ground box only
+T.check(P.inside({ 0, 0, 100, 100 }, 50, 50, 10) and not P.inside({ 0, 0, 100, 100 }, 95, 50, 10) and P.inside(nil, 1e9, 0, 10),
+  'inside the box shrunk by m (no box: anywhere)')
+P.update(2, player, { -100, -1000, 200 + P.EDGE_M, 1000 })
+clock = clock + 3
+P.update(2, player, { -100, -1000, 200 + P.EDGE_M, 1000 })
+local maxX = -1e9
+for _, ps in pairs(given.parkingSpots.objects) do maxX = math.max(maxX, ps.pos.x) end
+T.check(maxX <= 200.01 and #given.parkingSpots.sorted == 30, 'spots near the block edge left out')
 
 P.reset()
 T.check(P.status().spots == 0 and not P.status().started, 'reset')
