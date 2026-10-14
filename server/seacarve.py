@@ -31,7 +31,7 @@ import mapcells
 
 log = logging.getLogger("earthd.seacarve")
 
-VERSION = 10
+VERSION = 11
 SEA_E = 0.0                 # m: the sea surface (the DEMs' heights are above mean sea level)
 DEPTH_SLOPE = 0.15          # floor depth per metre from the shoreline (1 : 6.7)
 DEPTH_CAP = 6.0             # m: the floor's depth away from the shore without bathymetry (Chesapeake mean
@@ -64,6 +64,7 @@ RIVER_SKIP_CLASSES = ("drain", "ditch")
 RIVER_DEPTH_CAP = 3.0       # m
 RIVER_DEM_STEP = 4          # river levels: the DEM every 4th pixel (~7.5 m), the lowest of 3 x 3 such
                             # samples (the flattened surface, not a bank),
+OUTLINE_PAD_PX = 2          # the river mask spread this far past the river's water
 LINE_CELLS = 2              # stream / river lines from the 5 x 5 cells around (a way is owned by one cell)
 LINE_STEP_PX = 4            # a level every 4 px (~7.5 m) along them
 LINE_PROBE_MAX_M = 15.0     # the level: the lowest DEM within half the width, at most this far
@@ -304,6 +305,9 @@ class SeaCarver:
                 st = shore_steps(sea, kmax).astype(np.float32)
                 depth[sea] = np.minimum(target[sea], SHORE_SLOPE * (st[sea] - 0.5) * px)
             level[sea] = SEA_E
+        for _ in range(OUTLINE_PAD_PX):  # the river mask a little wider than the water: a lookup next to a
+            q = np.pad(outline, 1)      # river (the depth is bilinear) is never taken for a lake
+            outline = q[1:-1, 1:-1] | q[:-2, 1:-1] | q[2:, 1:-1] | q[1:-1, :-2] | q[1:-1, 2:]
         inner = (slice(PAD_PX, -PAD_PX), slice(PAD_PX, -PAD_PX))
         if not (np.isfinite(level[inner]).any() or outline[inner].any()):
             return None

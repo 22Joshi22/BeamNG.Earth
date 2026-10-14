@@ -279,6 +279,13 @@ class RiverTest(unittest.TestCase):
         self.assertTrue(np.all(np.diff(lv) < 0), "falls downstream")
         self.assertTrue(np.all(np.isnan(self.sc.lake_at(la, lo))), "a river is not a lake (no flat tiles)")
 
+    def test_river_edges_are_not_lakes(self):
+        """Just past a river's edge (the depth is bilinear) no lookup reads a lake: tiles would sit there."""
+        lo = RIV_LON + np.linspace(0.1, 0.9, 40) * L
+        for off in (-2.0, -0.5, 0.5, 2.0):          # metres outside the north and south edges
+            for la in (RIV_LAT + W + off / 111320.0, RIV_LAT - off / 111320.0):
+                self.assertTrue(np.all(np.isnan(self.sc.lake_at(np.full(40, la), lo))), (off, la))
+
     def test_tidal_river_is_sea(self):
         p = (np.array([RIV_LAT - 2.5 * W]), np.array([RIV_LON + L / 2]))
         d, lv = self.sc.water(*p)
