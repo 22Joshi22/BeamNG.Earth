@@ -34,8 +34,10 @@ in a few minutes. No programming needed.
   watch. Going back later is much faster (it is cached).
 
 ## Traffic
-Traffic is on by default. You can change it in the level-start traffic option, or while driving
-with the game's **radial menu** (the traffic entry), like on any other map.
+Traffic and parked cars follow your game settings, like on any other map: pick them in the
+level's start options (Disabled / Parked only / Normal / Police), or turn them on or off while
+driving with the game's **radial menu** (the traffic entry). The amounts are the game's own traffic
+settings (Options > Gameplay > Traffic).
 
 ## Something wrong? Tell us
 See the in-game report tool (**Ctrl+Shift+N**) to note what you saw and where. Issues go to
