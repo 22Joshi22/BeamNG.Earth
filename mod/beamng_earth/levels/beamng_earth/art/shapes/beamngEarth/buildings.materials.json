@@ -210,5 +210,32 @@
    {}
   ],
   "translucent": false
+ },
+ "bne_bld_stucco": {
+  "name": "bne_bld_stucco",
+  "mapTo": "bne_bld_stucco",
+  "class": "Material",
+  "version": 1.5,
+  "persistentId": "b2814772-bc31-5a54-83ce-de609df9ae58",
+  "Stages": [
+   {
+    "baseColorMap": "/assets/materials/tileable/plaster/m_stucco_white/t_stucco_white_b.color.png",
+    "normalMap": "/assets/materials/tileable/plaster/m_stucco_white/t_stucco_white_nm.normal.png",
+    "roughnessMap": "/assets/materials/tileable/plaster/m_stucco_white/t_stucco_white_r.data.png",
+    "ambientOcclusionMap": "/assets/materials/tileable/plaster/m_stucco_white/t_stucco_white_ao.data.png",
+    "metallicFactor": 0,
+    "baseColorFactor": [
+     1,
+     1,
+     1,
+     1
+    ],
+    "vertColor": true
+   },
+   {},
+   {},
+   {}
+  ],
+  "translucent": false
  }
 }

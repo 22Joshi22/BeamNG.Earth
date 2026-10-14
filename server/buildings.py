@@ -45,9 +45,10 @@ ROOF_SLATE = "bne_bld_roof_slate"
 ROOF_SHINGLE = "bne_bld_roof_shingle"
 SIDING = "bne_bld_siding"
 FACADE = "bne_bld_facade"    # the plaster window sheet, tinted per building by vertex colour
+STUCCO = "bne_bld_stucco"   # plain stucco walls (windows laid over them from the sheet)
 # The mesh's materials (vertColor: each building's colours are its vertices'); the names above are the
 # looks plan() picks, each one of these with a colour (LOOKS).
-MATERIALS = (FACADE, SHOP, OFFICE, ROOF_FLAT, ROOF_SLATE, ROOF_SHINGLE, SIDING)
+MATERIALS = (FACADE, SHOP, OFFICE, ROOF_FLAT, ROOF_SLATE, ROOF_SHINGLE, SIDING, STUCCO)
 LOOKS = {
     "bne_bld_fac_white": (FACADE, (1.0, 1.0, 1.0)), "bne_bld_fac_cream": (FACADE, (1.0, 0.93, 0.80)),
     "bne_bld_fac_sand": (FACADE, (0.92, 0.82, 0.68)), "bne_bld_fac_grey": (FACADE, (0.80, 0.82, 0.84)),
@@ -61,7 +62,12 @@ ROOF_TINTS = {               # per roof material: the colours a building's roof 
     ROOF_SLATE: ((1.0, 1.0, 1.0), (0.80, 0.66, 0.56), (0.76, 0.80, 0.90), (0.62, 0.62, 0.62)),
     ROOF_SHINGLE: ((0.75, 0.72, 0.70), (0.55, 0.50, 0.48), (0.70, 0.56, 0.48), (0.62, 0.66, 0.72)),
 }
-for _m, _cs in ROOF_TINTS.items():
+WALL_TINTS = {               # houses with plain walls and laid-over windows: their colours (hashed)
+    SIDING: ((0.96, 0.95, 0.92), (0.90, 0.86, 0.76), (0.78, 0.84, 0.90), (0.95, 0.92, 0.74), (0.78, 0.84, 0.74),
+             (0.82, 0.78, 0.72), (0.70, 0.72, 0.75)),
+    STUCCO: ((1.0, 0.97, 0.90), (0.96, 0.88, 0.74), (0.93, 0.80, 0.68), (0.98, 0.95, 0.88), (0.88, 0.84, 0.78)),
+}
+for _m, _cs in list(ROOF_TINTS.items()) + list(WALL_TINTS.items()):
     for _k, _c in enumerate(_cs):
         LOOKS[f"{_m}|{_k}"] = (_m, _c)
 JITTER = 0.06               # a building's colour varies this much (one factor, hashed)
@@ -210,7 +216,7 @@ def oriented_box(p):
 
 class Spec:
     """What is built for one footprint (decided by plan())."""
-    __slots__ = ("ring", "floors", "floor_h", "height", "roof", "roof_mat", "facade", "band", "shop", "plain", "min_h",
+    __slots__ = ("ring", "floors", "floor_h", "height", "roof", "roof_mat", "facade", "band", "shop", "plain", "min_h", "wall",
                  "seed")
 
     def __init__(self, **kw):
@@ -307,7 +313,8 @@ def plan(ring, attrs, neighbours=0, lat=None, lon=None, look=None):
             band = (BAND_OFFICE if seed < 0.5 else BAND_OFFICE2) if tall else BAND_PANEL
         else:
             u_brick = _hash01(seed, "brick")
-            brick = u_brick < brick_share(lat, lon) * (1.15 if row else 1.0)
+            detached = (cls in HOUSE_CLASSES or (area < 260 and not shop)) and not row
+            brick = u_brick < brick_share(lat, lon) * (1.15 if row else 0.35 if detached else 1.0)
             if brick:
                 band = BAND_BRICK
                 facade = BRICK_TINTS[int(seed * 7919) % len(BRICK_TINTS)]
@@ -320,10 +327,20 @@ def plan(ring, attrs, neighbours=0, lat=None, lon=None, look=None):
                 else:
                     band = (BAND_SASH, BAND_TALL, BAND_PANEL)[int(seed * 104729) % 3]
         plain = False
+    wall = None
+    house = (cls in HOUSE_CLASSES or (area < 260 and not shop and not industrial)) and not row and not shed
+    if house and band is not BAND_BRICK and nf <= 3:
+        # detached houses: siding in the East and South, stucco in the West; windows laid over the wall
+        u = _hash01(seed, "wall")
+        west = lon is not None and lon < -100.0
+        kind = (STUCCO if u < 0.65 else SIDING if u < 0.9 else None) if west else (SIDING if u < 0.75 else None)
+        if kind is not None:
+            wall = f"{kind}|{int(_hash01(seed, 'wc') * len(WALL_TINTS[kind]))}"
+            facade = wall
     roof_mat = ROOF_FLAT if roof == "flat" else (ROOF_SLATE if seed < 0.5 else ROOF_SHINGLE)
     roof_mat = f"{roof_mat}|{int(_hash01(seed, 'roof') * len(ROOF_TINTS[roof_mat]))}"
     return Spec(ring=ring, floors=nf, floor_h=floor_h, height=h, roof=roof, roof_mat=roof_mat, facade=facade,
-                band=band, shop=shop and not shed and nf >= 1, plain=plain, seed=seed, min_h=0.0)
+                band=band, shop=shop and not shed and nf >= 1, plain=plain, seed=seed, min_h=0.0, wall=wall)
 
 
 class Mesh:
@@ -376,6 +393,40 @@ def _band_v(band, k):
     return 1.0 - (k + 1) / BANDS + eps, 1.0 - k / BANDS - eps
 
 
+# A sash window cut from the plaster sheet (band 2, bay 0, its sill included): u, v ranges (Collada v up)
+WIN_UV = (53 / 1024, 154 / 1024, 1.0 - (512 + 238) / 1024, 1.0 - (512 + 45) / 1024)
+WIN_W, WIN_H, WIN_SILL = 1.05, 1.75, 0.85   # m
+HOUSE_BAY_M = 3.4           # m between a house's windows
+WIN_OUT_M = 0.03            # m the window stands proud of its wall
+
+
+def _plain_wall_with_windows(m, spec, a, b, L, z0, z_eave, wallmat, mat_idx):
+    """A wall of a plain tileable material (world-scaled UV) with sash windows laid over it, a whole
+    number per floor centred in their bays."""
+    su = SIDING_UV_M
+    m.quad((a[0], a[1], z0), (b[0], b[1], z0), (b[0], b[1], z_eave), (a[0], a[1], z_eave),
+           (0, z0 / su), (L / su, z0 / su), (L / su, z_eave / su), (0, z_eave / su), wallmat)
+    nb = int(L // HOUSE_BAY_M)
+    if nb < 1 or L < 2.0:
+        return
+    d = (b - a) / L
+    out = np.array([d[1], -d[0]]) * WIN_OUT_M
+    win = mat_idx["bne_bld_fac_white"]
+    u0, u1, v0, v1 = WIN_UV
+    base = z_eave - spec.floors * spec.floor_h
+    for f in range(spec.floors):
+        zf = base + f * spec.floor_h + WIN_SILL
+        if zf + WIN_H > z_eave - 0.2:
+            continue
+        for k in range(nb):
+            if f == 0 and nb % 2 == 1 and k == nb // 2:
+                continue                                # where a front door may stand (doors(): the middle)
+            c = a + d * (L * (k + 0.5) / nb) + out
+            p, q = c - d * WIN_W / 2, c + d * WIN_W / 2
+            m.quad((p[0], p[1], zf), (q[0], q[1], zf), (q[0], q[1], zf + WIN_H), (p[0], p[1], zf + WIN_H),
+                   (u0, v0), (u1, v0), (u1, v1), (u0, v1), win)
+
+
 def _walls(m, spec, ring, z0, z_eave, mat_idx, lite=False):
     """Each wall of the ring, floor by floor: one band of the window sheet, a whole number of bays."""
     n = len(ring)
@@ -384,6 +435,9 @@ def _walls(m, spec, ring, z0, z_eave, mat_idx, lite=False):
         a, b = ring[i], ring[(i + 1) % n]
         L = float(math.hypot(*(b - a)))
         if L < 0.05:
+            continue
+        if spec.wall:
+            _plain_wall_with_windows(m, spec, a, b, L, z0, z_eave, fac, mat_idx)
             continue
         if spec.plain:
             u1 = L / SIDING_UV_M
