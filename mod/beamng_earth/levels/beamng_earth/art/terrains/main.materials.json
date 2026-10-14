@@ -22,8 +22,8 @@
     ],
     "baseColorDetailTex": "/assets/materials/terrain/soil/dirt_crumbly/t_dirt_crumbly_b.png",
     "baseColorMacroStrength": [
-      0.3,
-      0.3
+      0.12,
+      0.08
     ],
     "baseColorMacroTex": "/assets/materials/terrain/soil/macro_clumply/t_macro_clumpy_b.png",
     "baseColorMacroTexSize": 64,

@@ -156,7 +156,7 @@ pretty(os.path.join(T, "main.materials.json"), {
         "aoMacroTex": A + "macro_clumply/t_macro_clumpy_ao.png", "aoMacroTexSize": 64,
         "baseColorBaseTex": B + "bngEarth_base_b.png", "baseColorBaseTexSize": 256,
         "baseColorDetailStrength": [0.25, 0], "baseColorDetailTex": A + "dirt_crumbly/t_dirt_crumbly_b.png",
-        "baseColorMacroStrength": [0.3, 0.3], "baseColorMacroTex": A + "macro_clumply/t_macro_clumpy_b.png", "baseColorMacroTexSize": 64,
+        "baseColorMacroStrength": [0.12, 0.08], "baseColorMacroTex": A + "macro_clumply/t_macro_clumpy_b.png", "baseColorMacroTexSize": 64,
         "detailDistances": [0, 0, 30, 60], "macroDistances": [0, 10, 100, 3000],
         "heightBaseTex": B + "bngEarth_base_h.png", "heightBaseTexSize": 256,
         "heightDetailTex": A + "dirt_crumbly/t_dirt_crumbly_h.png",
