@@ -61,6 +61,16 @@ class CurbTest(unittest.TestCase):
             else:
                 self.assertAlmostEqual(s[3], 180.0, places=0)
 
+    def test_one_way_against_its_geometry(self):
+        for k in range(50):
+            if furniture._h01(f"o{k}", "park") < parking.STREET_SHARE:
+                break
+        r = (f"o{k}", roads.Spec(9.5, "paved", True, "secondary", True), np.array([(-300.0, 50.0, 0.0), (600.0, 50.0, 0.0)]), 0.0)
+        along = parking.curb_spots([r], walks(r), (0, 0, 256, 256))
+        against = parking.curb_spots([r], walks(r), (0, 0, 256, 256), directions={f"o{k}": -1})
+        self.assertTrue(along and all(min(s[3], 360 - s[3]) < 1 for s in along), "eastbound along the geometry")
+        self.assertTrue(all(abs(s[3] - 180) < 1 for s in against), "westbound against it")
+
     def test_same_spots_from_neighbouring_tiles(self):
         r = eligible()
         a = parking.curb_spots([r], walks(r), (0, 0, 128, 256))

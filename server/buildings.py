@@ -410,6 +410,9 @@ def plan(ring, attrs, neighbours=0, lat=None, lon=None, look=None, town=False, d
     west = lon is not None and lon < -102.0
     porch = (house and roof != "flat" and not barn and not shed and area < 300
              and _hash01(seed, "porch") < (PORCH_SHARE_WEST if west else PORCH_SHARE))
+    if porch:   # pitched roofs draw the walls on the oriented box: an L-shaped house's door wall can be inside it
+        _, _, hl, hw = oriented_box(ring)
+        porch = area >= 0.9 * 4 * hl * hw
     return Spec(ring=ring, floors=nf, floor_h=floor_h, height=h, roof=roof, roof_mat=roof_mat, facade=facade,
                 band=band, shop=shop and not shed and nf >= 1, plain=plain, seed=seed, min_h=0.0, wall=wall,
                 windows=windows, steeple=church and roof == "gabled" and area < 2500, porch=porch, cls=cls)

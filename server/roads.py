@@ -1284,7 +1284,12 @@ def build_tile(frame, tx, ty, cells, elev, urban_fn=None, walks=None, bridges=No
                                      speeds={k: v for k, v in speeds.items() if v is not None}))
     if park is not None and walks is not None:      # curbside parking spots (parking.py)
         import parking
-        park.extend(parking.curb_spots(roads, walks, (x0, y0, x1, y1), left_hand))
+        dirs = {}
+        for fid, (f, i, sp) in seen.items():
+            if sp.oneway:
+                v = _rule_value(f.rules.get("oneway"), i)
+                dirs[fid] = -1 if v is not None and float(v) < 0 else 1
+        park.extend(parking.curb_spots(roads, walks, (x0, y0, x1, y1), left_hand, dirs))
     return chunks
 
 

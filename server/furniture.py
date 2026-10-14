@@ -158,7 +158,7 @@ def _arms(roads):
 def junction_controls(arms, k):
     """[(arm, G_SIGNAL | G_STOP)] of an urban junction's arms (fid, spec, unit vector away, point): signals on
     every arm where two or more major roads meet, stop signs on the minor arms meeting a major road, on the
-    stem of a minor T and on half the minor four-ways (hashed by k, the junction's key). Shared with
+    stem of a minor T and on half the minor four-ways (hashed by the junction's 8 m cell; k is unused). Shared with
     navgraph.py, so the AI's signals and stop signs are where the props stand."""
     major = [a for a in arms if a[1].cls in MAJOR]
     minor = [a for a in arms if a[1].cls in MINOR]
@@ -172,7 +172,12 @@ def junction_controls(arms, k):
         def straightest(a):
             return max(-float(a[2] @ b[2]) for b in arms if b is not a)
         return [(min(arms, key=straightest), G_STOP)] if all(a[1].cls in MINOR for a in arms) else []
-    return [(a, G_STOP) for a in minor] if _h01("allway", k) < 0.5 else []
+    # the all-way coin flip: keyed on an 8 m cell of the junction, the same from the road tiles and the road graph
+    # (whose points are at another height: a 1 m key could round differently)
+    cx_ = sum(float(a[3][0]) for a in arms) / len(arms)          # (the arms' order differs between the two)
+    cy_ = sum(float(a[3][1]) for a in arms) / len(arms)
+    key = (int(math.floor(cx_ / 8.0)), int(math.floor(cy_ / 8.0)))
+    return [(a, G_STOP) for a in minor] if _h01("allway", key) < 0.5 else []
 
 
 def junction_props(roads, box, curb_h=0.15, left_hand=False):

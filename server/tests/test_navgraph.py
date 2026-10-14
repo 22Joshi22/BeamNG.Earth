@@ -53,6 +53,24 @@ class GraphTest(unittest.TestCase):
         ys = {round(n[1]) for n in g["nodes"].values()}
         self.assertEqual(ys, {20}, "only the residential street in the window")
 
+    def test_even_lanes_and_no_parking_lanes(self):
+        import roads
+        for cls in ("residential", "tertiary", "secondary", "primary"):
+            sp = roads.Spec(roads.carriageway(cls, "paved", True), "paved", True, cls, False)
+            w = navgraph.driving_width(sp)
+            self.assertLessEqual(w, sp.width)
+            lo, li = navgraph._lanes(w, False)
+            self.assertEqual(lo, li, cls)
+
+    def test_tunnel_stretch_left_out(self):
+        f = features([[(0, 0), (300, 0)]], ["primary"], levels=[(0, -1.0, 0.4, 0.7)])
+        f.rules["connectors"] = rules([(0, "A", 0.0, 0.0), (0, "B", 1.0, 1.0)])
+        g = navgraph.build(FRAME, [f], flat, (0.0, 0.0))
+        for e in g["edges"]:
+            mid = (g["nodes"][e[0]][0] + g["nodes"][e[1]][0]) / 2
+            self.assertFalse(130 < mid < 200, "an edge over the tunnel")
+        self.assertTrue(g["edges"])
+
     def test_nodes_on_a_bridge_take_its_deck(self):
         f = features([[(0, 0), (200, 0)]], ["primary"])
         f.rules["connectors"] = rules([(0, "A", 0.0, 0.0), (0, "B", 1.0, 1.0)])

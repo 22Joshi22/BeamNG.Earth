@@ -252,7 +252,16 @@ local function applySignals(nodes)
     be:queueAllObjectLua('mapmgr.setSignals(' .. serialize(ts.getMapNodeSignals()) .. ')')
     stats.junctions = ns
     -- the road tiles' static booms stand where the switchable heads are now
-    require('beamngEarth/trees').GROUP_MAX_M.signal = next(heads) and 0 or 500
+    local trees = require('beamngEarth/trees')
+    local grid = {}
+    for _, h in pairs(heads) do grid[math.floor(h.x / 4) .. ',' .. math.floor(h.y / 4)] = true end
+    trees.suppress = function(g, x, y)
+      if g ~= 'signal' then return false end
+      local cx, cy = math.floor(x / 4), math.floor(y / 4)
+      for dx = -1, 1 do for dy = -1, 1 do if grid[(cx + dx) .. ',' .. (cy + dy)] then return true end end end
+      return false
+    end
+    trees.refresh()
   end)
   stats.signalsMs = (os.clock() - t1) * 1000
   if not okS then log('W', 'beamngEarth', 'navgraph: signals: ' .. tostring(err2)) end

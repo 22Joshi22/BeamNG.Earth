@@ -28,10 +28,11 @@ HYDRANT_CLEAR_M = 4.6       # m kept clear of a hydrant (US: 15 ft)
 DRIVE_CLEAR_M = 4.2         # m from a driveway's mouth to a spot's centre
 
 
-def curb_spots(roads, walks, box, left_hand=False):
+def curb_spots(roads, walks, box, left_hand=False, directions=None):
     """Rows [x, y, z, heading] of the curbside spots of a tile box (x0, y0, x1, y1). roads: build_tile's
     (fid, spec, centreline (k, 3), lon); walks: its sidewalk runs (dicts with fid, pts, side, w). left_hand:
-    traffic drives on the left (the car's left side to the curb)."""
+    traffic drives on the left (the car's left side to the curb). directions: fid -> +1 / -1, a one-way street's
+    traffic along / against its geometry (Overture's one-way rule; +1 when unknown)."""
     x0, y0, x1, y1 = box
     by_fid = {fid: (spec, pts) for fid, spec, pts, _ in roads}
     out = []
@@ -59,7 +60,7 @@ def curb_spots(roads, walks, box, left_hand=False):
             # the car's right side to the curb: heading h with right(h) = (h_y, -h_x) = away
             if spec.oneway:
                 _, d = furniture._at(line, furniture._project(line, q[None]))
-                h = d[0]
+                h = d[0] * (-1.0 if (directions or {}).get(fid, 1) < 0 else 1.0)
             elif left_hand:             # left(h) = (-h_y, h_x) = away
                 h = np.array([away[1], -away[0]])
             else:

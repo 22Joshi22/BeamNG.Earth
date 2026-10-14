@@ -65,12 +65,26 @@ def _rdp(p, tol):
     return np.flatnonzero(keep)
 
 
+def driving_width(spec):
+    """The width of a road's driving lanes: the drawn carriageway (spec.width) less its parking lanes and edge
+    strips (roads.carriageway adds them), i.e. the class's driving width capped by the drawn one; a four-lane
+    urban arterial is all lanes."""
+    if spec.urban and not spec.oneway and spec.cls in roads.URBAN_ARTERIAL:
+        return float(spec.width)
+    w = roads.STYLE.get(spec.cls, roads.STYLE["unknown"])[0]
+    if spec.oneway and spec.cls in roads.ONEWAY_STYLE:
+        w = roads.ONEWAY_STYLE[spec.cls]
+    return float(min(spec.width, w))
+
+
 def _lanes(width, oneway):
+    """Lanes (with the direction, against it) of a road whose driving lanes are `width` wide: the same number
+    each way on a two-way road (a lopsided split put the AI's centre line off the road's)."""
     n = max(1, int(round(width / LANE_W_M)))
     if oneway:
         return n, 0
-    n = max(2, n)
-    return (n + 1) // 2, n // 2
+    k = max(1, n // 2)
+    return k, k
 
 
 def _deck_z(decks, fid, x, y):
@@ -100,15 +114,16 @@ def build(frame, feats_list, elev, centre, urban_fn=None, window=WINDOW_M, decks
     measured street widths (roadwidth.py), so the AI's lanes are on the carriageway the road mesh draws."""
     cx, cy = centre
     nodes, edges, seen = {}, [], set()
-    arms = {}               # connector name -> [(fid, spec, unit vector away, point, neighbour, incoming)]
+    prop_arms = {}          # connector name -> [(fid, spec, unit vector away, point, end)] (the props' view)
+    approaches = {}         # (connector, fid, end) -> (graph node next to it, traffic comes in)
     pending = {}            # name -> (x, y) of nodes whose z is still to sample
     node_fid = {}           # name -> the feature it was made on (its deck, if any)
     for feats in feats_list:
         if feats is None or len(feats) == 0:
             continue
-        specs = roads.road_specs(feats, urban_fn, widths)
+        rspecs = roads.road_specs(feats, urban_fn, widths)      # the roads the road tiles (and their props) see
         bspecs = roads.bridge_specs(feats)
-        specs = [sp if sp is not None else bs for sp, bs in zip(specs, bspecs)]
+        specs = [sp if sp is not None else bs for sp, bs in zip(rspecs, bspecs)]
         rules = feats.rules
         sub = rules.get("subclass")
         con = rules.get("connectors")
@@ -116,11 +131,9 @@ def build(frame, feats_list, elev, centre, urban_fn=None, window=WINDOW_M, decks
         ow = rules.get("oneway")
         for i, spec in enumerate(specs):
             fid = str(feats.ids[i])
-            if spec is None or fid in seen or spec.cls not in DRIVE:
+            if spec is None or fid in seen:
                 continue
             seen.add(fid)
-            if roads._rule_value(sub, i) in SKIP_SUBCLASSES:
-                continue
             parts = feats.parts(i)
             if not parts or not parts[0]:
                 continue
@@ -136,6 +149,23 @@ def build(frame, feats_list, elev, centre, urban_fn=None, window=WINDOW_M, decks
             L = float(s[-1])
             if L < 1.0:
                 continue
+            # the junction arms as the road tiles' props see them (every road they draw: service roads, driveways
+            # and tracks too, no bridge-only roads), so furniture.junction_controls decides the same there and here
+            if rspecs[i] is not None and con is not None:
+                for r in con.rows(i):
+                    at = float(con.start[r])
+                    if at > 0.001 and at < 0.999:
+                        continue
+                    end = 0 if at <= 0.001 else -1
+                    j0, j1 = (0, 1) if end == 0 else (len(p) - 1, len(p) - 2)
+                    dd = p[j1] - p[j0]
+                    dl = float(np.hypot(*dd))
+                    if dl > 1e-6:
+                        prop_arms.setdefault("c" + str(con.value[r]), []).append(
+                            (fid, rspecs[i], dd / dl, np.array([p[j0][0], p[j0][1], 0.0]), end))
+            if spec.cls not in DRIVE or roads._rule_value(sub, i) in SKIP_SUBCLASSES:
+                continue
+            tunnels = [(a_, b_) for a_, b_, k_ in roads.level_ranges(feats, i) if k_ == "tunnel"]
             # the nodes along it: connectors at their arc length, shape points that bend it, long gaps split
             marks = {}
             if con is not None:
@@ -164,7 +194,7 @@ def build(frame, feats_list, elev, centre, urban_fn=None, window=WINDOW_M, decks
             xy = np.stack([np.interp(full, s, p[:, 0]), np.interp(full, s, p[:, 1])], 1)
             names = [marks[v] for v in full]
             # this road's edge attributes
-            w = float(spec.width)
+            w = driving_width(spec)       # the AI's lanes and radius: not the parking lanes
             mid = 0.5
             driv = DRIVE[spec.cls][0]
             v = road_mph(feats, i, spec) * MPH
@@ -174,23 +204,19 @@ def build(frame, feats_list, elev, centre, urban_fn=None, window=WINDOW_M, decks
                     if ow.start[r] <= mid <= ow.end[r]:
                         direction = int(ow.value[r])
             lo, li = _lanes(w, direction != 0)
-            # the junction arms at this road's two ends (furniture.junction_controls decides the signals)
+            # this road's approaches at its two ends (the graph node next to the junction, whether traffic comes in)
             for end in (0, -1):
                 j, nb = (0, 1) if end == 0 else (len(names) - 1, len(names) - 2)
                 if not names[j].startswith("c") or names[j] == names[nb]:
                     continue
-                d = xy[nb] - xy[j]
-                dl = float(np.hypot(*d))
-                if dl < 1e-6:
-                    continue
-                # traffic comes into the junction on this arm unless it is one-way out of it
-                incoming = direction == 0 or (direction > 0) == (end == -1)
-                arms.setdefault(names[j], []).append(
-                    (fid, spec, d / dl, np.array([xy[j][0], xy[j][1], 0.0]), names[nb], incoming))
+                incoming = direction == 0 or (direction > 0) == (end == -1)   # unless one-way out of it
+                approaches[(names[j], fid, end)] = (names[nb], incoming)
             for j in range(len(names) - 1):
                 a, b = names[j], names[j + 1]
                 if a == b:
                     continue
+                if tunnels and any(t0 <= (full[j] + full[j + 1]) / (2 * L) <= t1 for t0, t1 in tunnels):
+                    continue                # no ground over a tunnel: its stretch is left out
                 if direction < 0:
                     a, b = b, a
                 pa, pb = xy[j] if direction >= 0 else xy[j + 1], xy[j + 1] if direction >= 0 else xy[j]
@@ -219,7 +245,7 @@ def build(frame, feats_list, elev, centre, urban_fn=None, window=WINDOW_M, decks
                 radius[nm] = max(radius.get(nm, 0.0), e[7])
         for nm, x, y, z in zip(used, X, Y, Z):
             nodes[nm] = [round(float(x), 2), round(float(y), 2), round(float(z), 2), radius[nm]]
-    signals = _signals(arms, nodes, left_hand)
+    signals = _signals(prop_arms, approaches, nodes, left_hand)
     # one edge per node pair (two segments joining the same connectors: keep the first)
     uniq, pairs = [], set()
     for e in edges:
@@ -233,19 +259,18 @@ def build(frame, feats_list, elev, centre, urban_fn=None, window=WINDOW_M, decks
 STOP_BACK_M = 2.0           # the stop point: this far before the junction's widest road edge
 
 
-def _signals(arms, nodes, left_hand=False):
-    """[{"j": junction node, "kind": "signal" | "stop", "app": [[approach node, x, y, z, dir x, dir y, phase]]}] of
-    the urban junctions furniture.junction_controls controls: per incoming approach, its stop point on the right
-    half of the approach (where the AI's closest-edge search finds that approach) and the travel direction; the
-    signals' phase (0 / 1) by the approach's axis."""
+def _signals(arms, approaches, nodes, left_hand=False):
+    """[{"j": junction node, "kind": "signal" | "stop", "app": [[approach node, x, y, z, dir x, dir y, phase, prop x,
+    prop y, prop z, prop yaw]]}] of the urban junctions furniture.junction_controls controls, decided on the arms
+    the road tiles' props see (arms) and built for the graph's approaches into them (approaches): per incoming
+    approach its stop point on the kerb-side half of the lane (where the AI's closest-edge search finds that
+    approach), the travel direction, the phase (0 / 1, by the approach's axis) and the head's prop transform."""
     import furniture
     out = []
     for name, a in arms.items():
         if name not in nodes or len(a) < 3 or not all(x[1].urban for x in a):
             continue
-        p = a[0][3]
-        k = (round(float(p[0]) / furniture.JUNCTION_SNAP_M), round(float(p[1]) / furniture.JUNCTION_SNAP_M))
-        put = furniture.junction_controls([x[:4] for x in a], k)
+        put = furniture.junction_controls([x[:4] for x in a], None)
         if not put:
             continue
         kind = "signal" if put[0][1] == furniture.G_SIGNAL else "stop"
@@ -254,8 +279,9 @@ def _signals(arms, nodes, left_hand=False):
         jx, jy, jz = nodes[name][:3]
         app = []
         for arm, _ in put:
-            full = next(x for x in a if x[:4] is arm or (x[0] == arm[0] and x[2] is arm[2]))
-            fid, spec, u, _, nb, incoming = full
+            full = next(x for x in a if x[0] == arm[0] and x[2] is arm[2])
+            fid, spec, u, _, end = full
+            nb, incoming = approaches.get((name, fid, end), (None, False))
             if not incoming or nb not in nodes:
                 continue
             inc = -u

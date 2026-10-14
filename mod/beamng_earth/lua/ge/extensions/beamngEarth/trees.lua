@@ -255,6 +255,13 @@ local function threshold(d)
   return 0
 end
 
+-- M.suppress(group, x, y) -> true hides that item (set by navgraph.lua); M.refresh() re-runs every tile's rows
+-- after it changes.
+M.suppress = nil
+function M.refresh()
+  for _, t in pairs(tiles) do t.pending = true end
+end
+
 -- Which of the capped groups a tile at distance d still shows (changes re-run its rows).
 groupBand = function(t, d)
   local k = 0
@@ -300,6 +307,8 @@ function M.update(anchorId, player)
         local g = t.groups and t.groups[(row[1] or 0) + 1]
         local cap = g and M.GROUP_MAX_M[g]
         if cap and o[2] > cap then r = 2 end     -- this group is not shown this far out
+        -- an item something else stands in for (navgraph.lua's switchable signal heads)
+        if g and M.suppress and M.suppress(g, row[2], row[3]) then r = 2 end
         if r < want and not t.made[i] then
           if budget <= 0 then t.pending = true; return end
           t.made[i] = makeItem(fd, row, t.groups)
