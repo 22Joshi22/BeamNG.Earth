@@ -379,16 +379,24 @@ credits overlay and HUD for the shots (they are in every image, the same in both
 sun / weather override, matching the real photo itself (the photo benchmark is compared run to run;
 the photo stays on Commons).
 
-## Reports (the user's notes and benchmarks; `report.lua`, 2026-10-13)
+## Reports (GitHub issues: map / performance / bug / idea; `report.lua`, 2026-10-13, kinds 2026-10-14)
 - **Ctrl+Shift+N:** captures the moment at once: a screenshot, the location (lat/lon, anchor), the
   vehicle and camera, the last ~10 s of frame times, the engine's per-system frame metrics, the fps limit
-  and VRAM, and the mod's whole status (far tiles, trees, sea...). Then it opens a window for the note:
-  "Save note", "Save + 30 s benchmark" or "Cancel".
-- **Ctrl+Shift+B:** a 30 s benchmark while driving: every frame time, one sample per second (position,
-  speed, far tiles, trees, engine metrics) and every frame over 50 ms with its position. Then the same
-  report with the statistics (fps, p50 / p95 / p99, worst, frames over 33 / 50 / 100 ms).
-- Saved in `<user folder>/beamngearth/reports/<date>_<time>_<kind>_<n>/` (report.json, screenshot.jpg),
-  with one line per report in `reports/index.jsonl`. The folder name is lower case: the game's file
-  system lowercases new folders.
-- `tools/reports.py` lists them; `tools/reports.py show N` prints one.
+  and VRAM, and the mod's whole status (far tiles, trees, sea...). Then a window: the kind (Map issue /
+  Performance issue / Bug / Idea / suggestion), a title and a description; "Save report", for a
+  performance issue "Save + record 30 s profile", or "Cancel". After saving a small window shows the
+  folder with "Open folder" and "Open GitHub issue page".
+- **Ctrl+Shift+B:** the **performance profiler** (was "benchmark"): 30 s of frame times while driving,
+  one sample per second (position, speed, far tiles, trees, engine metrics) and every frame over 50 ms
+  with its position, then the statistics (fps, p50 / p95 / p99, worst, frames over 33 / 50 / 100 ms).
+  The report is saved at once, then the window opens (kind Performance issue) for the title and text.
+- Saved in `<user folder>/beamngearth/reports/<date>_<time>_<report|profile>_<n>/` (older:
+  `_note_` / `_bench_`): report.json, screenshot.jpg, **hardware.json** (OS, CPU, RAM, GPU, graphics API,
+  video mode, BeamNG version, the key graphics settings, other mods, mod version, the server's hello
+  options: `report.collectHardware()`, every engine call guarded) and **issue.md** (the GitHub issue:
+  `issuefmt.lua`, title on line 1). One line per report in `reports/index.jsonl`. The folder name is
+  lower case: the game's file system lowercases new folders.
+- `tools/reports.py` lists them; `show N` prints one; `issue [N]` edits issue.md ($EDITOR, else the
+  system editor) and opens the GitHub new-issue page (title, body, label map / performance / bug /
+  enhancement; body cut below 7000 URL characters) and the folder. Issue forms: `.github/ISSUE_TEMPLATE/`.
 

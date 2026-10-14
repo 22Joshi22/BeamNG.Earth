@@ -387,6 +387,14 @@ const settingsSchema = [
     ],
   },
   {
+    name: "Feedback",
+    items: [
+      { id: "reportKey", type: "text", name: "Report an issue or idea", desc: "Takes a screenshot, the location, the frame rate and your hardware and graphics settings, then opens a window to pick the kind (map issue, performance issue, bug, idea), give a title and describe it. Saves a ready-to-post GitHub issue (issue.md) in the report folder." },
+      { id: "profilerKey", type: "text", name: "Performance profiler", desc: "Records 30 s of frame times while you drive (every hitch with its place), then opens the same window as a performance issue." },
+      { id: "reportPost", type: "text", name: "Posting it", desc: "After saving, the window shows the folder and opens the GitHub new-issue page; or run python3 tools/reports.py issue in the mod's folder. Edit issue.md and drag screenshot.jpg into the issue." },
+    ],
+  },
+  {
     name: "Attribution",
     items: [
       { id: "credits", type: "text", name: "On screen now", desc: "The data credits for what is around you now, as drawn in the screen corner (sent by the server whenever they change)." },
@@ -436,6 +444,9 @@ function infoValue(item) {
   if (item.id === "player") return (typeof s.playerLat === "number") ? `${fmt(s.playerLat, 5)}, ${fmt(s.playerLon, 5)}  (${fmt(s.dist / 1000, 1)} km from origin)` : "-"
   if (item.id === "attribution") return s.attribution || "-"
   if (item.id === "credits") return s.credits || "-"
+  if (item.id === "reportKey") return "Ctrl+Shift+N"
+  if (item.id === "profilerKey") return "Ctrl+Shift+B"
+  if (item.id === "reportPost") return "github.com/TecnaGamer/BeamNG.Earth/issues"
   if (item.id === "weather") return s.weather || "-"
   if (item.id === "gravity") return s.gravity || "-"
   if (item.id === "deshadow") return s.deshadow || "off"
