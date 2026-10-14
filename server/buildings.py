@@ -364,7 +364,7 @@ def plan(ring, attrs, neighbours=0, lat=None, lon=None, look=None, town=False):
         plain = False
     wall = None
     house = (cls in HOUSE_CLASSES or (area < 260 and not shop and not industrial)) and not row and not shed \
-        and neighbours == 0
+        and neighbours == 0 and area < 300         # a long "residential" block is not a house (Fells Point)
     if house and band is not BAND_BRICK and nf <= 3:
         # detached houses: siding in the East and South, stucco in the West; windows laid over the wall
         u = _hash01(seed, "wall")
