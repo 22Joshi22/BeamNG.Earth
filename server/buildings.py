@@ -254,14 +254,27 @@ def plan(ring, attrs, neighbours=0, lat=None, lon=None, look=None, town=False):
     _, _, hl, hw = oriented_box(ring)
     box_fill = area / max(4 * hl * hw, 1e-6)
     cls = (attrs.get("class") or "").lower()
+    name = str(attrs.get("name") or "").lower()
+    terminal = any(w in name for w in ("terminal", "concourse"))
+    if "hangar" in name:
+        cls = "hangar"
+    garage = cls in ("parking", "parking_garage") or "parking garage" in name or (
+        "garage" in name and area > 800)
     narrow = hw < 4.2 and hl > 2.2 * hw                 # a row house: ~4-8 m wide, deep
     row = cls in ROW_CLASSES or (narrow and neighbours >= 1)
     shed = cls in SHED_CLASSES or (area < 40 and not row)
     shop = cls in SHOP_CLASSES
     industrial = cls in INDUSTRIAL_CLASSES or (area > 2500 and cls in ("", "commercial"))
+    industrial = industrial and not (garage or terminal)
 
     h = attrs.get("height")
     nf = attrs.get("num_floors")
+    if terminal and (h is None or not np.isfinite(h)) and (nf is None or not np.isfinite(nf)):
+        h, nf = 13.0, 2                                 # an airport terminal: two tall glass storeys
+    if garage and (h is None or not np.isfinite(h)) and (nf is None or not np.isfinite(nf)):
+        nf = 4 + int(seed * 2)
+    if cls == "hangar" and (h is None or not np.isfinite(h)):
+        h, nf = 12.0, 1
     h = None if h is None or not np.isfinite(h) or h <= 0 else float(h)
     nf = None if nf is None or not np.isfinite(nf) or nf <= 0 else int(round(nf))
     floor_h = FLOOR_M
@@ -353,8 +366,12 @@ def plan(ring, attrs, neighbours=0, lat=None, lon=None, look=None, town=False):
         if kind is not None:
             wall = f"{kind}|{int(_hash01(seed, 'wc') * len(WALL_TINTS[kind]))}"
             facade = wall
+    if terminal:
+        facade, band, plain = OFFICE, BAND_OFFICE, False
+    elif garage:
+        facade, band, plain = FACADE_TINTS[3], BAND_PANEL, False
     windows = True
-    if not (shed or barn or row or house) and nf <= 2 and roof == "flat" and (area >= BIG_BOX_M2 or industrial) \
+    if not (shed or barn or row or house or terminal or garage) and nf <= 2 and roof == "flat" and (area >= BIG_BOX_M2 or industrial) \
             and cls not in HOUSE_CLASSES and cls != "apartments":
         kind = METALWALL if industrial else PANEL
         wall = f"{kind}|{int(_hash01(seed, 'wc') * len(WALL_TINTS[kind]))}"
@@ -784,7 +801,7 @@ def tile_buildings(frame, x0, y0, x1, y1, layers, elev, water=None, part_layers=
             if not (x0 <= cx < x1 and y0 <= cy < y1):
                 continue
             at = {k: (a[k][i] if k in a else None) for k in
-                  ("class", "height", "num_floors", "min_height", "roof_shape", "roof_height")}
+                  ("class", "height", "num_floors", "min_height", "roof_shape", "roof_height", "name")}
             bparts = parts_of.get(str(key)) if key is not None else None
             if bparts and any(h is not None for _, h in bparts):
                 # drawn as its parts, with the building's class and one look for all of them; a part
