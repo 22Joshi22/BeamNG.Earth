@@ -29,6 +29,9 @@ ROOF_UV_M = 6.0             # m per repeat of the roof textures
 SIDING_UV_M = 3.0           # m per repeat of the plain wall textures (sheds, garages)
 PITCH = {"gabled": 32.0, "hipped": 26.0}     # degrees
 EAVE_M = 0.35               # m a pitched roof overhangs its walls
+CORNICE_OUT_M = 0.28        # a flat roof's cornice: how far it stands out, its depth below and above the eave
+CORNICE_DOWN_M = 0.45
+CORNICE_UP_M = 0.2
 
 # Materials (mod/.../art/shapes/beamngEarth/buildings.materials.json): the window sheets in a few tints, the
 # shop / office sheet, roofs, plain walls.
@@ -333,7 +336,7 @@ def _band_v(band, k):
     return 1.0 - (k + 1) / BANDS + eps, 1.0 - k / BANDS - eps
 
 
-def _walls(m, spec, ring, z0, z_eave, mat_idx):
+def _walls(m, spec, ring, z0, z_eave, mat_idx, lite=False):
     """Each wall of the ring, floor by floor: one band of the window sheet, a whole number of bays."""
     n = len(ring)
     fac = mat_idx[spec.facade]
@@ -369,7 +372,7 @@ def _walls(m, spec, ring, z0, z_eave, mat_idx):
                 uu = nbs / k_bpt if L > 2.0 else 0.02 * L
             else:
                 mat, band_k, uu = fac, spec.band[0], u1
-                if len(spec.band) > 2 and nb >= 1:          # the good bays only, one quad each
+                if len(spec.band) > 2 and nb >= 1 and not lite:     # the good bays only, one quad each
                     v0, v1 = _band_v(spec.band, band_k)
                     good = spec.band[2]
                     for k in range(nb):
@@ -385,6 +388,26 @@ def _walls(m, spec, ring, z0, z_eave, mat_idx):
             m.quad((a[0], a[1], za), (b[0], b[1], za), (b[0], b[1], zb), (a[0], a[1], zb),
                    (0, v0), (uu, v0), (uu, v1), (0, v1), mat)
             za = zb
+
+
+def _cornice(m, spec, ring, z_eave, mat_idx):
+    """A box moulding round a flat roof's edge (row houses' cornices, parapets), the plain white plaster."""
+    mat = mat_idx[FACADE_TINTS[0]]
+    o, z0, z1 = CORNICE_OUT_M, z_eave - CORNICE_DOWN_M, z_eave + CORNICE_UP_M
+    uv = ((0.002, 0.995), (0.012, 0.995), (0.012, 0.999), (0.002, 0.999))
+    n = len(ring)
+    for i in range(n):
+        a, b = ring[i], ring[(i + 1) % n]
+        e = b - a
+        L = float(math.hypot(*e))
+        if L < 0.3:
+            continue
+        d = e / L
+        nn = np.array([d[1], -d[0]])                  # outward (counter-clockwise ring)
+        a2, b2 = a + nn * o - d * o, b + nn * o + d * o
+        m.quad((a2[0], a2[1], z0), (b2[0], b2[1], z0), (b2[0], b2[1], z1), (a2[0], a2[1], z1), *uv, mat)
+        m.quad((a[0], a[1], z1), (a2[0], a2[1], z1), (b2[0], b2[1], z1), (b[0], b[1], z1), *uv, mat)      # top
+        m.quad((a[0], a[1], z0), (b[0], b[1], z0), (b2[0], b2[1], z0), (a2[0], a2[1], z0), *uv, mat)      # under
 
 
 def _roof(m, spec, ring, z_eave, mat_idx):
@@ -435,9 +458,10 @@ def _roof(m, spec, ring, z_eave, mat_idx):
               (-hw2 / ROOF_UV_M, 0), (hw2 / ROOF_UV_M, 0), (0, slope / ROOF_UV_M), rm)
 
 
-def build(specs_and_ground):
+def build(specs_and_ground, lite=False):
     """The tile's mesh from [(Spec, ground z min, ground z max)] with rings in the tile's local frame:
-    (positions, uvs, tris, tri material indices, MATERIALS) or None if empty."""
+    (positions, uvs, tris, tri material indices, MATERIALS) or None if empty. lite (far tiles): no
+    cornices, whole walls instead of one quad per bay."""
     m = Mesh()
     mat_idx = {name: i for i, name in enumerate(MATERIALS)}
     for spec, gmin, gmax in specs_and_ground:
@@ -448,8 +472,10 @@ def build(specs_and_ground):
             ring = np.array([c - u * hl - v * hw, c + u * hl - v * hw, c + u * hl + v * hw, c - u * hl + v * hw])
         z0 = gmin - FOUNDATION_M
         z_eave = gmax + spec.height
-        _walls(m, spec, ring, z0, z_eave, mat_idx)
+        _walls(m, spec, ring, z0, z_eave, mat_idx, lite)
         _roof(m, spec, ring, z_eave, mat_idx)
+        if spec.roof == "flat" and not spec.plain and spec.floors <= 6 and not lite:
+            _cornice(m, spec, ring, z_eave, mat_idx)
     if m.n == 0:
         return None
     P, UV, T, M = m.arrays()
@@ -566,15 +592,105 @@ def write(path, mesh):
     return cdae.write(path, P, T, uvs=UV, material=list(mats), tri_materials=M, object_name="buildings")
 
 
-def road_tile(frame, tx, ty, md, ground):
+DOOR_ROAD_M = 30.0          # a front door on the wall facing the nearest road within this
+DOOR_CLASSES_SKIP = SHED_CLASSES | INDUSTRIAL_CLASSES
+G_DOOR = "door"
+FAR_SEND_M = 1600.0         # far building tiles (render-only, the lite mesh) sent within this (Chebyshev)
+FAR_DROP_M = 1900.0         # ... dropped beyond
+FAR_PER_POSE = 4
+
+
+def doors(items, lines, x0, y0):
+    """Prop rows (trees.lua rows, group "door") of a front door per house: on the wall whose middle is
+    nearest a road and faces it, a row house's to one side, others' in the middle. lines: [(centreline
+    (k, 2) in the anchor frame, half width)]."""
+    if not lines:
+        return []
+    segs = []
+    for pts, half in lines:
+        p = np.asarray(pts, np.float64)
+        if len(p) >= 2:
+            segs.append(np.concatenate([p[:-1], p[1:]], 1))
+    if not segs:
+        return []
+    S = np.concatenate(segs)                             # (n, 4) x0 y0 x1 y1
+    A, B = S[:, :2], S[:, 2:]
+    D = B - A
+    L2 = np.maximum((D * D).sum(1), 1e-12)
+    rows = []
+    for spec, gmin, gmax in items:
+        if spec.plain or spec.shop or spec.floors >= 7 or spec.band in (BAND_OFFICE, BAND_OFFICE2):
+            continue
+        ring = spec.ring + np.array([x0, y0])
+        best = None
+        for i in range(len(ring)):
+            a, b = ring[i], ring[(i + 1) % len(ring)]
+            e = b - a
+            Le = float(math.hypot(*e))
+            if Le < 2.5:
+                continue
+            mid = (a + b) / 2
+            t = np.clip(((mid - A) * D).sum(1) / L2, 0, 1)
+            q = A + t[:, None] * D
+            dist = np.hypot(*(q - mid).T)
+            k = int(dist.argmin())
+            if dist[k] > DOOR_ROAD_M:
+                continue
+            out = np.array([e[1], -e[0]]) / Le
+            if float(np.dot(q[k] - mid, out)) <= 0:
+                continue                                 # the wall faces away from that road
+            if best is None or dist[k] < best[0]:
+                best = (dist[k], a, e / Le, Le, out)
+        if best is None:
+            continue
+        _, a, d, Le, out = best
+        narrow = Le < 9.0
+        f = (0.22 if _hash01(spec.seed, "door") < 0.5 else 0.78) if narrow else 0.5
+        p = a + d * (Le * f) + out * 0.03
+        base = gmax                                      # the ground floor (_walls: floors from the highest ground)
+        rows.append([G_DOOR, round(float(p[0]), 2), round(float(p[1]), 2), round(base, 2),
+                     round(math.degrees(math.atan2(d[1], d[0])) % 360.0, 1), 1.0, 2.2,
+                     round(_hash01(spec.seed, "dv"), 3)])
+    return rows
+
+
+def road_tile(frame, tx, ty, md, ground, lines=None, props=None):
     """The buildings of road tile (tx, ty) (roads.TILE squares of the anchor frame): (mesh, collider boxes) or
-    None. md: mapdata.MapData; ground(lat, lon): the physics ground without the road lift."""
+    None. md: mapdata.MapData; ground(lat, lon): the physics ground without the road lift. lines (the road
+    centrelines, roads.build_tile) and props (its prop rows): the houses' front doors are added to props."""
     import roads
     x0, y0, x1, y1 = roads.tile_bbox(tx, ty)
     layers = [md.cell(k, layers=("buildings",), kind="demand").layers.get("buildings")
               for k in roads.cells_of_tile(frame, tx, ty, margin=0.0)]
     items = tile_buildings(frame, x0, y0, x1, y1, layers, ground)
+    if props is not None and lines:
+        props.extend(doors(items, lines, x0, y0))
     mesh = build(items)
     if mesh is None:
         return None
     return mesh, collider_boxes(items, x0, y0)
+
+
+def far_tile(frame, tx, ty, md, ground, out_dir, vfs_dir, aid):
+    """A far (render-only) building tile written to the session folder: (vfs path of its JSON, building
+    count) or None. The lite mesh of the same buildings as road_tile's."""
+    import json
+    import os
+    import roads
+    x0, y0, x1, y1 = roads.tile_bbox(tx, ty)
+    layers = [md.cell(k, layers=("buildings",), kind="demand").layers.get("buildings")
+              for k in roads.cells_of_tile(frame, tx, ty, margin=0.0)]
+    items = tile_buildings(frame, x0, y0, x1, y1, layers, ground)
+    mesh = build(items, lite=True)
+    data = {"v": 1}
+    if mesh is not None:
+        shape = f"bldfar_{aid}_{tx}_{ty}.cdae"
+        write(os.path.join(out_dir, shape), mesh)
+        data["shape"] = f"{vfs_dir}/{shape}"
+        data["pos"] = [x0, y0, 0.0]
+    name = f"bldfar_{aid}_{tx}_{ty}.json"
+    path = os.path.join(out_dir, name)
+    with open(path + ".tmp", "w") as f:
+        json.dump(data, f)
+    os.replace(path + ".tmp", path)
+    return f"{vfs_dir}/{name}", len(items)

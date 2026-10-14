@@ -225,8 +225,9 @@ def roads_tile(aid, lat, lon, zoom, tx, ty, out_dir, vfs_dir, sidewalks, lift, b
     walks = []
     urban = _s.surface.urban if _s.surface is not None else None
     props = [] if buildings else None
+    lines = [] if buildings else None
     chunks = roadsmod.build_tile(frame, tx, ty, cells, elev, urban, walks=walks, bridges=bridges, widths=_s.widths,
-                                 props=props)
+                                 props=props, lines=lines)
     if _s.airports is not None:         # runway markings, drawn by the road mesh like the lane lines
         chunks += _s.airports.tile_chunks(frame, tx, ty, elev, roadsmod.tile_bbox)
     x0, y0, _, _ = roadsmod.tile_bbox(tx, ty)
@@ -236,9 +237,17 @@ def roads_tile(aid, lat, lon, zoom, tx, ty, out_dir, vfs_dir, sidewalks, lift, b
     if buildings:
         import buildings as buildingsmod
         bld = buildingsmod.road_tile(frame, tx, ty, _s.md,
-                                     lambda la, lo: ground(frame, la, lo, _s.dem.sample(la, lo, zoom)))
+                                     lambda la, lo: ground(frame, la, lo, _s.dem.sample(la, lo, zoom)), lines, props)
     return roadsmod.write_tile(out_dir, vfs_dir, aid, tx, ty, chunks, walks if sidewalks else None, mesh, dmesh,
                                bld, props)
+
+
+def far_buildings_tile(aid, lat, lon, zoom, tx, ty, out_dir, vfs_dir):
+    """earthd.Server.build_far_bld_tile here (road-tile pool): buildings.far_tile."""
+    import buildings as buildingsmod
+    frame = geodesy.EnuFrame(lat, lon)
+    return buildingsmod.far_tile(frame, tx, ty, _s.md, lambda la, lo: ground(frame, la, lo, _s.dem.sample(la, lo, zoom)),
+                                 out_dir, vfs_dir, aid)
 
 
 def base_entry(user_dir, base_vfs, ao_vfs, rgb, ao_value):

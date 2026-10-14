@@ -808,6 +808,19 @@ class Server:
             return None
         return vegetationmod.write_tile(self.out_dir, self.vfs_dir, aid, tx, ty, rows)
 
+    def build_far_bld_tile(self, aid, tx, ty):
+        """buildings.far_tile: a far (render-only) building tile of anchor aid, or None. Worker threads."""
+        anchor = self.anchors.get(aid)
+        if anchor is None or self.mapdata is None or not self.buildings:
+            return None
+        zoom = anchor.zooms[0]
+        if self.road_pool is not None:
+            return self.road_pool.submit(blockworker.far_buildings_tile, aid, anchor.lat, anchor.lon, zoom, tx, ty,
+                                         self.out_dir, self.vfs_dir).result()
+        return buildingsmod.far_tile(anchor.frame, tx, ty, self.mapdata,
+                                     lambda la, lo: self.ground(anchor.frame, la, lo, self.dem.sample(la, lo, zoom)),
+                                     self.out_dir, self.vfs_dir, aid)
+
     def build_roads_tile(self, aid, tx, ty):
         """roads.py: one road tile of anchor aid, written to the session folder. Returns (vfs path,
         chunks) or None if the anchor is gone. Worker threads (fetches the map cells it lacks)."""
@@ -835,8 +848,9 @@ class Server:
                     anchor.frame, lambda key: self.mapdata.cell(key, layers=("roads",), kind="demand").layers.get("roads"),
                     elev)
         props = [] if self.buildings else None
+        lines = [] if self.buildings else None
         chunks = roadsmod.build_tile(anchor.frame, tx, ty, cells, elev, urban, walks=walks, bridges=anchor.bridges,
-                                     widths=self.road_widths, props=props)
+                                     widths=self.road_widths, props=props, lines=lines)
         if self.airports is not None:   # runway markings, drawn by the road mesh like the lane lines
             chunks += self.airports.tile_chunks(anchor.frame, tx, ty, elev, roadsmod.tile_bbox)
         x0, y0, _, _ = roadsmod.tile_bbox(tx, ty)
@@ -846,7 +860,8 @@ class Server:
         bld = None
         if self.buildings:
             bld = buildingsmod.road_tile(anchor.frame, tx, ty, self.mapdata,
-                                         lambda la, lo: self.ground(anchor.frame, la, lo, self.dem.sample(la, lo, zoom)))
+                                         lambda la, lo: self.ground(anchor.frame, la, lo, self.dem.sample(la, lo, zoom)),
+                                         lines, props)
         return roadsmod.write_tile(self.out_dir, self.vfs_dir, aid, tx, ty, chunks, walks if self.sidewalks else None,
                                    mesh, dmesh, bld, props)
 
@@ -1642,6 +1657,8 @@ class Connection:
         self.weather = weathermod.Tracker()     # real weather: fetch rule, last message sent
         self.roads = roadsmod.Tracker()         # road tiles sent to the mod (--roads on)
         self.veg = vegetationmod.Tracker()      # vegetation tiles sent to the mod (--trees on)
+        self.bldfar = vegetationmod.Tracker(buildingsmod.FAR_SEND_M, buildingsmod.FAR_DROP_M,
+                                            buildingsmod.FAR_PER_POSE, "bldfar")   # far buildings (--buildings on)
         self.gravity = gravitymod.Tracker()     # real gravity: recompute rule, last message sent
         self.credits = creditsmod.Tracker()     # data credits: throttle, last message sent (--credits on)
         self.ground_busy = False                # a groundahead job is running (one at a time)
@@ -2027,6 +2044,8 @@ class Connection:
                 la, lo, _ = anchor.frame.enu_to_geodetic(*self.focus, 0.0)
                 self.s.veg.warm_around(float(la), float(lo))
             self.veg.on_pose(self, aid, *self.focus, asyncio.get_running_loop(), self.s.build_veg_tile)
+        if self.s.buildings and aid == self.active:
+            self.bldfar.on_pose(self, aid, *self.focus, asyncio.get_running_loop(), self.s.build_far_bld_tile)
         self.refresh_status()
         self.credits.poke(self)             # the player moved: the near / far credits may change
 

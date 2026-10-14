@@ -47,6 +47,8 @@ local createQ = {}          -- { key, chunk } FIFO
 local deleteQ = {}          -- object ids
 local loadedMaterials = false
 local anchorId = nil
+local far = {}              -- far buildings (server buildings.far_tile): key "a:tx_ty" -> { anchor, id, shape, pos, hidden }
+local farQ = {}             -- keys of far tiles to make
 local lastError = nil
 local sinceChange = stopwatch.new()  -- ms since a tile arrived / went or a road was made / deleted
 local sinceReload = stopwatch.new()
@@ -103,6 +105,12 @@ local function switchAnchor(aid)
   anchorId = aid
   for key, t in pairs(tiles) do
     if t.anchor ~= aid then dropTile(key) end
+  end
+  for key, f in pairs(far) do
+    if f.anchor ~= aid then
+      if f.id then deleteQ[#deleteQ + 1] = f.id end
+      far[key] = nil
+    end
   end
   local keep = {}
   for _, q in ipairs(createQ) do if tiles[q.key] then keep[#keep + 1] = q end end
@@ -185,6 +193,61 @@ function M.onTile(msg, currentAnchor)
   return true
 end
 
+-- Server message `bldfar_tile` {anchorId, key, path, n}: a far tile's buildings (render-only, the lite mesh);
+-- shown only while the road tile of the same square has no building mesh of its own.
+function M.onFarTile(msg, currentAnchor)
+  if not M.enabled then return false end
+  switchAnchor(currentAnchor)
+  if msg.anchorId ~= currentAnchor then return false end
+  local ok, data = pcall(jsonDecode, readFile(msg.path) or '')
+  if not ok or type(data) ~= 'table' then lastError = 'unreadable far building tile ' .. tostring(msg.path); return false end
+  local key = tileKey(msg.anchorId, msg.key)
+  local old = far[key]
+  if old and old.id then deleteQ[#deleteQ + 1] = old.id end
+  far[key] = nil
+  if data.shape and type(data.pos) == 'table' then
+    far[key] = { anchor = msg.anchorId, shape = data.shape, pos = data.pos }
+    farQ[#farQ + 1] = key
+  end
+  return true
+end
+
+-- Server message `bldfar_drop` {anchorId, key}.
+function M.onFarDrop(msg)
+  local key = tileKey(msg.anchorId, msg.key)
+  local f = far[key]
+  if f and f.id then deleteQ[#deleteQ + 1] = f.id end
+  far[key] = nil
+end
+
+-- A far tile is hidden while its square's road tile shows buildings (they are the same, colliding).
+local function updateFar(gov)
+  for key, f in pairs(far) do
+    if f.id then
+      local hide = tiles[key] ~= nil and tiles[key].bld ~= nil
+      if hide ~= (f.hidden or false) then
+        local o = scenetree.findObjectById(f.id)
+        if o then o:setHidden(hide) end
+        f.hidden = hide
+      end
+    end
+  end
+  while #farQ > 0 and gov:try('roadWalk') do
+    local key = table.remove(farQ, 1)
+    local f = far[key]
+    if f and not f.id then
+      local t0 = now()
+      if not loadedMaterials then
+        for _, mf in ipairs(M.MATERIAL_FILES) do loadJsonMaterialsFile(mf) end
+        loadedMaterials = true
+      end
+      local ok, id = pcall(createWalk, { shape = f.shape, pos = f.pos }, false)
+      if ok then f.id = id else lastError = tostring(id) end
+      gov:charge('roadWalk', now() - t0)
+    end
+  end
+end
+
 -- Server message `roads_drop` {anchorId, key}.
 function M.onDrop(msg)
   dropTile(tileKey(msg.anchorId, msg.key))
@@ -221,6 +284,7 @@ function M.update(gov, currentAnchor)
     end
   end
   releaseHeld()
+  updateFar(gov)
   while #walkQ > 0 and gov:try('roadWalk') do
     local q = table.remove(walkQ, 1)
     local t = tiles[q.key]
@@ -306,7 +370,7 @@ noteNewColliders = function()
 end
 M._noteNewColliders = noteNewColliders
 
-function M.hasWork() return #createQ > 0 or #deleteQ > 0 or #walkQ > 0 or collisionDirty end
+function M.hasWork() return #createQ > 0 or #deleteQ > 0 or #walkQ > 0 or #farQ > 0 or collisionDirty end
 
 -- Somebody else just ran be:reloadCollision() (the terrain commit): the sidewalks made so far collide.
 function M.collisionRebuilt()
@@ -318,6 +382,8 @@ end
 -- Every road removed now (setting off, mod unload).
 function M.clear()
   for key in pairs(tiles) do dropTile(key) end
+  for _, f in pairs(far) do if f.id then deleteQ[#deleteQ + 1] = f.id end end
+  far, farQ = {}, {}
   createQ, held, newColliders = {}, {}, {}
   for _, id in ipairs(deleteQ) do
     local o = scenetree.findObjectById(id)
@@ -334,6 +400,7 @@ end
 -- The level ended: its objects are gone with it.
 function M.reset()
   tiles, createQ, deleteQ, walkQ, anchorId, loadedMaterials = {}, {}, {}, {}, nil, false
+  far, farQ = {}, {}
   collisionDirty = false
 end
 
@@ -355,8 +422,10 @@ function M.status()
     if t.deck then nd = (nd or 0) + 1 end
     if t.bld then nb = nb + 1 end
   end
+  local nf = 0
+  for _, f in pairs(far) do if f.id and not f.hidden then nf = nf + 1 end end
   return { enabled = M.enabled, tiles = nt, roads = no, queued = #createQ, deleting = #deleteQ, anchor = anchorId,
-    walks = nw, roadMeshes = nr, decks = nd, buildings = nb, walksQueued = #walkQ, solidAround = M.solidAround or 0,
+    walks = nw, roadMeshes = nr, decks = nd, buildings = nb, farBuildings = nf, walksQueued = #walkQ, solidAround = M.solidAround or 0,
     quietS = sinceChange() / 1000, error = lastError }
 end
 

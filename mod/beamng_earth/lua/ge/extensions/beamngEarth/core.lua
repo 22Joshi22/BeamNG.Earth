@@ -680,6 +680,11 @@ local function onMessage(msg)
     trees.onTile(msg, st.anchorId)
   elseif t == 'veg_drop' then
     trees.onDrop(msg)
+  elseif t == 'bldfar_tile' then
+    -- far buildings (server buildings.far_tile, --buildings on): render-only, roads.lua
+    roads.onFarTile(msg, st.anchorId)
+  elseif t == 'bldfar_drop' then
+    roads.onFarDrop(msg)
   elseif t == 'sea' then
     -- the sea's water tiles near the player (server seatiles.py, --sea on): sea.lua
     sea.onMessage(msg)

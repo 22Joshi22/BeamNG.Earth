@@ -81,6 +81,12 @@ M.CATALOG = {
     { JV .. 'rocks/s_rocks_desert_small_01', 0.9 }, { JV .. 'rocks/s_rocks_desert_medium_03', 1.4 },
     { UT .. 'rocks/utah_boulder_3', 1.7 }, { UT .. 'rocks/utah_boulder_1', 1.9 }, { JV .. 'rocks/s_rocks_desert_medium_01', 2.1 },
   },
+  door = {     -- the stock Building Architect kit (art_shapes.zip; global materials)
+    { '/art/shapes/common/building_architect_modules/doors/R_HS_A_DR_01_100x210', 2.2 },
+    { '/art/shapes/common/building_architect_modules/doors/R_HS_B_DR_03_100x210', 2.2 },
+    { '/art/shapes/common/building_architect_modules/doors/R_HS_A_DR_01_90x220', 2.3 },
+    { '/art/shapes/common/building_architect_modules/doors/R_HS_A_DR_02_100x210', 2.5 },
+  },
   streetlight = { { '/art/shapes/garage_and_dealership/Clutter/eca_lamppost', 9.0 } },
   pole = { { '/levels/automation_test_track/art/shapes/objects/s_powerpole_3wire', 9.2 } },
   tropical = {

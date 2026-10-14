@@ -58,13 +58,15 @@ class MeshTest(unittest.TestCase):
         n = np.cross(P[T[:, 1]] - P[T[:, 0]], P[T[:, 2]] - P[T[:, 0]])
         mid = P[T].mean(1)
         good = ((mid - c) * n).sum(1) > 0
+        nz = n[:, 2] / np.maximum(np.linalg.norm(n, axis=1), 1e-12)
+        good |= (nz < -0.99) & (mid[:, 2] > spec.height - 1.0)     # a cornice's underside faces down
         self.assertTrue(good.all(), f"{(~good).sum()} of {len(T)} triangles face in ({spec.roof})")
         self.assertLess(M.max(), len(mats))
         return spec, P
 
     def test_flat_box(self):
         spec, P = self.check_outward(rect(0, 0, 30, 20), {"class": "retail", "height": 9.0})
-        self.assertAlmostEqual(P[:, 2].max(), 9.0)
+        self.assertAlmostEqual(P[:, 2].max(), 9.0 + bld.CORNICE_UP_M)
         self.assertAlmostEqual(P[:, 2].min(), -bld.FOUNDATION_M)
 
     def test_gabled_and_hipped(self):
@@ -72,6 +74,22 @@ class MeshTest(unittest.TestCase):
             spec, P = self.check_outward(rect(0, 0, 12, 8), {"class": "house", "roof_shape": shape})
             self.assertEqual(spec.roof, shape)
             self.assertGreater(P[:, 2].max(), spec.height + 1.5, "a ridge above the eaves")
+
+
+class DoorTest(unittest.TestCase):
+    def test_door_faces_the_road(self):
+        spec = bld.plan(rect(0, 0, 10, 8), {"class": "house"})
+        road = (np.array([(-50.0, -6.0), (50.0, -6.0)]), 4.0)        # south of the house
+        rows = bld.doors([(spec, 0.0, 0.0)], [road], 0.0, 0.0)
+        self.assertEqual(len(rows), 1)
+        g, x, y, z, yaw, sc, h, r = rows[0]
+        self.assertEqual(g, "door")
+        self.assertAlmostEqual(y, -0.03, places=2)                     # on the south wall
+        self.assertAlmostEqual(yaw, 0.0)                               # the wall runs +x
+
+    def test_no_door_without_a_road(self):
+        spec = bld.plan(rect(0, 0, 10, 8), {"class": "house"})
+        self.assertEqual(bld.doors([(spec, 0.0, 0.0)], [(np.array([(500.0, 0), (600.0, 0)]), 4.0)], 0, 0), [])
 
 
 if __name__ == "__main__":

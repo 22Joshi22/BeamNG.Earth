@@ -1426,7 +1426,7 @@ The user asked for "trees, rocks and other decoration" (ROADMAP v1.9 "Cities & n
 - **Per map-data cell (deterministic, cached in `<cache>/vegetation/v1/<release>/<x>/<y>.npz`):**
   - Trees are the tops of Meta/WRI's CHMv2 (1.2 m canopy heights, z17 grid): local maxima of the 3 x 3
     smoothed heights in a disc that grows with the height (r = 1-4 px for bushes to > 15 m trees), then
-    one per crown (the tallest first, removing tops within 0.8 (0.12 h + 1) m).
+    one per crown (the tallest first, removing tops within 0.5 (0.12 h + 1) m; 0.8 looked sparse).
   - None on buildings (the CHM counts roofs and solar panels), road corridors (half width by class +
     1.5 m: overhanging canopy would put a trunk in the lane) or water; the neighbours' features too.
   - Bushes: tops of 1-3 m, and a hashed scatter on a 6 m grid over shrubland (WorldCover 20).
@@ -1448,5 +1448,47 @@ The user asked for "trees, rocks and other decoration" (ROADMAP v1.9 "Cities & n
   - A tile shows the items whose rank is under its distance's threshold: all within 300 m, half to
     550 m, a quarter beyond.
   - Up to 300 items are made or removed per frame (~19 us each, 2026-10-13 probe: 1024 items in 19 ms).
+- **Regions (`vegetation.regional`, 2026-10-14):** a coarse climate from the position and the land cover
+  turns the generic groups into the stock maps' species: West Coast pines / redwoods and oaks /
+  eucalyptus (west of -114), junipers, desert bushes and rocks in the dry West's open land, palms on warm
+  coasts and in the tropics (60 % of town trees, 20 % elsewhere), tropical trees. Shapes from West Coast
+  USA, Utah, Johnson Valley, Jungle Rock Island and Italy; heights measured in game. A tile lists its
+  groups; the mod loads every shape folder's `main.materials.json`.
+- **Prefetch:** each pose of the active anchor queues the cells within 1200 m (`warm_around`, nearest
+  first), so a teleport's trees are built before its tiles ask for them.
 - Tests: `server/tests/test_vegetation.py`, `mod/tests/test_trees.lua`.
+
+## Buildings (`server/buildings.py`; 2026-10-14, `--buildings on`, default off)
+
+The user: "make the world look alive ... look like a professionally made map".
+- **With the road tiles:** each 256 m road tile also gets `bld_<a>_<tx>_<ty>.cdae`, every building whose
+  footprint centroid is in the tile, one mesh with one primitive per material, shown as a colliding
+  TSStatic by `roads.lua` ("bld", held like the sidewalks while the car is inside a building's box).
+- **Data and prediction:** Overture footprints (outer ring, simplified, counter-clockwise). Overture
+  rarely has heights (Fells Point 2 %, towns 50-80 %) and almost never roofs or facades, so:
+  - storeys from the class and the footprint: sheds 1, row houses (narrow, deep, sharing a wall) 2-4,
+    houses 1-2, apartments 3-5, others 2-4; a given height or floor count wins;
+  - roofs: gabled / hipped for detached houses and small sheds on near-rectangular footprints (the
+    oriented box fills >= 80 %), flat otherwise and always when attached;
+  - facades: the stock window sheets `m_highrise_plaster` / `m_highrise_metal` (asset survey
+    2026-10-13): each 256 px band is one floor style; every floor of a wall is one band with a whole
+    number of bays (12 m per 1024 px); the sash band's two black "open window" bays are skipped (one quad
+    per bay); shops get the shopfront band on the ground floor; 7+ storeys the office curtain wall;
+  - brick by region (`brick_share`: 75 % east of -95 and north of 36, 35 % in the South, 15 % in the
+    West), tinted variants (`buildings.materials.json`, own names pointing at the shared textures);
+  - floors stand on the footprint's highest ground; below it a plain plinth down to 0.6 m under the lowest.
+  - every choice hashes the footprint's position: the same building from any anchor.
+- **Cost:** ~0.5 s per tile to plan, 5-13k triangles (Fells Point).
+- Tests: `server/tests/test_buildings.py`.
+
+## Street furniture (`server/furniture.py`; 2026-10-14, with `--buildings on`)
+
+- Street lights on the sidewalk runs, 0.5 m from the curb, arm over the road (East Coast USA's
+  `eca_lamppost`): residential streets one side every 40 m, tertiary / secondary / primary both sides
+  staggered every 30-36 m (West Coast USA's lamps stand ~17 m from their nearest neighbour, often across
+  the street). Utility poles every 45 m along country roads without sidewalks, 2.4 m off the edge.
+- Stations at fixed distances along each road from its first vertex, phase hashed from the road id:
+  deterministic across tiles and anchors.
+- Sent in the road tile (`"props": {groups, items}`, trees.lua rows) and drawn by `trees.lua` as Forest
+  items (`onRows`, key `p<tx>_<ty>`, dropped with the road tile).
 

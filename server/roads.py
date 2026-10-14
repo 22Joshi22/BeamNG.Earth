@@ -1128,7 +1128,8 @@ def drains(run, side, caps, walk_w=None):
     return res
 
 
-def build_tile(frame, tx, ty, cells, elev, urban_fn=None, walks=None, bridges=None, widths=None, props=None):
+def build_tile(frame, tx, ty, cells, elev, urban_fn=None, walks=None, bridges=None, widths=None, props=None,
+               lines=None):
     """The chunks of one tile. cells: the mapgeom.Features of the "roads" layer of every cell touching
     the tile; elev(lat, lon) -> metres (the DEM); urban_fn: as road_specs. Features in several cells are
     taken once (by id). The carriageways, then each road's sidewalks / gutters / markings (extras), cut
@@ -1247,6 +1248,8 @@ def build_tile(frame, tx, ty, cells, elev, urban_fn=None, walks=None, bridges=No
                     for c in split(densify(simplify(run))):
                         if len(c) >= 2:
                             chunks.append(_chunk(look, w, c))
+    if lines is not None:                           # the centrelines near the tile (buildings' front doors)
+        lines.extend((pts[:, :2], spec.width / 2) for _, spec, pts, _ in roads)
     if props is not None and walks is not None:     # street lights and utility poles (furniture.py)
         import furniture
         props.extend(furniture.place(roads, walks, (x0, y0, x1, y1)))

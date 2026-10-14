@@ -508,26 +508,28 @@ def write_tile(out_dir, vfs_dir, aid, tx, ty, rows):
 
 
 class Tracker:
-    """Per connection: which vegetation tiles the mod has (as roads.Tracker; messages veg_tile / veg_drop)."""
+    """Per connection: which tiles of a kind the mod has (as roads.Tracker): vegetation tiles by default
+    (messages veg_tile / veg_drop); the far buildings use one too (buildings.FAR_*)."""
 
-    def __init__(self):
+    def __init__(self, send_m=SEND_M, drop_m=DROP_M, per_pose=BUILD_PER_POSE, kind="veg"):
         self.aid = None
         self.sent = set()
         self.building = set()
+        self.send_m, self.drop_m, self.per_pose, self.kind = send_m, drop_m, per_pose, kind
 
     def on_pose(self, conn, aid, x, y, loop, build):
         import roads as roadsmod
         if aid != self.aid:
             self.aid, self.sent, self.building = aid, set(), set()
-        want = [k for k in roadsmod.tiles_near(x, y, SEND_M) if k not in self.sent and k not in self.building]
+        want = [k for k in roadsmod.tiles_near(x, y, self.send_m) if k not in self.sent and k not in self.building]
         want.sort(key=lambda k: roadsmod.tile_distance(k[0], k[1], x, y))
-        for tx, ty in want[:BUILD_PER_POSE]:
+        for tx, ty in want[:self.per_pose]:
             self.building.add((tx, ty))
             fut = loop.run_in_executor(None, build, aid, tx, ty)
             fut.add_done_callback(lambda f, k=(tx, ty), a=aid: self._built(conn, a, k, f))
-        for k in [k for k in self.sent if roadsmod.tile_distance(k[0], k[1], x, y) > DROP_M]:
+        for k in [k for k in self.sent if roadsmod.tile_distance(k[0], k[1], x, y) > self.drop_m]:
             self.sent.discard(k)
-            conn.send({"type": "veg_drop", "anchorId": aid, "key": f"{k[0]}_{k[1]}"})
+            conn.send({"type": f"{self.kind}_drop", "anchorId": aid, "key": f"{k[0]}_{k[1]}"})
 
     def _built(self, conn, aid, key, fut):
         self.building.discard(key)
@@ -536,10 +538,10 @@ class Tracker:
         try:
             res = fut.result()
         except Exception as e:
-            log.debug("veg tile %s: %s: %s", key, type(e).__name__, e)
+            log.debug("%s tile %s: %s: %s", self.kind, key, type(e).__name__, e)
             return
         if res is None:                 # its cells not at hand yet: asked again on a later pose
             return
         path, n = res
         self.sent.add(key)
-        conn.send({"type": "veg_tile", "anchorId": aid, "key": f"{key[0]}_{key[1]}", "path": path, "n": n})
+        conn.send({"type": f"{self.kind}_tile", "anchorId": aid, "key": f"{key[0]}_{key[1]}", "path": path, "n": n})

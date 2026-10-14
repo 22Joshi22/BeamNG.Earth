@@ -166,6 +166,9 @@ SERVER_TO_MOD = {
     # trees, bushes and rocks of a tile (vegetation.py, --trees on): a JSON file of items
     "veg_tile": {"anchorId": F(int), "key": F(str), "path": F(str), "n": F(int)},
     "veg_drop": {"anchorId": F(int), "key": F(str)},
+    # far buildings (buildings.far_tile, --buildings on): a JSON file naming a render-only mesh
+    "bldfar_tile": {"anchorId": F(int), "key": F(str), "path": F(str), "n": F(int)},
+    "bldfar_drop": {"anchorId": F(int), "key": F(str)},
     # the download cache's usage (cache.py; additive, with a Cache only): after hello and every mod 'cache'
     "cache": {"v": F(int), "usedBytes": F(int), "capBytes": F(int), "files": F(int), "ready": F(bool),
               "managed": F(bool), "clearedBytes": F(int, OPT)},
@@ -176,7 +179,8 @@ WEATHER_NESTED = {"cover": {"total", "low", "mid", "high"}, "wind": {"ms", "from
 EXERCISED_ELSEWHERE = {"far_retex", "roads_tile", "roads_drop",   # roads: needs map data (roads tests)
                        "block_base",                                 # a lazy imagery source (test_detail)
                        "sea",                                        # --sea on: needs map data (test_seacarve)
-                       "veg_tile", "veg_drop"}                       # --trees on: needs map data
+                       "veg_tile", "veg_drop",                       # --trees on: needs map data
+                       "bldfar_tile", "bldfar_drop"}                 # --buildings on: needs map data
 # events the mod's net.lua makes up itself (not on the wire)
 MOD_INTERNAL = {"_connected": set(), "_disconnected": {"error"}}
 
