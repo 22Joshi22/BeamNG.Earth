@@ -755,6 +755,17 @@ def bc1_decode(data, w, h):
 
 
 class DdsTest(unittest.TestCase):
+    def test_mips_linear_light(self):
+        # a black / white checker averages to the linear mid grey (186 in sRGB), not 128
+        rgb = np.zeros((8, 8, 3), np.uint8)
+        rgb[0::2, 0::2] = rgb[1::2, 1::2] = 255
+        lv = imagery.mip_arrays(rgb)
+        self.assertEqual([a.shape[0] for a in lv], [8, 4, 2, 1])
+        self.assertTrue(180 <= int(lv[1][1, 1, 0]) <= 192, int(lv[1][1, 1, 0]))
+        flat = np.full((16, 16, 3), 90, np.uint8)
+        self.assertTrue(all(int(np.abs(a.astype(int) - 90).max()) <= 1 for a in imagery.mip_arrays(flat)),
+                        "a flat image stays flat (the sharpening adds no ringing)")
+
     def test_dxt1_with_full_mip_chain(self):
         n = 128
         # smooth, imagery-like content (BC1 is lossy; this tests the chain, not the encoder)
@@ -773,19 +784,19 @@ class DdsTest(unittest.TestCase):
             self.assertTrue(caps & imagery.DDSCAPS_MIPMAP and caps & imagery.DDSCAPS_COMPLEX)
             with Image.open(path) as im:                                    # a standard reader accepts it
                 self.assertEqual(im.size, (n, n))
-            # level k is the BC1 encoding of the 2 x 2 box reduction of level k - 1 ...
-            off, lv = imagery.DDS_HEADER, Image.fromarray(rgb, "RGB")
-            for k, sz in enumerate(sizes):
+            # level k is the BC1 encoding of mip_arrays' level k (linear light, sharpened) ...
+            off = imagery.DDS_HEADER
+            for k, (sz, lv) in enumerate(zip(sizes, imagery.mip_arrays(rgb))):
                 b = io.BytesIO()
-                lv.save(b, "DDS", pixel_format="DXT1")
+                Image.fromarray(lv, "RGB").save(b, "DDS", pixel_format="DXT1")
                 self.assertEqual(data[off:off + sz], b.getvalue()[imagery.DDS_HEADER:], k)
                 off += sz
-                lv = lv.reduce(2) if lv.size[0] > 1 else lv
             # ... and decodes to the image (row 0 first, as the source image)
             got = bc1_decode(data[imagery.DDS_HEADER:imagery.DDS_HEADER + sizes[0]], n, n)
             self.assertLess(np.abs(got - rgb).mean(), 4.0)
             last = bc1_decode(data[-8:], 1, 1)[0, 0]
-            np.testing.assert_allclose(last, rgb.reshape(-1, 3).mean(0), atol=6.0)      # one RGB565 step
+            lin_mean = ((rgb.reshape(-1, 3) / 255.0) ** 2.2).mean(0) ** (1 / 2.2) * 255.0
+            np.testing.assert_allclose(last, lin_mean, atol=6.0)        # the linear-light mean, one RGB565 step
 
     def test_sizes(self):
         for px, want in ((512, 128 + sum(max(1, (512 >> k) // 4) ** 2 * 8 for k in range(10))),

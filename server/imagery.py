@@ -969,13 +969,42 @@ def dxt1_size(w, h):
     return max(1, (w + 3) // 4) * max(1, (h + 3) // 4) * 8
 
 
+# Mip levels (LOD research 2026-10-14: the plain sRGB 2 x 2 box is the softest possible chain, and ground at a
+# grazing angle is drawn from the small levels): averaged in linear light (dark detail does not swallow light
+# detail) and each smaller level sharpened a little (MIP_SHARPEN, a 3 x 3 unsharp mask).
+MIP_SHARPEN = 0.35
+_TO_LIN = ((np.arange(256) / 255.0) ** 2.2).astype(np.float32)
+
+
+def _to_srgb(lin):
+    return np.clip(np.rint(np.clip(lin, 0.0, 1.0) ** (1 / 2.2) * 255.0), 0, 255).astype(np.uint8)
+
+
+def mip_arrays(rgb):
+    """[level 0, 1, ...] (uint8 [h, w, 3] arrays) down to 1 x 1 of a power-of-two image: linear-light 2 x 2
+    averages, each level from the previous unsharpened one, then sharpened by MIP_SHARPEN."""
+    rgb = np.asarray(rgb, np.uint8)
+    out = [rgb]
+    lin = _TO_LIN[rgb]
+    while max(lin.shape[:2]) > 1:
+        h, w = lin.shape[:2]
+        if h > 1:
+            lin = 0.5 * (lin[0::2] + lin[1::2])
+        if w > 1:
+            lin = 0.5 * (lin[:, 0::2] + lin[:, 1::2])
+        lev = lin
+        if min(lev.shape[:2]) >= 4 and MIP_SHARPEN > 0:
+            p = np.pad(lev, ((1, 1), (1, 1), (0, 0)), mode="edge")
+            blur = (p[:-2, :-2] + p[:-2, 1:-1] + p[:-2, 2:] + p[1:-1, :-2] + p[1:-1, 1:-1] + p[1:-1, 2:]
+                    + p[2:, :-2] + p[2:, 1:-1] + p[2:, 2:]) / 9.0
+            lev = lev + MIP_SHARPEN * (lev - blur)
+        out.append(_to_srgb(lev))
+    return out
+
+
 def mip_chain(img):
-    """[level 0, 1, ...] down to 1 x 1, each a 2 x 2 box average of the previous one."""
-    levels = [img]
-    while max(levels[-1].size) > 1:
-        w, h = levels[-1].size
-        levels.append(levels[-1].reduce((2 if w > 1 else 1, 2 if h > 1 else 1)))
-    return levels
+    """[level 0, 1, ...] PIL images down to 1 x 1 (mip_arrays)."""
+    return [Image.fromarray(a, "RGB") for a in mip_arrays(np.asarray(img.convert("RGB")))]
 
 
 def encode_dds(rgb):
