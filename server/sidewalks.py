@@ -74,6 +74,7 @@ RAMP_RUN = 1.8          # m over which a curb ramp's slab climbs back to the sid
 RAMP_FLARE = 0.6        # m of curb sloping down on each side of a ramp
 RAMP_H = 0.01           # m: the curb at a ramp (flush with the gutter)
 TACTILE_REPEAT_M = 0.6  # m per tactile pad texture repeat
+PAD_W = 0.6             # m of a ramp's slope from the curb that is the tactile pad (US: 2 ft of domes)
 
 
 def profile(h=CURB_H, w=2.5, hr=None):
@@ -83,17 +84,21 @@ def profile(h=CURB_H, w=2.5, hr=None):
     RAMP_RUN)."""
     hr = h if hr is None else hr
     f = hr / h if h > 0 else 0.0
+    zr = h + RAMP_RUN * CROSS_SLOPE
+    zp = hr + (zr - hr) * PAD_W / (RAMP_RUN - CURB_W)       # on the ramp's slope, PAD_W past the curb top
     return np.array([[0.0, -SINK], [BATTER * f, hr - NOSE * f], [NOSE_W * f, hr], [CURB_W, hr],
-                     [RAMP_RUN, h + RAMP_RUN * CROSS_SLOPE], [w, h + w * CROSS_SLOPE], [w, -SINK]])
+                     [CURB_W + PAD_W, zp], [RAMP_RUN, zr], [w, h + w * CROSS_SLOPE], [w, -SINK]])
 
 
 # strips: (from profile point, to point, material index, v at from, v at to); material 1 on the
 # ramp strip is replaced by 2 (tactile) where the curb is lowered
 _SL = (RAMP_RUN - CURB_W) / (2.5 - CURB_W)
+_SP = PAD_W / (2.5 - CURB_W)
 V_SLAB_MID = V_SLAB_IN + _SL * (V_SLAB_OUT - V_SLAB_IN)
+V_SLAB_PAD = V_SLAB_IN + _SP * (V_SLAB_OUT - V_SLAB_IN)
 STRIPS = ((0, 1, 0, V_BAND_LOW, V_LIGHT_LOW), (1, 2, 0, V_LIGHT_LOW, V_BAND_TOP - 0.02),
-          (2, 3, 0, V_BAND_TOP - 0.02, V_BAND_TOP), (3, 4, 1, V_SLAB_IN, V_SLAB_MID),
-          (4, 5, 1, V_SLAB_MID, V_SLAB_OUT), (5, 6, 0, V_LIGHT_LOW, V_BAND_LOW))
+          (2, 3, 0, V_BAND_TOP - 0.02, V_BAND_TOP), (3, 4, 1, V_SLAB_IN, V_SLAB_PAD),
+          (4, 5, 1, V_SLAB_PAD, V_SLAB_MID), (5, 6, 1, V_SLAB_MID, V_SLAB_OUT), (6, 7, 0, V_LIGHT_LOW, V_BAND_LOW))
 CURB_STRIPS = STRIPS[:3]
 
 
