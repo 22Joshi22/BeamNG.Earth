@@ -697,7 +697,10 @@ def cut_outside(pts, blockers, spacing=2.0):
 
 
 def has_sidewalks(spec):
-    return spec.kind in BUILT and spec.urban and spec.cls in SIDEWALK_CLASSES
+    # a two-way urban trunk is a town's main street on a state highway (Bishop's US-395, Moab's US-191);
+    # divided expressway trunks are one-way per carriageway and get none
+    return spec.kind in BUILT and spec.urban and (spec.cls in SIDEWALK_CLASSES
+                                                  or (spec.cls == "trunk" and not spec.oneway))
 
 
 def sidewalk_stop(spec, fid, other, ofid):

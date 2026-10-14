@@ -130,7 +130,7 @@ def shoulder(spec):
     cover: a road class that gets sidewalks in towns keeps a sidewalk-wide verge everywhere."""
     if spec.kind not in roadsmod.BUILT:
         return 0.0
-    if spec.cls in roadsmod.SIDEWALK_CLASSES:
+    if spec.cls in roadsmod.SIDEWALK_CLASSES or (spec.cls == "trunk" and not spec.oneway):   # roads.has_sidewalks
         return spec.walk + SIDEWALK_MARGIN_M
     return SHOULDER_M
 
