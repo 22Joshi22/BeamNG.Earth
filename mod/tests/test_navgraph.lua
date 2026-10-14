@@ -32,4 +32,7 @@ T.check(got.j1.a[1].action == 2 and got.j2.c[1].action == 1, 'old junctions / ap
 mapmgr = { setSignals = function(d) got = d end }
 loadstring(N.setSignalsLua('{ j9 = {} }'))()
 T.check(got.j9 and not got.j1, 'no old table: the new one as is')
+T.check(not N.stuck(nil, 100, 500), 'moving: not stuck')
+T.check(not N.stuck(60, 100, 500), 'still 40 s: a long signal, not stuck yet')
+T.check(N.stuck(50, 100, 500) and not N.stuck(50, 100, 20), 'still 50 s: stuck, unless next to the player')
 T.done('test_navgraph')

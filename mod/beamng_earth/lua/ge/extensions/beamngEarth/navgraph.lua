@@ -22,6 +22,13 @@ M.enabled = true
 -- place's graph is in.
 M.GUARD_M = 40
 M.GUARD_S = 0.5
+-- A car standing still this long (longer than a signal cycle), this far from the player, is respawned too: stock
+-- traffic respawns only cars far away and out of sight, so one wedged on a corner the map's road cuts through a
+-- building, or queued behind the player's parked car in a one-lane street, stood for good (Frederick, Fells Point
+-- 2026-10-14)
+M.STUCK_S = 45
+M.STUCK_MS = 0.5
+M.STUCK_FAR_M = 40
 M.EXTENSIONS = { 'core_multiSpawn', 'gameplay_traffic' }
 
 local graph = nil       -- the server's last graph {anchor, nodes, edges}
@@ -289,17 +296,40 @@ end
 
 local function playerId() return be and be.getPlayerVehicleID and be:getPlayerVehicleID(0) or -1 end
 
--- Traffic cars the block left behind (or all, after a teleport) are respawned on the graph.
+-- Pure: is a car that has stood still since `since` (nil: moving) at distance d from the player stuck at `now`?
+function M.stuck(since, now, d)
+  return since ~= nil and now - since >= M.STUCK_S and d >= M.STUCK_FAR_M
+end
+
+-- Traffic cars the block left behind (or all, after a teleport), and stuck ones, are respawned on the graph.
+local stillSince = {}   -- car id -> os.clock() it stopped moving
 local function guard(b, all)
   local gt = gameplay_traffic
   if not gt or gt.getState() ~= 'on' then return end
   local me = playerId()
+  local pv = me >= 0 and getObjectByID(me) or nil
+  local pp = pv and pv:getPosition() or nil
+  local now = os.clock()
+  -- paused: nothing moves, nobody is stuck (the clocks start again after it)
+  local paused = simTimeAuthority and simTimeAuthority.getPause and simTimeAuthority.getPause()
+  if paused then table.clear(stillSince) end
   for id in pairs(gt.getTrafficData() or {}) do
     if id ~= me then
       local o = getObjectByID(id)
       if o and o:getActive() then
         local p = o:getPosition()
-        if all or not M.inside(b, p.x, p.y, M.GUARD_M) then pcall(gt.forceTeleport, id) end
+        if not paused and o:getVelocity():length() < M.STUCK_MS then
+          stillSince[id] = stillSince[id] or now
+        else
+          stillSince[id] = nil
+        end
+        local d = pp and (p - pp):length() or math.huge
+        if all or not M.inside(b, p.x, p.y, M.GUARD_M) or M.stuck(stillSince[id], now, d) then
+          stillSince[id] = nil
+          pcall(gt.forceTeleport, id)
+        end
+      else
+        stillSince[id] = nil
       end
     end
   end
@@ -390,6 +420,7 @@ function M.reset()
   graph, applied, dirty, lastApply, persistent, ours, foreign = nil, nil, false, -math.huge, nil, false, false
   started, respawnAll, lastGuard, heldActive = false, false, -math.huge, nil
   pendingSignals = nil
+  stillSince = {}
   stats = { applies = 0, lastMs = 0, nodes = 0, edges = 0 }
 end
 
