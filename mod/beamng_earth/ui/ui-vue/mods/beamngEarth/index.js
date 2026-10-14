@@ -4,7 +4,7 @@ import { lua } from "@/bridge"
 // (same pattern as the taa_standalone mod). Lua side: lua/ge/extensions/beamngEarth/settings.lua.
 //
 // The world map (EarthMap.vue): a full-screen route of its own ("beamngEarthMap", opened by the
-// Alt+M binding through beamngEarth_settings.toggleMap) and a second Mods-tab button showing it
+// map key (M, the pause menu Map, or a bound key) through beamngEarth_settings.toggleMap) and a second Mods-tab button showing it
 // inside the pause menu. The route follows ui/ui-vue/mods/README.md "Standalone routes"; any failure
 // there is logged and leaves the settings button alone.
 const MAP_SOURCE = "beamngEarth.routes"

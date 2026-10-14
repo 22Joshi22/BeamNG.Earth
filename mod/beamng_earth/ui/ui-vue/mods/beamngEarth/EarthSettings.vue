@@ -227,7 +227,7 @@ const settingsSchema = [
   {
     name: "Places",
     items: [
-      { id: "placesMoved", type: "text", name: "Places are on the world map", desc: "Saving where you are, going to a latitude, longitude, the saved places (go, rename, delete) and the recent places are in the world map's Places panel: press Alt+M (or the BeamNG.Earth map button in this menu)." },
+      { id: "placesMoved", type: "text", name: "Places are on the world map", desc: "Saving where you are, going to a latitude, longitude, the saved places (go, rename, delete) and the recent places are in the world map's Places panel: press M (the game's map key) or open Map in the pause menu." },
     ],
   },
   {
@@ -350,9 +350,9 @@ function infoValue(item) {
   if (item.id === "player") return (typeof s.playerLat === "number") ? `${fmt(s.playerLat, 5)}, ${fmt(s.playerLon, 5)}  (${fmt(s.dist / 1000, 1)} km from origin)` : "-"
   if (item.id === "attribution") return s.attribution || "-"
   if (item.id === "credits") return s.credits || "-"
-  if (item.id === "placesMoved") return "Alt+M"
-  if (item.id === "reportKey") return "Ctrl+Shift+N"
-  if (item.id === "profilerKey") return "Ctrl+Shift+B"
+  if (item.id === "placesMoved") return "M"
+  if (item.id === "reportKey") return "Ctrl+Shift+I"
+  if (item.id === "profilerKey") return "Ctrl+Shift+Y"
   if (item.id === "reportPost") return "github.com/TecnaGamer/BeamNG.Earth/issues"
   if (item.id === "weather") return s.weather || "-"
   if (item.id === "gravity") return s.gravity || "-"

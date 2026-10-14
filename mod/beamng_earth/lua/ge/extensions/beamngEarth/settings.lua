@@ -510,7 +510,7 @@ end
 
 function M.mapOpened(on) mapOpen = on and true or false end
 
--- The key binding (actions/beamngEarth.json, Alt+M): open the map, or close it back to driving.
+-- The key binding (actions/beamngEarth.json; M and the pause menu Map via redirectBigMap): open the map, or close it back to driving.
 function M.toggleMap()
   local gh = rawget(_G, 'guihooks')
   if not gh then return end

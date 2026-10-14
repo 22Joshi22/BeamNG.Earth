@@ -115,6 +115,17 @@ class PlanTest(unittest.TestCase):
         self.assertEqual((a.floors, a.roof, a.facade, a.band), (b.floors, b.roof, b.facade, b.band))
 
 
+class PartsTest(unittest.TestCase):
+    def test_split_under_the_index_limit(self):
+        items = [(bld.plan(rect(x * 30, 0, 20, 12), {"class": ""}), 0.0, 0.0) for x in range(30)]
+        one = bld.build(items)
+        parts = bld.build_parts(items, max_verts=len(one[0]) // 3)
+        self.assertGreaterEqual(len(parts), 3)
+        self.assertTrue(all(len(p[0]) <= len(one[0]) // 3 for p in parts))
+        self.assertEqual(sum(len(p[2]) for p in parts), len(one[2]), "every triangle in exactly one part")
+        self.assertEqual(len(bld.build_parts(items)), 1, "a small tile stays one mesh")
+
+
 class MeshTest(unittest.TestCase):
     def check_outward(self, ring, attrs):
         spec = bld.plan(ring, attrs)
@@ -126,6 +137,8 @@ class MeshTest(unittest.TestCase):
         nz = n[:, 2] / np.maximum(np.linalg.norm(n, axis=1), 1e-12)
         good |= (nz < -0.99) & (mid[:, 2] > spec.height - 1.0)     # a cornice's underside faces down
         good |= mid[:, 2] > spec.height + bld.CORNICE_UP_M + 0.01   # roof boxes: their own outsides
+        lip = (mid[:, 2] > spec.height) & (mid[:, 2] < spec.height + bld.CORNICE_UP_M + 0.01) & (np.abs(nz) < 0.01)
+        good |= lip                                                   # the cornice lip's inner face, above the roof
         self.assertTrue(good.all(), f"{(~good).sum()} of {len(T)} triangles face in ({spec.roof})")
         self.assertLess(M.max(), len(mats))
         return spec, P

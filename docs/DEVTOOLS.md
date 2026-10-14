@@ -380,13 +380,13 @@ sun / weather override, matching the real photo itself (the photo benchmark is c
 the photo stays on Commons).
 
 ## Reports (GitHub issues: map / performance / bug / idea; `report.lua`, 2026-10-13, kinds 2026-10-14)
-- **Ctrl+Shift+N:** captures the moment at once: a screenshot, the location (lat/lon, anchor), the
+- **Ctrl+Shift+I:** captures the moment at once: a screenshot, the location (lat/lon, anchor), the
   vehicle and camera, the last ~10 s of frame times, the engine's per-system frame metrics, the fps limit
   and VRAM, and the mod's whole status (far tiles, trees, sea...). Then a window: the kind (Map issue /
   Performance issue / Bug / Idea / suggestion), a title and a description; "Save report", for a
   performance issue "Save + record 30 s profile", or "Cancel". After saving a small window shows the
   folder with "Open folder" and "Open GitHub issue page".
-- **Ctrl+Shift+B:** the **performance profiler** (was "benchmark"): 30 s of frame times while driving,
+- **Ctrl+Shift+Y:** the **performance profiler** (was "benchmark"): 30 s of frame times while driving,
   one sample per second (position, speed, far tiles, trees, engine metrics) and every frame over 50 ms
   with its position, then the statistics (fps, p50 / p95 / p99, worst, frames over 33 / 50 / 100 ms).
   The report is saved at once, then the window opens (kind Performance issue) for the title and text.

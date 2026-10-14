@@ -620,6 +620,8 @@ def _cornice(m, spec, ring, z_eave, mat_idx):
         m.quad((a2[0], a2[1], z0), (b2[0], b2[1], z0), (b2[0], b2[1], z1), (a2[0], a2[1], z1), *uv, mat)
         m.quad((a[0], a[1], z1), (a2[0], a2[1], z1), (b2[0], b2[1], z1), (b[0], b[1], z1), *uv, mat)      # top
         m.quad((a[0], a[1], z0), (b[0], b[1], z0), (b2[0], b2[1], z0), (a2[0], a2[1], z0), *uv, mat)      # under
+        # the lip's inner face, above the roof (seen from on the roof it was missing: the user's report, 2026-10-14)
+        m.quad((b[0], b[1], z_eave), (a[0], a[1], z_eave), (a[0], a[1], z1), (b[0], b[1], z1), *uv, mat)
 
 
 def _inside(ring, p):
@@ -798,6 +800,31 @@ def _roof(m, spec, ring, z_eave, mat_idx):
               (-hw2 / ROOF_UV_M, 0), (hw2 / ROOF_UV_M, 0), (0, slope / ROOF_UV_M), rm)
         m.tri(at(-hl2, hw2, ze), at(-hl2, -hw2, ze), at(-r, 0, zr),
               (-hw2 / ROOF_UV_M, 0), (hw2 / ROOF_UV_M, 0), (0, slope / ROOF_UV_M), rm)
+
+
+# The engine draws a shape's mesh with 16-bit indices: past 65,535 vertices they wrap and triangles join far-apart
+# vertices (the user's report 2026-10-14: slabs across a Fells Point street; dense tiles had up to 81k vertices).
+MAX_MESH_VERTS = 60000
+
+
+def build_parts(specs_and_ground, lite=False, max_verts=MAX_MESH_VERTS):
+    """build() split into meshes of at most max_verts vertices each (whole buildings per mesh): a list, [] if empty."""
+    parts, cur, n = [], [], 0
+    for item in specs_and_ground:
+        one = build([item], lite)
+        k = 0 if one is None else len(one[0])
+        if cur and n + k > max_verts:
+            mesh = build(cur, lite)
+            if mesh is not None:
+                parts.append(mesh)
+            cur, n = [], 0
+        cur.append(item)
+        n += k
+    if cur:
+        mesh = build(cur, lite)
+        if mesh is not None:
+            parts.append(mesh)
+    return parts
 
 
 def build(specs_and_ground, lite=False):
@@ -1254,10 +1281,10 @@ def road_tile(frame, tx, ty, md, ground, lines=None, props=None, items=None):
         items = road_tile_items(frame, tx, ty, md, ground)
     if props is not None and lines:
         props.extend(doors(items, lines, x0, y0))
-    mesh = build(items)
-    if mesh is None:
+    meshes = build_parts(items)
+    if not meshes:
         return None
-    return mesh, collider_boxes(items, x0, y0)
+    return meshes, collider_boxes(items, x0, y0)
 
 
 def far_tile(frame, tx, ty, md, ground, out_dir, vfs_dir, aid):

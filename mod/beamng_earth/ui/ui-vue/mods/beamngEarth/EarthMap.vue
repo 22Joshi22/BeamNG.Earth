@@ -85,7 +85,7 @@
       <button class="map-btn" @click="zoomBy(1)" title="Zoom in">+</button>
       <button class="map-btn" @click="zoomBy(-1)" title="Zoom out">-</button>
       <button class="map-btn" :class="{ on: follow }" @click="centreOnMe" title="Centre on the car and follow it">Me</button>
-      <button v-if="!embedded" class="map-btn close" @click="close" title="Close (Esc / Alt+M)">Close</button>
+      <button v-if="!embedded" class="map-btn close" @click="close" title="Close (Esc / M)">Close</button>
     </div>
 
     <!-- status: tiles unavailable / not connected -->

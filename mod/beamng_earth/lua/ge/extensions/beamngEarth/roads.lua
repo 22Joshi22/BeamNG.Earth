@@ -120,7 +120,7 @@ local function dropTile(key)
   if t.walk then deleteQ[#deleteQ + 1] = t.walk end
   if t.road then deleteQ[#deleteQ + 1] = t.road end
   if t.deck then deleteQ[#deleteQ + 1] = t.deck end
-  if t.bld then deleteQ[#deleteQ + 1] = t.bld end
+  for _, w in ipairs({ 'bld', 'bld2', 'bld3', 'bld4' }) do if t[w] then deleteQ[#deleteQ + 1] = t[w] end end
   if t.wire then deleteQ[#deleteQ + 1] = t.wire end
   if t.props then require('beamngEarth/trees').dropKey((key:gsub(':', ':p', 1))) end
   if t.park then require('beamngEarth/parking').dropKey(key) end
@@ -219,7 +219,8 @@ function M.onTile(msg, currentAnchor)
   if type(data.wire) == 'table' and data.wire.shape and type(data.wire.pos) == 'table' then    -- pole wires
     walkQ[#walkQ + 1] = { key = key, walk = data.wire, what = 'wire' }
   end
-  for _, what in ipairs({ 'walk', 'deck', 'bld' }) do  -- sidewalks, bridge decks, buildings: colliding meshes
+  -- sidewalks, bridge decks, buildings (split in parts under the engine's 16-bit index limit): colliding meshes
+  for _, what in ipairs({ 'walk', 'deck', 'bld', 'bld2', 'bld3', 'bld4' }) do
     local w = data[what]
     if type(w) == 'table' and w.shape and type(w.pos) == 'table' then
       walkQ[#walkQ + 1] = { key = key, walk = w, what = what }

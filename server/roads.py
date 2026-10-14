@@ -1392,6 +1392,9 @@ class Tracker:
         conn.send({"type": "roads_tile", "anchorId": aid, "key": f"{key[0]}_{key[1]}", "path": path, "n": n})
 
 
+BLD_PARTS_MAX = 4               # building meshes per road tile ("bld", "bld2".."bld4": the mod's list)
+
+
 def write_tile(out_dir, vfs_dir, aid, tx, ty, chunks, walks=None, road_mesh=None, deck_mesh=None, bld=None,
                props=None, wires=None, park=None):
     """Write a tile's chunks (atomically), its sidewalk mesh (walks: build_tile's runs, if any:
@@ -1434,10 +1437,13 @@ def write_tile(out_dir, vfs_dir, aid, tx, ty, chunks, walks=None, road_mesh=None
     if bld is not None:             # buildings.road_tile: the tile's buildings, colliding ("bld")
         import buildings
         x0, y0, _, _ = tile_bbox(tx, ty)
-        shape = f"bld_{aid}_{tx}_{ty}.cdae"
-        buildings.write(os.path.join(out_dir, shape), bld[0])
-        data["bld"] = {"shape": f"{vfs_dir}/{shape}", "pos": [x0, y0, 0.0]}
-        boxes["bld"] = bld[1]
+        meshes = bld[0] if isinstance(bld[0], list) else [bld[0]]
+        for k, mesh in enumerate(meshes[:BLD_PARTS_MAX]):   # under the engine's 16-bit index limit each
+            what = "bld" if k == 0 else f"bld{k + 1}"
+            shape = f"bld_{aid}_{tx}_{ty}.cdae" if k == 0 else f"bld_{aid}_{tx}_{ty}_{k + 1}.cdae"
+            buildings.write(os.path.join(out_dir, shape), mesh)
+            data[what] = {"shape": f"{vfs_dir}/{shape}", "pos": [x0, y0, 0.0]}
+            boxes[what] = bld[1]
     if boxes:
         data["colliders"] = boxes
     if wires:                       # utility pole wires (furniture.wire_mesh), render-only

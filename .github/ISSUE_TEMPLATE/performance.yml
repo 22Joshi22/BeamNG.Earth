@@ -6,7 +6,7 @@ body:
   - type: markdown
     attributes:
       value: |
-        Tip: press **Ctrl+Shift+B** in the game while it happens: the **performance profiler** records 30 s of frame
+        Tip: press **Ctrl+Shift+Y** in the game while it happens: the **performance profiler** records 30 s of frame
         times (and every hitch with its place), then opens the report window. issue.md in the report folder has
         all of this filled in (`python3 tools/reports.py issue` opens this page with it).
   - type: input

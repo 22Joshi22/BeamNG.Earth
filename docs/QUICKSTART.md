@@ -27,13 +27,11 @@ in a few minutes. No programming needed.
    - Start BeamNG.drive, go to **Freeroam** and pick the **BeamNG.Earth** level.
 
 ## Going places
-- Press **Alt+M** for the **world map**: satellite imagery, your car's position and heading, and your
-  saved places. Drag to pan, scroll to zoom, click anywhere (or a saved place) and confirm to
-  teleport there. The search box looks up real addresses and places as you type (OpenStreetMap data through
-  Photon by komoot: what you type and your position are sent to it), plus your saved places and
-  a typed "latitude, longitude"; pick a result to teleport there or set it as your GPS destination. Alt+M or Esc
-  closes it. In the BeamNG.Earth level the game's own map key (**M**) and the pause menu's **Map**
-  open this map too.
+- Press **M** (the game's map key) or open **Map** in the pause menu for the **world map**:
+  satellite imagery, your car's position and heading, and your saved places. Drag to pan, scroll
+  to zoom. The search box looks up real addresses and places as you type (OpenStreetMap data
+  through Photon by komoot: what you type and your position are sent to it), plus your saved places
+  and a typed "latitude, longitude". M or Esc closes it.
 - **Left-click** the map (or a saved place, or a search result) to plan a GPS route there: the whole
   road route is planned online (OSRM on OpenStreetMap; your start and destination are sent to it)
   and drawn on the map with the distance and driving time left; the game's own route arrows follow
@@ -52,10 +50,10 @@ driving with the game's **radial menu** (the traffic entry). The amounts are the
 settings (Options > Gameplay > Traffic).
 
 ## Something wrong? Tell us
-In the game, press **Ctrl+Shift+N** where it happens: the mod takes a screenshot and notes the place,
+In the game, press **Ctrl+Shift+I** where it happens: the mod takes a screenshot and notes the place,
 the frame rate and your hardware and graphics settings. Pick the kind (**Map issue**, **Performance
 issue**, **Bug**, **Idea / suggestion**), type a short title and what you saw, and Save. For stutters
-or low fps, press **Ctrl+Shift+B** instead while it happens: the **performance profiler** records 30 s
+or low fps, press **Ctrl+Shift+Y** instead while it happens: the **performance profiler** records 30 s
 of frame times, then opens the same window.
 
 Each report is a folder (the window shows where) with `issue.md`, a ready-to-post GitHub issue you

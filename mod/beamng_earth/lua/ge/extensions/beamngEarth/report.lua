@@ -2,10 +2,10 @@
 -- makes it easy for me to take notes on the world or to record the performance of my game";
 -- 2026-10-14: reports become GitHub issues: map issues, performance issues, bugs, ideas).
 --
---   Ctrl+Shift+N   a report: the moment is captured at once (screenshot, location, frame times, engine
+--   Ctrl+Shift+I   a report: the moment is captured at once (screenshot, location, frame times, engine
 --                  metrics, the mod's state), then a window takes the kind (Map issue / Performance
 --                  issue / Bug / Idea), a short title and the description; Save writes it all.
---   Ctrl+Shift+B   the performance profiler: 30 s of frame times (and position, every second) while the
+--   Ctrl+Shift+Y   the performance profiler: 30 s of frame times (and position, every second) while the
 --                  player drives; then the same window, kind "Performance issue", with its numbers.
 --
 -- Reports go to <user folder>/beamngEarth/reports/<date>_<time>_<report|profile>_<n>/ (the game
@@ -209,7 +209,7 @@ local function openForm(rel, data, kind)
   form = { dir = rel, data = data, kind = kind or lastKind, titleBuf = nil, noteBuf = nil, frames = 0 }
 end
 
--- Ctrl+Shift+N: capture now, open the report window.
+-- Ctrl+Shift+I: capture now, open the report window.
 function M.note()
   if form then return end
   if prof then M.profilerAttach() return end
@@ -220,7 +220,7 @@ function M.note()
   openForm(rel, data)
 end
 
--- Ctrl+Shift+B: the performance profiler over the next BENCH_S seconds. With the report window open,
+-- Ctrl+Shift+Y: the performance profiler over the next BENCH_S seconds. With the report window open,
 -- the profile goes into that report (kind Performance issue).
 function M.profiler(seconds)
   if prof then return end
@@ -240,7 +240,7 @@ function M.profiler(seconds)
 end
 M.benchmark = M.profiler   -- the input action (beamngEarth_reportBench) and older console calls
 
--- Ctrl+Shift+N while the profiler runs: the report window opens when it ends.
+-- Ctrl+Shift+I while the profiler runs: the report window opens when it ends.
 function M.profilerAttach()
   if prof and not prof.form then prof.form = { kind = 'perf' } end
   toast, toastUntil = 'The report window opens when the profiler ends', now() + 3

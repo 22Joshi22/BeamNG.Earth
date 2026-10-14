@@ -55,7 +55,7 @@ T.check(hw.game.versiond == '0.38.0.0' and hw.modVersion == '0.4.0' and hw.serve
 -- 3) a saved report: report.json, hardware.json, issue.md, one index line; a re-save adds no line
 beamngEarth_core.status = function() return '{ player = { lat = 39.28, lon = -76.59 }, anchorId = 3 }' end
 report.note()
-T.check(report.status().formOpen, 'Ctrl+Shift+N opens the report window')
+T.check(report.status().formOpen, 'Ctrl+Shift+I opens the report window')
 report.saveNote('Trees in the river', 'map', 'Trees in the water')
 local folder
 for p in pairs(files) do if p:match('issue%.md$') then folder = p:match('^(.*/)issue%.md$') end end

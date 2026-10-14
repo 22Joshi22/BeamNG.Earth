@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""The in-game reports (mod report.lua): Ctrl+Shift+N a report (map issue, performance issue, bug,
-idea), Ctrl+Shift+B the 30 s performance profiler. Each report folder has report.json, screenshot.jpg,
+"""The in-game reports (mod report.lua): Ctrl+Shift+I a report (map issue, performance issue, bug,
+idea), Ctrl+Shift+Y the 30 s performance profiler. Each report folder has report.json, screenshot.jpg,
 hardware.json and issue.md (a ready-to-post GitHub issue).
 
   python3 tools/reports.py [list]       one line per report (newest last)
@@ -244,7 +244,7 @@ def main(argv):
 
     if cmd == "list":
         if not reps:
-            print(f"no reports yet in {root} (in the game: Ctrl+Shift+N a report, Ctrl+Shift+B the profiler)")
+            print(f"no reports yet in {root} (in the game: Ctrl+Shift+I a report, Ctrl+Shift+Y the profiler)")
         for i, d in enumerate(reps, 1):
             print(line(i, d))
     elif cmd == "show":

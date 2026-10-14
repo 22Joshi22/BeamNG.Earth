@@ -6,7 +6,7 @@ body:
   - type: markdown
     attributes:
       value: |
-        Tip: press **Ctrl+Shift+N** in the game right after it happens and pick "Bug". issue.md in the report folder has
+        Tip: press **Ctrl+Shift+I** in the game right after it happens and pick "Bug". issue.md in the report folder has
         the place, the mod's status and your hardware filled in (`python3 tools/reports.py issue` opens this page with it).
   - type: textarea
     id: what
