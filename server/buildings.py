@@ -118,6 +118,7 @@ SHOP_CLASSES = {"retail", "commercial", "supermarket", "kiosk", "office", "hotel
 HOUSE_CLASSES = {"house", "detached", "semidetached_house", "bungalow", "residential", "farm", "static_caravan",
                  "cabin", "dormitory"}
 ROW_CLASSES = {"terrace"}
+GARAGE_MIN_M2 = 400.0       # a "parking" building this big is a parking structure
 INDUSTRIAL_CLASSES = {"industrial", "warehouse", "manufacture", "factory", "hangar"}
 
 
@@ -270,13 +271,15 @@ def plan(ring, attrs, neighbours=0, lat=None, lon=None, look=None, town=False, d
     church = cls in ("church", "chapel", "cathedral") or any(w in name for w in ("church", "chapel", "cathedral"))
     if "hangar" in name:
         cls = "hangar"
-    garage = cls in ("parking", "parking_garage") or "parking garage" in name or (
+    # a parking structure (a small "parking" building is a carport or a booth: a shed); "parking" is also a
+    # shed class, which made big garages barns in barn-red siding (Columbia, 2026-10-14)
+    garage = (cls in ("parking", "parking_garage") and area >= GARAGE_MIN_M2) or "parking garage" in name or (
         "garage" in name and area > 800)
     narrow = hw < 4.2 and hl > 2.2 * hw                 # a row house: ~4-8 m wide, deep
     # in a dense core small buildings are row houses even where the footprints leave gaps (Fells Point)
     row = cls in ROW_CLASSES or (not west_town and ((narrow and (neighbours >= 1 or dense)) or (
         dense and area < 260 and cls not in SHOP_CLASSES)))
-    shed = cls in SHED_CLASSES or (area < 40 and not row)
+    shed = (cls in SHED_CLASSES and not garage) or (area < 40 and not row)
     shop = cls in SHOP_CLASSES
     industrial = cls in INDUSTRIAL_CLASSES or (area > 2500 and cls in ("", "commercial"))
     industrial = industrial and not (garage or terminal)

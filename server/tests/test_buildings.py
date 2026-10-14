@@ -63,6 +63,13 @@ class PlanTest(unittest.TestCase):
         self.assertAlmostEqual(c, 10000.0 / (np.pi * bld.DISTRICT_M ** 2), delta=1e-4)
         self.assertAlmostEqual(bld.district_coverage(lat, lon, [("k1", None)]), c, msg="cached by cell")
 
+    def test_parking_structure_not_a_barn(self):
+        g = bld.plan(rect(0, 0, 60, 60), {"class": "parking"}, 0, 39.2, -76.86)
+        self.assertGreaterEqual(g.floors, 4)
+        self.assertFalse(g.facade.startswith(bld.SIDING), "garage panels, not barn siding")
+        c = bld.plan(rect(0, 0, 8, 6), {"class": "parking"}, 0, 39.2, -76.86)
+        self.assertEqual(c.floors, 1, "a carport")
+
     def test_small_house_pitched(self):
         roofs = {bld.plan(rect(x * 50, 0, 10, 8), {"class": "house"}).roof for x in range(20)}
         self.assertEqual(roofs, {"gabled", "hipped"})
