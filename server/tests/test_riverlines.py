@@ -74,15 +74,30 @@ class PlanTest(unittest.TestCase):
         for r in rv:
             xs = [n[0] for n in r.nodes]
             self.assertTrue(all(b > a for a, b in zip(xs, xs[1:])), "flow order")
-            self.assertEqual(r.nodes[0][3], riverlines.WIDTH_M["stream"])
+            self.assertAlmostEqual(r.nodes[0][3], riverlines.WIDTH_M["stream"] * riverlines.WIDTH_PAD
+                                   + riverlines.WIDTH_PAD_M)
         self.assertEqual(sorted(r.key for r in rv), sorted(r.key for r in self.plan()), "stable keys")
 
-    def test_left_out_where_tiles_are_water(self):
+    def test_left_out_where_tiles_are_water_but_reaching_in(self):
         wet = lambda la, lo: ((np.asarray(lo) - LON) / M_LON > 0).astype(float)    # noqa: E731
         rv = self.plan(wet)
         self.assertTrue(rv)
-        for r in rv:
-            self.assertTrue(all(n[0] <= riverlines.SPACING_M["stream"] + 1e-6 for n in r.nodes))
+        xs = [n[0] for r in rv for n in r.nodes]
+        self.assertTrue(all(v <= riverlines.SPACING_M["stream"] + 1e-6 for v in xs), "stops at the lake")
+        self.assertGreater(max(xs), 0.0, "one node into it: no gap at the mouth")
+
+    def test_confluence_narrow_ends_in_wide(self):
+        f = geodesy.EnuFrame(LAT, LON)
+        lines = Lines([("big", "river", "river", [(LON - 0.004, LAT + 0.003), (LON + 0.004, LAT + 0.003)]),
+                       ("trib", "stream", "stream", [(LON, LAT - 0.004), (LON, LAT + 0.003)])])
+        outline = lambda la, lo: np.abs((np.asarray(la) - (LAT + 0.003)) * 111320.0) < 40.0   # noqa: E731
+        rv = riverlines.plan(f, 0.0, 0.0, lambda k: lines, lambda la, lo: np.zeros(np.shape(la)),
+                             lambda la, lo: np.full(np.shape(la), 20.0), outline)
+        big_y = 0.003 * 111320.0
+        trib = [n for r in rv if r.kind == "stream" for n in r.nodes]
+        self.assertTrue(trib)
+        inside = [n for n in trib if abs(n[1] - big_y) < 40.0]
+        self.assertLessEqual(len(inside), 1, "the stream stops at the river (one node into it)")
 
 
 if __name__ == "__main__":

@@ -36,6 +36,7 @@ SPACING_M = {"river": 20.0, "stream": 10.0, "canal": 15.0}
 WIDTH_M = {"river": 12.0, "stream": 4.0, "canal": 8.0}         # without an outline
 WIDTH_MAX_M = 2000.0        # m: wide rivers (the Susquehanna at Harrisburg: ~1 km)
 WIDTH_STEP_M = 4.0          # the banks searched this finely
+WIDTH_PAD, WIDTH_PAD_M = 1.1, 2.0   # a River this much wider than the bed: no carved edge left uncovered
 CHANNEL_PROBE_M = 3.0
 MEDIAN_N = 5
 SMOOTH_N = 7                # the centre and width also averaged over this many nodes
@@ -153,18 +154,46 @@ def plan(frame, x, y, cell_water, water_at, dem_at, outline_at=None, radius=None
                 for ring in part:
                     if len(ring) >= 2:
                         ways.append((gid, kind, np.asarray(ring, np.float64)))
-    out = []
+    rivers = []
     for ids, kind, ll in chains(ways):
         e, n, _ = frame.geodetic_to_enu(ll[:, 1], ll[:, 0], np.zeros(len(ll)))
         xy = np.stack([np.asarray(e), np.asarray(n)], -1)
         if np.hypot(xy[:, 0] - x, xy[:, 1] - y).min() > r + PIECE_M:
             continue
         pts, _ = _resample(xy, SPACING_M[kind])
-        out += _pieces(frame, ids, kind, pts, x, y, r, water_at, dem_at, outline_at, level_at)
+        rivers.append(_nodes(frame, ids, kind, pts, water_at, dem_at, outline_at, level_at))
+    _confluences(rivers)
+    out = []
+    for rv in rivers:
+        out += _pieces(rv, x, y, r)
     return out
 
 
-def _pieces(frame, ids, kind, pts, x, y, r, water_at, dem_at, outline_at, level_at=None):
+def _confluences(rivers):
+    """Where a river runs into a wider one (or a stream into a river), its nodes inside the other's ribbon
+    are left out (two
+    Rivers over each other: their ripples flow two ways, 2026-10-13); the wider one carries the water."""
+    rank_of = {"river": 0, "canal": 1, "stream": 2}     # a stream inside a river's outline measures the
+    order = sorted(range(len(rivers)), key=lambda k: (rank_of[rivers[k]["kind"]],   # river's width there
+                                                     -float(rivers[k]["width"].max()), rivers[k]["ids"]))
+    for rank, k in enumerate(order):
+        rv = rivers[k]
+        for w in order[:rank]:
+            big = rivers[w]
+            if len(big["centre"]) < 2:
+                continue
+            a, b = big["centre"][:-1], big["centre"][1:]
+            hw = (big["width"][:-1] + big["width"][1:]) / 4.0
+            p = rv["centre"][:, None, :]
+            ab = (b - a)[None, :, :]
+            L2 = np.maximum((ab ** 2).sum(-1), 1e-9)
+            t = np.clip(((p - a[None]) * ab).sum(-1) / L2, 0.0, 1.0)
+            d = np.hypot(*(p - (a[None] + t[..., None] * ab)).transpose(2, 0, 1))
+            rv["into"] |= (d < hw[None, :]).any(axis=1)
+
+
+def _nodes(frame, ids, kind, pts, water_at, dem_at, outline_at, level_at=None):
+    """A chain's nodes: centre, surface z, width, depth, and where it is in tiled water already ("wet")."""
     la, lo, _ = frame.enu_to_geodetic(pts[:, 0], pts[:, 1], np.zeros(len(pts)))
     la, lo = np.asarray(la), np.asarray(lo)
     wet = np.asarray(water_at(la, lo)) > 0          # already water (tiles): left out there
@@ -184,9 +213,22 @@ def _pieces(frame, ids, kind, pts, x, y, r, water_at, dem_at, outline_at, level_
     depth = np.clip(width / 8.0, *DEPTH_M)
     # the surface in the anchor frame (the curve included)
     _, _, z = frame.geodetic_to_enu(la, lo, level)
-    z = np.asarray(z, np.float64)
+    width = width * WIDTH_PAD + WIDTH_PAD_M         # over the carved bed's edges (holes, 2026-10-13)
+    return {"ids": ids, "kind": kind, "pts": pts, "centre": centre, "z": np.asarray(z, np.float64),
+            "width": width, "depth": depth, "wet": wet, "into": np.zeros(len(pts), bool)}
+
+
+def _pieces(rv, x, y, r):
+    ids, kind, pts, centre, z, width, depth = (rv[k] for k in ("ids", "kind", "pts", "centre", "z", "width",
+                                                               "depth"))
     near = np.hypot(pts[:, 0] - x, pts[:, 1] - y) <= r + PIECE_M / 2
-    keep = ~wet & near
+    gone = rv["wet"] | rv["into"]       # a lake, the sea or a wider river carries the water there
+    keep = ~gone & near
+    # one node on into the water it flows into (and out of), so they meet without a gap
+    ext = keep.copy()
+    ext[1:] |= keep[:-1] & gone[1:] & near[1:]
+    ext[:-1] |= keep[1:] & gone[:-1] & near[:-1]
+    keep = ext
     sq = np.floor(pts / PIECE_M).astype(np.int64)
     out = []
     base = hashlib.sha1("|".join(ids).encode()).hexdigest()[:10]
