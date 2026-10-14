@@ -739,6 +739,11 @@ Next, from the photo comparisons (docs/research/streetview/fp*, base_*):
 - Facade variety: painted brick, formstone, siding colours per region; window sheet per era.
 - Wires between utility poles; signs (stop, speed limits) from data where present.
 - Odd dark mounds of ground near some Harbor East buildings (raised plazas or DEM remnants).
+- Road widths on through-town highways (Moab's Main Street, US-191: 4 lanes + a turn lane; ours 2):
+  Overture has no lane counts; options: OSM `lanes` for the segment's source record, or a wider
+  default for urban primary / trunk roads checked against more photos.
+- Near ground looks pale (Moab, Frederick photos: grey-white where lawns are green): inspect the
+  detail-mode ground material and the NAIP base photo there.
 
 ## Bugs to look at (reported, not fixed yet)
 - **Rain particles "spazzing out"** (user, 2026-10-11): some raindrops jump around or streak across the

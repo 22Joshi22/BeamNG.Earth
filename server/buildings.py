@@ -239,7 +239,7 @@ def brick_share(lat, lon):
     return 0.15
 
 
-def plan(ring, attrs, neighbours=0, lat=None, lon=None, look=None):
+def plan(ring, attrs, neighbours=0, lat=None, lon=None, look=None, town=False):
     """The Spec of a footprint (local ring (n, 2) in metres, counter-clockwise) from its Overture attributes
     (dict: class, height, num_floors, min_height, roof_shape, roof_height) and the number of buildings
     sharing a wall with it. Height and roof are predicted when not given."""
@@ -276,6 +276,8 @@ def plan(ring, attrs, neighbours=0, lat=None, lon=None, look=None):
             nf = 2 if area > 6000 else 1
         elif cls == "apartments":
             nf = 3 + int(seed * 3)
+        elif town:
+            nf = 1 if seed < 0.6 else 2                 # small towns: mostly single-storey shops and offices
         elif area < 900:
             nf = 2 + int(seed * 2)
         else:
@@ -791,13 +793,14 @@ def tile_buildings(frame, x0, y0, x1, y1, layers, elev, water=None, part_layers=
     if not rings:
         return []
     shared = _shared_walls(rings)
+    town = sum(_area2(r) / 2 for r, mh in zip(rings, mins) if mh <= 0.5) / ((x1 - x0) * (y1 - y0)) < TOWN_COVERAGE
     clat, clon, _ = frame.enu_to_geodetic((x0 + x1) / 2, (y0 + y1) / 2, 0.0)
     clat, clon = float(clat), float(clon)
     out = []
     for ring, at, sh, look, mh in zip(rings, attrs, shared, looks, mins):
         if mh > 0.5 and at.get("height") is not None and np.isfinite(at["height"]) and look is None:
             at = dict(at, height=max(2.5, float(at["height"]) - mh))     # a building's own height range
-        spec = plan(ring, at, int(sh) if look is None else 0, clat, clon, look)
+        spec = plan(ring, at, int(sh) if look is None else 0, clat, clon, look, town)
         spec.min_h = mh
         e = ring[:, 0] + x0
         n = ring[:, 1] + y0
@@ -905,7 +908,7 @@ def doors(items, lines, x0, y0, drives=None):
         _, a, d, Le, out, edge, on_main, kseg = best
         if spec.shop:
             continue
-        if on_main and not spec.wall and spec.roof == "flat" and spec.floors >= 2 \
+        if on_main and not spec.wall and spec.roof == "flat" \
                 and _hash01(spec.seed, "shop") < MAIN_STREET_SHOPS:
             spec.shop = True                    # a main street's ground floor: a shopfront, no house door
             continue
