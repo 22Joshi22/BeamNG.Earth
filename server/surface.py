@@ -50,9 +50,11 @@ MATERIALS = (
     ("beamngEarthDirt", "DIRT"),
 )
 ASPHALT, GRASS, DUSTY, LOOSE, ROCK, SNOW, MUD, COBBLE, DIRT = range(len(MATERIALS))
-# WorldCover class -> material (§5.4 of the world-data research; built-up is asphalt until the OSM
-# land-use overrides tell lawns from streets)
-CLASS_MATERIAL = {0: DIRT, 10: GRASS, 20: DUSTY, 30: GRASS, 40: DIRT, 50: ASPHALT, 60: LOOSE, 70: SNOW,
+# WorldCover class -> material (§5.4 of the world-data research). Built-up land is the plain dirt layer
+# (2026-10-14): its yards, lawns and lots took the asphalt layer's grey detail and macro textures, which
+# washed whole towns pale grey in the street photos (Moab, Frederick); the roads are painted asphalt anyway
+# (paint_roads), and the photo's own colours now show through.
+CLASS_MATERIAL = {0: DIRT, 10: GRASS, 20: DUSTY, 30: GRASS, 40: DIRT, 50: DIRT, 60: LOOSE, 70: SNOW,
                   80: MUD, 90: MUD, 95: MUD, 100: GRASS}
 ROCK_SLOPE_DEG = 35.0       # steeper ground is rock (cliffs, scree), except snow
 # Organic borders (user 2026-10-11: rectangular grass in Monument Valley). WorldCover's 10 m square

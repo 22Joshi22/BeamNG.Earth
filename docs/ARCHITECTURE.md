@@ -891,7 +891,8 @@ three days of testing: dem 741 MB / 7.5k files, imagery 1.4 GB / 35k, deshadow 7
   (`heightmap.generate(keep=)`), `Surface.classes` reads the WorldCover class under every 2 m sample from
   the map-data cache (z14 cells, `mapdata.MapData` "landcover", no DuckDB needed) and `classify` maps
   it to MATERIALS (§5.4 of docs/research/2026-10-10-world-data-sources.md: built-up asphalt, tree /
-  grass / moss grass, shrub dusty dirt, bare loose dirt, cropland dirt, snow, water / wetland mud) with
+  grass / moss grass, shrub dusty dirt, bare loose dirt, cropland dirt, snow, water / wetland mud; built-up
+  dirt since 2026-10-14: as asphalt it washed whole towns grey, the roads are painted asphalt anyway) with
   ROCK where the slope is above 35° (snow stays snow). One 0/255 mask per material
   (`hm_<a>_<cx>_<cy>_m<i>.png`, rows as the heightmap's) goes next to the heightmap; the terrain message
   names them (`layers`, `materials`) and terrain.lua imports 8 greyscale masks (+4-5 ms per 512²
