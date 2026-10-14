@@ -1595,7 +1595,15 @@ class Server:
             doomed += glob.glob(os.path.join(self.cdae_dir, f"far_{aid}_*"))  # caches whose source went earlier
             doomed += [p for p in glob.glob(os.path.join(self.out_dir, f"hm_{aid}_*"))
                        if os.path.basename(p) not in keep]
+            # the road / building / tree tiles too (2026-10-14: a night of teleports left 13k files in the
+            # session folder, and the game's file watchers cost 4.5 ms a frame)
+            for stem in ANCHOR_TILE_FILES:
+                doomed += glob.glob(os.path.join(self.out_dir, f"{stem}_{aid}_*"))
             self.queue_delete(p for p in dict.fromkeys(doomed) if os.path.exists(p))
+
+
+# Per-anchor tile files (besides far_ / hm_) that prune() deletes with their anchor
+ANCHOR_TILE_FILES = ("roads", "road", "walks", "deck", "bld", "bldfar", "wire", "veg")
 
 
 class _BoundedLru:
