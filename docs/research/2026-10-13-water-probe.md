@@ -73,3 +73,13 @@ So the plan stays the roadmap's: bounded water per area near the player (blocks 
   So a vehicle seems to take the water objects that exist when it spawns or resets. The runtime WaterPlane was seen without a reset.
 - **A runtime WaterBlock stays dead** even after a reset: 0 of 950 nodes, not drawn.
 - **So:** lakes and rivers can use River objects. Open question: a way to refresh a vehicle's water objects without a reset (a reset stops the car).
+
+## Fourth probe: the WaterBlock cause found, and vehicles and new water (2026-10-13 night)
+
+- **The cause:** a WaterBlock's surface is at its `position`. The engine caps the volume's top at the box centre (Torque3D `Engine/source/environment/waterBlock.cpp`, `isUnderwater`), even though `getWorldBox` shows the box extending scale.z/2 above. Every earlier test placed the position scale.z/2 *below* the wanted surface, so the water was underground. Found by a research pass over the BeamNG docs and the Torque3D source.
+- **A block placed right works:** 60 x 60 x 10 m at Sandy Point, position.z = ground + 1.5 m around the parked car. It drew (`wb_fixed2.jpg`, with the editor's test ripples) and, after a same-place nudge, 906 of 950 nodes were in water.
+- **Driving into new water:** a River created after the car had parked, then driven into at up to 10.8 m/s (throttle 0.35). Inside the river, 898-907 of 950 nodes were in water; the car slowed from 10.6 to 2.5 m/s; it dropped back on the way out. No reset was needed.
+- **Water appearing around a parked car** is only seen after the car moves. `setPositionRotation` to its own place works (68 -> 907 of 950).
+- **WaterPlane hidden** with `setHidden(true)`: 0 of 950 (no physics). With "transparent" fields (baseColor alpha 0, no foam / ripples / waves) it still draws a grey sheet with sun glint, and keeps its physics.
+- **Curvature with the plane, from altitude:** 200 m above Sandy Point the plane covered Kent Island (8 km east, lifted to only 0.3 m above the plane) and the Eastern Shore (30-40 km, beyond the 30 km lift radius). The engine's own help text says the WaterPlane "is primarily designed to be viewed from ground level".
+- Sources: the BeamNG water doc (above), the Torque3D environment sources, the Flood mod (github.com/daniel-w0/beamng-flood: moves an existing WaterPlane; hides Rivers / WaterBlocks with `isRenderEnabled = false`).
