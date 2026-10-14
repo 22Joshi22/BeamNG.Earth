@@ -805,6 +805,107 @@ def extras(spec, pts, lon, left_hand=False):
     return out
 
 
+JOIN_GAP_M = 14.0       # sidewalk ends this close (and facing each other) are joined: a sharp corner / road merge
+JOIN_TURN_DEG = 70.0    # ... when the run turns by at most this to reach the other end
+
+
+def _end_dir(pts, at_end):
+    """Unit direction a run leaves by at its start (at_end False: pointing out of the run backwards) or end."""
+    if at_end:
+        d = pts[-1, :2] - pts[-2, :2]
+    else:
+        d = pts[0, :2] - pts[1, :2]
+    n = math.hypot(*d)
+    return d / n if n > 1e-9 else d
+
+
+def join_walk_ends(runs, carriageways):
+    """Sidewalk runs whose open ends face each other across a short gap merged into one run (the user,
+    2026-10-14: sidewalks at sharp corners do not join; junctions.py makes no curb return under 35 degrees or with a
+    long tangent, so each street's sidewalk stopped at the other's carriageway with bare ground between). runs: the
+    runs near the tile before clipping ({pts, side, w, fid, j, open, ramp_fids}); two are merged when the straight
+    gap between their ends stays off every carriageway and they are on the same side (one continuous polyline: the
+    mesh mitres it, no seam). Pairs found greedily, nearest first. Returns the new list of runs."""
+    ends = []                                   # (run index, at_end, point, leaving direction)
+    for k, rn in enumerate(runs):
+        p = rn["pts"]
+        if len(p) < 2:
+            continue
+        for at_end in (False, True):
+            if not rn["open"][1 if at_end else 0] or rn["j"][1 if at_end else 0]:
+                continue                        # cut by the near box, or at a curb return: not a loose end
+            ends.append((k, at_end, (p[-1] if at_end else p[0]), _end_dir(p, at_end)))
+    pairs = []
+    cos_t = math.cos(math.radians(JOIN_TURN_DEG))
+    for a in range(len(ends)):
+        for b in range(a + 1, len(ends)):
+            ki, ei, qi, di = ends[a]
+            kj, ej, qj, dj = ends[b]
+            if ki == kj:
+                continue
+            gap = qj[:2] - qi[:2]
+            L = math.hypot(*gap)
+            if L < 0.3 or L > JOIN_GAP_M:
+                continue
+            u = gap / L
+            if float(u @ di) < cos_t or float(-u @ dj) < cos_t:
+                continue                        # each end must leave toward the other
+            pairs.append((L, a, b))
+    runs = [dict(r) for r in runs]
+    alias = list(range(len(runs)))              # a merged run's index (runs consumed by merges point to it)
+    used = set()
+    for L, a, b in sorted(pairs):
+        if a in used or b in used:
+            continue
+        ki, ei, qi, di = ends[a]
+        kj, ej, qj, dj = ends[b]
+        while alias[ki] != ki:
+            ki = alias[ki]
+        while alias[kj] != kj:
+            kj = alias[kj]
+        if ki == kj:
+            continue
+        ri, rj = runs[ki], runs[kj]
+        # the pieces in travel order: ri toward its joined end, then rj away from its joined end
+        pi_ = ri["pts"] if ei else ri["pts"][::-1]
+        pj_ = rj["pts"] if not ej else rj["pts"][::-1]
+        si = ri["side"] if ei else -ri["side"]
+        sj = rj["side"] if not ej else -rj["side"]
+        if si != sj:
+            continue                            # opposite sides of the streets: not one sidewalk
+        gap_pts = np.linspace(pi_[-1], pj_[0], max(2, int(L / 2.0) + 2))[1:-1]
+        hw = 0.25 * (ri["w"] + rj["w"])
+        if any(_seg_dist_min(cl, q[:2]) < h + hw * 0.5 for cl, h in carriageways for q in gap_pts):
+            continue                            # the gap would cross a road
+        used.update((a, b))
+        pts = np.vstack([pi_, gap_pts, pj_]) if len(gap_pts) else np.vstack([pi_, pj_])
+        j0 = ri["j"][0] if ei else ri["j"][1]
+        j1 = rj["j"][1] if not ej else rj["j"][0]
+        o0 = ri["open"][0] if ei else ri["open"][1]
+        o1 = rj["open"][1] if not ej else rj["open"][0]
+        runs[ki] = {"pts": densify(simplify(pts)), "side": si, "w": ri["w"], "fid": ri["fid"], "j": (j0, j1),
+                    "open": (o0, o1), "ramp_keys": sorted(set(ri.get("ramp_keys", [(ri["fid"], ri["side"])])
+                                                               + rj.get("ramp_keys", [(rj["fid"], rj["side"])])))}
+        runs[kj] = None
+        alias[kj] = ki
+    return [r for r in runs if r is not None]
+
+
+def _left_normal(two):
+    d = two[1] - two[0]
+    n = math.hypot(*d)
+    return np.array([-d[1], d[0]]) / n if n > 1e-9 else np.array([0.0, 0.0])
+
+
+def _seg_dist_min(line, p):
+    a, b = line[:-1], line[1:]
+    d = b - a
+    L2 = np.maximum((d * d).sum(1), 1e-12)
+    t = np.clip(((p - a) * d).sum(1) / L2, 0.0, 1.0)
+    q = a + d * t[:, None]
+    return float(np.min(np.hypot(*(q - p).T)))
+
+
 def clip_polyline(pts, x0, y0, x1, y1):
     """The pieces of a polyline (k, D >= 2, xy first) inside the box, as a list of arrays (Liang-Barsky
     per segment, consecutive pieces joined). Pure."""
@@ -1310,6 +1411,7 @@ def build_tile(frame, tx, ty, cells, elev, urban_fn=None, walks=None, bridges=No
             if x0 <= mid[0] < x1 and y0 <= mid[1] < y1:
                 look = junctions.STOP_LINE if cw.get("stop") else junctions.CROSSWALK
                 chunks.append(_chunk(look, cw["w"], np.array([cw["a"], cw["b"]])))
+    runs_near = []                              # sidewalk runs near the tile, before clipping (walks: below)
     for fid, spec, pts, lon in roads:
         ex = extras(spec, pts, lon, left_hand) if fid not in jinternal else []    # inside a junction: none
         if not ex:
@@ -1323,7 +1425,8 @@ def build_tile(frame, tx, ty, cells, elev, urban_fn=None, walks=None, bridges=No
             if (walk or look["m"] == GUTTER["m"]) and (fid, side) in inner:
                 continue                        # facing a traffic island: no sidewalk there
             if walk and walks is not None:
-                for piece in clip_polyline(line, *exact):
+                # whole runs near the tile first (joined across tile borders below), clipped to the tile after
+                for piece in clip_polyline(line, *near):
                     for cpiece, (j0, j1) in junctions.apply_cuts(piece, jcuts.get((fid, side), [])):
                         for run in cut_outside(cpiece, walk_blockers, 0.5):
                             run = densify(simplify(run))
@@ -1331,10 +1434,8 @@ def build_tile(frame, tx, ty, cells, elev, urban_fn=None, walks=None, bridges=No
                                 continue
                             at_j0 = j0 and np.hypot(*(run[0, :2] - cpiece[0, :2])) < 0.6
                             at_j1 = j1 and np.hypot(*(run[-1, :2] - cpiece[-1, :2])) < 0.6
-                            caps = (not _on_box(run[0], exact) and not at_j0, not _on_box(run[-1], exact) and not at_j1)
-                            ramps = junctions.ramp_ranges(run, jramps.get((fid, side), []))
-                            walks.append({"pts": run, "side": side, "caps": caps, "ramps": ramps, "w": w, "fid": fid})
-                            chunks.extend(drains(run, side, (caps[0] or at_j0, caps[1] or at_j1), w))
+                            runs_near.append({"pts": run, "side": side, "w": w, "fid": fid, "j": (at_j0, at_j1),
+                                              "open": (not _on_box(run[0], near), not _on_box(run[-1], near))})
                 continue
             if walks is not None and look["m"] == GUTTER["m"]:     # gutters end where their curb turns
                 gcuts = jcuts.get((fid, side), [])
@@ -1348,6 +1449,23 @@ def build_tile(frame, tx, ty, cells, elev, urban_fn=None, walks=None, bridges=No
                     for c in split(densify(simplify(run))):
                         if len(c) >= 2:
                             chunks.append(_chunk(look, w, c))
+    if walks is not None:
+        runs_near = join_walk_ends(runs_near, [(p2[:, :2], s2.width / 2) for _, s2, p2, _ in roads])
+        for rn in runs_near:
+            fid, side, w, run0 = rn["fid"], rn["side"], rn["w"], rn["pts"]
+            for run in clip_polyline(run0, *exact):
+                if len(run) < 2:
+                    continue
+                first = np.hypot(*(run[0, :2] - run0[0, :2])) < 1e-6
+                last = np.hypot(*(run[-1, :2] - run0[-1, :2])) < 1e-6
+                at_j0 = first and rn["j"][0]
+                at_j1 = last and rn["j"][1]
+                caps = (first and not at_j0 and not _on_box(run[0], exact),
+                        last and not at_j1 and not _on_box(run[-1], exact))
+                rl = [r for key in rn.get("ramp_keys", [(fid, side)]) for r in jramps.get(key, [])]
+                ramps = junctions.ramp_ranges(run, rl)
+                walks.append({"pts": run, "side": side, "caps": caps, "ramps": ramps, "w": w, "fid": fid})
+                chunks.extend(drains(run, side, (caps[0] or at_j0, caps[1] or at_j1), w))
     if lines is not None:                           # the centrelines near the tile (buildings' front doors)
         lines.extend((pts[:, :2], spec.width / 2, spec.cls, spec.urban) for _, spec, pts, _ in roads)
     if props is not None and walks is not None:     # street lights and utility poles (furniture.py)
