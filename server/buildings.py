@@ -996,3 +996,73 @@ def far_tile(frame, tx, ty, md, ground, out_dir, vfs_dir, aid):
         json.dump(data, f)
     os.replace(path + ".tmp", path)
     return f"{vfs_dir}/{name}", len(items)
+
+
+# ------------------------------------------------------------------------------------------- the ground photo
+
+PHOTO_GROW_M = 1.5          # m a footprint is grown on the ground photo (edges, eaves) ...
+PHOTO_LEAN = 0.12           # ... plus this share of its height (the photo's lean of tall buildings), at most
+PHOTO_LEAN_MAX_M = 6.0      # ... this
+PHOTO_FILL_M = 12.0         # m: the blur that fills them from the ground around
+
+
+def photo_mask(frame, x0, y0, size, px, md):
+    """A (px, px) bool mask (row 0 = north) of the ground photo's square [x0, x0 + size) x [y0, y0 + size)
+    (anchor frame) where buildings stand, grown by their edges and lean: there the photo shows roofs and
+    walls that the 3D buildings now stand on or next to. None without buildings."""
+    from PIL import Image, ImageDraw
+    import mapcells
+    la, lo, _ = frame.enu_to_geodetic(np.array([x0, x0 + size, x0, x0 + size]),
+                                      np.array([y0, y0, y0 + size, y0 + size]), 0.0)
+    keys = mapcells.cells_for_bbox(float(la.min()), float(lo.min()), float(la.max()), float(lo.max()))
+    img = Image.new("L", (px, px), 0)
+    draw = ImageDraw.Draw(img)
+    mpp = size / px
+    seen = set()
+    n = 0
+    for k in keys:
+        f = md.cell(k, layers=("buildings",), kind="demand").layers.get("buildings")
+        if f is None:
+            continue
+        hs = f.attrs.get("height")
+        for i in range(len(f.kind)):
+            fid = f.ids[i]
+            if fid in seen:
+                continue
+            seen.add(fid)
+            parts = f.parts(i)
+            if not parts or not parts[0]:
+                continue
+            ring = np.asarray(parts[0][0], np.float64)
+            e, nn, _ = frame.geodetic_to_enu(ring[:, 1], ring[:, 0], np.zeros(len(ring)))
+            if e.max() < x0 or e.min() > x0 + size or nn.max() < y0 or nn.min() > y0 + size:
+                continue
+            h = float(hs[i]) if hs is not None and np.isfinite(hs[i]) else 8.0
+            grow = (PHOTO_GROW_M + min(PHOTO_LEAN * h, PHOTO_LEAN_MAX_M)) / mpp
+            cx, cy = (e - x0) / mpp, (y0 + size - nn) / mpp
+            c = np.array([cx.mean(), cy.mean()])
+            pts = np.stack([cx, cy], 1)
+            d = pts - c
+            r = np.hypot(d[:, 0], d[:, 1])[:, None]
+            pts = pts + d / np.maximum(r, 1e-6) * grow          # grown out from its middle
+            draw.polygon([tuple(p) for p in pts], fill=255)
+            n += 1
+    if n == 0:
+        return None
+    return np.asarray(img) > 0
+
+
+def fill_photo(rgb, mask, size, px):
+    """rgb (px, px, 3) uint8 with the masked pixels replaced by a blur of the unmasked ground around them."""
+    from PIL import Image, ImageFilter
+    r = max(2.0, PHOTO_FILL_M / (size / px))
+    w = (~mask).astype(np.float32)
+    out = rgb.astype(np.float32).copy()
+    wb = np.asarray(Image.fromarray((w * 255).astype(np.uint8)).filter(ImageFilter.GaussianBlur(r)),
+                    np.float32) / 255.0
+    for c in range(3):
+        ch = np.asarray(Image.fromarray(np.clip(out[:, :, c] * w, 0, 255).astype(np.uint8))
+                        .filter(ImageFilter.GaussianBlur(r)), np.float32)
+        fill = ch / np.maximum(wb, 1e-3)
+        out[:, :, c] = np.where(mask, np.clip(fill, 0, 255), out[:, :, c])
+    return out.astype(np.uint8)

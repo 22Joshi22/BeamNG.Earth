@@ -1042,6 +1042,13 @@ class Server:
         name = self.base_name((anchor.id, cx, cy), rev)
         path = os.path.join(self.out_dir, name)
         rgb = np.asarray(rgb, np.uint8)
+        if self.buildings and self.mapdata is not None:     # no roofs on the ground beside the 3D buildings
+            try:
+                mask = buildingsmod.photo_mask(anchor.frame, x0, y0, size, BASE_PX, self.mapdata)
+                if mask is not None:
+                    rgb = buildingsmod.fill_photo(rgb, mask, size, BASE_PX)
+            except Exception as e:      # the photo stays as it is
+                log.info("base photo %s: building mask: %s", (anchor.id, cx, cy), e)
         # a lazy source (NAIP) not fetched yet for all of it: rendered again once it is (base_refresh)
         # ... and the analyses (de-shadow, colour match) it was rendered without (never waited for)
         key = (anchor.id, cx, cy)
