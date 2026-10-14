@@ -33,91 +33,6 @@
 
         <div class="category-items">
 
-          <!-- Saved places (places.lua through settings.lua's uiPlace* functions) -->
-          <div v-if="category.places" class="places-block">
-            <div v-if="placesState.cannotGo" class="places-note">Go is off: {{ placesState.cannotGo }}</div>
-            <div v-if="placesState.warning" class="places-note is-warning">{{ placesState.warning }}</div>
-            <div v-if="placesMsg" class="places-note" :class="{ 'is-warning': placesMsgError }">{{ placesMsg }}</div>
-
-            <!-- Save current place -->
-            <div class="options-item-row" @mouseenter="hoveredItem = PLACE_HELP.save" @mouseleave="hoveredItem = null">
-              <div class="row-header">
-                <div class="option-label">Save current place</div>
-                <div class="info-value">{{ placesState.here || "position unknown" }}</div>
-              </div>
-              <div class="stacked-controls">
-                <BngInput class="place-input" v-model="newName" placeholder="Name (optional)" :maxlength="60" @enter="saveHere" />
-                <BngButton class="place-btn" :accent="ACCENTS.main" :disabled="!placesState.here" @click="saveHere">Save</BngButton>
-              </div>
-            </div>
-
-            <!-- Go to / save a typed lat, lon -->
-            <div class="options-item-row" @mouseenter="hoveredItem = PLACE_HELP.coords" @mouseleave="hoveredItem = null">
-              <div class="row-header">
-                <div class="option-label">Latitude, longitude</div>
-              </div>
-              <div class="stacked-controls">
-                <BngInput class="place-input" v-model="coordText" placeholder="36.5785, -118.2923" :maxlength="80" @enter="goText" />
-                <BngButton class="place-btn" :accent="ACCENTS.main" :disabled="!!placesState.cannotGo" @click="goText">Go</BngButton>
-                <BngButton class="place-btn" :accent="ACCENTS.outlined" @click="saveText">Save</BngButton>
-              </div>
-            </div>
-
-            <!-- The saved places -->
-            <div class="places-subtitle">Saved places</div>
-            <div
-              v-for="p in placeList"
-              :key="'p' + p.id"
-              class="options-item-row place-row"
-              @mouseenter="hoveredItem = PLACE_HELP.list"
-              @mouseleave="hoveredItem = null"
-            >
-              <div v-if="renamingId === p.id" class="stacked-controls place-rename">
-                <BngInput class="place-input" v-model="renameText" :maxlength="60" @enter="commitRename(p)" />
-                <BngButton class="place-btn" :accent="ACCENTS.main" @click="commitRename(p)">OK</BngButton>
-                <BngButton class="place-btn" :accent="ACCENTS.outlined" @click="renamingId = null">Cancel</BngButton>
-              </div>
-              <div v-else class="row-header">
-                <div class="option-label">
-                  <div class="place-name">{{ p.name }}</div>
-                  <div class="place-coords">{{ p.text }}</div>
-                </div>
-                <div class="inline-controls place-actions">
-                  <BngButton class="place-btn" :accent="ACCENTS.main" :disabled="!!placesState.cannotGo" @click="goPlace(p)">Go</BngButton>
-                  <BngButton class="place-btn" :accent="ACCENTS.outlined" @click="startRename(p)">Rename</BngButton>
-                  <BngButton
-                    class="place-btn"
-                    :accent="confirmDeleteId === p.id ? ACCENTS.destructive : ACCENTS.outlined"
-                    @click="deletePlace(p)"
-                  >{{ confirmDeleteId === p.id ? "Confirm" : "Delete" }}</BngButton>
-                </div>
-              </div>
-            </div>
-            <div v-if="!placeList.length" class="places-empty">No saved places yet.</div>
-
-            <!-- Recent places (teleport targets and level starts, newest first) -->
-            <div class="places-subtitle">Recent places</div>
-            <div
-              v-for="r in recentList"
-              :key="'r' + r.index + r.text"
-              class="options-item-row place-row"
-              @mouseenter="hoveredItem = PLACE_HELP.recent"
-              @mouseleave="hoveredItem = null"
-            >
-              <div class="row-header">
-                <div class="option-label">
-                  <div class="place-name">{{ r.name || r.text }}</div>
-                  <div class="place-coords">{{ recentDetail(r) }}</div>
-                </div>
-                <div class="inline-controls place-actions">
-                  <BngButton class="place-btn" :accent="ACCENTS.main" :disabled="!!placesState.cannotGo" @click="goRecent(r)">Go</BngButton>
-                  <BngButton class="place-btn" :accent="ACCENTS.outlined" @click="saveRecent(r)">Save</BngButton>
-                </div>
-              </div>
-            </div>
-            <div v-if="!recentList.length" class="places-empty">No recent places yet.</div>
-          </div>
-
           <!-- Dev tools presets (session only) -->
           <div v-if="category.devPresets" class="options-presets dev-presets">
             <BngButton
@@ -288,16 +203,6 @@ const dev = ref({ on: {}, lastPreset: "lod", active: false })
 const hoveredItem = ref(null)
 const openDropdown = ref(null) // Tracks which dropdown is currently open
 let pollTimer = null
-// Saved places (the "Places" section): the Lua side's lists and the page's own inputs
-const placesState = ref({ places: [], recent: [] })
-const newName = ref("")
-const coordText = ref("")
-const renamingId = ref(null)
-const renameText = ref("")
-const confirmDeleteId = ref(null)
-const placesMsg = ref("")
-const placesMsgError = ref(false)
-let confirmTimer = null
 const cacheConfirm = ref(false) // Clear cache: the confirmation is showing
 const cacheBusy = ref(false)    // Clear cache: sent, waiting for the server's answer
 const cacheResult = ref("")     // "Freed 1.2 GB" / an error
@@ -321,8 +226,9 @@ const settingsSchema = [
   },
   {
     name: "Places",
-    places: true,
-    items: [],
+    items: [
+      { id: "placesMoved", type: "text", name: "Places are on the world map", desc: "Saving where you are, going to a latitude, longitude, the saved places (go, rename, delete) and the recent places are in the world map's Places panel: press Alt+M (or the BeamNG.Earth map button in this menu)." },
+    ],
   },
   {
     name: "World",
@@ -444,6 +350,7 @@ function infoValue(item) {
   if (item.id === "player") return (typeof s.playerLat === "number") ? `${fmt(s.playerLat, 5)}, ${fmt(s.playerLon, 5)}  (${fmt(s.dist / 1000, 1)} km from origin)` : "-"
   if (item.id === "attribution") return s.attribution || "-"
   if (item.id === "credits") return s.credits || "-"
+  if (item.id === "placesMoved") return "Alt+M"
   if (item.id === "reportKey") return "Ctrl+Shift+N"
   if (item.id === "profilerKey") return "Ctrl+Shift+B"
   if (item.id === "reportPost") return "github.com/TecnaGamer/BeamNG.Earth/issues"
@@ -563,134 +470,15 @@ function getOptionLabel(item, val) {
   return opt ? opt.label : val
 }
 
-// ---- Saved places (settings.lua uiPlace* -> places.lua; every call answers with both lists) ----
-
-const PLACE_HELP = {
-  save: { name: "Save current place", desc: "Adds where you are now to the saved places, under the name typed here (empty: its latitude, longitude). Saved in settings/beamngEarth_places.json, apart from the settings." },
-  coords: { name: "Latitude, longitude", desc: "Go to (or save, under the name above) any point: \"36.5785, -118.2923\" as Google Maps copies it (right-click a point on the map), \"36.5785 N, 118.2923 W\", or degrees, minutes and seconds such as 36°34'42.6\"N 118°17'32.3\"W. Go needs the companion server and a player vehicle." },
-  list: { name: "Saved places", desc: "Go teleports there (the world loads around you, as at the level start). The list starts with the project's test places and a few well-known drives; rename or delete any of them." },
-  recent: { name: "Recent places", desc: "The last 10 places you teleported to and the place of each level start, newest first; places within 200 m count as one. Save adds one to the saved places." },
-}
-
-// a Lua string literal; control characters become spaces (JSON.stringify's \u escapes are not Lua)
-function luaStr(v) {
-  return '"' + String(v).replace(/[\x00-\x1f\x7f]/g, " ").replace(/\\/g, "\\\\").replace(/"/g, '\\"') + '"'
-}
-
-// an empty Lua table arrives as {} (an object), not []
-function toArray(v) {
-  if (Array.isArray(v)) return v
-  return v && typeof v === "object" ? Object.values(v) : []
-}
-
-const placeList = computed(() => toArray(placesState.value.places))
-const recentList = computed(() => toArray(placesState.value.recent))
-
-function recentDetail(r) {
-  const parts = []
-  if (r.name) parts.push(r.text)
-  if (r.kind === "start") parts.push("level start")
-  return parts.join("  |  ")
-}
-
-function applyPlaces(res, okText) {
-  if (!res) return
-  placesState.value = res
-  if (res.ok === false && res.error) {
-    placesMsg.value = res.error
-    placesMsgError.value = true
-  } else if (okText !== undefined) {
-    placesMsg.value = okText
-    placesMsgError.value = false
-  }
-}
-
-function placesCall(script, okText, onOk) {
-  engineLua(`beamngEarth_settings and beamngEarth_settings.uiPlaces and beamngEarth_settings.${script} or nil`, res => {
-    if (!res) {
-      placesMsg.value = "BeamNG.Earth is not loaded"
-      placesMsgError.value = true
-      return
-    }
-    applyPlaces(res, okText)
-    if (res.ok && onOk) onOk()
-  })
-}
-
-function refreshPlaces() {
-  engineLua("beamngEarth_settings and beamngEarth_settings.uiPlaces and beamngEarth_settings.uiPlaces() or nil", res => applyPlaces(res))
-}
-
-function saveHere() {
-  placesCall(`uiPlaceAddHere(${luaStr(newName.value)})`, "Saved", () => { newName.value = "" })
-}
-
-function goText() {
-  if (!coordText.value.trim()) return
-  placesCall(`uiPlaceGoText(${luaStr(coordText.value)})`, `Going to ${coordText.value.trim()}`)
-}
-
-function saveText() {
-  if (!coordText.value.trim()) return
-  placesCall(`uiPlaceAdd(${luaStr(newName.value)}, ${luaStr(coordText.value)})`, "Saved", () => { newName.value = ""; coordText.value = "" })
-}
-
-function goPlace(p) {
-  placesCall(`uiPlaceGo(${luaNum(p.id)})`, `Going to ${p.name}`)
-}
-
-function startRename(p) {
-  renamingId.value = p.id
-  renameText.value = p.name
-  confirmDeleteId.value = null
-}
-
-function commitRename(p) {
-  placesCall(`uiPlaceRename(${luaNum(p.id)}, ${luaStr(renameText.value)})`, "Renamed", () => { renamingId.value = null })
-}
-
-// Delete asks once more: the button reads "Confirm" for 4 s
-function deletePlace(p) {
-  if (confirmTimer) clearTimeout(confirmTimer)
-  confirmTimer = null
-  if (confirmDeleteId.value !== p.id) {
-    confirmDeleteId.value = p.id
-    confirmTimer = setTimeout(() => { confirmDeleteId.value = null }, 4000)
-    return
-  }
-  confirmDeleteId.value = null
-  placesCall(`uiPlaceDelete(${luaNum(p.id)})`, `Deleted ${p.name}`)
-}
-
-// a number for the Lua side ("nil" when it is not one; never JS's NaN / Infinity)
-function luaNum(v) {
-  const n = Number(v)
-  return Number.isFinite(n) ? String(n) : "nil"
-}
-
-// the row's lat/lon go along: a Go moves its place to the front, so the index alone can be stale
-function goRecent(r) {
-  placesCall(`uiPlaceGoRecent(${luaNum(r.index)}, ${luaNum(r.lat)}, ${luaNum(r.lon)})`, `Going to ${r.name || r.text}`)
-}
-
-// toFixed: String(1e-7) is "1e-7", which the lat/lon parser does not read
-function saveRecent(r) {
-  const ll = `${Number(r.lat).toFixed(6)}, ${Number(r.lon).toFixed(6)}`
-  placesCall(`uiPlaceAdd(${luaStr(r.name || "")}, ${luaStr(ll)})`, "Saved")
-}
-
 onMounted(() => {
   config.value = { ...defaultSettings }
   refresh()
-  refreshPlaces()
-  pollTimer = setInterval(() => { refresh(); refreshPlaces() }, 2000) // status lines (and recent places) while the page is open
+  pollTimer = setInterval(refresh, 2000) // status lines while the page is open
 })
 
 onUnmounted(() => {
   if (pollTimer) clearInterval(pollTimer)
   pollTimer = null
-  if (confirmTimer) clearTimeout(confirmTimer)
-  confirmTimer = null
 })
 </script>
 
@@ -1021,69 +809,6 @@ details[open] > summary.category-title {
     --bng-button-padding-y: 0.15em;
     opacity: 0.8;
     &:hover { opacity: 1; }
-  }
-}
-
-/* Saved places */
-.places-block {
-  display: flex;
-  flex-direction: column;
-
-  .places-subtitle {
-    padding: 0.6em 0.8em 0.3em;
-    font-size: 0.9rem;
-    font-weight: 600;
-    color: var(--bng-orange-550, #f60);
-  }
-
-  .places-note {
-    padding: 0.35em 0.8em;
-    font-size: 0.85rem;
-    color: #ccc;
-
-    &.is-warning { color: #f88; }
-  }
-
-  .places-empty {
-    padding: 0.4em 0.8em 0.6em;
-    font-size: 0.85rem;
-    color: rgba(255, 255, 255, 0.45);
-    font-style: italic;
-  }
-
-  .place-input {
-    flex: 1 1 auto;
-    min-width: 0;
-  }
-
-  .place-btn {
-    flex: none;
-    --bng-button-padding-y: 0.3em;
-    font-size: 0.9em;
-  }
-
-  .place-row .option-label {
-    min-width: 0;
-  }
-
-  .place-name {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .place-coords {
-    margin-top: 0.15em;
-    font-size: 0.8rem;
-    color: rgba(255, 255, 255, 0.55);
-  }
-
-  .place-actions {
-    gap: 0.35em;
-  }
-
-  .place-rename {
-    margin-top: 0;
   }
 }
 

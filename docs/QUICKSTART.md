@@ -31,9 +31,9 @@ in a few minutes. No programming needed.
   saved places. Drag to pan, scroll to zoom, click anywhere (or a saved place) and confirm to
   teleport there. The search box finds saved places or a typed "latitude, longitude". Alt+M or Esc
   closes it. (Plain M is still the game's own map.)
-- Press **Esc**, open the **Mods** tab and click **BeamNG.Earth**. The **Places** section lets you
-  type (or paste from Google Maps) a "latitude, longitude" and press **Go**, save your favourite
-  spots, and jump back to recent ones.
+- The map's **Places** panel (on the right; "Places ›" hides it) lets you save where you are, type
+  (or paste from Google Maps) a "latitude, longitude" and press **Go**, go to, rename or delete your
+  saved places, and jump back to recent ones. Click a place's name to see it on the map.
 - The first visit to a new area takes a little while: the map is downloaded and built while you
   watch. Going back later is much faster (it is cached).
 

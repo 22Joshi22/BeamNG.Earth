@@ -88,6 +88,69 @@
       </div>
     </div>
 
+    <!-- Places (moved here from the settings page, 2026-10-14): save, go, rename, delete; recent places -->
+    <div class="places-panel" :class="{ open: panelOpen }" @mousedown.stop @wheel.stop @dblclick.stop>
+      <button class="map-btn panel-toggle" @click="panelOpen = !panelOpen" :title="panelOpen ? 'Hide places' : 'Show places'">
+        {{ panelOpen ? "Places ›" : "‹ Places" }}
+      </button>
+      <div v-if="panelOpen" class="panel-body">
+        <div v-if="state.cannotGo" class="panel-msg warn">Go is off: {{ state.cannotGo }}</div>
+        <div v-if="placesMsg" class="panel-msg" :class="{ warn: placesMsgError }">{{ placesMsg }}</div>
+
+        <div class="panel-sub">Save where you are</div>
+        <div class="panel-row">
+          <input v-model="newName" class="panel-input" placeholder="Name (optional)" maxlength="60"
+                 @keydown.enter.stop.prevent="saveHere" @keydown.esc.stop.prevent="newName = ''" />
+          <button class="map-btn primary" :disabled="!state.player" @click="saveHere">Save</button>
+        </div>
+
+        <div class="panel-sub">Latitude, longitude</div>
+        <div class="panel-row">
+          <input v-model="coordText" class="panel-input" placeholder="36.5785, -118.2923" maxlength="80"
+                 @keydown.enter.stop.prevent="goText" @keydown.esc.stop.prevent="coordText = ''" />
+          <button class="map-btn primary" :disabled="!!state.cannotGo || !coordText.trim()" @click="goText">Go</button>
+          <button class="map-btn" :disabled="!coordText.trim()" @click="saveText">Save</button>
+        </div>
+
+        <div class="panel-sub">Saved places</div>
+        <div v-for="p in placeList" :key="'s' + p.id" class="panel-item">
+          <div v-if="renamingId === p.id" class="panel-row">
+            <input v-model="renameText" class="panel-input" maxlength="60"
+                   @keydown.enter.stop.prevent="commitRename(p)" @keydown.esc.stop.prevent="renamingId = null" />
+            <button class="map-btn primary" @click="commitRename(p)">OK</button>
+            <button class="map-btn" @click="renamingId = null">Cancel</button>
+          </div>
+          <template v-else>
+            <div class="item-text" @click="showOnMap(p)" title="Show on the map">
+              <div class="item-name">{{ p.name }}</div>
+              <div class="item-sub">{{ p.text }}</div>
+            </div>
+            <div class="item-btns">
+              <button class="map-btn primary small" :disabled="!!state.cannotGo" @click="goPlace(p)">Go</button>
+              <button class="map-btn small" @click="startRename(p)">Rename</button>
+              <button class="map-btn small" :class="{ danger: confirmDeleteId === p.id }" @click="deletePlace(p)">
+                {{ confirmDeleteId === p.id ? "Confirm" : "Delete" }}
+              </button>
+            </div>
+          </template>
+        </div>
+        <div v-if="!placeList.length" class="panel-empty">No saved places yet.</div>
+
+        <div class="panel-sub">Recent places</div>
+        <div v-for="r in recentList" :key="'r' + r.index + '_' + r.lat" class="panel-item">
+          <div class="item-text" @click="showOnMap(r)" title="Show on the map">
+            <div class="item-name">{{ r.name || r.text }}</div>
+            <div class="item-sub">{{ recentDetail(r) }}</div>
+          </div>
+          <div class="item-btns">
+            <button class="map-btn primary small" :disabled="!!state.cannotGo" @click="goRecent(r)">Go</button>
+            <button class="map-btn small" @click="saveRecent(r)">Save</button>
+          </div>
+        </div>
+        <div v-if="!recentList.length" class="panel-empty">No recent places yet.</div>
+      </div>
+    </div>
+
     <!-- bottom: cursor position, scale, attribution -->
     <div class="map-bottom">
       <span class="cursor-pos">{{ cursorText }}</span>
@@ -312,6 +375,89 @@ function centreOnMe() {
   if (p) view.value = { ...view.value, lat: p.lat, lon: p.lon, z: Math.max(view.value.z, 12) }
 }
 
+// ---- Places panel (settings.lua uiPlace* -> places.lua; every call answers with both lists) ---------
+const panelOpen = ref(true)
+const newName = ref(""), coordText = ref(""), renameText = ref("")
+const renamingId = ref(null), confirmDeleteId = ref(null)
+const placesMsg = ref(""), placesMsgError = ref(false)
+let confirmTimer = null
+
+// an empty Lua table arrives as {} (an object), not []
+function toArray(v) {
+  if (Array.isArray(v)) return v
+  return v && typeof v === "object" ? Object.values(v) : []
+}
+const placeList = computed(() => toArray(state.value.places))
+const recentList = computed(() => toArray(state.value.recent))
+
+// a Lua string literal (control characters become spaces) and a Lua number ("nil" if not one)
+function luaStr(v) {
+  return '"' + String(v).replace(/[\x00-\x1f\x7f]/g, " ").replace(/\\/g, "\\\\").replace(/"/g, '\\"') + '"'
+}
+function luaNum(v) {
+  const n = Number(v)
+  return Number.isFinite(n) ? String(n) : "nil"
+}
+
+function recentDetail(r) {
+  const parts = []
+  if (r.name) parts.push(r.text)
+  if (r.kind === "start") parts.push("level start")
+  return parts.join("  |  ")
+}
+
+function placesCall(script, okText, onOk) {
+  engineLua(`beamngEarth_settings and beamngEarth_settings.uiPlaces and beamngEarth_settings.${script} or nil`, res => {
+    if (!res) { placesMsg.value = "BeamNG.Earth is not loaded"; placesMsgError.value = true; return }
+    state.value = { ...state.value, places: res.places, recent: res.recent, cannotGo: res.cannotGo }
+    if (res.ok === false && res.error) { placesMsg.value = res.error; placesMsgError.value = true }
+    else if (okText !== undefined) { placesMsg.value = okText; placesMsgError.value = false }
+    if (res.ok && onOk) onOk()
+  })
+}
+
+function showOnMap(p) {
+  if (p.lat == null || p.lon == null) return
+  follow.value = false
+  view.value = { ...view.value, lat: Number(p.lat), lon: Number(p.lon), z: Math.max(view.value.z, 13) }
+}
+// after a Go: back to driving, as the map's own Teleport does
+function wentThere() { follow.value = true; if (!embedded) close() }
+function saveHere() { placesCall(`uiPlaceAddHere(${luaStr(newName.value)})`, "Saved", () => { newName.value = "" }) }
+function goText() {
+  if (!coordText.value.trim()) return
+  placesCall(`uiPlaceGoText(${luaStr(coordText.value)})`, `Going to ${coordText.value.trim()}`, wentThere)
+}
+function saveText() {
+  if (!coordText.value.trim()) return
+  placesCall(`uiPlaceAdd(${luaStr(newName.value)}, ${luaStr(coordText.value)})`, "Saved", () => { newName.value = ""; coordText.value = "" })
+}
+function goPlace(p) { placesCall(`uiPlaceGo(${luaNum(p.id)})`, `Going to ${p.name}`, wentThere) }
+function startRename(p) { renamingId.value = p.id; renameText.value = p.name; confirmDeleteId.value = null }
+function commitRename(p) {
+  placesCall(`uiPlaceRename(${luaNum(p.id)}, ${luaStr(renameText.value)})`, "Renamed", () => { renamingId.value = null })
+}
+// Delete asks once more: the button reads "Confirm" for 4 s
+function deletePlace(p) {
+  if (confirmTimer) clearTimeout(confirmTimer)
+  confirmTimer = null
+  if (confirmDeleteId.value !== p.id) {
+    confirmDeleteId.value = p.id
+    confirmTimer = setTimeout(() => { confirmDeleteId.value = null }, 4000)
+    return
+  }
+  confirmDeleteId.value = null
+  placesCall(`uiPlaceDelete(${luaNum(p.id)})`, `Deleted ${p.name}`)
+}
+// the row's lat/lon go along: a Go moves its place to the front, so the index alone can be stale
+function goRecent(r) {
+  placesCall(`uiPlaceGoRecent(${luaNum(r.index)}, ${luaNum(r.lat)}, ${luaNum(r.lon)})`, `Going to ${r.name || r.text}`, wentThere)
+}
+function saveRecent(r) {
+  const ll = `${Number(r.lat).toFixed(6)}, ${Number(r.lon).toFixed(6)}`
+  placesCall(`uiPlaceAdd(${luaStr(r.name || "")}, ${luaStr(ll)})`, "Saved")
+}
+
 // ---- search --------------------------------------------------------------------------------
 function allPlaces() {
   const s = state.value
@@ -502,6 +648,36 @@ const fmtLatLon = mm.fmtLatLon
 .map-btn.primary { background: #e0761c; border-color: #e0761c; }
 .map-btn:disabled { opacity: 0.45; cursor: default; }
 .map-btn.close { margin-left: auto; }
+.map-btn.small { padding: 4px 8px; font-size: 12px; }
+.map-btn.danger { background: #a3302a; border-color: #a3302a; }
+
+.places-panel {
+  position: absolute; right: 10px; top: 56px; z-index: 6; display: flex; flex-direction: column; align-items: flex-end;
+  max-height: calc(100% - 100px);
+}
+.panel-toggle { margin-bottom: 6px; }
+.panel-body {
+  width: 340px; overflow-y: auto; padding: 10px 12px; background: rgba(15, 18, 22, 0.88);
+  border: 1px solid rgba(255, 255, 255, 0.15); border-radius: 6px; user-select: text; cursor: default;
+}
+.panel-sub { margin: 10px 0 5px; font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em; color: #9aa4ae; }
+.panel-sub:first-child { margin-top: 0; }
+.panel-row { display: flex; gap: 6px; align-items: center; }
+.panel-input {
+  flex: 1; min-width: 0; padding: 6px 8px; font-size: 13px; color: #fff; background: rgba(0, 0, 0, 0.55);
+  border: 1px solid rgba(255, 255, 255, 0.3); border-radius: 4px;
+}
+.panel-msg { margin-bottom: 6px; font-size: 12px; color: #9fd3ff; }
+.panel-msg.warn { color: #ffb08a; }
+.panel-item {
+  display: flex; gap: 8px; align-items: center; padding: 6px 4px; border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+.item-text { flex: 1; min-width: 0; cursor: pointer; }
+.item-text:hover .item-name { color: #ffc28a; }
+.item-name { font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.item-sub { font-size: 11px; color: #9aa4ae; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.item-btns { display: flex; gap: 4px; flex-shrink: 0; }
+.panel-empty { padding: 6px 4px; font-size: 12px; color: #9aa4ae; }
 
 .map-notice {
   position: absolute; left: 50%; top: 60px; transform: translateX(-50%); z-index: 9;
