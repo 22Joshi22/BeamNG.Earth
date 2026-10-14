@@ -114,8 +114,16 @@ def build(frame, chunks, elev, origin, lift=0.0):
         i = np.arange(k - 1)
         A, A1, B, B1 = nverts + i, nverts + i + 1, nverts + k + i, nverts + k + i + 1
         # left edge to the left of the direction: (A, B, B1) is counter-clockwise seen from above
-        T.append(np.concatenate([np.stack([A, B, B1], 1), np.stack([A, B1, A1], 1)]))
-        M.append(np.full(2 * (k - 1), mi))
+        tri = np.concatenate([np.stack([A, B, B1], 1), np.stack([A, B1, A1], 1)])
+        # where a ribbon folds over itself (a mitred joint at a sharp merge pulls its edges across: the user saw
+        # black triangles in President St, 2026-10-14) its triangles turn over: dropped, the neighbours cover it
+        xy = np.concatenate([left, right])[:, :2]
+        loc = tri - nverts
+        e1, e2 = xy[loc[:, 1]] - xy[loc[:, 0]], xy[loc[:, 2]] - xy[loc[:, 0]]
+        cz = e1[:, 0] * e2[:, 1] - e1[:, 1] * e2[:, 0]
+        keep = cz * np.sign(np.median(cz) or 1.0) > 1e-6
+        T.append(tri[keep])
+        M.append(np.full(int(keep.sum()), mi))
         nverts += 2 * k
     for c in polys:                             # filled polygons (corner asphalt): a fan from vertex 0
         q = np.asarray(c["poly"], np.float64)
