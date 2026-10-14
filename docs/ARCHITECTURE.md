@@ -1613,3 +1613,35 @@ signal booms, stop signs and stop points to the left side (road tiles in both th
 - A traffic car still for 45 s, 40 m or more from the player, is respawned (`STUCK_*`; paused time excluded): stock
   traffic respawns only far, unseen cars. A parked car off its spot (another frame's position after a teleport the
   scatter missed) is moved to a spot once the player is 60 m away (`parking.offSpot`).
+
+**The player's choice** (the user, 2026-10-14: spawn them if the player has them on, not otherwise). The level
+`supportsTraffic`, so the level-start configurator offers Disabled / Parked only / Normal / Police. The mod takes
+that choice in `onClientPreStartMission` (freeroam's camera-ready spawn can come before our mission start) with
+`navgraph.takeChoice`: freeroam's options are set to disabled (it would spawn before our first road graph is in the
+map), our cars start once it is, and the player's options are given back then (and when the level ends). Level
+start runs twice; a repeat keeps the first choice. The radial menu's traffic entries work at any time. The server
+builds the graph and the parking spots by default (`--traffic on`).
+
+## Seasons (`server/season.py`, mod `seasonlook.lua`; 2026-10-14, `--season auto|fall|off`, `--leaf-on`)
+The user: colour-correct Maryland's leaf-off photos, and use it for seasons (it was fall).
+- `leaf_on` (in `Imagery.render`, for sources with `leaf_off`: md6in): where the summer reference (the rest of
+  the chain: USGS / NAIP, already rendered for `match_colours`) is vegetation (green chromaticity 0.345-0.37),
+  the texture takes its chroma at the reference's ~8 m scale and 80 % of its brightness; roofs, roads, dirt and
+  water keep theirs, the photo's detail stays.
+- `grade` (every texture: the block's photo and every far tile, so they agree): fall turns the canopy (green,
+  darker than value 0.44-0.52 and textured at 2-3 m; brightness only on texels over 2.5 m) yellow / orange / rust
+  in world-anchored noise patches (18 m stands, 6 m trees, 25 m colour regions), the share growing with the
+  amount, and every green moves 35 % of the amount toward yellow. Textures of 512 px or more are graded at half
+  size and applied as a colour ratio (21 ms per 512 px tile). The amount: `season_amounts` (peak ~Oct 27 at 40 N,
+  2.5 days earlier per degree north, +-28 days; 0 under 23 degrees; the southern hemisphere half a year off).
+- The 3D trees (`seasonlook.lua`, hello.season): no stock autumn models, so the stock leaf materials
+  (`baseColorFactor`; the merged billboards' `diffuseColor`) are tinted in our level: oak rust-orange (~12 days
+  late), beech bronze, birch / aspen gold (~10 days early), conifers green; amount^1.6 so trees hold their green.
+  The stock factors come back when the level ends. Engine-made far billboards keep their green (open).
+
+## Post effects in our level (mod `postfx.lua`; 2026-10-14)
+The stock depth of field blurs everything past a few hundred metres; stock maps hide it in haze (3-15 mile view
+distances), ours (60+ miles) showed it as soft distance. In our level the far blur is 0 (re-applied when the
+player's preset resets it); the near blur and the player's settings stay theirs; the stock parameters return when
+the level ends. LOD research: docs/research/2026-10-14-lod-research.md (also: linear-light sharpened mip chains,
+`imagery.mip_arrays`; gentler far-tree rings, the engine billboards far trees itself).
