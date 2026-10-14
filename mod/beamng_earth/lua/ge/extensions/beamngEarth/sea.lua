@@ -46,10 +46,10 @@ local INLAND = {
   { 'baseColor', 0, '44 74 60 255' }, { 'underwaterColor', 0, '52 78 58 240' }, { 'clarity', 0, '0.12' },
   { 'overallWaveMagnitude', 0, '0.04' }, { 'overallRippleMagnitude', 0, '0.12' },
 }
--- Rivers along centrelines lie in their channels, shallow: little foam (with the bay's 0.75 m foam depth
--- a stream drew as a white ribbon, 2026-10-13)
+-- Rivers along centrelines: no foam (with the bay's 0.75 m foam depth a stream drew as a white ribbon,
+-- and their shallow edges as white fringes, 2026-10-13)
 local RIVER_LOOK = {
-  { 'overallFoamOpacity', 0, '0.4' }, { 'foamMaxDepth', 0, '0.1' }, { 'depthGradientMax', 0, '1.5' },
+  { 'overallFoamOpacity', 0, '0' }, { 'foamMaxDepth', 0, '0.1' }, { 'depthGradientMax', 0, '6' },
   { 'overallRippleMagnitude', 0, '0.3' },
 }
 local TEXTURES = {      -- field, East Coast's file, the core fallback

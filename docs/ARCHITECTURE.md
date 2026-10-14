@@ -1377,6 +1377,16 @@ position; vehicles see water they drive into, but not water that appears around 
   fitted to their water (least squares; split while a sample is > 0.15 m off), tilted to match, and the
   physics block takes the tilted surface's height at the player. Ground carved > 5 cm under water gets
   the MUD layer (no grass through the surface).
+- **Every river is River objects, beds carved (2026-10-13, the user: "if the tiles can only be flat we
+  shouldn't use them, even the large river has holes"; "you can carve the streams"):** `lake_at` leaves out
+  river outlines, so tiles are only the sea and lakes. `SeaCarver._carve_lines` draws the stream / river
+  lines of the 5 x 5 cells around into the water raster: a level every 4 px (the lowest DEM within half
+  the width, <= 15 m), the width from the outline (twice the distance to its edge) or by class, the bed
+  cut to level - D (1 - (d / hw)^2) (D = width / 6 in 0.6-3 m) with a 1:1 bank for 4 m beyond (a negative
+  depth: the ground kept below level + distance), the deeper cut winning at confluences; flattened river
+  outlines keep their own carving. Those pixels join the outline mask. The Rivers' nodes take that level
+  + 0.05 m (`level_at`), each node moved midway between the outline's banks with the outline's width
+  (up to 2 km). The Harrisburg creek: one 28-48 m River dropping 91.7 -> 88.5 m in its cut channel.
 - **River objects along centrelines (`server/riverlines.py`, 2026-10-13):** after the user's look at the
   "Downhill Mayhem" map (each of its two rivers is one River with 24-130 nodes, 5 m deep, the surface
   following the valley, `flowMagnitudePhysics` 35 / 100 m/s pushing cars). Overture water lines (river /

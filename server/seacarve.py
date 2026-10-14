@@ -31,7 +31,7 @@ import mapcells
 
 log = logging.getLogger("earthd.seacarve")
 
-VERSION = 8
+VERSION = 10
 SEA_E = 0.0                 # m: the sea surface (the DEMs' heights are above mean sea level)
 DEPTH_SLOPE = 0.15          # floor depth per metre from the shoreline (1 : 6.7)
 DEPTH_CAP = 6.0             # m: the floor's depth away from the shore without bathymetry (Chesapeake mean
@@ -64,6 +64,12 @@ RIVER_SKIP_CLASSES = ("drain", "ditch")
 RIVER_DEPTH_CAP = 3.0       # m
 RIVER_DEM_STEP = 4          # river levels: the DEM every 4th pixel (~7.5 m), the lowest of 3 x 3 such
                             # samples (the flattened surface, not a bank),
+LINE_CELLS = 2              # stream / river lines from the 5 x 5 cells around (a way is owned by one cell)
+LINE_STEP_PX = 4            # a level every 4 px (~7.5 m) along them
+LINE_PROBE_MAX_M = 15.0     # the level: the lowest DEM within half the width, at most this far
+LINE_DEPTH_M = (0.6, 3.0)   # the bed's depth in the middle: width / 6, clamped
+LINE_BANK_M = 4.0           # the bank beyond the half width ...
+LINE_BANK_SLOPE = 1.0       # ... kept below level + its distance (1:1)
 RIVER_FLAT_M = 0.25         # a river whose samples stand more than this above its surface (p90) is not
                             # flattened by the DEM: left out (rough creeks; River objects later)
 WATER_BANK_M = 1.0          # m: a lake / river pixel whose DEM is higher than its level by more is dry
@@ -216,7 +222,7 @@ class SeaCarver:
                 if r is None:
                     np.savez_compressed(fh, any=False)
                 else:
-                    np.savez_compressed(fh, any=True, depth=np.round(r[0] * 100.0).astype(np.uint16), level=r[1],
+                    np.savez_compressed(fh, any=True, depth=np.round(r[0] * 100.0).astype(np.int16), level=r[1],
                                         outline=r[2])
             os.replace(tmp, p)
         return r, complete
@@ -275,11 +281,14 @@ class SeaCarver:
             if rl is not None:
                 tidal = river & (rl <= SEA_HI)
                 sea |= tidal            # a tidal river: the sea
+                outline &= ~tidal
                 river &= ~tidal & np.isfinite(rl)
                 kmax = int(math.ceil(RIVER_DEPTH_CAP / DEPTH_SLOPE / px)) + 2
                 st = shore_steps(river, kmax).astype(np.float32)
                 depth[river] = np.minimum(RIVER_DEPTH_CAP, DEPTH_SLOPE * (st[river] - 0.5) * px)
                 level[river] = rl[river]
+        if self.dem is not None:        # streams and the rivers the DEM does not flatten: their lines
+            self._carve_lines(x, y, ox, oy, n, px, depth, level, outline)
         complete = True
         if sea.any():
             bathy = self._bathy(ox, oy, n)
@@ -339,6 +348,100 @@ class SeaCarver:
         inter = f.attrs.get("is_intermittent", np.zeros(len(sub), bool))
         ok = np.isin(sub, RIVER_SUBTYPES) & ~np.isin(cls, RIVER_SKIP_CLASSES) & (f.kind == 3)
         return np.flatnonzero(ok & ~np.asarray(inter, bool))
+
+    def _carve_lines(self, x, y, ox, oy, n, px, depth, level, outline):
+        """Streams and rivers along their lines (riverlines.py draws them): every LINE_STEP_PX, the level is
+        the lowest DEM within half the width (the channel), the width the river's outline's where it has
+        one (twice the distance to its edge) else riverlines.WIDTH_M; the bed is carved to
+        level - D (1 - (d / hw)^2) inside the half width hw (D = width / 6 in LINE_DEPTH_M), the bank
+        above kept below level + (d - hw) * LINE_BANK_SLOPE (a negative depth). Pixels the sea, a lake or a
+        flattened river already hold are left alone. The pixels drawn join the outline (no lake tiles
+        there; riverlines reads their level)."""
+        import riverlines
+        held = np.isfinite(level)
+        kmax = int(math.ceil(riverlines.WIDTH_MAX_M / 2 / px))
+        o_dist = shore_steps(outline, min(kmax, 256)).astype(np.float32) * px if outline.any() else None
+        seen = set()
+        drawn = np.zeros((n, n), bool)
+        for dy in range(-LINE_CELLS, LINE_CELLS + 1):
+            for dx in range(-LINE_CELLS, LINE_CELLS + 1):
+                f = self._water((mapcells.ZOOM, x + dx, y + dy))
+                if f is None:
+                    continue
+                cls = f.attrs.get("class", np.full(len(f.kind), "", object))
+                inter = f.attrs.get("is_intermittent", np.zeros(len(f.kind), bool))
+                for i in np.flatnonzero(f.kind == 2):
+                    kind = riverlines._kind(str(f.attrs["subtype"][i]), str(cls[i]))
+                    gid = str(f.ids[i])
+                    if kind is None or bool(inter[i]) or gid in seen:
+                        continue
+                    seen.add(gid)
+                    for part in f.parts(i):
+                        for ring in part:
+                            mx, my = _merc(ring[:, 1], ring[:, 0])
+                            self._carve_line(np.stack([mx - ox, my - oy], -1), kind, ox, oy, n, px, depth, level,
+                                             held, drawn, o_dist)
+        outline |= drawn
+
+    def _carve_line(self, pts, kind, ox, oy, n, px, depth, level, held, drawn, o_dist):
+        import riverlines
+        wmax = riverlines.WIDTH_MAX_M / px
+        if (pts[:, 0].max() < -wmax or pts[:, 1].max() < -wmax or pts[:, 0].min() > n + wmax
+                or pts[:, 1].min() > n + wmax or len(pts) < 2):
+            return
+        seg = np.hypot(*np.diff(pts, axis=0).T)
+        s = np.r_[0.0, np.cumsum(seg)]
+        if s[-1] <= 0:
+            return
+        t = np.linspace(0.0, s[-1], max(2, int(math.ceil(s[-1] / LINE_STEP_PX)) + 1))
+        q = np.stack([np.interp(t, s, pts[:, 0]), np.interp(t, s, pts[:, 1])], -1)
+        w = np.full(len(q), riverlines.WIDTH_M[kind])
+        if o_dist is not None:          # in an outline: twice the distance to its edge
+            qi = np.clip(np.round(q).astype(np.int64), 0, n - 1)
+            inr = (q[:, 0] >= 0) & (q[:, 0] < n) & (q[:, 1] >= 0) & (q[:, 1] < n)
+            od = np.where(inr, o_dist[qi[:, 1], qi[:, 0]], 0.0)
+            w = np.where(od > 0, np.maximum(2 * od, w), w)
+        w = np.minimum(w, riverlines.WIDTH_MAX_M)
+        # the level: the lowest DEM at the point and 8 around it at half the width (<= LINE_PROBE_MAX_M)
+        r = np.clip(w / 2, 2.0, LINE_PROBE_MAX_M) / px
+        ang = np.arange(8) * (np.pi / 4)
+        pxs = np.concatenate([q[:, 0]] + [q[:, 0] + r * math.cos(a) for a in ang])
+        pys = np.concatenate([q[:, 1]] + [q[:, 1] + r * math.sin(a) for a in ang])
+        la, lo = _lonlat(ox + pxs + 0.5, oy + pys + 0.5)
+        try:
+            e = np.asarray(self.dem.sample(la, lo, LAKE_DEM_ZOOM), np.float64).reshape(9, -1).min(axis=0)
+        except Exception as ex:
+            log.debug("stream levels: %s", ex)
+            return
+        lv = np.round(e / LEVEL_Q) * LEVEL_Q
+        hw = w / 2 / px
+        D = np.clip(w / 6.0, *LINE_DEPTH_M)
+        bank = LINE_BANK_M / px
+        for k in range(len(q) - 1):
+            a, b = q[k], q[k + 1]
+            reach = max(hw[k], hw[k + 1]) + bank
+            i0, i1 = max(0, int(min(a[0], b[0]) - reach)), min(n, int(max(a[0], b[0]) + reach) + 2)
+            j0, j1 = max(0, int(min(a[1], b[1]) - reach)), min(n, int(max(a[1], b[1]) + reach) + 2)
+            if i1 <= i0 or j1 <= j0:
+                continue
+            gi, gj = np.meshgrid(np.arange(i0, i1) + 0.5, np.arange(j0, j1) + 0.5)
+            ab = b - a
+            L2 = float(ab @ ab) or 1e-9
+            tt = np.clip(((gi - a[0]) * ab[0] + (gj - a[1]) * ab[1]) / L2, 0.0, 1.0)
+            dist = np.hypot(gi - (a[0] + tt * ab[0]), gj - (a[1] + tt * ab[1]))
+            h = hw[k] + (hw[k + 1] - hw[k]) * tt
+            L = lv[k] + (lv[k + 1] - lv[k]) * tt
+            dd = D[k] + (D[k + 1] - D[k]) * tt
+            inside = dist <= h
+            want = np.where(inside, dd * (1 - (dist / np.maximum(h, 1e-6)) ** 2),
+                            -(dist - h) * px * LINE_BANK_SLOPE)
+            m = (dist <= h + bank) & ~held[j0:j1, i0:i1]
+            cur_d, cur_l = depth[j0:j1, i0:i1], level[j0:j1, i0:i1]
+            # the deeper cut wins where lines meet (a confluence); a pixel not cut yet takes this one
+            take = m & (np.isnan(cur_l) | (L - want < cur_l - cur_d))
+            cur_d[take] = want[take]
+            cur_l[take] = L[take]
+            drawn[j0:j1, i0:i1] |= take & inside
 
     def _coarse_dem(self, m, ox, oy):
         """The DEM every RIVER_DEM_STEP pixels over m's bounding box: (grid, j0, i0), None without one."""
@@ -530,23 +633,25 @@ class SeaCarver:
         return self.water(lat, lon)[0]
 
     def carve(self, lat, lon, z):
-        """z (DEM heights at the points) with the sea's and the lakes' floors carved in."""
+        """z (DEM heights at the points) with the beds of the sea, the lakes and the rivers carved in (a
+        negative depth: a stream's bank, kept no higher than its level plus that)."""
         d, lv = self.water(lat, lon)
-        wet = (d > 0) & np.isfinite(lv)
-        if not wet.any():
+        cut = (d != 0) & np.isfinite(lv)
+        if not cut.any():
             return z
         z = np.asarray(z, np.float64)
-        return np.where(wet, np.minimum(z, np.where(wet, lv, 0.0) - d), z)
+        return np.where(cut, np.minimum(z, np.where(cut, lv, 0.0) - d), z)
 
     def lake_at(self, lat, lon, wait=True):
-        """The level of the inland water (lakes, rivers above sea level) at the points (NaN on land, at
-        sea and away from water; wait=False: also in cells not at hand yet, built in the background)."""
+        """The level of the lakes (still water above sea level) at the points: NaN on land, at sea, away
+        from water and in rivers (they slope: River objects, riverlines.py, not flat tiles; their beds are
+        carved here all the same); wait=False: also in cells not at hand yet, built in the background."""
         d, lv = self.water(lat, lon, wait=wait)[:2]
-        return np.where((d > 0) & (lv > SEA_HI), lv, np.nan)
+        return np.where((d > 0) & (lv > SEA_HI) & ~self.outline_at(lat, lon), lv, np.nan)
 
     def outline_at(self, lat, lon):
-        """Inside a river outline (any, flattened or not) at the points; False in cells not at hand yet
-        (built in the background)."""
+        """Inside a river outline above sea level (any, flattened or not) at the points; False in cells not
+        at hand yet (built in the background)."""
         lat = np.asarray(lat, np.float64)
         lon = np.asarray(lon, np.float64)
         out = np.zeros(lat.shape, bool)

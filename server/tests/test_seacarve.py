@@ -273,10 +273,11 @@ class RiverTest(unittest.TestCase):
     def test_level_follows_the_fall(self):
         la = np.full(5, RIV_LAT + W / 2)
         lo = RIV_LON + np.array([0.1, 0.3, 0.5, 0.7, 0.9]) * L
-        lv = self.sc.lake_at(la, lo)
-        self.assertTrue(np.all(np.isfinite(lv)))
+        d, lv = self.sc.water(la, lo)
+        self.assertTrue(np.all(np.isfinite(lv)) and np.all(d > 0), "the bed carved below the river's level")
         np.testing.assert_allclose(lv, 30.0 - np.array([0.1, 0.3, 0.5, 0.7, 0.9]) * 6.0, atol=0.25)
         self.assertTrue(np.all(np.diff(lv) < 0), "falls downstream")
+        self.assertTrue(np.all(np.isnan(self.sc.lake_at(la, lo))), "a river is not a lake (no flat tiles)")
 
     def test_tidal_river_is_sea(self):
         p = (np.array([RIV_LAT - 2.5 * W]), np.array([RIV_LON + L / 2]))
@@ -285,15 +286,12 @@ class RiverTest(unittest.TestCase):
         self.assertEqual(float(lv[0]), seacarve.SEA_E)
         self.assertTrue(np.isnan(self.sc.lake_at(*p)[0]))
 
-    def test_tiles_step_down(self):
+    def test_no_tiles_for_rivers(self):
         import seatiles
         f = geodesy.EnuFrame(RIV_LAT + W / 2, RIV_LON + L / 2)
         dem = RiverDem()
-        tiles = seatiles.plan_lakes(f, 0.0, 0.0, self.sc.lake_at, lambda la, lo: dem.sample(la, lo, 15))
-        self.assertTrue(tiles)
-        west = min(tiles, key=lambda t: t.x)
-        east = max(tiles, key=lambda t: t.x)
-        self.assertGreater(west.z - east.z, 3.0, "the tiles follow the river down")
+        self.assertEqual(seatiles.plan_lakes(f, 0.0, 0.0, self.sc.lake_at, lambda la, lo: dem.sample(la, lo, 15)),
+                         [], "rivers slope: River objects (riverlines.py), not flat tiles")
 
 
 class SinkTest(unittest.TestCase):

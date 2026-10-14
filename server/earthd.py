@@ -2079,9 +2079,9 @@ class Connection:
                         return None
                     return md.cell(key, layers=("water",)).layers.get("water")
 
-                def tiled(la, lo):      # already water as tiles (sea, lakes, flattened rivers)
+                def tiled(la, lo):      # already water as tiles (the sea, lakes; not rivers)
                     d, lv, _ = sea.water(la, lo, wait=False)
-                    return np.where(np.isfinite(lv), d, 0.0)
+                    return np.where(np.isfinite(lv) & ~sea.outline_at(la, lo), d, 0.0)
 
                 def plan():
                     # with the cells at hand (the others are built in the background and used by the
@@ -2089,9 +2089,12 @@ class Connection:
                     tiles = (seatilesmod.plan(frame, x, y, lambda la, lo, size: sea.sea_at(dem, la, lo, size, False))
                              + seatilesmod.plan_lakes(frame, x, y, lambda la, lo: sea.lake_at(la, lo, False),
                                                       lambda la, lo: dem.sample(la, lo, seatilesmod.LAKE_DEM_ZOOM)))
+                    def carved(la, lo):     # the river beds' level (seacarve), NaN elsewhere
+                        lv = sea.water(la, lo, wait=False)[1]
+                        return np.where(sea.outline_at(la, lo), lv, np.nan)
                     rivers = riverlinesmod.plan(frame, x, y, cell_water, tiled,
                                                 lambda la, lo: dem.sample(la, lo, riverlinesmod.DEM_ZOOM),
-                                                sea.outline_at)
+                                                sea.outline_at, level_at=carved)
                     return tiles, rivers
                 tiles, rivers = await self.loop.run_in_executor(self.s.ground_pool, plan)
                 msg = ([t.to_msg() for t in tiles], [r.to_msg() for r in rivers])
