@@ -80,4 +80,13 @@ T.check(cut and #url <= 7000 and #url > 6500, 'long body truncated under the lim
 T.check(url:find(fmt.urlEncode('Truncated'), 1, true), 'truncation note')
 T.check(not url:find('%%C3%%%x%x?$') and not url:find('%%C3' .. fmt.urlEncode(fmt.TRUNCATED), 1, true), 'cut at a character boundary')
 
+do
+  local F = require('beamngEarth/issuefmt')
+  local fn = F.buildIssue
+  if fn then
+    local ok, md = pcall(fn, { kind = 'map', title = 't', folder = '/home/bob/.local/share/BeamNG/BeamNG.drive/current/beamngEarth/reports/x_1/' })
+    T.check(ok and type(md) == 'string' and not md:find('bob', 1, true) and md:find('<BeamNG user folder>/beamngEarth/reports/x_1/', 1, true) ~= nil,
+      'the folder line has no account name')
+  end
+end
 T.done('test_issuefmt')

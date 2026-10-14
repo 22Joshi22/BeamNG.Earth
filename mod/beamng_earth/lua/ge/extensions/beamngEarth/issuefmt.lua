@@ -238,7 +238,12 @@ function M.buildIssue(data, hw)
   p('')
   p('### Screenshot')
   p('_Attach the screenshot from this report folder: drag `screenshot.jpg` into this box._')
-  if str(data.folder) then p('Folder: `' .. str(data.folder) .. '`') end
+  -- the folder inside the BeamNG user folder only: a full path would put the player's account name in a public issue
+  if str(data.folder) then
+    local f = str(data.folder):gsub('\\', '/')
+    local rel = f:match('([Bb]eam[Nn][Gg][Ee]arth/reports/.*)$') or f:match('([^/]+/?)$') or f
+    p('Folder: `<BeamNG user folder>/' .. rel .. '`')
+  end
   p('')
   p('<details><summary>Hardware / settings</summary>')
   p('')
