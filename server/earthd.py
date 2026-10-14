@@ -834,8 +834,9 @@ class Server:
                 anchor.bridges = roadsmod.BridgeProfiles(
                     anchor.frame, lambda key: self.mapdata.cell(key, layers=("roads",), kind="demand").layers.get("roads"),
                     elev)
+        props = [] if self.buildings else None
         chunks = roadsmod.build_tile(anchor.frame, tx, ty, cells, elev, urban, walks=walks, bridges=anchor.bridges,
-                                     widths=self.road_widths)
+                                     widths=self.road_widths, props=props)
         if self.airports is not None:   # runway markings, drawn by the road mesh like the lane lines
             chunks += self.airports.tile_chunks(anchor.frame, tx, ty, elev, roadsmod.tile_bbox)
         x0, y0, _, _ = roadsmod.tile_bbox(tx, ty)
@@ -847,7 +848,7 @@ class Server:
             bld = buildingsmod.road_tile(anchor.frame, tx, ty, self.mapdata,
                                          lambda la, lo: self.ground(anchor.frame, la, lo, self.dem.sample(la, lo, zoom)))
         return roadsmod.write_tile(self.out_dir, self.vfs_dir, aid, tx, ty, chunks, walks if self.sidewalks else None,
-                                   mesh, dmesh, bld)
+                                   mesh, dmesh, bld, props)
 
     def ground(self, frame, la, lo, z):
         """blockworker.ground here: runways graded in, the sea floor carved."""

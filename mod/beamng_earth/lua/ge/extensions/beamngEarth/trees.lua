@@ -12,36 +12,92 @@ M.RINGS = { { 300, 1.0 }, { 550, 0.5 }, { 1e9, 0.25 } }    -- tile distance (m):
 M.FOREST_NAME = 'bngEarthForest'
 
 local ECA = '/levels/east_coast_usa/art/shapes/'
--- the stock shapes per group with their measured heights (m; TSStatic world boxes, 2026-10-13)
+local WCA = '/levels/west_coast_usa/art/shapes/'
+local UT = '/levels/Utah/art/shapes/'
+local JV = '/levels/johnson_valley/art/shapes/'
+local JRI = '/levels/jungle_rock_island/art/shapes/'
+local IT = '/levels/italy/art/shapes/'
+-- the stock shapes per group with their measured heights (m; TSStatic world boxes, 2026-10-13/14)
 M.CATALOG = {
   deciduous = {
-    { 'trees/trees_oak/tree_oak_sml_a', 8.6 }, { 'trees/trees_oak/tree_oak_sml_b', 9.5 },
-    { 'trees/trees_aspen/tree_aspen_small_a', 8.3 }, { 'trees/trees_aspen/tree_aspen_small_c', 9.7 },
-    { 'trees/trees_beech/tree_beech_small_c', 9.9 }, { 'trees/trees_oak/tree_oak_large_a', 13.2 },
-    { 'trees/trees_oak/tree_oak_large_b', 15.9 }, { 'trees/trees_oak/tree_oak_large_c', 15.5 },
-    { 'trees/trees_oak/tree_oak_forest_a', 15.9 }, { 'trees/trees_oak/tree_oak_forest_b', 16.0 },
-    { 'trees/trees_beech/tree_beech_large_c', 17.4 }, { 'trees/trees_aspen/tree_aspen_forest_b', 18.5 },
-    { 'trees/trees_beech/tree_beech_forest_a', 20.2 }, { 'trees/trees_beech/tree_beech_large_b', 21.1 },
+    { ECA .. 'trees/trees_oak/tree_oak_sml_a', 8.6 }, { ECA .. 'trees/trees_oak/tree_oak_sml_b', 9.5 },
+    { ECA .. 'trees/trees_aspen/tree_aspen_small_a', 8.3 }, { ECA .. 'trees/trees_aspen/tree_aspen_small_c', 9.7 },
+    { ECA .. 'trees/trees_beech/tree_beech_small_c', 9.9 }, { ECA .. 'trees/trees_oak/tree_oak_large_a', 13.2 },
+    { ECA .. 'trees/trees_oak/tree_oak_large_b', 15.9 }, { ECA .. 'trees/trees_oak/tree_oak_large_c', 15.5 },
+    { ECA .. 'trees/trees_oak/tree_oak_forest_a', 15.9 }, { ECA .. 'trees/trees_oak/tree_oak_forest_b', 16.0 },
+    { ECA .. 'trees/trees_beech/tree_beech_large_c', 17.4 }, { ECA .. 'trees/trees_aspen/tree_aspen_forest_b', 18.5 },
+    { ECA .. 'trees/trees_beech/tree_beech_forest_a', 20.2 }, { ECA .. 'trees/trees_beech/tree_beech_large_b', 21.1 },
   },
   conifer = {
-    { 'trees/trees_douglasfir/tree_douglasfir_small_b', 11.2 }, { 'trees/trees_douglasfir/tree_douglasfir_small_a', 13.4 },
-    { 'trees/trees_douglasfir/tree_douglasfir_large_c', 18.9 }, { 'trees/trees_douglasfir/tree_douglasfir_large_a', 19.6 },
-    { 'trees/trees_douglasfir/tree_douglasfir_large_b', 21.4 }, { 'trees/trees_douglasfir/tree_douglasfir_large_d', 21.7 },
+    { ECA .. 'trees/trees_douglasfir/tree_douglasfir_small_b', 11.2 }, { ECA .. 'trees/trees_douglasfir/tree_douglasfir_small_a', 13.4 },
+    { ECA .. 'trees/trees_douglasfir/tree_douglasfir_large_c', 18.9 }, { ECA .. 'trees/trees_douglasfir/tree_douglasfir_large_a', 19.6 },
+    { ECA .. 'trees/trees_douglasfir/tree_douglasfir_large_b', 21.4 }, { ECA .. 'trees/trees_douglasfir/tree_douglasfir_large_d', 21.7 },
+    { IT .. 'trees/trees_italy/scots_pine', 18.9 },
   },
   shrub = {
-    { 'trees/ECA_coast_bush/generibush', 1.8 }, { 'trees/trees_aspen/tree_aspen_bush_a', 2.2 },
-    { 'trees/trees_douglasfir/tree_douglasfir_bush_a', 2.7 }, { 'trees/trees_oak/tree_oak_bush_c', 3.1 },
-    { 'trees/trees_beech/tree_beech_bush_b', 3.3 }, { 'trees/trees_beech/tree_beech_bush_c', 3.9 },
-    { 'trees/trees_oak/tree_oak_bush_b', 4.1 },
+    { ECA .. 'trees/ECA_coast_bush/generibush', 1.8 }, { ECA .. 'trees/trees_aspen/tree_aspen_bush_a', 2.2 },
+    { ECA .. 'trees/trees_douglasfir/tree_douglasfir_bush_a', 2.7 }, { ECA .. 'trees/trees_oak/tree_oak_bush_c', 3.1 },
+    { ECA .. 'trees/trees_beech/tree_beech_bush_b', 3.3 }, { ECA .. 'trees/trees_beech/tree_beech_bush_c', 3.9 },
+    { ECA .. 'trees/trees_oak/tree_oak_bush_b', 4.1 },
   },
   rock = {
-    { 'rocks/eca_rock_small', 0.6 }, { 'rocks/rock_01_a_large_a', 0.7 }, { 'rocks/eca_rock_small_2', 0.9 },
-    { 'rocks/eca_rock_medium_1', 1.5 }, { 'rocks/eca_rock_medium_2', 1.6 }, { 'rocks/eca_rock_big_narrow', 1.9 },
-    { 'rocks/eca_rock_big_wide', 1.9 },
+    { ECA .. 'rocks/eca_rock_small', 0.6 }, { ECA .. 'rocks/rock_01_a_large_a', 0.7 }, { ECA .. 'rocks/eca_rock_small_2', 0.9 },
+    { ECA .. 'rocks/eca_rock_medium_1', 1.5 }, { ECA .. 'rocks/eca_rock_medium_2', 1.6 }, { ECA .. 'rocks/eca_rock_big_narrow', 1.9 },
+    { ECA .. 'rocks/eca_rock_big_wide', 1.9 },
+  },
+  pine_west = {
+    { WCA .. 'trees/trees_conifer/pine_radiata_small', 8.6 }, { WCA .. 'trees/trees_conifer/pine_radiata_forest', 13.3 },
+    { WCA .. 'trees/trees_conifer/pine_radiata_large', 13.2 }, { WCA .. 'trees/trees_conifer/pine_radiata_weathered', 13.2 },
+    { ECA .. 'trees/trees_douglasfir/tree_douglasfir_large_a', 19.6 }, { ECA .. 'trees/trees_douglasfir/tree_douglasfir_large_d', 21.7 },
+    { IT .. 'trees/trees_italy/scots_pine', 18.9 }, { WCA .. 'trees/trees_conifer/redwood_tall', 38.5 },
+    { WCA .. 'trees/trees_conifer/redwood_split', 38.1 }, { WCA .. 'trees/trees_conifer/redwood_broad', 38.5 },
+  },
+  oak_west = {
+    { WCA .. 'trees/trees_oak/oak_d', 7.1 }, { WCA .. 'trees/trees_oak/oak_b', 8.2 }, { WCA .. 'trees/trees_oak/oak_c', 8.4 },
+    { WCA .. 'trees/trees_oak/oak_a', 9.6 }, { WCA .. 'trees/trees_eucalyptus/eucalyptus_double', 14.7 },
+    { WCA .. 'trees/trees_eucalyptus/eucalyptus_tall', 22.5 },
+  },
+  palm = {
+    { JRI .. 'trees/trees_palm/palm_small', 8.9 }, { JRI .. 'trees/trees_palm/palm_short', 9.1 },
+    { WCA .. 'trees/trees_palm/fanpalm_short', 10.6 }, { WCA .. 'trees/trees_palm/fanpalm_skirt', 11.7 },
+    { WCA .. 'trees/trees_palm/fanpalm_full', 13.8 }, { JRI .. 'trees/trees_palm/palm_medium', 18.0 },
+    { WCA .. 'trees/trees_palm/fanpalm_tall', 18.5 }, { WCA .. 'trees/trees_palm/fanpalm_slim', 20.8 },
+    { JRI .. 'trees/trees_palm/palm_tall', 25.3 },
+  },
+  juniper = {
+    { UT .. 'trees/Juniper/Juniper_bush_large_01', 2.6 }, { UT .. 'trees/Juniper/Juniper_tree_04', 4.5 },
+    { UT .. 'trees/Juniper/Juniper_tree_03', 5.2 }, { UT .. 'trees/Juniper/Juniper_tree_01', 6.3 },
+    { UT .. 'trees/Juniper/Juniper_tree_02', 7.4 }, { UT .. 'trees/Juniper/Juniper_ancient_01', 7.5 },
+  },
+  desert_shrub = {
+    { UT .. 'groundcover/s_gc_utah_grey_bush_01', 0.7 }, { JV .. 'groundcover/s_gc_jv_dry_bush_01', 0.7 },
+    { JV .. 'trees/deserttrees/deserttree_bush_tiny', 0.7 }, { UT .. 'groundcover/s_gc_utah_grey_bush_03', 1.0 },
+    { JV .. 'groundcover/s_gc_jv_dry_bush_03', 1.0 }, { UT .. 'trees/Juniper/Juniper_bush_small_01', 1.2 },
+    { UT .. 'trees/Juniper/Juniper_bush_small_dry_01', 2.0 }, { UT .. 'trees/Juniper/Juniper_bush_medium_01', 2.4 },
+    { JV .. 'trees/deserttrees/deserttree_bush_medium', 2.9 },
+  },
+  desert_rock = {
+    { UT .. 'rocks/rock_01_a_small_a', 0.3 }, { UT .. 'rocks/utah_rock_flat_a', 0.5 }, { UT .. 'rocks/utah_boulder_5', 0.6 },
+    { JV .. 'rocks/s_rocks_desert_small_01', 0.9 }, { JV .. 'rocks/s_rocks_desert_medium_03', 1.4 },
+    { UT .. 'rocks/utah_boulder_3', 1.7 }, { UT .. 'rocks/utah_boulder_1', 1.9 }, { JV .. 'rocks/s_rocks_desert_medium_01', 2.1 },
+  },
+  streetlight = { { '/art/shapes/garage_and_dealership/Clutter/eca_lamppost', 9.0 } },
+  pole = { { '/levels/automation_test_track/art/shapes/objects/s_powerpole_3wire', 9.2 } },
+  tropical = {
+    { JRI .. 'trees/bush_tropical_1/tro_bush_huge', 5.5 }, { JRI .. 'trees/bush_tropical_2/tro_bush_2_small', 6.1 },
+    { JRI .. 'trees/trees_tropical_2/tro_tree_2_filler', 20.2 }, { JRI .. 'trees/trees_tropical_1/tro_tree_1_huge', 20.6 },
+    { JRI .. 'trees/trees_tropical_1/tro_tree_1_filler', 33.0 },
   },
 }
-local MATERIALS = { 'trees/trees_oak', 'trees/trees_beech', 'trees/trees_aspen', 'trees/trees_douglasfir',
-  'trees/ECA_coast_bush', 'trees/common', 'trees', 'rocks' }
+local MATERIALS = {
+  ECA .. 'trees/trees_oak', ECA .. 'trees/trees_beech', ECA .. 'trees/trees_aspen', ECA .. 'trees/trees_douglasfir',
+  ECA .. 'trees/ECA_coast_bush', ECA .. 'trees/common', ECA .. 'trees', ECA .. 'rocks',
+  WCA .. 'trees/trees_conifer', WCA .. 'trees/trees_oak', WCA .. 'trees/trees_eucalyptus', WCA .. 'trees/trees_palm',
+  WCA .. 'trees', UT .. 'trees/Juniper', UT .. 'trees', UT .. 'groundcover', UT .. 'rocks', JV .. 'groundcover',
+  JV .. 'rocks', JV .. 'trees/deserttrees', JV .. 'trees', JRI .. 'trees/trees_palm', JRI .. 'trees/trees_tropical_1',
+  JRI .. 'trees/trees_tropical_2', JRI .. 'trees/bush_tropical_1', JRI .. 'trees/bush_tropical_2', JRI .. 'trees',
+  IT .. 'trees/trees_italy', IT .. 'trees', '/levels/automation_test_track/art/shapes/objects',
+}
 
 local tiles = {}        -- key "a:tx_ty" -> { anchor, cx, cy, rows, made = { i -> item }, shown = rank }
 local types = {}        -- shape path -> TSForestItemData
@@ -61,7 +117,7 @@ end
 local function setup()
   if ready then return true end
   for _, m in ipairs(MATERIALS) do
-    local p = ECA .. m .. '/main.materials.json'
+    local p = m .. '/main.materials.json'
     if not FS or FS:fileExists(p) then pcall(loadJsonMaterialsFile, p) end
   end
   ready = true
@@ -77,7 +133,7 @@ local function itemType(shape)
     d = (worldEditorCppApi and worldEditorCppApi.createObject) and worldEditorCppApi.createObject('TSForestItemData')
       or createObject('TSForestItemData')
     if not d then return nil end
-    d:setField('shapeFile', 0, ECA .. shape .. '.dae')
+    d:setField('shapeFile', 0, shape .. '.dae')
     d:setField('windScale', 0, '0.4'); d:setField('branchAmp', 0, '0.1'); d:setField('detailAmp', 0, '0.2')
     d:registerObject(name)
     if Sim and Sim.getDataBlockSet then Sim.getDataBlockSet():addObject(d) end
@@ -111,8 +167,8 @@ end
 
 local GROUPS = { 'deciduous', 'conifer', 'shrub', 'rock' }
 
-local function makeItem(fd, row)
-  local shape, sc = M.pick(GROUPS[(row[1] or 0) + 1] or 'deciduous', row[7] or 10, row[8] or 0)
+local function makeItem(fd, row, groups)
+  local shape, sc = M.pick((groups or GROUPS)[(row[1] or 0) + 1] or 'deciduous', row[7] or 10, row[8] or 0)
   local d = itemType(shape)
   if not d then M.errors = M.errors + 1; return nil end
   local m = MatrixF(true)
@@ -138,12 +194,24 @@ function M.onTile(msg, currentAnchor)
     M.errors = M.errors + 1
     return
   end
-  local key = msg.anchorId .. ':' .. tostring(msg.key)
+  M.onRows(msg.anchorId, msg.key, data.items, data.groups)
+end
+
+-- Rows of a tile from elsewhere (a road tile's street furniture: roads.lua, key "p<tx>_<ty>").
+function M.onRows(anchorId, tileKey, rows, groups)
+  local key = anchorId .. ':' .. tostring(tileKey)
   local old = tiles[key]
-  local tx, ty = tostring(msg.key):match('^(%-?%d+)_(%-?%d+)$')
-  local t = { anchor = msg.anchorId, rows = data.items, made = old and old.made or {}, shown = old and old.shown or 0,
+  local tx, ty = tostring(tileKey):match('(%-?%d+)_(%-?%d+)$')
+  local t = { anchor = anchorId, rows = rows, groups = type(groups) == 'table' and groups or nil,
+    made = old and old.made or {}, shown = old and old.shown or 0,
     cx = (tonumber(tx) or 0) * 256 + 128, cy = (tonumber(ty) or 0) * 256 + 128, drop = false }
   tiles[key] = t
+end
+
+-- The tile "anchorId:key" goes (roads.lua's furniture).
+function M.dropKey(key)
+  local t = tiles[key]
+  if t then t.drop = true end
 end
 
 -- A 'veg_drop' message: the tile's items go.
@@ -195,7 +263,7 @@ function M.update(anchorId, player)
         local r = row[8] or 0
         if r < want and not t.made[i] then
           if budget <= 0 then t.pending = true; return end
-          t.made[i] = makeItem(fd, row)
+          t.made[i] = makeItem(fd, row, t.groups)
           budget = budget - 1
         elseif r >= want and t.made[i] then
           if budget <= 0 then t.pending = true; return end

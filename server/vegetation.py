@@ -31,13 +31,15 @@ import mapcells
 
 log = logging.getLogger("earthd.vegetation")
 
-VERSION = 2
+VERSION = 3
 TREE_MIN_M = 3.0
 CROWN_SPACING = 0.5          # tops kept this many crown radii apart (0.8 looked sparse: the user, 2026-10-13)
 BUSH_MIN_M = 1.0
 KIND_TREE, KIND_BUSH, KIND_ROCK = 0, 1, 2
-GROUPS = ("deciduous", "conifer", "shrub", "rock")
-G_DECIDUOUS, G_CONIFER, G_SHRUB, G_ROCK = range(4)
+GROUPS = ("deciduous", "conifer", "shrub", "rock", "pine_west", "palm", "juniper", "desert_shrub", "desert_rock",
+          "oak_west", "tropical")
+(G_DECIDUOUS, G_CONIFER, G_SHRUB, G_ROCK, G_PINE_WEST, G_PALM, G_JUNIPER, G_DESERT_SHRUB, G_DESERT_ROCK,
+ G_OAK_WEST, G_TROPICAL) = range(len(GROUPS))
 ROAD_CLEAR_M = 1.5          # trees kept this far off a road's edge (its width by class below)
 ROAD_HALF_WIDTH_M = {"motorway": 7.0, "trunk": 6.0, "primary": 5.5, "secondary": 5.0, "tertiary": 4.5,
                      "residential": 4.0, "service": 3.0, "unclassified": 3.5, "living_street": 3.0}
@@ -91,6 +93,35 @@ def _shift_max(a, r):
             if (dj - r) ** 2 + (di - r) ** 2 <= r * r + r:      # a disc, not a square
                 np.maximum(out, p[dj:dj + n, di:di + m], out=out)
     return out
+
+
+def regional(group, height, lat, lon, lcls, u):
+    """The groups of a region (the stock maps' species: West Coast USA's pines, oaks and palms, Utah's junipers
+    and desert bushes, Johnson Valley's rocks, Jungle Rock Island's palms and tropical trees) from the generic
+    ones, by a coarse climate from the position and the land cover class at the item (until a species map).
+    u: a hashed [0, 1) per item. Pure."""
+    g = np.asarray(group).copy()
+    lat, lon, h, lcls = np.asarray(lat), np.asarray(lon), np.asarray(height), np.asarray(lcls)
+    west_coast = (lon < -114.0) & (lat > 32.0) & (lat < 49.5)
+    dry_west = (lon < -102.0) & (lat > 25.0) & (lat < 46.0) & ~((lon < -121.0) & (lat > 37.0))
+    open_dry = dry_west & np.isin(lcls, (WC["shrub"], WC["bare"], WC["grass"]))
+    tropics = np.abs(lat) < 23.5
+    warm_coast = ((lat < 30.5) & (lon > -100.0) & (lon < -79.0)) | ((lat < 34.6) & (lon < -114.0) & (lat > 20.0))
+    built = lcls == WC["built"]
+    tree = (g == G_DECIDUOUS) | (g == G_CONIFER)
+    # the west: pines for the conifers, oaks for the small broadleaves
+    g = np.where(west_coast & (g == G_CONIFER), G_PINE_WEST, g)
+    g = np.where(west_coast & (g == G_DECIDUOUS) & (h < 11.0), G_OAK_WEST, g)
+    # dry open country: junipers, desert bushes and rocks
+    g = np.where(open_dry & tree & (h < 9.0), G_JUNIPER, g)
+    g = np.where(open_dry & (g == G_CONIFER), G_PINE_WEST, g)
+    g = np.where(dry_west & (g == G_SHRUB), G_DESERT_SHRUB, g)
+    g = np.where(dry_west & (g == G_ROCK), G_DESERT_ROCK, g)
+    # palms: most of a warm coast's town trees, some of its others; tall broadleaves in the tropics
+    palm_p = np.where(built, 0.6, 0.2)
+    g = np.where((warm_coast | tropics) & tree & (u < palm_p), G_PALM, g)
+    g = np.where(tropics & (g == G_DECIDUOUS) & (h >= 12.0), G_TROPICAL, g)
+    return g.astype(np.uint8)
 
 
 def _conifer_share(lat, lon):
@@ -246,6 +277,7 @@ class Vegetation:
         u1, u2, u3, u4 = (_hash01(gx, gy, s) for s in (1, 2, 3, 4))
         conifer = u1 < _conifer_share(tlat, tlon) * np.clip(th / 12.0, 0.5, 1.2)
         group = np.where(is_tree, np.where(conifer, G_CONIFER, G_DECIDUOUS), G_SHRUB).astype(np.uint8)
+        group = regional(group, th, tlat, tlon, lcls, _hash01(gx, gy, 7))
         kind = np.where(is_tree, KIND_TREE, KIND_BUSH).astype(np.uint8)
         jitter = chm.dx * 0.5
         tlon2, tlat2 = _to4326(mx[ii] + (u3 - 0.5) * jitter, my[jj] + (u4 - 0.5) * jitter)
@@ -292,7 +324,8 @@ class Vegetation:
         size = 0.4 + 1.6 * _hash01(GI[sel], GJ[sel], 14) ** 2
         return Items(lon[sel], lat[sel], size.astype(np.float32), (size * 0.6).astype(np.float32),
                      np.where(rock[sel], KIND_ROCK, KIND_BUSH).astype(np.uint8),
-                     np.where(rock[sel], G_ROCK, G_SHRUB).astype(np.uint8),
+                     regional(np.where(rock[sel], G_ROCK, G_SHRUB), size, lat[sel], lon[sel], cls[sel],
+                              _hash01(GI[sel], GJ[sel], 18)),
                      _hash01(GI[sel], GJ[sel], 15).astype(np.float32),
                      (_hash01(GI[sel], GJ[sel], 16) * 360.0).astype(np.float32),
                      (0.8 + 0.4 * _hash01(GI[sel], GJ[sel], 17)).astype(np.float32)) if n else _empty()

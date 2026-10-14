@@ -113,5 +113,19 @@ class VegetationTest(unittest.TestCase):
                                delta=0.5)
 
 
+class RegionalTest(unittest.TestCase):
+    def g(self, group, h, lat, lon, lcls, u=0.9):
+        return int(veg.regional(np.array([group]), np.array([h]), np.array([lat]), np.array([lon]),
+                                np.array([lcls]), np.array([u]))[0])
+
+    def test_regions(self):
+        self.assertEqual(self.g(veg.G_DECIDUOUS, 12, 39.3, -76.6, 10), veg.G_DECIDUOUS, "the east keeps its trees")
+        self.assertEqual(self.g(veg.G_CONIFER, 20, 37.7, -119.6, 10), veg.G_PINE_WEST, "Sierra conifers: pines")
+        self.assertEqual(self.g(veg.G_DECIDUOUS, 5, 38.6, -109.5, 20), veg.G_JUNIPER, "Moab scrub trees: junipers")
+        self.assertEqual(self.g(veg.G_ROCK, 1, 38.6, -109.5, 60), veg.G_DESERT_ROCK)
+        self.assertEqual(self.g(veg.G_DECIDUOUS, 9, 25.8, -80.2, 50, u=0.1), veg.G_PALM, "Miami street trees")
+        self.assertEqual(self.g(veg.G_DECIDUOUS, 9, 25.8, -80.2, 50, u=0.9), veg.G_DECIDUOUS)
+
+
 if __name__ == "__main__":
     unittest.main()

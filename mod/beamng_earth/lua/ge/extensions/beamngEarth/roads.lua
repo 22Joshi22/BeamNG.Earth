@@ -93,6 +93,7 @@ local function dropTile(key)
   if t.road then deleteQ[#deleteQ + 1] = t.road end
   if t.deck then deleteQ[#deleteQ + 1] = t.deck end
   if t.bld then deleteQ[#deleteQ + 1] = t.bld end
+  if t.props then require('beamngEarth/trees').dropKey((key:gsub(':', ':p', 1))) end
   tiles[key] = nil
 end
 
@@ -170,6 +171,10 @@ function M.onTile(msg, currentAnchor)
     walkQ[#walkQ + 1] = { key = key, walk = road, what = 'road' }
   else
     for _, c in ipairs(data.chunks) do createQ[#createQ + 1] = { key = key, chunk = c } end
+  end
+  if type(data.props) == 'table' and type(data.props.items) == 'table' then   -- street lights, poles (trees.lua)
+    require('beamngEarth/trees').onRows(msg.anchorId, 'p' .. tostring(msg.key), data.props.items, data.props.groups)
+    tiles[key].props = true
   end
   for _, what in ipairs({ 'walk', 'deck', 'bld' }) do  -- sidewalks, bridge decks, buildings: colliding meshes
     local w = data[what]

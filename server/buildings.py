@@ -33,19 +33,20 @@ EAVE_M = 0.35               # m a pitched roof overhangs its walls
 # Materials (mod/.../art/shapes/beamngEarth/buildings.materials.json): the window sheets in a few tints, the
 # shop / office sheet, roofs, plain walls.
 FACADE_TINTS = ("bne_bld_fac_white", "bne_bld_fac_cream", "bne_bld_fac_sand", "bne_bld_fac_grey")
+BRICK_TINTS = ("bne_bld_fac_white", "bne_bld_fac_brickdark", "bne_bld_fac_brickwarm")   # the brick band's
 SHOP = "bne_bld_shop"
 OFFICE = "bne_bld_office"
 ROOF_FLAT = "bne_bld_roof_flat"
 ROOF_SLATE = "bne_bld_roof_slate"
 ROOF_SHINGLE = "bne_bld_roof_shingle"
 SIDING = "bne_bld_siding"
-MATERIALS = FACADE_TINTS + (SHOP, OFFICE, ROOF_FLAT, ROOF_SLATE, ROOF_SHINGLE, SIDING)
+MATERIALS = FACADE_TINTS + BRICK_TINTS[1:] + (SHOP, OFFICE, ROOF_FLAT, ROOF_SLATE, ROOF_SHINGLE, SIDING)
 
 # The window sheets' bands, top of the image first (v in Collada convention: v = 1 at the image top).
 # (sheet, band index, bays per 1024 px)
 BAND_TALL = (0, 3)          # m_highrise_plaster: tall windows on plaster (3 bays of uneven width)
 BAND_PANEL = (1, 4)         # square windows on panels
-BAND_SASH = (2, 5)          # sash windows on plaster
+BAND_SASH = (2, 5, (0, 2, 3))   # sash windows on plaster (bays 1 and 4 are black "open" windows: skipped)
 BAND_BRICK = (3, 5)         # sash windows on red brick
 BAND_OFFICE = (0, 5)        # m_highrise_metal: curtain wall
 BAND_OFFICE2 = (1, 4)
@@ -182,7 +183,19 @@ class Spec:
             setattr(self, k, kw.get(k))
 
 
-def plan(ring, attrs, neighbours=0):
+def brick_share(lat, lon):
+    """The share of brick facades in a region (old East Coast / Midwest towns are mostly brick; the South and
+    the West plaster, siding and stucco). A coarse stand-in until a facade-material map."""
+    if lat is None:
+        return 0.4
+    if lon > -95.0 and lat > 36.0:
+        return 0.75
+    if lon > -95.0:
+        return 0.35
+    return 0.15
+
+
+def plan(ring, attrs, neighbours=0, lat=None, lon=None):
     """The Spec of a footprint (local ring (n, 2) in metres, counter-clockwise) from its Overture attributes
     (dict: class, height, num_floors, min_height, roof_shape, roof_height) and the number of buildings
     sharing a wall with it. Height and roof are predicted when not given."""
@@ -209,7 +222,7 @@ def plan(ring, attrs, neighbours=0):
         if shed:
             nf = 1
         elif row:
-            nf = 2 if seed < 0.35 else 3
+            nf = 2 if seed < 0.25 else (3 if seed < 0.85 else 4)
         elif cls in HOUSE_CLASSES or (area < 220 and not shop):
             nf = 1 if seed < 0.3 else 2
         elif industrial:
@@ -229,7 +242,9 @@ def plan(ring, attrs, neighbours=0):
         roof = "gabled"
     else:
         detached_house = (cls in HOUSE_CLASSES or (area < 260 and not shop and not row)) and not industrial
-        if shed and area < 80:
+        if neighbours >= 1:
+            roof = "flat"                           # attached: a pitched roof would show its gable to the neighbour
+        elif shed and area < 80:
             roof = "gabled" if seed > 0.4 else "flat"
         elif detached_house:
             roof = "gabled" if seed < 0.6 else "hipped"
@@ -256,13 +271,17 @@ def plan(ring, attrs, neighbours=0):
             facade = OFFICE if tall else FACADE_TINTS[3]
             band = (BAND_OFFICE if seed < 0.5 else BAND_OFFICE2) if tall else BAND_PANEL
         else:
-            facade = FACADE_TINTS[int(seed * 7919) % len(FACADE_TINTS)]
-            if row:
-                band = BAND_BRICK if seed < 0.75 else BAND_SASH
-            elif cls in HOUSE_CLASSES or roof != "flat":
-                band = BAND_SASH if seed < 0.7 else BAND_BRICK
+            u_brick = _hash01(seed, "brick")
+            brick = u_brick < brick_share(lat, lon) * (1.15 if row else 1.0)
+            if brick:
+                band = BAND_BRICK
+                facade = BRICK_TINTS[int(seed * 7919) % len(BRICK_TINTS)]
             else:
-                band = (BAND_BRICK, BAND_SASH, BAND_TALL, BAND_PANEL)[int(seed * 104729) % 4]
+                facade = FACADE_TINTS[int(seed * 7919) % len(FACADE_TINTS)]
+                if row or cls in HOUSE_CLASSES or roof != "flat":
+                    band = BAND_SASH if seed < 0.7 else BAND_PANEL
+                else:
+                    band = (BAND_SASH, BAND_TALL, BAND_PANEL)[int(seed * 104729) % 3]
         plain = False
     roof_mat = ROOF_FLAT if roof == "flat" else (ROOF_SLATE if seed < 0.5 else ROOF_SHINGLE)
     return Spec(ring=ring, floors=nf, floor_h=floor_h, height=h, roof=roof, roof_mat=roof_mat, facade=facade,
@@ -333,9 +352,16 @@ def _walls(m, spec, ring, z0, z_eave, mat_idx):
         bay = TILE_PX_M / bays_per_tile
         nb = int(round(L / bay))
         u1 = (nb / bays_per_tile) if nb >= 1 else 0.02 * L          # a short wall: the plain strip at the sheet's edge
+        # the floors stand on the footprint's highest ground; below it a plain plinth (a slope's basement)
+        base = z_eave - spec.floors * spec.floor_h
         za = z0
+        if base - z0 > FOUNDATION_M + 0.4:
+            pv0, pv1 = _band_v(spec.band, spec.band[0])
+            m.quad((a[0], a[1], z0), (b[0], b[1], z0), (b[0], b[1], base - 0.3), (a[0], a[1], base - 0.3),
+                   (0.002, pv0), (0.012, pv0), (0.012, pv0 + 0.01), (0.002, pv0 + 0.01), fac)
+            za = base - 0.3
         for f in range(spec.floors):
-            zb = z_eave if f == spec.floors - 1 else z0 + FOUNDATION_M + (f + 1) * spec.floor_h
+            zb = z_eave if f == spec.floors - 1 else base + (f + 1) * spec.floor_h
             if f == 0 and spec.shop:
                 mat, (_, k_bpt) = mat_idx[SHOP], BAND_SHOP
                 band_k = BAND_SHOP[0]
@@ -343,6 +369,17 @@ def _walls(m, spec, ring, z0, z_eave, mat_idx):
                 uu = nbs / k_bpt if L > 2.0 else 0.02 * L
             else:
                 mat, band_k, uu = fac, spec.band[0], u1
+                if len(spec.band) > 2 and nb >= 1:          # the good bays only, one quad each
+                    v0, v1 = _band_v(spec.band, band_k)
+                    good = spec.band[2]
+                    for k in range(nb):
+                        g = good[int(_hash01(spec.seed, i, f, k) * len(good))]
+                        pa, pb = a + (b - a) * (k / nb), a + (b - a) * ((k + 1) / nb)
+                        m.quad((pa[0], pa[1], za), (pb[0], pb[1], za), (pb[0], pb[1], zb), (pa[0], pa[1], zb),
+                               (g / bays_per_tile, v0), ((g + 1) / bays_per_tile, v0), ((g + 1) / bays_per_tile, v1),
+                               (g / bays_per_tile, v1), mat)
+                    za = zb
+                    continue
             v0, v1 = _band_v(spec.band, band_k)
             # the foundation and the parapet stretch the band a little; the windows stay a floor's height
             m.quad((a[0], a[1], za), (b[0], b[1], za), (b[0], b[1], zb), (a[0], a[1], zb),
@@ -487,12 +524,14 @@ def tile_buildings(frame, x0, y0, x1, y1, layers, elev, water=None):
     if not rings:
         return []
     shared = _shared_walls(rings)
+    clat, clon, _ = frame.enu_to_geodetic((x0 + x1) / 2, (y0 + y1) / 2, 0.0)
+    clat, clon = float(clat), float(clon)
     out = []
     for ring, at, sh in zip(rings, attrs, shared):
         mh = at.get("min_height")
         if mh is not None and np.isfinite(mh) and mh > 2.0:
             continue                                  # a bridge / skyway part; not drawn yet
-        spec = plan(ring, at, int(sh))
+        spec = plan(ring, at, int(sh), clat, clon)
         e = ring[:, 0] + x0
         n = ring[:, 1] + y0
         la, lo, _ = frame.enu_to_geodetic(e, n, np.zeros(len(e)))

@@ -1128,7 +1128,7 @@ def drains(run, side, caps, walk_w=None):
     return res
 
 
-def build_tile(frame, tx, ty, cells, elev, urban_fn=None, walks=None, bridges=None, widths=None):
+def build_tile(frame, tx, ty, cells, elev, urban_fn=None, walks=None, bridges=None, widths=None, props=None):
     """The chunks of one tile. cells: the mapgeom.Features of the "roads" layer of every cell touching
     the tile; elev(lat, lon) -> metres (the DEM); urban_fn: as road_specs. Features in several cells are
     taken once (by id). The carriageways, then each road's sidewalks / gutters / markings (extras), cut
@@ -1232,7 +1232,7 @@ def build_tile(frame, tx, ty, cells, elev, urban_fn=None, walks=None, bridges=No
                             at_j1 = j1 and np.hypot(*(run[-1, :2] - cpiece[-1, :2])) < 0.6
                             caps = (not _on_box(run[0], exact) and not at_j0, not _on_box(run[-1], exact) and not at_j1)
                             ramps = junctions.ramp_ranges(run, jramps.get((fid, side), []))
-                            walks.append({"pts": run, "side": side, "caps": caps, "ramps": ramps, "w": w})
+                            walks.append({"pts": run, "side": side, "caps": caps, "ramps": ramps, "w": w, "fid": fid})
                             chunks.extend(drains(run, side, (caps[0] or at_j0, caps[1] or at_j1), w))
                 continue
             if walks is not None and look["m"] == GUTTER["m"]:     # gutters end where their curb turns
@@ -1247,6 +1247,9 @@ def build_tile(frame, tx, ty, cells, elev, urban_fn=None, walks=None, bridges=No
                     for c in split(densify(simplify(run))):
                         if len(c) >= 2:
                             chunks.append(_chunk(look, w, c))
+    if props is not None and walks is not None:     # street lights and utility poles (furniture.py)
+        import furniture
+        props.extend(furniture.place(roads, walks, (x0, y0, x1, y1)))
     return chunks
 
 
@@ -1290,7 +1293,8 @@ class Tracker:
         conn.send({"type": "roads_tile", "anchorId": aid, "key": f"{key[0]}_{key[1]}", "path": path, "n": n})
 
 
-def write_tile(out_dir, vfs_dir, aid, tx, ty, chunks, walks=None, road_mesh=None, deck_mesh=None, bld=None):
+def write_tile(out_dir, vfs_dir, aid, tx, ty, chunks, walks=None, road_mesh=None, deck_mesh=None, bld=None,
+               props=None):
     """Write a tile's chunks (atomically), its sidewalk mesh (walks: build_tile's runs, if any:
     `walks_<a>_<tx>_<ty>.cdae`, announced in the tile as "walk": {shape, pos}) and its road mesh
     (road_mesh: roadmesh.build's result: `road_<a>_<tx>_<ty>.cdae`, "road": {shape, pos}; the mod then
@@ -1336,6 +1340,9 @@ def write_tile(out_dir, vfs_dir, aid, tx, ty, chunks, walks=None, road_mesh=None
         boxes["bld"] = bld[1]
     if boxes:
         data["colliders"] = boxes
+    if props:                       # furniture.place's rows: Forest items (trees.lua), groups by index
+        groups = sorted({r[0] for r in props})
+        data["props"] = {"groups": groups, "items": [[groups.index(r[0])] + r[1:] for r in props]}
     tmp = path + ".tmp"
     with open(tmp, "w") as f:
         json.dump(data, f, separators=(",", ":"))
