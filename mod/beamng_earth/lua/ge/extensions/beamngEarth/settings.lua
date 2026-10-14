@@ -477,6 +477,25 @@ function M.uiMapGps(lat, lon, name)
   return { ok = gps.setDestination(lat, lon, name) }
 end
 
+-- The map's search-as-you-type: send (q -> { id } or { error }) and poll (id -> nil while waiting, else
+-- { results = {{name, detail, kind, lat, lon}...}, error }). Biased toward the player.
+local geocodeId = 0
+function M.uiGeocode(q)
+  local core = ext('beamngEarth_core')
+  if not core or not core.requestGeocode then return { error = 'BeamNG.Earth is not loaded' } end
+  local st = core._state and core._state() or nil
+  local pl = st and st.player
+  geocodeId = geocodeId + 1
+  if not core.requestGeocode(geocodeId, tostring(q or ''), pl and pl.lat, pl and pl.lon) then
+    return { error = 'Companion server not connected' }
+  end
+  return { id = geocodeId }
+end
+function M.uiGeocodeResult(id)
+  local core = ext('beamngEarth_core')
+  return core and core.takeGeocode and core.takeGeocode(tonumber(id)) or nil
+end
+
 -- "lat, lon" typed in the map's search box -> { lat, lon } or { error }.
 function M.uiMapParse(text)
   local lat, lon = places.parseLatLon(text)

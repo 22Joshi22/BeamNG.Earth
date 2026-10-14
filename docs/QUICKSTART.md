@@ -29,7 +29,9 @@ in a few minutes. No programming needed.
 ## Going places
 - Press **Alt+M** for the **world map**: satellite imagery, your car's position and heading, and your
   saved places. Drag to pan, scroll to zoom, click anywhere (or a saved place) and confirm to
-  teleport there. The search box finds saved places or a typed "latitude, longitude". Alt+M or Esc
+  teleport there. The search box looks up real addresses and places as you type (OpenStreetMap data through
+  Photon by komoot: what you type and your position are sent to it), plus your saved places and
+  a typed "latitude, longitude"; pick a result to teleport there or set it as your GPS destination. Alt+M or Esc
   closes it. In the BeamNG.Earth level the game's own map key (**M**) and the pause menu's **Map**
   open this map too.
 - **Right-click** the map for a menu: **Teleport here**, **Set GPS destination** or **Save this

@@ -527,6 +527,8 @@ local function formatKnown(f)
   return false
 end
 
+local geocodeResults = {}       -- the world map's address search answers: id -> { results, error }
+
 local function onMessage(msg)
   local t = msg.type
   if t == '_connected' then
@@ -696,6 +698,8 @@ local function onMessage(msg)
     roads.onFarTile(msg, st.anchorId)
   elseif t == 'bldfar_drop' then
     roads.onFarDrop(msg)
+  elseif t == 'geocode_result' then
+    if msg.id then geocodeResults[msg.id] = { results = msg.results or {}, error = msg.error } end
   elseif t == 'map_tiles_ready' then
     -- the world map's tile files are written (settings.mapTiles: the map finds them on its next poll)
   elseif t == 'navgraph' then
@@ -1356,6 +1360,18 @@ function M.cacheQuery()
   if not cacheReady() then return false end
   net.send({ type = 'cache' })
   return true
+end
+
+-- The world map's search box: addresses and places from the server (geocode.py); the answer is geocode_result.
+function M.requestGeocode(id, q, lat, lon)
+  if not net.isConnected() then return false end
+  net.send({ type = 'geocode', id = id, q = q, lat = lat, lon = lon })
+  return true
+end
+function M.takeGeocode(id)
+  local r = geocodeResults[id]
+  geocodeResults[id] = nil
+  return r
 end
 
 -- The world map asks for basemap tiles as files (settings.mapTiles; {{z, x, y}, ...}).

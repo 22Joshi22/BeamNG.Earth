@@ -110,6 +110,7 @@ import groundahead as groundaheadmod  # noqa: E402
 import heightmap  # noqa: E402
 import imagery as imagerymod  # noqa: E402
 import maptiles as maptilesmod  # noqa: E402
+import geocode as geocodemod  # noqa: E402
 import netfetch  # noqa: E402
 import protocol  # noqa: E402
 import weather as weathermod  # noqa: E402
@@ -1808,6 +1809,18 @@ class Connection:
         out = await asyncio.to_thread(build)
         self.send({"type": "map_tiles_ready", "tiles": out})
 
+    async def geocode(self, msg):
+        """The map's search {"id", "q", "lat"?, "lon"?} -> geocode_result {"id", "results": [...], "error"?}."""
+        q = str(msg.get("q") or "")[:200]
+        lat, lon = msg.get("lat"), msg.get("lon")
+        out = {"type": "geocode_result", "id": msg.get("id"), "results": []}
+        try:
+            out["results"] = await asyncio.to_thread(geocodemod.search, q, lat, lon, self.s.net)
+        except Exception as e:          # offline, rate limited, a bad answer: the map says so
+            out["error"] = f"{type(e).__name__}: {e}"[:200]
+        log.debug("geocode %r: %d results%s", q, len(out["results"]), (" (" + out["error"] + ")") if "error" in out else "")
+        self.send(out)
+
     def send(self, msg):
         if not self.writer.is_closing():
             self.writer.write(protocol.encode(msg))
@@ -1931,6 +1944,8 @@ class Connection:
             self.on_pose(msg)
         elif kind == "map_tiles":               # the in-game map's tiles, as files (the UI cannot fetch http)
             self.spawn(self.map_tiles(msg))
+        elif kind == "geocode":                 # the map's search box: addresses and places (geocode.py)
+            self.spawn(self.geocode(msg))
         elif kind == "cache":
             self.on_cache(msg)
         elif kind == "roads_reset":             # the mod dropped its roads (settings): send them all again

@@ -57,20 +57,27 @@
       <div class="search">
         <input
           ref="searchEl"
+          @focus="typing(true)"
+          @blur="typing(false)"
           v-model="query"
           class="search-input"
-          placeholder="Search saved places, or lat, lon"
+          placeholder="Search addresses, places, or lat, lon"
           @keydown.enter.stop.prevent="onSearch"
+          @keydown.down.stop.prevent="moveResult(1)"
+          @keydown.up.stop.prevent="moveResult(-1)"
           @keydown.esc.stop.prevent="query = ''"
           @mousedown.stop
         />
         <div v-if="results.length" class="search-results">
-          <div v-for="(r, i) in results" :key="i" class="search-result" @mousedown.stop @click="pickResult(r)">
-            <span class="result-name">{{ r.name }}</span>
-            <span class="result-coords">{{ fmtLatLon(r.lat, r.lon) }}</span>
+          <div v-for="(r, i) in results" :key="i" class="search-result" :class="{ active: i === resultIndex }"
+               @mousedown.stop @click="pickResult(r)">
+            <span class="result-name">{{ r.saved ? "★ " : "" }}{{ r.name }}</span>
+            <span class="result-coords">{{ r.detail || fmtLatLon(r.lat, r.lon) }}</span>
           </div>
+          <div class="search-credit">Search: Photon by komoot, © OpenStreetMap contributors</div>
         </div>
         <div v-if="searchMsg" class="search-msg">{{ searchMsg }}</div>
+        <div v-else-if="searching && !results.length" class="search-msg">Searching…</div>
       </div>
       <button class="map-btn" @click="zoomBy(1)" title="Zoom in">+</button>
       <button class="map-btn" @click="zoomBy(-1)" title="Zoom out">-</button>
@@ -106,6 +113,7 @@
       <div v-if="teleportMsg" class="confirm-warn">{{ teleportMsg }}</div>
       <div class="confirm-btns">
         <button class="map-btn primary" :disabled="!!state.cannotGo || busy" @click="teleport">Teleport</button>
+        <button class="map-btn" @click="setGps(target.lat, target.lon, target.name); target = null">Set GPS</button>
         <button class="map-btn" @click="target = null; teleportMsg = ''">Cancel</button>
       </div>
     </div>
@@ -121,14 +129,14 @@
 
         <div class="panel-sub">Save where you are</div>
         <div class="panel-row">
-          <input v-model="newName" class="panel-input" placeholder="Name (optional)" maxlength="60"
+          <input v-model="newName" class="panel-input" @focus="typing(true)" @blur="typing(false)" placeholder="Name (optional)" maxlength="60"
                  @keydown.enter.stop.prevent="saveHere" @keydown.esc.stop.prevent="newName = ''" />
           <button class="map-btn primary" :disabled="!state.player" @click="saveHere">Save</button>
         </div>
 
         <div class="panel-sub">Latitude, longitude</div>
         <div class="panel-row">
-          <input v-model="coordText" class="panel-input" placeholder="36.5785, -118.2923" maxlength="80"
+          <input v-model="coordText" class="panel-input" @focus="typing(true)" @blur="typing(false)" placeholder="36.5785, -118.2923" maxlength="80"
                  @keydown.enter.stop.prevent="goText" @keydown.esc.stop.prevent="coordText = ''" />
           <button class="map-btn primary" :disabled="!!state.cannotGo || !coordText.trim()" @click="goText">Go</button>
           <button class="map-btn" :disabled="!coordText.trim()" @click="saveText">Save</button>
@@ -137,7 +145,7 @@
         <div class="panel-sub">Saved places</div>
         <div v-for="p in placeList" :key="'s' + p.id" class="panel-item">
           <div v-if="renamingId === p.id" class="panel-row">
-            <input v-model="renameText" class="panel-input" maxlength="60"
+            <input v-model="renameText" class="panel-input" @focus="typing(true)" @blur="typing(false)" maxlength="60"
                    @keydown.enter.stop.prevent="commitRename(p)" @keydown.esc.stop.prevent="renamingId = null" />
             <button class="map-btn primary" @click="commitRename(p)">OK</button>
             <button class="map-btn" @click="renamingId = null">Cancel</button>
@@ -246,7 +254,7 @@ function askTiles() {
 let askTimer = null
 watch(wanted, () => { clearTimeout(askTimer); askTimer = setTimeout(askTiles, 120) })
 const askLoop = setInterval(askTiles, 1000)
-onUnmounted(() => { clearInterval(askLoop); clearTimeout(askTimer) })
+onUnmounted(() => { clearInterval(askLoop); clearTimeout(askTimer); clearTimeout(searchTimer); typing(false) })
 
 const tiles = computed(() => wanted.value
   .filter(t => readyTiles.value.has(`${t.z}/${t.x}/${t.y}`))
@@ -541,25 +549,79 @@ function goTo(lat, lon, name) {
   askTeleport(lat, lon, name)
 }
 
-function onSearch() {
+// Search as you type: saved / recent places at once, and addresses and places from the server (geocode.py:
+// Photon, OpenStreetMap) 300 ms after the last key, 3+ characters; a typed "lat, lon" on Enter.
+const searching = ref(false)
+const resultIndex = ref(-1)
+let searchTimer = null, searchSeq = 0
+const LATLON_RE = /^[-+]?\d+(\.\d+)?[°\s]*[NSns]?\s*[,;\s]\s*[-+]?\d+(\.\d+)?/
+
+function typing(on) { engineLua(`if setCEFTyping then setCEFTyping(${on ? "true" : "false"}) end`) }
+
+function localHits(text) {
+  return mm.searchPlaces(allPlaces(), text).slice(0, 3).map(r => ({ ...r, saved: true }))
+}
+
+function liveSearch() {
+  const text = query.value.trim()
   searchMsg.value = ""
+  resultIndex.value = -1
+  const seq = ++searchSeq
+  const local = text ? localHits(text) : []
+  results.value = local
+  if (text.length < 3 || LATLON_RE.test(text)) { searching.value = false; return }
+  searching.value = true
+  engineLua(`beamngEarth_settings and beamngEarth_settings.uiGeocode(${luaStr(text)}) or nil`, r => {
+    if (seq !== searchSeq) return
+    if (!r || r.error || !r.id) { searching.value = false; if (r && r.error && !local.length) searchMsg.value = r.error; return }
+    let tries = 0
+    const poll = () => {
+      if (seq !== searchSeq) return
+      engineLua(`beamngEarth_settings and beamngEarth_settings.uiGeocodeResult(${r.id}) or nil`, res => {
+        if (seq !== searchSeq) return
+        if (!res) {
+          if (++tries < 40) setTimeout(poll, 150)
+          else { searching.value = false; if (!local.length) searchMsg.value = "No answer from the address search" }
+          return
+        }
+        searching.value = false
+        const online = toArray(res.results)
+        results.value = [...local, ...online]
+        if (!results.value.length) searchMsg.value = res.error ? "Address search unavailable (offline?)" : "Nothing found"
+      })
+    }
+    setTimeout(poll, 150)
+  })
+}
+watch(query, () => { clearTimeout(searchTimer); searchTimer = setTimeout(liveSearch, 300) })
+
+function moveResult(d) {
+  const n = results.value.length
+  if (!n) return
+  resultIndex.value = (resultIndex.value + d + n) % n
+}
+
+function onSearch() {
   const text = query.value.trim()
   if (!text) { results.value = []; return }
-  const hits = mm.searchPlaces(allPlaces(), text)
-  if (hits.length === 1) { pickResult(hits[0]); return }
-  if (hits.length) { results.value = hits; return }
-  results.value = []
-  // not a place name: a typed latitude, longitude (places.lua parses every format the page accepts)
-  engineLua(`beamngEarth_settings and beamngEarth_settings.uiMapParse(${JSON.stringify(text)}) or nil`, r => {
+  if (results.value.length) { pickResult(results.value[Math.max(0, resultIndex.value)]); return }
+  // a typed latitude, longitude (places.lua parses every format the page accepts)
+  engineLua(`beamngEarth_settings and beamngEarth_settings.uiMapParse(${luaStr(text)}) or nil`, r => {
     if (r && typeof r.lat === "number") goTo(r.lat, r.lon, "")
-    else searchMsg.value = "No saved place by that name, and not a latitude, longitude (no online place search)"
+    else if (!searching.value) searchMsg.value = "Nothing found (try more of the address, or a latitude, longitude)"
   })
 }
 
 function pickResult(r) {
+  searchSeq++
+  clearTimeout(searchTimer)
   results.value = []
-  query.value = r.name || ""
-  goTo(r.lat, r.lon, r.name || "")
+  searching.value = false
+  searchMsg.value = ""
+  const name = r.name || ""
+  query.value = name
+  setTimeout(() => { searchSeq++; clearTimeout(searchTimer) }, 0)   // the watch on query must not search again
+  goTo(r.lat, r.lon, r.detail ? `${name}, ${r.detail}` : name)
 }
 
 // ---- teleport ------------------------------------------------------------------------------
@@ -749,6 +811,8 @@ const fmtLatLon = mm.fmtLatLon
 .item-sub { font-size: 11px; color: #9aa4ae; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .item-btns { display: flex; gap: 4px; flex-shrink: 0; }
 .panel-empty { padding: 6px 4px; font-size: 12px; color: #9aa4ae; }
+.search-result.active { background: rgba(224, 118, 28, 0.6); }
+.search-credit { padding: 4px 10px; font-size: 10px; color: #8a949e; border-top: 1px solid rgba(255, 255, 255, 0.08); }
 
 .ctx-menu {
   position: absolute; z-index: 10; min-width: 190px; padding: 4px 0; background: rgba(15, 18, 22, 0.95);
