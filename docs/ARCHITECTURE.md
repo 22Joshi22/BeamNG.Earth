@@ -1604,3 +1604,12 @@ lanes ran over London's kerbs. The road rules come from the nearest airport's co
 `navgraph.road_rules`): left-hand traffic (the game's `rightHandDrive = true`) in ~70 countries, turn on red in the
 US and Canada, `lightsBasicEU` where red+yellow precedes green; the same per-anchor flag turns the parked cars,
 signal booms, stop signs and stop points to the left side (road tiles in both the main process and the pool).
+
+**Keeping it running** (found in game 2026-10-14):
+- Each vehicle's new signals table keeps the old junctions it lacks (`navgraph.setSignalsLua`): ai.lua remembers the
+  junction a car approaches across map changes and reads its signal unchecked; a graph without it disabled the car.
+- No stop or signal on an approach from another connector under 15 m away (`SHORT_APPROACH_M`): offset streets split
+  one intersection into connectors metres apart, and a car met the next stop line behind it and waited forever.
+- A traffic car still for 45 s, 40 m or more from the player, is respawned (`STUCK_*`; paused time excluded): stock
+  traffic respawns only far, unseen cars. A parked car off its spot (another frame's position after a teleport the
+  scatter missed) is moved to a spot once the player is 60 m away (`parking.offSpot`).
