@@ -103,3 +103,75 @@ def plan(frame, x, y, sea_at, radius=None):
             nx, ny = cx / EARTH_R, cy / EARTH_R
             out.append(Tile(f"{int(s)}_{int(x0 // s)}_{int(y0 // s)}", cx, cy, z, s, nx, ny))
     return out
+
+
+# --- lakes ----------------------------------------------------------------------------------------
+LAKE_RADIUS_M = 2500.0      # lake tiles within this of the player (the far tiles carved: L <= 2)
+LAKE_TILE_MAX = 512.0
+LAKE_TILE_MIN = 16.0
+LAKE_SAMPLES = 24           # samples per tile edge when checking a lake tile
+LAKE_FLOOD_M = 1.0          # land inside a lake tile lower than the lake by more than this splits it
+                            # (a valley below a dam; the banks themselves are ~ at the lake's level)
+LAKE_MAX_TILES = 80         # nearest first
+LAKE_DEM_ZOOM = 15
+
+
+def plan_lakes(frame, x, y, lake_at, ground_at, radius=None):
+    """Water tiles for the lakes around (x, y): lake_at(lat, lon) -> the lake level at the points (NaN
+    away from lakes, seacarve.SeaCarver.lake_at), ground_at(lat, lon) -> the DEM there. A square of the
+    LAKE_TILE_MAX lattice holding lake water becomes one tile at that level when every other point in it
+    is land no lower than the lake by more than LAKE_FLOOD_M, else it is split, down to LAKE_TILE_MIN (kept there when
+    at least half of it is lake). So a reservoir's tile never floods the valley below its dam. Tilted to
+    the local vertical like the sea's tiles."""
+    r = LAKE_RADIUS_M if radius is None else radius
+    x = (math.floor(x / TILE_MIN) + 0.5) * TILE_MIN
+    y = (math.floor(y / TILE_MIN) + 0.5) * TILE_MIN
+    s0 = LAKE_TILE_MAX
+    i0, i1 = math.floor((x - r) / s0), math.floor((x + r) / s0)
+    j0, j1 = math.floor((y - r) / s0), math.floor((y + r) / s0)
+    roots = [(i * s0, j * s0) for i in range(i0, i1 + 1) for j in range(j0, j1 + 1)
+             if _dist(x, y, i * s0, j * s0, s0) <= r]
+    if not roots:
+        return []
+    f = (np.arange(LAKE_SAMPLES) + 0.5) / LAKE_SAMPLES
+    out = []
+
+    def samples(sq, s):
+        c = np.asarray(sq, np.float64)
+        E = np.repeat((c[:, 0:1] + f[None, :] * s)[:, None, :], LAKE_SAMPLES, axis=1)
+        N = np.repeat((c[:, 1:2] + f[None, :] * s)[:, :, None], LAKE_SAMPLES, axis=2)
+        lat, lon, _ = frame.enu_to_geodetic(E.ravel(), N.ravel(), 0.0)
+        return lat, lon
+
+    todo, s = roots, s0
+    while todo and s >= LAKE_TILE_MIN:
+        lat, lon = samples(todo, s)
+        lv = np.asarray(lake_at(lat, lon), np.float64).reshape(len(todo), -1)
+        has = np.isfinite(lv).any(axis=1)
+        todo = [sq for sq, h in zip(todo, has) if h]
+        lv = lv[has]
+        if not todo:
+            break
+        lat, lon = samples(todo, s)
+        g = np.asarray(ground_at(lat, lon), np.float64).reshape(len(todo), -1)
+        nxt = []
+        for (x0, y0), l, gr in zip(todo, lv, g):
+            wet = np.isfinite(l)
+            level = float(np.median(l[wet]))
+            one_level = np.all(np.abs(l[wet] - level) < 0.05)
+            clear = np.all(gr[~wet] >= level - LAKE_FLOOD_M)
+            if (one_level and clear) or (s <= LAKE_TILE_MIN and wet.mean() >= 0.5 and one_level):
+                out.append((x0, y0, s, level))
+            elif s > LAKE_TILE_MIN:
+                h = s / 2
+                nxt += [(x0 + a * h, y0 + b * h) for a in (0, 1) for b in (0, 1)]
+        todo, s = nxt, s / 2
+    out.sort(key=lambda t: _dist(x, y, t[0], t[1], t[2]))
+    tiles = []
+    for x0, y0, s, level in out[:LAKE_MAX_TILES]:
+        cx, cy = x0 + s / 2, y0 + s / 2
+        la, lo, _ = frame.enu_to_geodetic(cx, cy, 0.0)
+        z = float(np.asarray(frame.geodetic_to_enu(la, lo, level)[2]))
+        tiles.append(Tile(f"L{int(s)}_{int(x0 // s)}_{int(y0 // s)}_{int(round(level * 10))}", cx, cy, z, s,
+                          cx / EARTH_R, cy / EARTH_R))
+    return tiles

@@ -476,6 +476,8 @@ class Server:
         # runways graded in (--airports on: main() loads the OurAirports copy before the worker processes)
         self.airports = airportgrademod.AirportGrader(airports_db, self.dem) if airports_db is not None else None
         self.sea = sea              # seacarve.SeaCarver (--sea on): the sea floor carved, the water tiles
+        if sea is not None and sea.dem is None:
+            sea.dem = self.dem      # the lakes' levels
         # Satellite imagery (§A); None = --imagery off (v3-style palette tiles).
         # De-shadowing of the USGS tiles (--deshadow lambert|full; off = the imagery as served).
         self.deshadow = None
@@ -2067,9 +2069,11 @@ class Connection:
 
         async def run():
             try:
-                tiles = await self.loop.run_in_executor(
-                    self.s.ground_pool, seatilesmod.plan, frame, x, y,
-                    lambda la, lo, size: sea.sea_at(dem, la, lo, size))
+                def plan():
+                    return (seatilesmod.plan(frame, x, y, lambda la, lo, size: sea.sea_at(dem, la, lo, size))
+                            + seatilesmod.plan_lakes(frame, x, y, sea.lake_at,
+                                                     lambda la, lo: dem.sample(la, lo, seatilesmod.LAKE_DEM_ZOOM)))
+                tiles = await self.loop.run_in_executor(self.s.ground_pool, plan)
                 msg = [t.to_msg() for t in tiles]
                 if self.sea_sent is None or self.sea_sent[0] != aid or self.sea_sent[1] != msg:
                     self.sea_sent = (aid, msg)
@@ -2643,8 +2647,8 @@ def main():
                     help="runways graded into the ground and the tiles (OurAirports, airportgrade.py); "
                          "the data is downloaded once (~5 MB) and refreshed weekly")
     ap.add_argument("--sea", choices=("on", "off"), default="off",
-                    help="sea water (seacarve.py, seatiles.py): the ground carved under Overture's ocean "
-                         "polygons and the mod's WaterBlock tiles that follow the Earth's curve")
+                    help="sea and lake water (seacarve.py, seatiles.py): the ground carved under Overture's ocean "
+                         "and lake polygons and the mod's WaterBlock tiles that follow the Earth's curve")
     ap.add_argument("--road-processes", type=int, default=ROAD_PROCESSES,
                     help="processes building the road tiles (--block-process on); 0 = threads in the server")
     ap.add_argument("--detail-ring", type=float, default=DETAIL_RING_M,

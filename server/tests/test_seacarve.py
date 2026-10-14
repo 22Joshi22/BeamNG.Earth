@@ -9,6 +9,7 @@ from pathlib import Path
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import geodesy  # noqa: E402
 import mapcells  # noqa: E402
 import seacarve  # noqa: E402
 
@@ -108,6 +109,75 @@ class SeaCarveTest(unittest.TestCase):
     def test_near(self):
         self.assertTrue(self.sc.near(south(-1000), LON0, 2000))
         self.assertFalse(self.sc.near(south(-5000), LON0, 2000))
+
+
+LAKE_LAT, LAKE_LON = 39.30, -76.62        # a 600 m x 600 m lake (north of the test's sea)
+D = 600 / 111320.0
+
+
+class LakeWater(Water):
+    def __init__(self, polys, ids):
+        super().__init__(polys)
+        self.ids = np.array(ids)
+        n = len(polys)
+        self.attrs["class"] = np.array([""] * n, object)
+        self.attrs["is_intermittent"] = np.zeros(n, bool)
+
+
+class LakeMapData(FakeMapData):
+    def cell(self, key, layers=None, kind="demand"):
+        self.calls += 1
+        sq = lambda la, lo, d: [(lo, la), (lo + d, la), (lo + d, la + d), (lo, la + d), (lo, la)]   # noqa: E731
+        return Cell(LakeWater([("lake", sq(LAKE_LAT, LAKE_LON, D)),
+                               ("pond", sq(LAKE_LAT, LAKE_LON + 2 * D, 0.00005)),     # ~5 m: too small
+                               ("lake", sq(LAKE_LAT + 2 * D, LAKE_LON, D))],          # not flat
+                              ["a", "b", "c"]))
+
+
+class LakeDem:
+    """50 m inside the first lake, sloping across the third, 60 m around (a valley at 30 m east of x+D)."""
+
+    def sample(self, lat, lon, zoom, progress=None):
+        lat, lon = np.asarray(lat, np.float64), np.asarray(lon, np.float64)
+        e = np.full(lat.shape, 60.0)
+        e[(lon > LAKE_LON + 1.2 * D) & (lat < LAKE_LAT + D)] = 30.0
+        in1 = (lat > LAKE_LAT) & (lat < LAKE_LAT + D) & (lon > LAKE_LON) & (lon < LAKE_LON + D)
+        e[in1] = 50.0
+        in3 = (lat > LAKE_LAT + 2 * D) & (lat < LAKE_LAT + 3 * D) & (lon > LAKE_LON) & (lon < LAKE_LON + D)
+        e[in3] = 40.0 + (lat[in3] - LAKE_LAT - 2 * D) / D * 20.0
+        return e
+
+
+class LakeTest(unittest.TestCase):
+    def setUp(self):
+        self.sc = seacarve.SeaCarver(LakeMapData(), None, dem=LakeDem())
+
+    def test_level_carve_and_filters(self):
+        mid = (np.array([LAKE_LAT + D / 2]), np.array([LAKE_LON + D / 2]))
+        self.assertEqual(float(self.sc.lake_at(*mid)[0]), 50.0)
+        z = self.sc.carve(*mid, np.array([50.0]))
+        self.assertAlmostEqual(float(z[0]), 50.0 - seacarve.LAKE_DEPTH_CAP, places=4)
+        land = (np.array([LAKE_LAT - D / 2]), np.array([LAKE_LON + D / 2]))
+        self.assertEqual(float(self.sc.carve(*land, np.array([61.25]))[0]), 61.25)
+        self.assertTrue(np.isnan(self.sc.lake_at(*land)[0]))
+        steep = (np.array([LAKE_LAT + 2.5 * D]), np.array([LAKE_LON + D / 2]))
+        self.assertTrue(np.isnan(self.sc.lake_at(*steep)[0]), "not flat: not a lake")
+        tiny = (np.array([LAKE_LAT + 0.00002]), np.array([LAKE_LON + 2 * D + 0.00002]))
+        self.assertTrue(np.isnan(self.sc.lake_at(*tiny)[0]), "too small")
+        sea = (np.array([south(100)]), np.array([LON0]))
+        self.assertTrue(np.isnan(self.sc.lake_at(*sea)[0]), "the sea is not a lake")
+
+    def test_tiles_never_over_the_valley(self):
+        import seatiles
+        f = geodesy.EnuFrame(LAKE_LAT + D / 2, LAKE_LON + D / 2)
+        dem = LakeDem()
+        tiles = seatiles.plan_lakes(f, 0.0, 0.0, self.sc.lake_at, lambda la, lo: dem.sample(la, lo, 15))
+        self.assertTrue(tiles)
+        valley_x = float(f.geodetic_to_enu(LAKE_LAT, LAKE_LON + 1.2 * D, 0)[0])
+        for t in tiles:
+            self.assertLessEqual(t.x + t.size / 2, valley_x + 1e-6, t)
+            la, lo, _ = f.enu_to_geodetic(t.x, t.y, 0.0)
+            self.assertAlmostEqual(t.z, float(f.geodetic_to_enu(la, lo, 50.0)[2]), places=5)
 
 
 class SinkTest(unittest.TestCase):

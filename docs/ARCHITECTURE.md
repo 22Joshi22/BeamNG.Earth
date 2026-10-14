@@ -1340,4 +1340,14 @@ position; vehicles see water they drive into, but not water that appears around 
   new tile is re-placed where it is (`setPositionRotation`), since a parked car does not notice water
   that appears around it. Cleared on disconnect, a new anchor and unload.
 - **Cost (Sandy Point, 83 tiles, 2026-10-13):** 99 vs 102 fps at eye level, 108 vs 119 from 200 m.
+- **Lakes (2026-10-13):** Overture `lake`, `reservoir`, `pond` and `water` polygons (not fountains,
+  pools, basins, drains or intermittent water) go into the same per-cell raster as the sea, which now
+  holds a depth and a level per pixel (cache `seacarve/v2/<release>/lakes/`). A lake's level is the
+  median DEM (z15) inside it, away from the banks, quantised to 0.1 m (US DEMs flatten lakes, so every
+  cell gets the same value). A lake smaller than ~350 m^2 in the 3 x 3 cells, one whose inside spans
+  more than 1.5 m (p10..p90: a river, bad data) and one at sea level are left out. Floors are carved
+  from the shore at 0.15 m/m to 4 m. The far tiles up to L2 are carved (L2 reaches ~3 km).
+  `seatiles.plan_lakes` gives the water tiles within 2.5 km: 512 m squares holding lake water, split down
+  to 16 m while one holds land more than 1 m lower than the lake (a valley below a dam) or two levels;
+  at most 80, nearest first. Loch Raven: 61 tiles, Patterson Park's boat lake: 21; 0.1-0.2 s per plan.
 - Tests: `server/tests/test_seacarve.py`, `mod/tests/test_sea.lua`.

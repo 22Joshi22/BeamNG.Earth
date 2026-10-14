@@ -42,8 +42,8 @@ class _State:
         # runways graded in (--airports on): the copy the server loaded, never refreshed here
         self.airports = load_airports(cache_dir, self.dem) if airports else None
         md = mapdatamod.MapData(cache_dir, fetcher=net) if (roads or surface or sea) else None
-        # the sea floor carved in (--sea on)
-        self.sea = seacarvemod.SeaCarver(md, cache_dir) if sea else None
+        # the sea's and the lakes' floors carved in (--sea on)
+        self.sea = seacarvemod.SeaCarver(md, cache_dir, dem=self.dem) if sea else None
         self.md = md if roads else None
         self.grading = bool(grading) and self.md is not None
         self.widths = (roadwidthmod.RoadWidths(
