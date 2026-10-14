@@ -84,6 +84,7 @@ import cdae  # noqa: E402
 import colormatch as colormatchmod  # noqa: E402
 import credits as creditsmod  # noqa: E402
 import surface as surfacemod  # noqa: E402
+import navgraph as navgraphmod  # noqa: E402
 import parking as parkingmod  # noqa: E402
 import roads as roadsmod  # noqa: E402
 import grading as gradingmod  # noqa: E402
@@ -429,7 +430,7 @@ class Server:
                  tone=1.0, near_radii=None, status_interval=STATUS_INTERVAL, cells=CELLS_DEFAULT, tex=None,
                  block=BLOCK_DEFAULT, horizon=False, deshadow="off", weather=None, gravity=None, net=None,
                  colormatch="off", credits=None, cache=None, retex_rate=RETEX_RATE, surface=None,
-                 mapdata=None, grading=False, road_widths=False, block_pools=(), sidewalks=True, buildings=False, far_pool=None,
+                 mapdata=None, grading=False, road_widths=False, block_pools=(), sidewalks=True, buildings=False, traffic=False, far_pool=None,
                  road_pool=None, airports_db=None, sea=None, vegetation=None):
         """kfun: K(L) for every level (default: the layout's K table); near_radii: the min-level
         radii (default: the layout's); cells: 32 (v1.3.1) or 64 (M1, mesh mode only); tex: texture
@@ -585,6 +586,7 @@ class Server:
         # street widths measured between the buildings (roadwidth.py), decided once per road per run
         self.sidewalks = sidewalks  # raised sidewalk meshes with the road tiles (sidewalks.py)
         self.buildings = buildings  # building meshes with the road tiles (buildings.py)
+        self.traffic = bool(traffic) and mapdata is not None   # the AI road graph around the player (navgraph.py)
         self.road_widths = (roadwidthmod.RoadWidths(
             lambda key: mapdata.cell(key, layers=("buildings",), kind="demand").layers.get("buildings")).get
             if road_widths and mapdata is not None else None)
@@ -808,6 +810,29 @@ class Server:
         if rows is None:
             return None
         return vegetationmod.write_tile(self.out_dir, self.vfs_dir, aid, tx, ty, rows)
+
+    def build_navgraph(self, aid, x, y, serial):
+        """navgraph.py: the AI road graph around (x, y) of anchor aid, written to the session folder (the
+        anchor's earlier graphs deleted): (vfs path, nodes, edges) or None. Worker threads."""
+        anchor = self.anchors.get(aid)
+        if anchor is None or self.mapdata is None:
+            return None
+        w = navgraphmod.WINDOW_M + 200.0
+        la, lo, _ = anchor.frame.enu_to_geodetic(np.array([x - w, x + w]), np.array([y - w, y + w]), 0.0)
+        keys = mapcells.cells_for_bbox(float(la.min()), float(lo.min()), float(la.max()), float(lo.max()))
+        feats = [self.mapdata.cell(k, layers=("roads",), kind="demand").layers.get("roads") for k in keys]
+        zoom = anchor.zooms[0]
+        urban = self.surface.urban if self.surface is not None else None
+        graph = navgraphmod.build(anchor.frame, feats,
+                                  lambda la_, lo_: self.ground(anchor.frame, la_, lo_, self.dem.sample(la_, lo_, zoom)),
+                                  (x, y), urban)
+        for old in glob.glob(os.path.join(self.out_dir, f"navgraph_{aid}_*.json")):    # one file at a time
+            try:
+                os.remove(old)
+            except OSError:
+                pass
+        path = navgraphmod.write(self.out_dir, self.vfs_dir, aid, serial, graph)
+        return path, len(graph["nodes"]), len(graph["edges"])
 
     def build_far_bld_tile(self, aid, tx, ty):
         """buildings.far_tile: a far (render-only) building tile of anchor aid, or None. Worker threads."""
@@ -1615,7 +1640,7 @@ class Server:
 
 
 # Per-anchor tile files (besides far_ / hm_) that prune() deletes with their anchor
-ANCHOR_TILE_FILES = ("roads", "road", "walks", "deck", "bld", "bldfar", "wire", "veg")
+ANCHOR_TILE_FILES = ("roads", "road", "walks", "deck", "bld", "bldfar", "wire", "veg", "navgraph")
 
 
 class _BoundedLru:
@@ -1700,6 +1725,7 @@ class Connection:
         self.veg = vegetationmod.Tracker()      # vegetation tiles sent to the mod (--trees on)
         self.bldfar = vegetationmod.Tracker(buildingsmod.FAR_SEND_M, buildingsmod.FAR_DROP_M,
                                             buildingsmod.FAR_PER_POSE, "bldfar")   # far buildings (--buildings on)
+        self.nav = navgraphmod.Tracker()        # the AI road graph around the player (--traffic on)
         self.gravity = gravitymod.Tracker()     # real gravity: recompute rule, last message sent
         self.credits = creditsmod.Tracker()     # data credits: throttle, last message sent (--credits on)
         self.ground_busy = False                # a groundahead job is running (one at a time)
@@ -2087,6 +2113,8 @@ class Connection:
             self.veg.on_pose(self, aid, *self.focus, asyncio.get_running_loop(), self.s.build_veg_tile)
         if self.s.buildings and aid == self.active:
             self.bldfar.on_pose(self, aid, *self.focus, asyncio.get_running_loop(), self.s.build_far_bld_tile)
+        if self.s.traffic and aid == self.active:
+            self.nav.on_pose(self, aid, *self.focus, asyncio.get_running_loop(), self.s.build_navgraph)
         self.refresh_status()
         self.credits.poke(self)             # the player moved: the near / far credits may change
 
@@ -2577,6 +2605,7 @@ async def main_async(args):
                     road_widths=args.road_widths == "on" and args.roads == "on",
                     sidewalks=args.sidewalks == "on",
                     buildings=args.buildings == "on" and args.roads == "on",
+                    traffic=args.traffic == "on" and args.roads == "on",
                     block_pools=block_pools, far_pool=far_pool, road_pool=road_pool, airports_db=airports_db,
                     sea=seacarvemod.SeaCarver(mapdata, args.cache_dir) if args.sea == "on" else None,
                     vegetation=(vegetationmod.Vegetation(mapdata, args.cache_dir) if args.trees == "on" else None))
@@ -2781,6 +2810,9 @@ def main():
     ap.add_argument("--buildings", choices=("on", "off"), default="off",
                     help="3D buildings from the Overture footprints with the road tiles (buildings.py; needs --roads "
                          "on): heights and roofs predicted where the data has none")
+    ap.add_argument("--traffic", choices=("on", "off"), default="off",
+                    help="the AI road graph around the player for BeamNG's own traffic and AI (navgraph.py; needs "
+                         "--roads on): the mod hands it to map.reset")
     ap.add_argument("--road-widths", choices=("on", "off"), default="on",
                     help="street widths measured between the buildings that line them (roadwidth.py; Overture "
                          "buildings); off = class defaults")

@@ -169,6 +169,9 @@ SERVER_TO_MOD = {
     # far buildings (buildings.far_tile, --buildings on): a JSON file naming a render-only mesh
     "bldfar_tile": {"anchorId": F(int), "key": F(str), "path": F(str), "n": F(int)},
     "bldfar_drop": {"anchorId": F(int), "key": F(str)},
+    # the AI road graph around the player (navgraph.py, --traffic on): a JSON file of nodes and edges
+    "navgraph": {"anchorId": F(int), "path": F(str), "cx": F(NUM), "cy": F(NUM), "nodes": F(int), "edges": F(int),
+                 "serial": F(int)},
     # the download cache's usage (cache.py; additive, with a Cache only): after hello and every mod 'cache'
     "cache": {"v": F(int), "usedBytes": F(int), "capBytes": F(int), "files": F(int), "ready": F(bool),
               "managed": F(bool), "clearedBytes": F(int, OPT)},
@@ -180,7 +183,8 @@ EXERCISED_ELSEWHERE = {"far_retex", "roads_tile", "roads_drop",   # roads: needs
                        "block_base",                                 # a lazy imagery source (test_detail)
                        "sea",                                        # --sea on: needs map data (test_seacarve)
                        "veg_tile", "veg_drop",                       # --trees on: needs map data
-                       "bldfar_tile", "bldfar_drop"}                 # --buildings on: needs map data
+                       "bldfar_tile", "bldfar_drop",                 # --buildings on: needs map data
+                       "navgraph"}                                   # --traffic on: needs map data
 # events the mod's net.lua makes up itself (not on the wire)
 MOD_INTERNAL = {"_connected": set(), "_disconnected": {"error"}}
 

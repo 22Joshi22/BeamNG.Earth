@@ -1,0 +1,232 @@
+"""The AI road graph ("navgraph") around the player, for BeamNG's own traffic and AI (docs/research/
+2026-10-10-navgraph-traffic-signals.md): the mod hands it to `map.reset(customNodes)`.
+
+Nodes are Overture connectors (named "c<connector id>": the same name in every window and anchor, and shared
+by every segment meeting at a junction) and the simplified shape points between them ("s<segment id>_<k>").
+Each edge carries what the custom map path does not compute (research §2.4): its half width (radius), lanes
+(per direction), one-way direction, speed limit (m/s) and drivability. Positions are in the anchor frame, z the
+ground (elev); the mod clips the graph to the terrain block before using it (the only collidable ground).
+
+Pure given the map cells and elev; deterministic.
+"""
+import math
+
+import numpy as np
+
+import roads
+
+# classes the AI drives on: drivability (path cost divisor) and a default speed limit (mph, US practice)
+DRIVE = {"motorway": (1.0, 65), "trunk": (1.0, 55), "primary": (1.0, 45), "secondary": (1.0, 40),
+         "tertiary": (0.9, 35), "residential": (0.8, 25), "unclassified": (0.8, 30), "living_street": (0.5, 15),
+         "service": (0.4, 15), "unknown": (0.6, 25)}
+SKIP_SUBCLASSES = {"driveway", "parking_aisle", "sidewalk", "crosswalk", "cycle_crossing"}
+URBAN_MPH_CAP = {"primary": 35, "secondary": 35, "tertiary": 30}   # in town (spec.urban) unless mapped
+MPH = 0.44704
+LANE_W_M = 3.3
+SIMPLIFY_M = 0.6            # a shape point is kept where the chord would be off by more than this
+MAX_EDGE_M = 80.0           # long straight edges are split (the AI and the spawner like shorter ones)
+WINDOW_M = 1100.0           # half size of the square around the player the graph covers
+
+
+def _rdp(p, tol):
+    """Indices kept by Ramer-Douglas-Peucker on polyline p (k, 2)."""
+    keep = np.zeros(len(p), bool)
+    keep[0] = keep[-1] = True
+    stack = [(0, len(p) - 1)]
+    while stack:
+        a, b = stack.pop()
+        if b <= a + 1:
+            continue
+        d = p[b] - p[a]
+        L = math.hypot(*d)
+        seg = p[a + 1:b] - p[a]
+        dist = np.abs(seg[:, 0] * d[1] - seg[:, 1] * d[0]) / L if L > 1e-9 else np.hypot(*seg.T)
+        k = int(dist.argmax())
+        if dist[k] > tol:
+            keep[a + 1 + k] = True
+            stack += [(a, a + 1 + k), (a + 1 + k, b)]
+    return np.flatnonzero(keep)
+
+
+def _lanes(width, oneway):
+    n = max(1, int(round(width / LANE_W_M)))
+    if oneway:
+        return n, 0
+    n = max(2, n)
+    return (n + 1) // 2, n // 2
+
+
+def build(frame, feats_list, elev, centre, urban_fn=None, window=WINDOW_M):
+    """{"nodes": {name: [x, y, z, radius]}, "edges": [[in, out, oneway, lanes_out, lanes_in, speed m/s,
+    drivability, radius]]} of the drivable roads in the square of half size `window` around centre (x, y) of
+    the anchor frame. feats_list: the "roads" mapgeom.Features of the cells around (duplicates across cells
+    are taken once). elev(lat, lon) -> metres."""
+    cx, cy = centre
+    nodes, edges, seen = {}, [], set()
+    pending = {}            # name -> (x, y) of nodes whose z is still to sample
+    for feats in feats_list:
+        if feats is None or len(feats) == 0:
+            continue
+        specs = roads.road_specs(feats, urban_fn)
+        rules = feats.rules
+        sub = rules.get("subclass")
+        con = rules.get("connectors")
+        speed = rules.get("max_speed_kmh")
+        ow = rules.get("oneway")
+        for i, spec in enumerate(specs):
+            fid = str(feats.ids[i])
+            if spec is None or fid in seen or spec.cls not in DRIVE:
+                continue
+            seen.add(fid)
+            if roads._rule_value(sub, i) in SKIP_SUBCLASSES:
+                continue
+            parts = feats.parts(i)
+            if not parts or not parts[0]:
+                continue
+            ll = np.asarray(parts[0][0], np.float64)
+            if len(ll) < 2:
+                continue
+            e, n, _ = frame.geodetic_to_enu(ll[:, 1], ll[:, 0], 0.0)
+            p = np.stack([e, n], 1)
+            if (np.abs(p[:, 0] - cx).min() > window + 200) or (np.abs(p[:, 1] - cy).min() > window + 200):
+                continue
+            seg = np.hypot(*np.diff(p, axis=0).T)
+            s = np.concatenate([[0.0], np.cumsum(seg)])
+            L = float(s[-1])
+            if L < 1.0:
+                continue
+            # the nodes along it: connectors at their arc length, shape points that bend it, long gaps split
+            marks = {}
+            if con is not None:
+                for r in con.rows(i):
+                    marks[round(float(con.start[r]) * L, 2)] = "c" + str(con.value[r])
+            for k in _rdp(p, SIMPLIFY_M):
+                sk = round(float(s[k]), 2)
+                if not any(abs(sk - m) < 1.0 for m in marks):
+                    marks[sk] = f"s{fid}_{k}"
+            if 0.0 not in marks and not any(m < 1.0 for m in marks):
+                marks[0.0] = f"s{fid}_0"
+            if not any(m > L - 1.0 for m in marks):
+                marks[round(L, 2)] = f"s{fid}_{len(p) - 1}"
+            order = sorted(marks)
+            full = []
+            for a, b in zip(order[:-1], order[1:]):
+                full.append(a)
+                gap = b - a
+                if gap > MAX_EDGE_M:
+                    m = int(math.ceil(gap / MAX_EDGE_M))
+                    for j in range(1, m):
+                        sj = round(a + gap * j / m, 2)
+                        marks[sj] = f"s{fid}_{int(round(sj * 10))}d"
+                        full.append(sj)
+            full.append(order[-1])
+            xy = np.stack([np.interp(full, s, p[:, 0]), np.interp(full, s, p[:, 1])], 1)
+            names = [marks[v] for v in full]
+            # this road's edge attributes
+            w = float(spec.width)
+            mid = 0.5
+            kmh = None
+            if speed is not None:
+                rows_ = speed.rows(i)
+                for r in rows_:
+                    if speed.start[r] <= mid <= speed.end[r]:
+                        kmh = float(speed.value[r])
+            driv, mph = DRIVE[spec.cls]
+            if kmh is None and spec.urban and spec.cls in URBAN_MPH_CAP:
+                mph = min(mph, URBAN_MPH_CAP[spec.cls])
+            v = kmh / 3.6 if kmh else mph * MPH
+            direction = 0
+            if ow is not None:
+                for r in ow.rows(i):
+                    if ow.start[r] <= mid <= ow.end[r]:
+                        direction = int(ow.value[r])
+            lo, li = _lanes(w, direction != 0)
+            for j in range(len(names) - 1):
+                a, b = names[j], names[j + 1]
+                if a == b:
+                    continue
+                if direction < 0:
+                    a, b = b, a
+                pa, pb = xy[j] if direction >= 0 else xy[j + 1], xy[j + 1] if direction >= 0 else xy[j]
+                for nm, q in ((a, pa), (b, pb)):
+                    if nm not in nodes and nm not in pending:
+                        pending[nm] = (float(q[0]), float(q[1]))
+                edges.append([a, b, 1 if direction else 0, lo, li, round(v, 2), driv, round(w / 2, 2)])
+    # keep the edges with both ends in the window; z of their nodes from the ground
+    inside = {nm for nm, (x, y) in pending.items() if abs(x - cx) <= window and abs(y - cy) <= window}
+    edges = [e for e in edges if e[0] in inside and e[1] in inside]
+    used = sorted({e[0] for e in edges} | {e[1] for e in edges})
+    if used:
+        X = np.array([pending[nm][0] for nm in used])
+        Y = np.array([pending[nm][1] for nm in used])
+        la, lo, _ = frame.enu_to_geodetic(X, Y, 0.0)
+        Z = np.asarray(elev(la, lo), np.float64)
+        radius = {}
+        for e in edges:
+            for nm in e[:2]:
+                radius[nm] = max(radius.get(nm, 0.0), e[7])
+        for nm, x, y, z in zip(used, X, Y, Z):
+            nodes[nm] = [round(float(x), 2), round(float(y), 2), round(float(z), 2), radius[nm]]
+    # one edge per node pair (two segments joining the same connectors: keep the first)
+    uniq, pairs = [], set()
+    for e in edges:
+        k = (min(e[0], e[1]), max(e[0], e[1]))
+        if k not in pairs:
+            pairs.add(k)
+            uniq.append(e)
+    return {"nodes": nodes, "edges": uniq}
+
+
+REBUILD_M = 400.0           # a new graph once the player is this far from the last one's centre
+
+
+def write(out_dir, vfs_dir, aid, serial, graph):
+    """The graph as navgraph_<aid>_<serial>.json in the session folder; returns its vfs path."""
+    import json
+    import os
+    name = f"navgraph_{aid}_{serial}.json"
+    path = os.path.join(out_dir, name)
+    with open(path + ".tmp", "w") as f:
+        json.dump(graph, f, separators=(",", ":"))
+    os.replace(path + ".tmp", path)
+    return f"{vfs_dir}/{name}"
+
+
+class Tracker:
+    """Per connection: builds a graph around the player when the anchor changes or the player moved
+    REBUILD_M from the last one's centre, one at a time, and announces it ("navgraph")."""
+
+    def __init__(self, rebuild_m=REBUILD_M):
+        self.rebuild_m = rebuild_m
+        self.aid = None
+        self.centre = None
+        self.building = False
+        self.serial = 0
+
+    def on_pose(self, conn, aid, x, y, loop, build):
+        """build(aid, x, y, serial) runs in a worker and returns (vfs path, nodes, edges) or None."""
+        if self.building:
+            return
+        if aid == self.aid and self.centre is not None and \
+                max(abs(x - self.centre[0]), abs(y - self.centre[1])) < self.rebuild_m:
+            return
+        self.building = True
+        self.serial += 1
+        serial = self.serial
+        fut = loop.run_in_executor(None, build, aid, x, y, serial)
+        fut.add_done_callback(lambda f: self._built(conn, aid, (x, y), serial, f))
+
+    def _built(self, conn, aid, centre, serial, fut):
+        self.building = False
+        try:
+            res = fut.result()
+        except Exception as e:      # map data not at hand: the next pose asks again
+            import logging
+            logging.getLogger("earthd.navgraph").debug("navgraph %s: %s: %s", centre, type(e).__name__, e)
+            return
+        if res is None:
+            return
+        self.aid, self.centre = aid, centre
+        path, n, m = res
+        conn.send({"type": "navgraph", "anchorId": aid, "path": path, "cx": round(centre[0], 1),
+                   "cy": round(centre[1], 1), "nodes": n, "edges": m, "serial": serial})

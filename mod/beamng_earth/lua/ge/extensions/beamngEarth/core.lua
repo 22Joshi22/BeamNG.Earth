@@ -55,6 +55,7 @@ local roads = require('beamngEarth/roads') -- DecalRoads from the server's road 
 local sea = require('beamngEarth/sea') -- the sea's WaterBlock tiles (server seatiles.py)
 local trees = require('beamngEarth/trees') -- trees, bushes, rocks (server vegetation.py)
 local parking = require('beamngEarth/parking') -- parked cars on the road tiles' spots (stock gameplay_parking)
+local navgraph = require('beamngEarth/navgraph') -- the AI road graph for the stock traffic and AI (map.reset)
 
 local LEVEL_ID = 'beamng_earth'
 local MOD_VERSION = '0.4.0'
@@ -686,6 +687,9 @@ local function onMessage(msg)
     roads.onFarTile(msg, st.anchorId)
   elseif t == 'bldfar_drop' then
     roads.onFarDrop(msg)
+  elseif t == 'navgraph' then
+    -- the AI road graph around the player (server navgraph.py, --traffic on): map.reset (navgraph.lua)
+    navgraph.onMessage(msg, st.anchorId)
   elseif t == 'sea' then
     -- the sea's water tiles near the player (server seatiles.py, --sea on): sea.lua
     sea.onMessage(msg)
@@ -1049,6 +1053,7 @@ local function onUpdate(dtReal, dtSim)
       pb[1], pb[2], pb[3], pb[4] = lattice.groundBox(st.block.cx, st.block.cy)
     end
     parking.update(st.anchorId, st.player, pb)
+    navgraph.update(st.anchorId, pb)
     updateSky(dtReal)
     updateGuard()
   end
@@ -1130,6 +1135,7 @@ local function onClientEndMission()
   sea.reset()
   trees.reset()
   parking.reset()
+  navgraph.reset()
   local sessionId, nextRequestId = st.sessionId, st.nextRequestId
   resetState()
   st.sessionId, st.nextRequestId = sessionId, nextRequestId
@@ -1326,6 +1332,7 @@ M.onUpdate = onUpdate
 M.onPreRender = onPreRender
 M.onUiChangedState = onUiChangedState
 M.onClientStartMission = onClientStartMission
+M.onNavgraphReloaded = function() navgraph.onReloaded() end
 M.onClientEndMission = onClientEndMission
 M.onExtensionLoaded = onExtensionLoaded
 M.onExtensionUnloaded = onExtensionUnloaded
