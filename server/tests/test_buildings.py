@@ -176,6 +176,20 @@ class DoorTest(unittest.TestCase):
             self.assertAlmostEqual(P[:, 2].max(), 1.0 + bld.PORCH_DECK_M + bld.PORCH_H_M + 0.18, places=3)
         self.assertTrue(10 < with_porch < 35, with_porch)
 
+    def test_front_fence_with_a_gate(self):
+        a, d = np.array([0.0, 20.0]), np.array([1.0, 0.0])         # a 12 m house front 20 m from a road at y = 0
+        rows = bld._front_fence(type("S", (), {"seed": 0.3})(), a, d, 12.0, 0.5, np.array([-100.0, 0.0]),
+                                np.array([300.0, 0.0]), 300.0 ** 2, 4.0, 1.5, False)
+        self.assertTrue(rows)
+        for g, x, y, z, yaw, sc, h, r in rows:
+            self.assertEqual(g, bld.G_FENCE)
+            self.assertAlmostEqual(y, 4.0 + bld.FENCE_BACK_M, places=2)
+            self.assertEqual(yaw, 0.0)
+            self.assertGreater(abs(x - 6.0), bld.FENCE_SEG_M / 2, "a gap in front of the door")
+        self.assertEqual(bld._front_fence(type("S", (), {"seed": 0.3})(), np.array([0.0, 8.0]), d, 12.0, 0.5,
+                                          np.array([-100.0, 0.0]), np.array([300.0, 0.0]), 300.0 ** 2, 4.0, 1.5,
+                                          False), [], "no fence without a front yard")
+
     def test_no_door_without_a_road(self):
         spec = bld.plan(rect(0, 0, 10, 8), {"class": "house"})
         self.assertEqual(bld.doors([(spec, 0.0, 0.0)], [(np.array([(500.0, 0), (600.0, 0)]), 4.0)], 0, 0), [])

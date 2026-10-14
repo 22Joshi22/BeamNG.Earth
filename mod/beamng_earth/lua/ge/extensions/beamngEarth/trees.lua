@@ -11,7 +11,8 @@ M.PER_FRAME = 300       -- items made or removed per frame at most
 M.RINGS = { { 300, 1.0 }, { 550, 0.5 }, { 900, 0.25 }, { 1e9, 0.12 } }   -- tile distance (m): the rank shown below
 -- small props only near the player (2026-10-14, Fells Point at street level: ~10 ms a frame for the Forest
 -- with a door on every house out to 300 m): the tile distance (m) beyond which a group is not shown
-M.GROUP_MAX_M = { door = 120, hydrant = 200, bin = 200, bench = 200, polelamp = 400, stop = 300, signal = 500 }
+M.GROUP_MAX_M = { door = 120, hydrant = 200, bin = 200, bench = 200, polelamp = 400, stop = 300, signal = 500,
+  fence = 150 }
 M.FOREST_NAME = 'bngEarthForest'
 
 local ECA = '/levels/east_coast_usa/art/shapes/'
@@ -90,6 +91,8 @@ M.CATALOG = {
   },
   signal = { { '/art/shapes/objects/s_trafficlight_boom_sn', 9.4 } },
   stop = { { '/levels/east_coast_usa/art/shapes/signs_usa/sign_stop', 3.0 } },
+  -- a low wooden yard fence, 5.4 m along its x (server buildings._front_fence)
+  fence = { { ECA .. 'buildings/eca_bld_wood_fence_c', 1.3 } },
   hydrant = { { '/levels/west_coast_usa/art/shapes/objects/hydrant1', 1.5 } },
   bench = { { ECA .. 'clutter/clutter_city_bench_wood', 0.9 } },
   bin = { { '/art/shapes/garage_and_dealership/Clutter/clutter_city_bin_round', 1.1 }, { WCA .. 'objects/garbage_bin_a', 1.1 } },
