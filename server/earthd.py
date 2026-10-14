@@ -99,6 +99,7 @@ import geodesy  # noqa: E402
 import gravity as gravitymod  # noqa: E402
 import airportgrade as airportgrademod  # noqa: E402
 import airports as airportsmod  # noqa: E402
+import seacarve as seacarvemod  # noqa: E402
 import groundahead as groundaheadmod  # noqa: E402
 import heightmap  # noqa: E402
 import imagery as imagerymod  # noqa: E402
@@ -157,6 +158,9 @@ NEAR_VISUALS = ("mesh", "terrain", "detail")
 # as in terrain mode. MESH_LAYOUT: the modes on the mesh-mode tile layout; BLOCK_DRAWN: the block is seen.
 MESH_LAYOUT = ("mesh", "detail")
 BLOCK_DRAWN = ("terrain", "detail")
+SEA_NEAR_M = 4000.0         # sea (--sea on): the mod's sea plane exists while sea water is this close
+SEA_CHECK_M, SEA_CHECK_S = 200.0, 5.0     # ... checked after this much movement or this long
+SEA_RESEND_Z = 0.05         # m: the plane's level sent again when it changed this much
 GROUND_RESEND_M, GROUND_RESEND_S = 1.0, 1.5   # ground_ahead: sent on a change, else this often (the mod's
                                                # follow.GROUND_STALE_S is 3 s)
 DETAIL_RING_M = 128.0           # detail mode: L-1 tiles this far beyond the block (forced())
@@ -422,7 +426,7 @@ class Server:
                  block=BLOCK_DEFAULT, horizon=False, deshadow="off", weather=None, gravity=None, net=None,
                  colormatch="off", credits=None, cache=None, retex_rate=RETEX_RATE, surface=None,
                  mapdata=None, grading=False, road_widths=False, block_pools=(), sidewalks=True, far_pool=None,
-                 road_pool=None, airports_db=None):
+                 road_pool=None, airports_db=None, sea=None):
         """kfun: K(L) for every level (default: the layout's K table); near_radii: the min-level
         radii (default: the layout's); cells: 32 (v1.3.1) or 64 (M1, mesh mode only); tex: texture
         px per level from the finest (default: tex_near, tex_near, tex_far with 32 cells,
@@ -471,6 +475,7 @@ class Server:
         self.dem = demmod.Dem(os.path.join(cache_dir, "dem"), fetcher=self.net)
         # runways graded in (--airports on: main() loads the OurAirports copy before the worker processes)
         self.airports = airportgrademod.AirportGrader(airports_db, self.dem) if airports_db is not None else None
+        self.sea = sea              # seacarve.SeaCarver (--sea on): the sea floor carved, land above the plane
         # Satellite imagery (§A); None = --imagery off (v3-style palette tiles).
         # De-shadowing of the USGS tiles (--deshadow lambert|full; off = the imagery as served).
         self.deshadow = None
@@ -799,9 +804,7 @@ class Server:
         g = self.grader_for(anchor)
 
         def elev(la, lo):           # the physics ground (lifted under roads: grading.ROAD_LIFT)
-            z = self.dem.sample(la, lo, zoom)
-            if self.airports is not None:
-                z = self.airports.apply(la, lo, z)
+            z = self.ground(anchor.frame, la, lo, self.dem.sample(la, lo, zoom))
             return g.apply(la, lo, z, gradingmod.ROAD_LIFT) if g is not None else z
         walks = []
         with self.grader_lock:
@@ -819,6 +822,14 @@ class Server:
         dmesh = roadmeshmod.deck(chunks, (x0, y0, 0.0))
         return roadsmod.write_tile(self.out_dir, self.vfs_dir, aid, tx, ty, chunks, walks if self.sidewalks else None,
                                    mesh, dmesh)
+
+    def ground(self, frame, la, lo, z):
+        """blockworker.ground here: runways graded in, the sea floor carved, land above the sea plane."""
+        if self.airports is not None:
+            z = self.airports.apply(la, lo, z)
+        if self.sea is not None:
+            z = seacarvemod.lift(frame, la, lo, self.sea.carve(la, lo, z))
+        return z
 
     def grader_for(self, anchor):
         """The anchor's grading.Grader (--grading on), else None."""
@@ -909,9 +920,7 @@ class Server:
         grade_s = [0.0]
 
         def elev(la, lo):
-            z = self.dem.sample(la, lo, anchor.hm_zoom, progress)
-            if self.airports is not None:
-                z = self.airports.apply(la, lo, z)
+            z = self.ground(anchor.frame, la, lo, self.dem.sample(la, lo, anchor.hm_zoom, progress))
             if g is None:
                 return z
             t1 = time.perf_counter()
@@ -1208,6 +1217,8 @@ class Server:
         path = os.path.join(self.out_dir, self.tile_name(anchor.id, tile.key))
         g = self.grader_for(anchor) if lvl <= 0 and self.far_pool is None else None   # graded like the block
         base = self.airports.wrap(self.dem) if self.airports is not None else self.dem
+        if self.sea is not None:
+            base = seacarvemod.SeaDem(base, self.sea if lvl <= seacarvemod.CARVE_MAX_LEVEL else None, anchor.frame)
         src = gradingmod.GradedDem(base, g) if g is not None else base
         if self.far_pool is not None:
             built = self.far_pool.submit(blockworker.far_geometry, anchor.id, anchor.lat, anchor.lon, tile,
@@ -1604,6 +1615,9 @@ class Connection:
         self.gravity = gravitymod.Tracker()     # real gravity: recompute rule, last message sent
         self.credits = creditsmod.Tracker()     # data credits: throttle, last message sent (--credits on)
         self.ground_busy = False                # a groundahead job is running (one at a time)
+        self.sea_busy = False                   # a sea check is running (sea_near)
+        self.sea_checked = None                 # (anchor id, x, y, monotonic) of the last sea check
+        self.sea_sent = None                    # (anchor id, on, z) of the last "sea" message
         self.base_busy = False                  # a base photo refresh is running (base_refresh)
         self.ground_sent = None                 # (anchor id, z, monotonic) of the last ground_ahead sent
         self.following = True                   # the mod moves its block (pose "follow"; false high up)
@@ -1949,6 +1963,8 @@ class Connection:
             self.update_eye(self.s.anchors[aid].frame, x, y, msg)
         self.gravity.on_pose(self, self.s.anchors[aid].frame, x, y, _num(msg, "z", 0.0))
         self.ground_ahead(aid, x, y, vx, vy)
+        if self.s.sea is not None:
+            self.sea_near(aid, x, y)
         # the mod's altitude rule: high above the ground it does not move its block, so no block is
         # built ahead (prefetch, road plans) until it comes down
         self.following = msg.get("follow") is not False
@@ -2035,6 +2051,33 @@ class Connection:
                 log.debug("ground ahead: %s: %s", type(e).__name__, e)
             finally:
                 self.ground_busy = False
+        self.spawn(run())
+
+    def sea_near(self, aid, x, y):
+        """Tell the mod whether sea water is within SEA_NEAR_M and the sea level's z under the player in
+        the anchor frame (its WaterPlane; seacarve.py), checked after SEA_CHECK_M or SEA_CHECK_S."""
+        last, now = self.sea_checked, time.monotonic()
+        if self.sea_busy or (last is not None and last[0] == aid and math.hypot(x - last[1], y - last[2]) < SEA_CHECK_M
+                             and now - last[3] < SEA_CHECK_S):
+            return
+        self.sea_busy = True
+        self.sea_checked = (aid, x, y, now)
+        frame = self.s.anchors[aid].frame
+
+        async def run():
+            try:
+                la, lo, _ = frame.enu_to_geodetic(x, y, 0.0)
+                on = await self.loop.run_in_executor(self.s.ground_pool, self.s.sea.near, float(la), float(lo),
+                                                     SEA_NEAR_M)
+                z = float(frame.geodetic_to_enu(la, lo, seacarvemod.SEA_E)[2])
+                sent = self.sea_sent
+                if sent is None or sent[0] != aid or sent[1] != on or (on and abs(z - sent[2]) > SEA_RESEND_Z):
+                    self.sea_sent = (aid, on, z)
+                    self.send({"type": "sea", "anchorId": aid, "on": on, "z": round(z, 2)})
+            except Exception as e:      # offline, no map data: no sea plane
+                log.debug("sea near: %s: %s", type(e).__name__, e)
+            finally:
+                self.sea_busy = False
         self.spawn(run())
 
     def update_eye(self, frame, x, y, msg):
@@ -2364,7 +2407,7 @@ async def main_async(args):
     disk = cachemod.Cache(args.cache_dir, args.cache_cap)
     # map data (mapdata.py): land cover for the surfaces, roads; one instance shares its cache locks
     mapdata = (mapdatamod.MapData(args.cache_dir, fetcher=net)
-               if "on" in (args.surface, args.roads) else None)
+               if "on" in (args.surface, args.roads, args.sea) else None)
     pacer.DUTY = args.background_duty
     global DETAIL_RING_M
     DETAIL_RING_M = args.detail_ring
@@ -2378,13 +2421,13 @@ async def main_async(args):
                 initargs=(args.cache_dir, args.offline, args.roads == "on",
                           args.grading == "on" and args.roads == "on",
                           args.road_widths == "on" and args.roads == "on", args.surface == "on", warm_q,
-                          logging.getLogger().level, args.airports == "on")), warm_q))
+                          logging.getLogger().level, args.airports == "on", args.sea == "on")), warm_q))
         far_pool = ProcessPoolExecutor(
             args.workers, mp_context=ctx, initializer=blockworker.init,
             initargs=(args.cache_dir, args.offline, args.roads == "on",
                       args.grading == "on" and args.roads == "on",
                       args.road_widths == "on" and args.roads == "on", False, ctx.Queue(maxsize=1),
-                      logging.getLogger().level, args.airports == "on"))
+                      logging.getLogger().level, args.airports == "on", args.sea == "on"))
     airports_db = None
     if args.airports == "on":       # before any worker process starts: they read this copy
         try:
@@ -2398,7 +2441,7 @@ async def main_async(args):
             args.road_processes, mp_context=ctx, initializer=blockworker.init,
             initargs=(args.cache_dir, args.offline, True, args.grading == "on", args.road_widths == "on",
                       args.surface == "on", ctx.Queue(maxsize=1), logging.getLogger().level,
-                      args.airports == "on"))
+                      args.airports == "on", args.sea == "on"))
     server = Server(args.user_dir, args.cache_dir, args.workers, kfun, args.hysteresis, args.far_radius, fmt,
                     imagery=args.imagery, near_visual=args.near_visual, tex_near=args.tex_near,
                     tex_far=args.tex_far, tone=args.tone, near_radii=radii,
@@ -2415,7 +2458,8 @@ async def main_async(args):
                     grading=args.grading == "on" and args.roads == "on",
                     road_widths=args.road_widths == "on" and args.roads == "on",
                     sidewalks=args.sidewalks == "on",
-                    block_pools=block_pools, far_pool=far_pool, road_pool=road_pool, airports_db=airports_db)
+                    block_pools=block_pools, far_pool=far_pool, road_pool=road_pool, airports_db=airports_db,
+                    sea=seacarvemod.SeaCarver(mapdata, args.cache_dir) if args.sea == "on" else None)
 
     async def net_log():
         while True:
@@ -2598,6 +2642,9 @@ def main():
     ap.add_argument("--airports", choices=("on", "off"), default="off",
                     help="runways graded into the ground and the tiles (OurAirports, airportgrade.py); "
                          "the data is downloaded once (~5 MB) and refreshed weekly")
+    ap.add_argument("--sea", choices=("on", "off"), default="off",
+                    help="sea water (seacarve.py): the ground carved under Overture's ocean polygons and the "
+                         "mod's sea-level WaterPlane near the coast")
     ap.add_argument("--road-processes", type=int, default=ROAD_PROCESSES,
                     help="processes building the road tiles (--block-process on); 0 = threads in the server")
     ap.add_argument("--detail-ring", type=float, default=DETAIL_RING_M,

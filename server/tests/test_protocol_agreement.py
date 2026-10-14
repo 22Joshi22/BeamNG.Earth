@@ -155,6 +155,8 @@ SERVER_TO_MOD = {
     "block_base": {"anchorId": F(int), "cx": F(NUM), "cy": F(NUM), "base": F(str), "baseSize": F(NUM)},
     # the highest ground near the player's path (groundahead.py; the mod's altitude rule), z in the anchor's frame
     "ground_ahead": {"anchorId": F(int), "z": F(NUM)},
+    # sea water near the player (seacarve.py, --sea on): the mod's sea-level WaterPlane, z in the anchor's frame
+    "sea": {"anchorId": F(int), "on": F(bool), "z": F(NUM)},
     # data credits for the tiles around the player (credits.py; additive, protocol 4, --credits on)
     "credits": {"v": F(int), "near": F(str), "far": F(str), "ids": F(list), "farIds": F(list)},
     # road tiles near the player (roads.py; additive, with map data only): a JSON file of DecalRoad chunks
@@ -168,7 +170,8 @@ WEATHER_NESTED = {"cover": {"total", "low", "mid", "high"}, "wind": {"ms", "from
                   "aloft": {"ms", "fromDeg"}}
 # message types the plain session cannot produce (each has its own session test below)
 EXERCISED_ELSEWHERE = {"far_retex", "roads_tile", "roads_drop",   # roads: needs map data (roads tests)
-                       "block_base"}                                 # a lazy imagery source (test_detail)
+                       "block_base",                                 # a lazy imagery source (test_detail)
+                       "sea"}                                        # --sea on: needs map data (test_seacarve)
 # events the mod's net.lua makes up itself (not on the wire)
 MOD_INTERNAL = {"_connected": set(), "_disconnected": {"error"}}
 

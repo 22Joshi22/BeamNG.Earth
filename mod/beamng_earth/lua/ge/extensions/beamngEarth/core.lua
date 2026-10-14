@@ -52,6 +52,7 @@ local banner = require('beamngEarth/banner') -- the connection banner (docs/DEVT
 local edgeguard = require('beamngEarth/edgeguard') -- never fall off the last block (docs/ROADMAP.md)
 local groundcover = require('beamngEarth/groundcover') -- grass on the surface layers (docs/ROADMAP.md v1.5)
 local roads = require('beamngEarth/roads') -- DecalRoads from the server's road tiles (docs/ROADMAP.md v1.6)
+local sea = require('beamngEarth/sea') -- the sea-level WaterPlane near the coast (server seacarve.py)
 
 local LEVEL_ID = 'beamng_earth'
 local MOD_VERSION = '0.4.0'
@@ -531,6 +532,7 @@ local function onMessage(msg)
     st.serverNote, st.serverNoteDetail, st.terrainErrorAt = nil, nil, nil
     -- an auto-teleport lost with the connection is retried on the next hello
     if not st.anchor then st.autoTeleportDone = false end
+    sea.clear()
     setStatus('Disconnected from companion server: ' .. tostring(msg.error))
   elseif t == 'hello' then
     st.sessionId = msg.sessionId
@@ -671,6 +673,9 @@ local function onMessage(msg)
   elseif t == 'ground_ahead' then
     -- the highest ground near the player's path (server groundahead.py): the altitude rule (follow.lua)
     if tonumber(msg.z) then st.groundAhead = { anchorId = msg.anchorId, z = tonumber(msg.z), at = st.clock } end
+  elseif t == 'sea' then
+    -- sea water near the player (server seacarve.py, --sea on): the sea-level WaterPlane (sea.lua)
+    sea.onMessage(msg)
   elseif t == 'credits' then
     -- the sources around the player (server credits.py): msg.near, msg.far, drawn by credits.lua
     credits.onMessage(msg)
@@ -1022,6 +1027,7 @@ local function onUpdate(dtReal, dtSim)
     updateWorld(dtReal)
     farfield.update(gov, (gov.w1 or dtReal * 1000) / 1000, st.cam, st.player)
     roads.update(gov, st.anchorId)
+    sea.update(st.anchorId, st.player and st.player.z)
     updateSky(dtReal)
     updateGuard()
   end
@@ -1100,6 +1106,7 @@ local function onClientEndMission()
   horizon.restoreSky() -- M1h: the level's sky planet radius (its LevelInfo goes with the level)
   groundcover.reset() -- its objects go with the level
   roads.reset()
+  sea.reset()
   local sessionId, nextRequestId = st.sessionId, st.nextRequestId
   resetState()
   st.sessionId, st.nextRequestId = sessionId, nextRequestId
@@ -1115,6 +1122,7 @@ local function onExtensionUnloaded()
   net.close()
   farfield.clear()
   roads.clear()
+  sea.clear()
   terrain.delete()
   -- M1h: the level stays loaded; give it back its sky and view distance
   horizon.restoreSky()
@@ -1233,7 +1241,7 @@ function M.status()
     cells = crossover.cells(), blockSize = blockSize, anchorLatency = st.anchorLatency,
     terrainLatency = st.terrainLatency, horizon = horizonOn, farRadius = farRadius,
     visibleDistance = st.visibleDistance or VISIBLE_DISTANCE, banner = banner.current().id, guard = st.guard.mode,
-    sessions = farfield.heldSessions(), tileSession = farfield.session() })
+    sessions = farfield.heldSessions(), tileSession = farfield.session(), sea = sea.status() })
 end
 
 -- The connection state line (the settings page shows it): the banner's { id, level, text } (text

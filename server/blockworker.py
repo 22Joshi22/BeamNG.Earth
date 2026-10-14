@@ -26,6 +26,7 @@ import heightmap
 import mapdata as mapdatamod
 import netfetch
 import roadwidth as roadwidthmod
+import seacarve as seacarvemod
 import surface as surfacemod
 import terraincache
 
@@ -35,12 +36,14 @@ _s = None       # this process's state (init)
 
 
 class _State:
-    def __init__(self, cache_dir, offline, roads, grading, road_widths, surface, airports=False):
+    def __init__(self, cache_dir, offline, roads, grading, road_widths, surface, airports=False, sea=False):
         net = netfetch.Fetcher(offline=offline)
         self.dem = demmod.Dem(os.path.join(cache_dir, "dem"), fetcher=net)
         # runways graded in (--airports on): the copy the server loaded, never refreshed here
         self.airports = load_airports(cache_dir, self.dem) if airports else None
-        md = mapdatamod.MapData(cache_dir, fetcher=net) if (roads or surface) else None
+        md = mapdatamod.MapData(cache_dir, fetcher=net) if (roads or surface or sea) else None
+        # the sea floor carved in and land kept above the mod's sea plane (--sea on)
+        self.sea = seacarvemod.SeaCarver(md, cache_dir) if sea else None
         self.md = md if roads else None
         self.grading = bool(grading) and self.md is not None
         self.widths = (roadwidthmod.RoadWidths(
@@ -84,10 +87,11 @@ def load_airports(cache_dir, dem):
     return airportgrade.AirportGrader(db, dem)
 
 
-def init(cache_dir, offline, roads, grading, road_widths, surface, warm_q, log_level=logging.INFO, airports=False):
+def init(cache_dir, offline, roads, grading, road_widths, surface, warm_q, log_level=logging.INFO, airports=False,
+         sea=False):
     global _s
     logging.basicConfig(level=log_level, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
-    _s = _State(cache_dir, offline, roads, grading, road_widths, surface, airports)
+    _s = _State(cache_dir, offline, roads, grading, road_widths, surface, airports, sea)
     threading.Thread(target=_watch_parent, args=(os.getppid(),), daemon=True, name="parent-watch").start()
     threading.Thread(target=_read_warm, args=(warm_q,), daemon=True, name="warm-read").start()
     threading.Thread(target=_warm_loop, daemon=True, name="roads-ahead").start()
@@ -140,6 +144,16 @@ def _warm_loop():
                 _s.want = [w for w in _s.want if w[1] != job[1]]
 
 
+def ground(frame, la, lo, z):
+    """The DEM heights z at (la, lo) shaped before the road grading: runways graded in (--airports on),
+    the sea floor carved in and land kept above the sea plane (--sea on)."""
+    if _s.airports is not None:
+        z = _s.airports.apply(la, lo, z)
+    if _s.sea is not None:
+        z = seacarvemod.lift(frame, la, lo, _s.sea.carve(la, lo, z))
+    return z
+
+
 def build(aid, lat, lon, hm_zoom, q, cx, cy, size, out_dir, name, ter_name=None):
     """Build and write the block (heightmap PNG name in out_dir, its surface masks beside it, and the
     .ter ter_name if given). Returns the info dict of earthd's make_heightmap (without seconds / zoom /
@@ -151,9 +165,7 @@ def build(aid, lat, lon, hm_zoom, q, cx, cy, size, out_dir, name, ter_name=None)
     grade_s = [0.0]
 
     def elev(la, lo):
-        z = _s.dem.sample(la, lo, hm_zoom)
-        if _s.airports is not None:
-            z = _s.airports.apply(la, lo, z)
+        z = ground(frame, la, lo, _s.dem.sample(la, lo, hm_zoom))
         if g is None:
             return z
         t1 = time.perf_counter()
@@ -198,9 +210,7 @@ def roads_tile(aid, lat, lon, zoom, tx, ty, out_dir, vfs_dir, sidewalks, lift):
              for k in roadsmod.cells_of_tile(frame, tx, ty)]
 
     def elev(la, lo):           # the physics ground (lifted under roads: grading.ROAD_LIFT)
-        z = _s.dem.sample(la, lo, zoom)
-        if _s.airports is not None:
-            z = _s.airports.apply(la, lo, z)
+        z = ground(frame, la, lo, _s.dem.sample(la, lo, zoom))
         return g.apply(la, lo, z, gradingmod.ROAD_LIFT) if g is not None else z
     with _s.lock:
         bridges = _s.bridges.get(aid)
@@ -230,7 +240,10 @@ def far_geometry(aid, lat, lon, tile, zoom, q, ref_zoom, with_sink, layout):
     most of a far tile's cost; its texture is rendered in the server, where the imagery corrections live).
     Returns the Built."""
     g, _ = _s.anchor(aid, lat, lon)
+    frame = geodesy.EnuFrame(lat, lon)
     base = _s.airports.wrap(_s.dem) if _s.airports is not None else _s.dem
+    if _s.sea is not None:
+        base = seacarvemod.SeaDem(base, _s.sea if tile.level <= seacarvemod.CARVE_MAX_LEVEL else None, frame)
     src = gradingmod.GradedDem(base, g) if (g is not None and tile.level <= 0) else base
-    return farfield.build_tile(geodesy.EnuFrame(lat, lon), src, tile, zoom, q, ref_zoom, with_sink=with_sink,
+    return farfield.build_tile(frame, src, tile, zoom, q, ref_zoom, with_sink=with_sink,
                                layout=layout)

@@ -1308,3 +1308,30 @@ host policy `netfetch.POLICIES["davidmegginson.github.io"]` and `airports` in `c
   within 16 cm of the DEM. Not yet: markings (DecalRoads), runway ground models in the layers, spawn places.
 - Tests: `server/tests/test_airports.py`, `test_runwaygeom.py`, `test_runwaymarks.py`, `test_airportgrade.py` (synthetic files from
   `airportfixtures.py`, synthetic DEMs, fake netfetch transport and wall clock; no network).
+
+## Sea water (`server/seacarve.py`, mod `sea.lua`; 2026-10-13, `--sea on`, default off)
+
+User's choices (2026-10-13): sea and bays first, roughly real depths and sinking cars, glossy far tiles
+later. Engine facts: docs/research/2026-10-13-water-probe.md (a runtime WaterBlock neither draws nor
+floats anything in our level; a WaterPlane does both).
+- **Where:** Overture `base/water` polygons with subtype `ocean` (OSM's coastline: the open sea, bays,
+  tidal rivers such as Baltimore's harbour). Per map-data cell they are rasterised on the z16 Web-Mercator
+  grid (~1.9 m) with a 32 px margin from the neighbouring cells, then the floor depth grows from the
+  shoreline at 0.15 m/m to 6 m (an octagonal erosion distance; no bathymetry yet). Cached in
+  `<cache>/seacarve/v1/<overture release>/<x>/<y>.npz` (depth in 5 cm steps; a cell without sea is a
+  small marker file). A point's depth is the bilinear sample, so the floor is continuous across the shore
+  and the cells and the same in every process.
+- **Ground:** `blockworker.ground` / `Server.ground` shape the DEM before the road grading: runways
+  (`--airports on`), then `SeaCarver.carve` (z = min(z, -depth) where the depth is > 0), then `lift`.
+  The block, the road tiles and the far tiles up to L1 are carved; coarser far tiles keep the DEM's sea
+  (~0 m, under the plane) and are only lifted.
+- **The plane and the curve:** the mod's WaterPlane is flat at the sea level under the player, but the
+  ground curves away below it (d^2 / 2R). `lift` raises land (DEM > 0.3 m) that would be lower than
+  0.3 m above the anchor's sea level, within 30 km of the anchor. Seen from the ground that land lies
+  within a pixel of the horizon either way; the mod removes the plane 300 m above the sea.
+- **Message:** `sea` {anchorId, on, z}: sea within 4 km of the player (`SeaCarver.near`, a 250 m grid),
+  and the sea level's z under the player in the anchor frame; checked after 200 m or 5 s, sent on a
+  change (z by more than 5 cm).
+- **Mod (`sea.lua`):** one WaterPlane named `bngEarthSea` with East Coast USA's ocean settings (murkier
+  colours), created / moved / removed by `update(anchorId, playerZ)`; cleared on disconnect and unload.
+- Tests: `server/tests/test_seacarve.py`, `mod/tests/test_sea.lua`.

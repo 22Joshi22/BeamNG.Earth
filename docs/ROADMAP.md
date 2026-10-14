@@ -226,6 +226,10 @@ Manhattan cell: 4.8 s cold, peak RSS 381 MB. Next:
 
 ## Water (with v1.5/v1.6; user 2026-10-10: lakes and rivers are blue dirt today; keep depths
 ## roughly real, no underwater detail needed)
+- **Sea: first version done 2026-10-13** (`--sea on`, default off; docs/ARCHITECTURE.md "Sea water"):
+  the ground carved under Overture's ocean polygons, one sea-level WaterPlane near the coast, land kept
+  above it. The user tried it: "the water is working". Next: lakes and rivers (their own levels: a
+  WaterBlock fix or another object), bathymetry (NOAA CUDEM, GEBCO), glossy far tiles, default on.
 - Where: OSM/Overture water polygons + river lines (with width), ESA WorldCover water class as
   fallback. Surface height: the DEM at the shoreline (DEMs usually show the water surface, flat).
 - Depth (bathymetry): GEBCO global grid (~450 m, public) for oceans and big lakes; NOAA coastal
