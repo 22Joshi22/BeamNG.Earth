@@ -65,9 +65,10 @@ LOOK = {
     "gravel": {"m": "m_dirt_road", "tl": 88.0, "p": 21},
     "dirt": {"m": "m_dirt_road", "tl": 88.0, "p": 21},
 }
-Spec = namedtuple("Spec", "width kind urban cls oneway walk dir kmh", defaults=(False, 2.5, 0, None))
+Spec = namedtuple("Spec", "width kind urban cls oneway walk dir kmh gap", defaults=(False, 2.5, 0, None, None))
 # road_specs' result per feature (walk: the sidewalk width, measured from the buildings where known: roadwidth.py;
-# dir: a one-way road's direction along its geometry, +1 / -1, 0 two-way; kmh: its speed limit, None unknown)
+# dir: a one-way road's direction along its geometry, +1 / -1, 0 two-way; kmh: its speed limit, None unknown;
+# gap: m of road per junction along it (its connectors), None unknown)
 # (width = carriageway). One-way driving widths (Overture's divided roads are two one-way segments, each
 # drawn before as a full two-way street: 2026-10-11 orthophoto of Broadway, 14-15 m drawn for 8-9 m)
 ONEWAY_STYLE = {"primary": 6.5, "secondary": 6.5, "tertiary": 4.0, "residential": 3.5, "living_street": 3.5,
@@ -263,12 +264,24 @@ def carriageway(cls, kind, urban, rule_width=None, oneway=False):
     return w
 
 
-def _dir_kmh(rules, i):
-    """(one-way direction along the geometry +1 / -1 or 0, speed limit km/h or None) of feature i."""
+def _dir_kmh(feats, i, ncon):
+    """(one-way direction along the geometry +1 / -1 or 0, speed limit km/h or None, m per junction or None)
+    of feature i; ncon: connectors per feature (None: unknown)."""
+    rules = feats.rules
     v = _rule_value(rules.get("oneway"), i)
     d = 0 if v is None else (-1 if float(v) < 0 else 1)
     k = _rule_value(rules.get("max_speed_kmh"), i)
-    return d, (float(k) if k is not None and float(k) > 0 else None)
+    gap = None
+    if ncon is not None and ncon[i] >= 2:
+        a = feats.coord_off[feats.ring_off[feats.part_off[i]]]
+        b = feats.coord_off[feats.ring_off[feats.part_off[i + 1]]]
+        ll = feats.lonlat[a:b]
+        if len(ll) >= 2:
+            m = 111320.0
+            L = float(np.sum(np.hypot(np.diff(ll[:, 0]) * m * math.cos(math.radians(float(ll[0, 1]))),
+                                      np.diff(ll[:, 1]) * m)))
+            gap = L / (ncon[i] - 1)
+    return d, (float(k) if k is not None and float(k) > 0 else None), gap
 
 
 def road_specs(feats, urban_fn=None, widths=None):
@@ -278,6 +291,8 @@ def road_specs(feats, urban_fn=None, widths=None):
     out = []
     rules = feats.rules
     ask = []                                    # (index in out, cls, kind, rule_w, coordinate range)
+    cr = rules.get("connectors")
+    ncon = np.bincount(np.asarray(cr.feature), minlength=len(feats)) if cr is not None and len(cr.feature) else None
     for i in range(len(feats)):
         cls = str(feats.attrs["class"][i]) if "class" in feats.attrs else "unknown"
         if str(feats.attrs.get("subtype", ["road"] * len(feats))[i]) != "road" or cls not in STYLE:
@@ -291,7 +306,7 @@ def road_specs(feats, urban_fn=None, widths=None):
         rule_w = float(width) if width is not None and 1.0 <= float(width) <= 40.0 else None
         kind = surface_kind(cls, _rule_value(rules.get("surface"), i))
         ow = _rule_value(rules.get("oneway"), i) is not None
-        dk = _dir_kmh(rules, i)
+        dk = _dir_kmh(feats, i, ncon)
         if urban_fn is not None and rule_w is None and kind in BUILT:
             a = feats.coord_off[feats.ring_off[feats.part_off[i]]]
             b = feats.coord_off[feats.ring_off[feats.part_off[i + 1]]]
@@ -706,7 +721,8 @@ def cut_outside(pts, blockers, spacing=2.0):
     return out
 
 
-ARTERIAL_KMH = 73.0             # a divided urban trunk this slow (45 mph) is a town arterial, not an expressway
+ARTERIAL_KMH = 73.0             # a divided urban trunk this slow (45 mph) is a town arterial, not an expressway ...
+ARTERIAL_GAP_M = 150.0          # ... or, with no limit, one with a junction this often (Coastal Highway ~50 m)
 
 
 def has_sidewalks(spec):
@@ -718,7 +734,11 @@ def has_sidewalks(spec):
 
 
 def _arterial(spec):
-    return spec.oneway and spec.kmh is not None and spec.kmh <= ARTERIAL_KMH
+    if not spec.oneway:
+        return False
+    if spec.kmh is not None:
+        return spec.kmh <= ARTERIAL_KMH
+    return spec.gap is not None and spec.gap <= ARTERIAL_GAP_M
 
 
 def walk_sides(spec, left_hand=False):

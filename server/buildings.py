@@ -254,10 +254,11 @@ def brick_share(lat, lon):
     return 0.15
 
 
-def plan(ring, attrs, neighbours=0, lat=None, lon=None, look=None, town=False, dense=False):
+def plan(ring, attrs, neighbours=0, lat=None, lon=None, look=None, town=False, dense=False, west_town=False):
     """The Spec of a footprint (local ring (n, 2) in metres, counter-clockwise) from its Overture attributes
     (dict: class, height, num_floors, min_height, roof_shape, roof_height) and the number of buildings
-    sharing a wall with it. Height and roof are predicted when not given."""
+    sharing a wall with it. Height and roof are predicted when not given. west_town: a small town of the
+    arid West (district_town): single-storey main streets and ranch houses."""
     area = _area2(ring) / 2
     c = ring.mean(0)
     seed = _hash01(round(float(c[0]) * 2), round(float(c[1]) * 2), round(area)) if look is None else look
@@ -273,8 +274,8 @@ def plan(ring, attrs, neighbours=0, lat=None, lon=None, look=None, town=False, d
         "garage" in name and area > 800)
     narrow = hw < 4.2 and hl > 2.2 * hw                 # a row house: ~4-8 m wide, deep
     # in a dense core small buildings are row houses even where the footprints leave gaps (Fells Point)
-    row = cls in ROW_CLASSES or (narrow and (neighbours >= 1 or dense)) or (
-        dense and area < 260 and cls not in SHOP_CLASSES)
+    row = cls in ROW_CLASSES or (not west_town and ((narrow and (neighbours >= 1 or dense)) or (
+        dense and area < 260 and cls not in SHOP_CLASSES)))
     shed = cls in SHED_CLASSES or (area < 40 and not row)
     shop = cls in SHOP_CLASSES
     industrial = cls in INDUSTRIAL_CLASSES or (area > 2500 and cls in ("", "commercial"))
@@ -305,6 +306,9 @@ def plan(ring, attrs, neighbours=0, lat=None, lon=None, look=None, town=False, d
             nf = 1
         elif row:
             nf = 2 if seed < 0.25 else (3 if seed < 0.85 else 4)
+        elif west_town and not industrial and cls != "apartments":
+            # Bishop's and Moab's photos (2026-10-14): one-storey shops with false fronts, ranch houses
+            nf = 1 if seed < WEST_TOWN_ONE_STOREY else 2
         elif cls in HOUSE_CLASSES or (area < 220 and not shop):
             nf = 1 if seed < 0.3 else 2
         elif industrial:
@@ -342,6 +346,8 @@ def plan(ring, attrs, neighbours=0, lat=None, lon=None, look=None, town=False, d
         roof = "flat"                               # pitched roofs only on near-rectangular footprints
     if h is None:
         h = nf * floor_h + (GROUND_FLOOR_SHOP_M - floor_h if shop and nf > 1 else 0.0) + (0.6 if roof == "flat" else 0.2)
+        if west_town and roof == "flat" and nf == 1 and area >= 80 and not (shed or barn):
+            h += FALSE_FRONT_M                      # a main-street shop's tall parapet
     else:
         if attrs.get("roof_height") and np.isfinite(attrs["roof_height"]) and roof != "flat":
             h = max(2.5, h - float(attrs["roof_height"]))
@@ -877,7 +883,7 @@ def _part_heights(a, i):
     return float(top) - mh, mh
 
 
-def tile_buildings(frame, x0, y0, x1, y1, layers, elev, water=None, part_layers=()):
+def tile_buildings(frame, x0, y0, x1, y1, layers, elev, water=None, part_layers=(), west_town=False):
     """[(Spec, gmin, gmax)] of the buildings whose footprint centroid is in the tile [x0, x1) x [y0, y1)
     (anchor frame), rings relative to (x0, y0). layers: mapgeom.Features of buildings (one per map cell; a
     building in two cells is taken once, by id); elev(lat, lon) the physics ground. part_layers: the
@@ -971,7 +977,7 @@ def tile_buildings(frame, x0, y0, x1, y1, layers, elev, water=None, part_layers=
     for ring, at, sh, look, mh in zip(rings, attrs, shared, looks, mins):
         if mh > 0.5 and at.get("height") is not None and np.isfinite(at["height"]) and look is None:
             at = dict(at, height=max(2.5, float(at["height"]) - mh))     # a building's own height range
-        spec = plan(ring, at, int(sh) if look is None else 0, clat, clon, look, town, dense)
+        spec = plan(ring, at, int(sh) if look is None else 0, clat, clon, look, town, dense, west_town)
         spec.min_h = mh
         e = ring[:, 0] + x0
         n = ring[:, 1] + y0
@@ -1213,10 +1219,18 @@ def road_tile_items(frame, tx, ty, md, ground):
     cds = [md.cell(k, layers=("buildings", "building_parts"), kind="demand")
            for k in roads.cells_of_tile(frame, tx, ty, margin=0.0)]
     return tile_buildings(frame, x0, y0, x1, y1, [c.layers.get("buildings") for c in cds], ground,
-                          part_layers=[c.layers.get("building_parts") for c in cds])
+                          part_layers=[c.layers.get("building_parts") for c in cds],
+                          west_town=district_town(frame, tx, ty, md))
 
 
 TOWN_COVERAGE = 0.16        # a tile whose footprints cover less than this share is a town / suburb (heights)
+# Small towns of the arid West (Bishop, Moab: one-storey main streets with false fronts, ranch houses), told
+# from cities by the footprint share of the district around a tile (1 km: Bishop 0.14, Moab 0.11; Frederick
+# 0.22, Fells Point 0.27): a tile's own share cannot (a main-street block is as dense as a city's).
+DISTRICT_M = 1000.0
+WEST_TOWN_COVERAGE = 0.18
+WEST_TOWN_ONE_STOREY = 0.75     # share of predicted one-storey buildings there
+FALSE_FRONT_M = 1.2             # m of parapet over a one-storey shop there
 POLES_COVERAGE = 0.30       # ... and its streets get wired wooden poles (furniture; Ocean City's photos: poles
                             # everywhere; Fells Point's dense core ~0.45 keeps lamp posts)
 
@@ -1253,7 +1267,8 @@ def far_tile(frame, tx, ty, md, ground, out_dir, vfs_dir, aid):
     cds = [md.cell(k, layers=("buildings", "building_parts"), kind="demand")
            for k in roads.cells_of_tile(frame, tx, ty, margin=0.0)]
     items = tile_buildings(frame, x0, y0, x1, y1, [c.layers.get("buildings") for c in cds], ground,
-                           part_layers=[c.layers.get("building_parts") for c in cds])
+                           part_layers=[c.layers.get("building_parts") for c in cds],
+                           west_town=district_town(frame, tx, ty, md))
     mesh = build(items, lite=True)
     data = {"v": 1}
     if mesh is not None:
@@ -1372,3 +1387,89 @@ def brick_walks(walks, items, lat, lon):
         fid = wk.get("fid")
         if fid is not None and _hash01(str(fid), "brickwalk") < BRICK_WALK_SHARE:
             wk["brick"] = True
+
+
+_cell_stats = {}                # map cell key -> (lon, lat, area m2) per footprint (district_coverage)
+_cell_lock = None
+
+
+def _cell_lock_get():
+    global _cell_lock
+    if _cell_lock is None:
+        import threading
+        _cell_lock = threading.Lock()
+    return _cell_lock
+
+
+def cell_footprints(key, layer):
+    """(lon, lat, area m2) arrays of a cell's building footprints (outer rings), cached per cell (layer may
+    be None once cached). Pure."""
+    _cell_lock_get()
+    with _cell_lock:
+        got = _cell_stats.get(key)
+    if got is not None:
+        return got
+    if layer is None or len(layer.ids) == 0:
+        got = (np.zeros(0), np.zeros(0), np.zeros(0))
+    else:
+        f = layer
+        first = f.ring_off[f.part_off[:-1]]
+        a = f.coord_off[first]
+        b = f.coord_off[first + 1]
+        ll = f.lonlat
+        lat0 = float(np.mean(ll[:, 1]))
+        x = ll[:, 0] * 111320.0 * math.cos(math.radians(lat0))
+        y = ll[:, 1] * 111320.0
+        cross = np.r_[x[:-1] * y[1:] - x[1:] * y[:-1], 0.0]
+        C = np.r_[0.0, np.cumsum(cross)]
+        CX, CY = np.r_[0.0, np.cumsum(ll[:, 0])], np.r_[0.0, np.cumsum(ll[:, 1])]
+        n = np.maximum(b - a, 1)
+        last = np.maximum(b - 1, a)
+        area = np.abs(C[last] - C[a] + x[last] * y[a] - x[a] * y[last]) / 2
+        got = ((CX[b] - CX[a]) / n, (CY[b] - CY[a]) / n, area)
+    with _cell_lock:
+        if len(_cell_stats) > 64:
+            _cell_stats.clear()
+        _cell_stats[key] = got
+    return got
+
+
+def district_coverage(lat, lon, cells):
+    """The share of the DISTRICT_M disc around (lat, lon) covered by building footprints; cells: [(key,
+    buildings layer)] covering the disc."""
+    seen = 0.0
+    mx = 111320.0 * math.cos(math.radians(lat))
+    for key, layer in cells:
+        lo, la, ar = cell_footprints(key, layer)
+        if len(ar):
+            d2 = ((lo - lon) * mx) ** 2 + ((la - lat) * 111320.0) ** 2
+            seen += float(ar[d2 <= DISTRICT_M * DISTRICT_M].sum())
+    return seen / (math.pi * DISTRICT_M * DISTRICT_M)
+
+
+def district_town(frame, tx, ty, md):
+    """Is road tile (tx, ty) in a small town of the arid West (WEST_TOWN_COVERAGE)? The cells of the district
+    are loaded like the tile's own (the far building tiles need them anyway); an unreadable one counts as
+    empty."""
+    import mapcells
+    import roads
+    import surface
+    x0, y0, x1, y1 = roads.tile_bbox(tx, ty)
+    lat, lon, _ = frame.enu_to_geodetic((x0 + x1) / 2, (y0 + y1) / 2, 0.0)
+    lat, lon = float(lat), float(lon)
+    if not bool(surface.dry_west(lat, lon)):
+        return False
+    dlat = DISTRICT_M / 111320.0
+    dlon = DISTRICT_M / (111320.0 * math.cos(math.radians(lat)))
+    cells = []
+    for key in mapcells.cells_for_bbox(lat - dlat, lon - dlon, lat + dlat, lon + dlon):
+        with _cell_lock_get():
+            known = key in _cell_stats
+        if known:
+            cells.append((key, None))
+            continue
+        try:
+            cells.append((key, md.cell(key, layers=("buildings",), kind="demand").layers.get("buildings")))
+        except Exception:           # not cached / unreadable: counts as empty
+            continue
+    return district_coverage(lat, lon, cells) < WEST_TOWN_COVERAGE

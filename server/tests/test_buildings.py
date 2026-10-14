@@ -40,6 +40,29 @@ class PlanTest(unittest.TestCase):
         self.assertIn(s.floors, (2, 3))
         self.assertEqual(s.roof, "flat")
 
+    def test_west_town_one_storey_main_street(self):
+        shops = [bld.plan(rect(x * 30, 0, 7, 25), {"class": ""}, 2, 37.36, -118.39, west_town=True)
+                 for x in range(40)]
+        self.assertTrue(all(s.floors in (1, 2) for s in shops), "attached shops, not 2-4 storey row houses")
+        self.assertGreater(sum(s.floors == 1 for s in shops), 20)
+        one = next(s for s in shops if s.floors == 1)
+        self.assertGreater(one.height, bld.FLOOR_M + 0.6 + 1.0, "a false front's parapet")
+        city = [bld.plan(rect(x * 30, 0, 5, 18), {"class": ""}, 2) for x in range(10)]
+        self.assertTrue(all(s.floors >= 2 for s in city), "a city's row houses unchanged")
+        given = bld.plan(rect(0, 0, 20, 20), {"class": "", "height": 18.0}, 0, west_town=True)
+        self.assertEqual(given.floors, 6, "data heights win")
+
+    def test_district_coverage(self):
+        from test_roads import features
+        f = features([[(0, 0), (10, 0)]], ["x"])
+        lat, lon = f.lonlat[0, 1], f.lonlat[0, 0]
+        # one 100 x 100 m square footprint at the centre, as a buildings layer
+        sq = features([[(-50, -50), (50, -50), (50, 50), (-50, 50)]], ["x"])
+        bld._cell_stats.clear()
+        c = bld.district_coverage(lat, lon, [("k1", sq)])
+        self.assertAlmostEqual(c, 10000.0 / (np.pi * bld.DISTRICT_M ** 2), delta=1e-4)
+        self.assertAlmostEqual(bld.district_coverage(lat, lon, [("k1", None)]), c, msg="cached by cell")
+
     def test_small_house_pitched(self):
         roofs = {bld.plan(rect(x * 50, 0, 10, 8), {"class": "house"}).roof for x in range(20)}
         self.assertEqual(roofs, {"gabled", "hipped"})

@@ -147,7 +147,12 @@ class BuildTileTest(unittest.TestCase):
         self.assertGreater(walks(slow._replace(dir=-1))[0], 0)
         self.assertGreater(walks(slow, left_hand=True)[0], 0)
         self.assertEqual(walks(slow._replace(kmh=100.0)), [], "an expressway carriageway: none")
-        self.assertEqual(walks(slow._replace(kmh=None)), [], "unknown limit: none")
+        self.assertEqual(walks(slow._replace(kmh=None)), [], "unknown limit and junctions: none")
+        self.assertEqual(len(walks(slow._replace(kmh=None, gap=50.0))), 1, "no limit, a junction every block")
+        self.assertEqual(walks(slow._replace(kmh=None, gap=900.0)), [], "no limit, interchanges far apart")
+        f = features([[(0, 0), (300, 0)]], ["trunk"])
+        f.rules["connectors"] = rules([(0, "A", 0.0, 0.0), (0, "B", 0.5, 0.5), (0, "C", 1.0, 1.0)])
+        self.assertAlmostEqual(roads.road_specs(f)[0].gap, 150.0, delta=1.0)
         self.assertEqual(len(walks(roads.Spec(9.0, "paved", True, "trunk", False))), 2, "a two-way main street")
 
     def test_city_street_sidewalks_and_lines_stop_at_crossings(self):
