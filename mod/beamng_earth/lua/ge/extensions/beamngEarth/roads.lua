@@ -98,6 +98,8 @@ local function loadMaterials()
       pcall(function() m:setField('translucent', 0, '0'); m:flush(); m:reload() end)
     end
   end
+  local pad = scenetree.findObject('tactile_indicator')    -- curb ramp pads: US truncated domes are yellow
+  if pad then pcall(function() pad:setField('baseColorFactor', 0, '0.95 0.78 0.18 1'); pad:flush(); pad:reload() end) end
   loadedMaterials = true
 end
 
