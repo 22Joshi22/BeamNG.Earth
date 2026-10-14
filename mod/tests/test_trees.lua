@@ -36,7 +36,7 @@ files['/t/v.json'] = '{ groups = {}, items = { ' .. table.concat(rows, ', ') .. 
 trees.onTile({ anchorId = 1, key = '0_0', path = '/t/v.json', n = 100 }, 1)
 trees.update(1, { x = 50, y = 50 })
 T.check(count() == 100 and trees.status().items == 100, 'near: every item')
-trees.update(1, { x = 50, y = 1700 })
+trees.update(1, { x = 50, y = 1900 })
 T.check(count() == 20, 'far: the fifth with the lowest ranks, the same trees')
 trees.update(1, { x = 50, y = 1100 })
 T.check(count() == 35, 'beyond 700 m: 35 %')
