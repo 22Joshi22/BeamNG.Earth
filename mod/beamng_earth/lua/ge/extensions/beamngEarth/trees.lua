@@ -9,6 +9,9 @@ local M = {}
 
 M.PER_FRAME = 300       -- items made or removed per frame at most
 M.RINGS = { { 300, 1.0 }, { 550, 0.5 }, { 900, 0.25 }, { 1e9, 0.12 } }   -- tile distance (m): the rank shown below
+-- small props only near the player (2026-10-14, Fells Point at street level: ~10 ms a frame for the Forest
+-- with a door on every house out to 300 m): the tile distance (m) beyond which a group is not shown
+M.GROUP_MAX_M = { door = 120, hydrant = 200, bin = 200, bench = 200, polelamp = 400, stop = 300, signal = 500 }
 M.FOREST_NAME = 'bngEarthForest'
 
 local ECA = '/levels/east_coast_usa/art/shapes/'
@@ -178,6 +181,7 @@ function M.pick(group, h, rank)
 end
 
 local GROUPS = { 'deciduous', 'conifer', 'shrub', 'rock' }
+local groupBand
 
 local function makeItem(fd, row, groups)
   local shape, sc = M.pick((groups or GROUPS)[(row[1] or 0) + 1] or 'deciduous', row[7] or 10, row[8] or 0)
@@ -239,6 +243,13 @@ local function threshold(d)
   return 0
 end
 
+-- Which of the capped groups a tile at distance d still shows (changes re-run its rows).
+groupBand = function(t, d)
+  local k = 0
+  for _, cap in pairs(M.GROUP_MAX_M) do if d <= cap then k = k + cap end end
+  return k
+end
+
 -- Every frame: tiles of other anchors and dropped ones emptied, the others filled / thinned to their
 -- distance's rank, M.PER_FRAME items at most.
 function M.update(anchorId, player)
@@ -269,10 +280,14 @@ function M.update(anchorId, player)
   for _, o in ipairs(order) do
     local t = tiles[o[1]]
     local want = threshold(o[2])
-    if want ~= t.shown or t.pending then
+    local band = groupBand(t, o[2])
+    if want ~= t.shown or band ~= t.band or t.pending then
       t.pending = false
       for i, row in ipairs(t.rows) do
         local r = row[8] or 0
+        local g = t.groups and t.groups[(row[1] or 0) + 1]
+        local cap = g and M.GROUP_MAX_M[g]
+        if cap and o[2] > cap then r = 2 end     -- this group is not shown this far out
         if r < want and not t.made[i] then
           if budget <= 0 then t.pending = true; return end
           t.made[i] = makeItem(fd, row, t.groups)
@@ -285,6 +300,7 @@ function M.update(anchorId, player)
         end
       end
       t.shown = want
+      t.band = band
     end
   end
 end
