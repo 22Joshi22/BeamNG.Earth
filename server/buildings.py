@@ -210,7 +210,7 @@ def oriented_box(p):
 
 class Spec:
     """What is built for one footprint (decided by plan())."""
-    __slots__ = ("ring", "floors", "floor_h", "height", "roof", "roof_mat", "facade", "band", "shop", "plain",
+    __slots__ = ("ring", "floors", "floor_h", "height", "roof", "roof_mat", "facade", "band", "shop", "plain", "min_h",
                  "seed")
 
     def __init__(self, **kw):
@@ -230,13 +230,13 @@ def brick_share(lat, lon):
     return 0.15
 
 
-def plan(ring, attrs, neighbours=0, lat=None, lon=None):
+def plan(ring, attrs, neighbours=0, lat=None, lon=None, look=None):
     """The Spec of a footprint (local ring (n, 2) in metres, counter-clockwise) from its Overture attributes
     (dict: class, height, num_floors, min_height, roof_shape, roof_height) and the number of buildings
     sharing a wall with it. Height and roof are predicted when not given."""
     area = _area2(ring) / 2
     c = ring.mean(0)
-    seed = _hash01(round(float(c[0]) * 2), round(float(c[1]) * 2), round(area))
+    seed = _hash01(round(float(c[0]) * 2), round(float(c[1]) * 2), round(area)) if look is None else look
     _, _, hl, hw = oriented_box(ring)
     box_fill = area / max(4 * hl * hw, 1e-6)
     cls = (attrs.get("class") or "").lower()
@@ -323,7 +323,7 @@ def plan(ring, attrs, neighbours=0, lat=None, lon=None):
     roof_mat = ROOF_FLAT if roof == "flat" else (ROOF_SLATE if seed < 0.5 else ROOF_SHINGLE)
     roof_mat = f"{roof_mat}|{int(_hash01(seed, 'roof') * len(ROOF_TINTS[roof_mat]))}"
     return Spec(ring=ring, floors=nf, floor_h=floor_h, height=h, roof=roof, roof_mat=roof_mat, facade=facade,
-                band=band, shop=shop and not shed and nf >= 1, plain=plain, seed=seed)
+                band=band, shop=shop and not shed and nf >= 1, plain=plain, seed=seed, min_h=0.0)
 
 
 class Mesh:
@@ -510,9 +510,12 @@ def build(specs_and_ground, lite=False):
             c, u, hl, hw = oriented_box(ring)
             v = np.array([-u[1], u[0]])
             ring = np.array([c - u * hl - v * hw, c + u * hl - v * hw, c + u * hl + v * hw, c - u * hl + v * hw])
-        z0 = gmin - FOUNDATION_M
-        z_eave = gmax + spec.height
+        mh = spec.min_h or 0.0
+        z0 = gmin - FOUNDATION_M if mh <= 0.5 else gmax + mh
+        z_eave = gmax + mh + spec.height
         _walls(m, spec, ring, z0, z_eave, mat_idx, lite)
+        if mh > 0.5:                                  # a part standing on another / over a street: its underside
+            m.poly([(p[0], p[1], z0) for p in ring[::-1]], [(0.002, 0.995)] * len(ring), mat_idx[spec.facade])
         _roof(m, spec, ring, z_eave, mat_idx)
         if spec.roof == "flat" and not spec.plain and spec.floors <= 6 and not lite:
             _cornice(m, spec, ring, z_eave, mat_idx)
@@ -552,12 +555,51 @@ def _shared_walls(rings, tol=0.6):
     return cnt
 
 
-def tile_buildings(frame, x0, y0, x1, y1, layers, elev, water=None):
+def _part_heights(a, i):
+    """A building part's (own height, its bottom) from its attributes, or None without a height."""
+    top = a["height"][i] if "height" in a else np.nan
+    mh = a["min_height"][i] if "min_height" in a else np.nan
+    mh = float(mh) if np.isfinite(mh) and mh > 0 else 0.0
+    if not np.isfinite(top) or top <= mh + 1.0:
+        nf, f0 = (a[k][i] if k in a else np.nan for k in ("num_floors", "min_floor"))
+        if np.isfinite(nf) and nf > 0:
+            f0 = float(f0) if np.isfinite(f0) and f0 > 0 else 0.0
+            mh = mh or f0 * FLOOR_M
+            return max(FLOOR_M, (float(nf) - f0) * FLOOR_M), mh
+        return None
+    return float(top) - mh, mh
+
+
+def tile_buildings(frame, x0, y0, x1, y1, layers, elev, water=None, part_layers=()):
     """[(Spec, gmin, gmax)] of the buildings whose footprint centroid is in the tile [x0, x1) x [y0, y1)
     (anchor frame), rings relative to (x0, y0). layers: mapgeom.Features of buildings (one per map cell; a
-    building in two cells is taken once, by id); elev(lat, lon) the physics ground."""
+    building in two cells is taken once, by id); elev(lat, lon) the physics ground. part_layers: the
+    building parts of the same cells: a building whose parts all have heights is drawn as its parts
+    (each from its bottom to its top, the building's look)."""
+    parts_of = {}                       # building id -> [(ring in the anchor frame, own height, bottom)]
+    pseen = set()
+    for f in part_layers:
+        if f is None or len(f.kind) == 0:
+            continue
+        a = f.attrs
+        for i in range(len(f.kind)):
+            pid = f.ids[i]
+            if pid in pseen:
+                continue
+            pseen.add(pid)
+            bid = str(a["building_id"][i]) if "building_id" in a else ""
+            if not bid:
+                continue
+            pp = f.parts(i)
+            if not pp or not pp[0]:
+                continue
+            outer = np.asarray(pp[0][0], np.float64)
+            if len(outer) < 4:
+                continue
+            e, n, _ = frame.geodetic_to_enu(outer[:, 1], outer[:, 0], np.zeros(len(outer)))
+            parts_of.setdefault(bid, []).append((np.stack([e, n], 1), _part_heights(a, i)))
     seen = set()
-    rings, attrs = [], []
+    rings, attrs, looks, mins = [], [], [], []
     for f in layers:
         if f is None or len(f.kind) == 0:
             continue
@@ -579,25 +621,49 @@ def tile_buildings(frame, x0, y0, x1, y1, layers, elev, water=None):
             cx, cy = float(np.mean(e[:-1])), float(np.mean(n[:-1]))
             if not (x0 <= cx < x1 and y0 <= cy < y1):
                 continue
+            at = {k: (a[k][i] if k in a else None) for k in
+                  ("class", "height", "num_floors", "min_height", "roof_shape", "roof_height")}
+            bparts = parts_of.get(str(key)) if key is not None else None
+            if bparts and any(h is not None for _, h in bparts):
+                # drawn as its parts, with the building's class and one look for all of them; a part
+                # without a height takes the building's (else its lowest known part's)
+                look = _hash01(str(key), "look")
+                bh = at.get("height")
+                fill = float(bh) if bh is not None and np.isfinite(bh) and bh > 0 else \
+                    min(h[0] + h[1] for _, h in bparts if h is not None)
+                for pring, hh in bparts:
+                    ph, pmh = hh if hh is not None else (fill, 0.0)
+                    r = clean_ring(pring - np.array([x0, y0]))
+                    if r is None or _area2(r) / 2 < 4.0:
+                        continue
+                    rings.append(r)
+                    attrs.append({"class": at["class"], "height": ph, "num_floors": None, "roof_shape": "flat"})
+                    looks.append(look)
+                    mins.append(pmh)
+                if key is not None:
+                    seen.add(key)
+                continue
             ring = clean_ring(np.stack([e - x0, n - y0], 1))
             if ring is None or _area2(ring) / 2 < MIN_AREA_M2:
                 continue
             if key is not None:
                 seen.add(key)
             rings.append(ring)
-            attrs.append({k: (a[k][i] if k in a else None) for k in
-                          ("class", "height", "num_floors", "min_height", "roof_shape", "roof_height")})
+            attrs.append(at)
+            looks.append(None)
+            mh = at.get("min_height")
+            mins.append(float(mh) if mh is not None and np.isfinite(mh) and mh > 0 else 0.0)
     if not rings:
         return []
     shared = _shared_walls(rings)
     clat, clon, _ = frame.enu_to_geodetic((x0 + x1) / 2, (y0 + y1) / 2, 0.0)
     clat, clon = float(clat), float(clon)
     out = []
-    for ring, at, sh in zip(rings, attrs, shared):
-        mh = at.get("min_height")
-        if mh is not None and np.isfinite(mh) and mh > 2.0:
-            continue                                  # a bridge / skyway part; not drawn yet
-        spec = plan(ring, at, int(sh), clat, clon)
+    for ring, at, sh, look, mh in zip(rings, attrs, shared, looks, mins):
+        if mh > 0.5 and at.get("height") is not None and np.isfinite(at["height"]) and look is None:
+            at = dict(at, height=max(2.5, float(at["height"]) - mh))     # a building's own height range
+        spec = plan(ring, at, int(sh) if look is None else 0, clat, clon, look)
+        spec.min_h = mh
         e = ring[:, 0] + x0
         n = ring[:, 1] + y0
         la, lo, _ = frame.enu_to_geodetic(e, n, np.zeros(len(e)))
@@ -700,9 +766,10 @@ def road_tile(frame, tx, ty, md, ground, lines=None, props=None):
     centrelines, roads.build_tile) and props (its prop rows): the houses' front doors are added to props."""
     import roads
     x0, y0, x1, y1 = roads.tile_bbox(tx, ty)
-    layers = [md.cell(k, layers=("buildings",), kind="demand").layers.get("buildings")
-              for k in roads.cells_of_tile(frame, tx, ty, margin=0.0)]
-    items = tile_buildings(frame, x0, y0, x1, y1, layers, ground)
+    cds = [md.cell(k, layers=("buildings", "building_parts"), kind="demand")
+           for k in roads.cells_of_tile(frame, tx, ty, margin=0.0)]
+    items = tile_buildings(frame, x0, y0, x1, y1, [c.layers.get("buildings") for c in cds], ground,
+                           part_layers=[c.layers.get("building_parts") for c in cds])
     if props is not None and lines:
         props.extend(doors(items, lines, x0, y0))
     mesh = build(items)
@@ -718,9 +785,10 @@ def far_tile(frame, tx, ty, md, ground, out_dir, vfs_dir, aid):
     import os
     import roads
     x0, y0, x1, y1 = roads.tile_bbox(tx, ty)
-    layers = [md.cell(k, layers=("buildings",), kind="demand").layers.get("buildings")
-              for k in roads.cells_of_tile(frame, tx, ty, margin=0.0)]
-    items = tile_buildings(frame, x0, y0, x1, y1, layers, ground)
+    cds = [md.cell(k, layers=("buildings", "building_parts"), kind="demand")
+           for k in roads.cells_of_tile(frame, tx, ty, margin=0.0)]
+    items = tile_buildings(frame, x0, y0, x1, y1, [c.layers.get("buildings") for c in cds], ground,
+                           part_layers=[c.layers.get("building_parts") for c in cds])
     mesh = build(items, lite=True)
     data = {"v": 1}
     if mesh is not None:

@@ -92,5 +92,39 @@ class DoorTest(unittest.TestCase):
         self.assertEqual(bld.doors([(spec, 0.0, 0.0)], [(np.array([(500.0, 0), (600.0, 0)]), 4.0)], 0, 0), [])
 
 
+class Feats:
+    def __init__(self, ids, rings, **attrs):
+        self.ids = np.array(ids, object)
+        self.kind = np.full(len(ids), 3, np.uint8)
+        self.rings = rings
+        self.attrs = {k: np.array(v, object if isinstance(v[0], str) else np.float64) for k, v in attrs.items()}
+
+    def parts(self, i):
+        return [[np.asarray(self.rings[i], np.float64)]]
+
+
+class PartsTest(unittest.TestCase):
+    def test_tower_on_podium(self):
+        import geodesy
+        f = geodesy.EnuFrame(39.28, -76.59)
+
+        def ll(x, y, w, d):
+            e = np.array([x, x + w, x + w, x, x]); n = np.array([y, y, y + d, y + d, y])
+            la, lo, _ = f.enu_to_geodetic(e, n, 0.0)
+            return np.stack([lo, la], 1)
+        b = Feats(["B"], [ll(10, 10, 40, 40)], **{"class": ["commercial"], "height": [90.0],
+                                                   "has_parts": [1.0], "min_height": [np.nan]})
+        parts = Feats(["p1", "p2", "p3"], [ll(10, 10, 40, 40), ll(20, 20, 20, 20), ll(10, 10, 40, 8)],
+                      building_id=["B", "B", "B"], height=[15.0, np.nan, 30.0], min_height=[np.nan, np.nan, 20.0],
+                      num_floors=[np.nan, np.nan, np.nan], min_floor=[np.nan, np.nan, np.nan])
+        items = bld.tile_buildings(f, 0, 0, 256, 256, [b], lambda la, lo: np.zeros(np.shape(la)), part_layers=[parts])
+        self.assertEqual(len(items), 3, "the parts, not the footprint")
+        tops = sorted(round(s.height + s.min_h) for s, _, _ in items)
+        self.assertEqual(tops, [15, 30, 90], "the podium, a floating part, the tower at the building's height")
+        self.assertEqual(len({s.seed for s, _, _ in items}), 1, "one look")
+        P = bld.build(items)[0]
+        self.assertAlmostEqual(P[:, 2].max(), 90.0, delta=0.01)
+
+
 if __name__ == "__main__":
     unittest.main()
