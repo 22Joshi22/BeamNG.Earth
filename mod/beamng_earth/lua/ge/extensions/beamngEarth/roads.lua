@@ -236,7 +236,7 @@ local function updateFar(gov)
       end
     end
   end
-  while #farQ > 0 and gov:try('roadWalk') do
+  while #farQ > 0 and #walkQ == 0 and gov:try('roadWalk') do
     local key = table.remove(farQ, 1)
     local f = far[key]
     if f and not f.id then
@@ -288,7 +288,6 @@ function M.update(gov, currentAnchor)
     end
   end
   releaseHeld()
-  updateFar(gov)
   while #walkQ > 0 and gov:try('roadWalk') do
     local q = table.remove(walkQ, 1)
     local t = tiles[q.key]
@@ -311,6 +310,7 @@ function M.update(gov, currentAnchor)
       sinceChange = stopwatch.new()
     end
   end
+  updateFar(gov)                -- far buildings: only with the near meshes all made (they share the budget)
   if collisionDirty and sinceReload() > M.RELOAD_EVERY_S * 1000 then
     local t0 = now()
     noteNewColliders()
