@@ -316,7 +316,7 @@ def plan(ring, attrs, neighbours=0, lat=None, lon=None, look=None, town=False, d
     elif roof_given in ("skillion", "dome", "onion", "round", "saltbox"):
         roof = "gabled"
     else:
-        detached_house = (cls in HOUSE_CLASSES or (area < 260 and not shop and not row)) and not industrial
+        detached_house = (cls in HOUSE_CLASSES or (area < 260 and not shop)) and not industrial and not row
         if church and neighbours == 0:
             roof = "gabled"
         elif neighbours >= 1:
