@@ -746,6 +746,8 @@ Next, from the photo comparisons (docs/research/streetview/fp*, base_*):
   masks buildings (~0 m on roofs, checked 2026-10-14), so it cannot fill them.
 - Near ground looked pale grey in towns: built-up land was the asphalt layer (the dirt layer since
   2026-10-14; check more places).
+- Town ground at street level has a whitish-blue sheen at grazing angles (Bishop, 2026-10-14) although
+  the photo is a plain grey: suspect the layers' roughness (sky reflections); tune with in-game A/B.
 
 ## Bugs to look at (reported, not fixed yet)
 - **Rain particles "spazzing out"** (user, 2026-10-11): some raindrops jump around or streak across the
