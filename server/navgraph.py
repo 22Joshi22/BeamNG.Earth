@@ -28,6 +28,23 @@ MAX_EDGE_M = 80.0           # long straight edges are split (the AI and the spaw
 WINDOW_M = 1100.0           # half size of the square around the player the graph covers
 
 
+def road_mph(feats, i, spec):
+    """The speed limit (mph) of road feature i: the mapped one at its middle, else the class default (capped
+    in town for arterials), or None for a class the AI does not drive. Shared by the graph and the road tiles'
+    speed signs (furniture.py), so a sign shows what the traffic drives."""
+    if spec is None or spec.cls not in DRIVE:
+        return None
+    speed = feats.rules.get("max_speed_kmh")
+    if speed is not None:
+        for r in speed.rows(i):
+            if speed.start[r] <= 0.5 <= speed.end[r]:
+                return float(speed.value[r]) / 1.609344
+    mph = DRIVE[spec.cls][1]
+    if spec.urban and spec.cls in URBAN_MPH_CAP:
+        mph = min(mph, URBAN_MPH_CAP[spec.cls])
+    return float(mph)
+
+
 def _rdp(p, tol):
     """Indices kept by Ramer-Douglas-Peucker on polyline p (k, 2)."""
     keep = np.zeros(len(p), bool)
@@ -149,16 +166,8 @@ def build(frame, feats_list, elev, centre, urban_fn=None, window=WINDOW_M, decks
             # this road's edge attributes
             w = float(spec.width)
             mid = 0.5
-            kmh = None
-            if speed is not None:
-                rows_ = speed.rows(i)
-                for r in rows_:
-                    if speed.start[r] <= mid <= speed.end[r]:
-                        kmh = float(speed.value[r])
-            driv, mph = DRIVE[spec.cls]
-            if kmh is None and spec.urban and spec.cls in URBAN_MPH_CAP:
-                mph = min(mph, URBAN_MPH_CAP[spec.cls])
-            v = kmh / 3.6 if kmh else mph * MPH
+            driv = DRIVE[spec.cls][0]
+            v = road_mph(feats, i, spec) * MPH
             direction = 0
             if ow is not None:
                 for r in ow.rows(i):

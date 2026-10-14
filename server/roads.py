@@ -1278,7 +1278,10 @@ def build_tile(frame, tx, ty, cells, elev, urban_fn=None, walks=None, bridges=No
         lines.extend((pts[:, :2], spec.width / 2, spec.cls, spec.urban) for _, spec, pts, _ in roads)
     if props is not None and walks is not None:     # street lights and utility poles (furniture.py)
         import furniture
-        props.extend(furniture.place(roads, walks, (x0, y0, x1, y1), wires=wires, town=bool(town), left_hand=left_hand))
+        import navgraph
+        speeds = {fid: navgraph.road_mph(f, i, sp) for fid, (f, i, sp) in seen.items()}
+        props.extend(furniture.place(roads, walks, (x0, y0, x1, y1), wires=wires, town=bool(town), left_hand=left_hand,
+                                     speeds={k: v for k, v in speeds.items() if v is not None}))
     if park is not None and walks is not None:      # curbside parking spots (parking.py)
         import parking
         park.extend(parking.curb_spots(roads, walks, (x0, y0, x1, y1), left_hand))

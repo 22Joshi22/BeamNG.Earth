@@ -109,5 +109,23 @@ class JunctionTest(unittest.TestCase):
         self.assertGreater(rows[0][1], 100.0, "on its right for northbound drivers (east side)")
 
 
+
+class SpeedSignTest(unittest.TestCase):
+    def test_a_sign_after_each_end_facing_its_traffic(self):
+        r = road("t", "tertiary", True, x0=0.0, x1=400.0)
+        rows = furniture.speed_signs([r], {"t": 30.0 / 0.999}, (-50, -50, 450, 150))
+        self.assertEqual(sorted(x[0] for x in rows), ["speed30", "speed30"])
+        east = min(rows, key=lambda x: x[1])
+        self.assertAlmostEqual(east[1], furniture.SIGN_IN_M, places=1)
+        self.assertLess(east[2], 50.0, "eastbound traffic: its kerb is the south side")
+        west = max(rows, key=lambda x: x[1])
+        self.assertGreater(west[2], 50.0)
+
+    def test_no_sign_without_a_model_or_on_short_roads(self):
+        self.assertEqual(furniture.speed_signs([road("t", "tertiary", True)], {"t": 35.0}, (-500, -50, 700, 150)), [])
+        self.assertEqual(furniture.speed_signs([road("s", "tertiary", True, x0=0.0, x1=100.0)], {"s": 30.0},
+                                               (-500, -50, 700, 150)), [])
+
+
 if __name__ == "__main__":
     unittest.main()

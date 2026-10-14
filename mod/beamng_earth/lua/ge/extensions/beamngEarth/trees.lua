@@ -12,7 +12,7 @@ M.RINGS = { { 300, 1.0 }, { 550, 0.5 }, { 900, 0.25 }, { 1e9, 0.12 } }   -- tile
 -- small props only near the player (2026-10-14, Fells Point at street level: ~10 ms a frame for the Forest
 -- with a door on every house out to 300 m): the tile distance (m) beyond which a group is not shown
 M.GROUP_MAX_M = { door = 120, hydrant = 200, bin = 200, bench = 200, polelamp = 400, stop = 300, signal = 500,
-  fence = 150 }
+  fence = 150, speed30 = 300, speed40 = 300, speed50 = 300, speed60 = 300, speed70 = 300 }
 M.FOREST_NAME = 'bngEarthForest'
 
 local ECA = '/levels/east_coast_usa/art/shapes/'
@@ -93,6 +93,10 @@ M.CATALOG = {
   stop = { { '/levels/east_coast_usa/art/shapes/signs_usa/sign_stop', 3.0 } },
   -- a low wooden yard fence, 5.4 m along its x (server buildings._front_fence)
   fence = { { ECA .. 'buildings/eca_bld_wood_fence_c', 1.3 } },
+  -- speed-limit signs (server furniture.speed_signs: the road graph's limit, where a model exists)
+  speed30 = { { UT .. 'ut_roadsigns/ut_30_speed_limit', 2.6 } }, speed40 = { { UT .. 'ut_roadsigns/ut_40_speed_limit', 2.6 } },
+  speed50 = { { UT .. 'ut_roadsigns/ut_50_speed_limit', 2.6 } }, speed60 = { { UT .. 'ut_roadsigns/ut_60_speed_limit', 2.6 } },
+  speed70 = { { UT .. 'ut_roadsigns/ut_70_speed_limit', 2.6 } },
   hydrant = { { '/levels/west_coast_usa/art/shapes/objects/hydrant1', 1.5 } },
   bench = { { ECA .. 'clutter/clutter_city_bench_wood', 0.9 } },
   bin = { { '/art/shapes/garage_and_dealership/Clutter/clutter_city_bin_round', 1.1 }, { WCA .. 'objects/garbage_bin_a', 1.1 } },
@@ -115,6 +119,7 @@ local MATERIALS = {
   IT .. 'trees/trees_italy', IT .. 'trees', '/levels/automation_test_track/art/shapes/objects',
   '/levels/automation_test_track/art/shapes/buildings',     -- the utility pole's wood_trim / painted metal
   ECA .. 'signs_usa', '/art/shapes/objects', '/levels/east_coast_usa/art/shapes', WCA .. 'objects', ECA .. 'buildings',
+  UT .. 'ut_roadsigns',
 }
 
 local tiles = {}        -- key "a:tx_ty" -> { anchor, cx, cy, rows, made = { i -> item }, shown = rank }

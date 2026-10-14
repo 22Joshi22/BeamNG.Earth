@@ -204,6 +204,40 @@ def junction_props(roads, box, curb_h=0.15, left_hand=False):
     return rows
 
 
+SIGN_MPH = (30, 40, 50, 60, 70)     # speed-limit sign models (trees.lua: Utah's ut_<n>_speed_limit)
+SIGN_CLASSES = {"tertiary", "secondary", "primary", "trunk", "unclassified"}
+SIGN_MIN_M = 150.0          # a road segment at least this long gets a sign after each of its ends
+SIGN_IN_M = 30.0            # m past the junction
+SIGN_OFF_M = 1.5            # m beyond the carriageway's edge
+
+
+def speed_signs(roads, speeds, box, left_hand=False):
+    """Prop rows of speed-limit signs: on two-way roads of SIGN_CLASSES whose limit (speeds: fid -> mph, the
+    road graph's) has a sign model, SIGN_IN_M after each end of a segment of at least SIGN_MIN_M, on the kerb
+    side of the traffic leaving that end, facing it."""
+    x0, y0, x1, y1 = box
+    rows = []
+    for fid, spec, line, _ in roads:
+        mph = speeds.get(fid)
+        if mph is None or spec.cls not in SIGN_CLASSES or spec.oneway or len(line) < 2:
+            continue
+        n = int(round(mph / 5.0)) * 5
+        if n not in SIGN_MPH:
+            continue
+        L = _arclen(line)[-1]
+        if L < SIGN_MIN_M:
+            continue
+        for s0, sgn in ((SIGN_IN_M, 1.0), (L - SIGN_IN_M, -1.0)):
+            p, d = _at(line, np.array([s0]))
+            f = d[0] * sgn                                  # the travel direction leaving that end
+            side = np.array([f[1], -f[0]]) * (-1 if left_hand else 1)
+            q = p[0][:2] + side * (spec.width / 2 + SIGN_OFF_M)
+            if x0 <= q[0] < x1 and y0 <= q[1] < y1:
+                rows.append([f"speed{n}", round(float(q[0]), 2), round(float(q[1]), 2), round(float(p[0][2]), 2),
+                             round(_yaw(side[0], side[1]), 1), 1.0, 2.6, 0.0])
+    return rows
+
+
 G_HYDRANT, G_BENCH, G_BIN = "hydrant", "bench", "bin"
 G_STREET_TREE = "deciduous"     # trees.lua's broadleaf group (the variant nearest each tree's height)
 STREET_TREE_CLASSES = {"residential", "tertiary", "secondary", "living_street"}
@@ -241,7 +275,7 @@ def _stations(run, line, spacing, phase, clear, side):
     return out
 
 
-def place(roads, walks, box, curb_h=0.15, wires=None, town=False, left_hand=False):
+def place(roads, walks, box, curb_h=0.15, wires=None, town=False, left_hand=False, speeds=None):
     """Rows [group, x, y, z, yaw, scale, height, rank] (trees.lua's tile rows) of the lamps and poles of a
     tile box (x0, y0, x1, y1). roads: build_tile's (fid, spec, centreline (k, 3), lon); walks: its sidewalk
     runs (dicts with fid, pts, side, w)."""
@@ -317,6 +351,8 @@ def place(roads, walks, box, curb_h=0.15, wires=None, town=False, left_hand=Fals
                 lambda out: _yaw(-out[0], -out[1]) + BENCH_YAW)
             put(G_BIN, BIN_SPACING, _h01(fid, side, "bin") * BIN_SPACING, 0.7, 1.1, lambda out: _yaw(-out[0], -out[1]))
     rows.extend(junction_props(roads, box, curb_h, left_hand))
+    if speeds:
+        rows.extend(speed_signs(roads, speeds, box, left_hand))
     for fid, spec, line, _ in roads:
         if spec.urban or fid in lit or spec.cls not in POLE_CLASSES or len(line) < 2:
             continue
