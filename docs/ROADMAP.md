@@ -726,9 +726,15 @@ Built 2026-10-14 (ARCHITECTURE "Buildings", "Street furniture", "Trees"):
 - Regional tree species (West pines / oaks / palms, junipers and desert scatter), street trees moved
   out of the road corridor onto the verge, denser crowns, cells built ahead after a teleport.
 Next, from the photo comparisons (docs/research/streetview/fp*, base_*):
-- Parked cars along urban curbs (the photos are full of them), traffic lights at signalled junctions,
-  stop signs (Mapillary map features have real positions in cities: 42 street lights in 170 m square
-  of Fells Point; the API is slow, so per-cell cache).
+- **Parked cars (needs the user's OK: spawns real vehicles):** the photos are full of them and streets
+  look empty without. Plan: the road tiles list curb parking spots (urban roads that already get a
+  parking lane, one spot per 6.5 m); the mod hands them to the stock `gameplay_parking` as sites data
+  (`setSites({parkingSpots = {...}})`, the West Coast USA format: pos, rot, scl, multi-spots) and
+  `setupVehicles(n)` keeps a pool of n parked cars on the spots near the player (stock vehicle pooling).
+  Open: the cost of n vehicles, and how pooled cars follow our rebase.
+- Traffic signals and stop signs are built from junction shapes (furniture.py); Mapillary map
+  features have real positions of signs in cities (42 street lights in a 170 m square of Fells Point;
+  the API is slow, so a per-cell cache) for later.
 - Building parts (Overture `building_part`): towers' podiums and setbacks; roof clutter (HVAC boxes).
 - Facade variety: painted brick, formstone, siding colours per region; window sheet per era.
 - Wires between utility poles; signs (stop, speed limits) from data where present.
