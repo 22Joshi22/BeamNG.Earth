@@ -196,6 +196,34 @@ def junction_props(roads, box, curb_h=0.15):
     return rows
 
 
+G_HYDRANT, G_BENCH, G_BIN = "hydrant", "bench", "bin"
+HYDRANT_SPACING = 120.0
+BENCH_SPACING = 140.0
+BIN_SPACING = 90.0
+BENCH_YAW = 90.0            # the bench model's front is its local +y (the yaw puts +x toward the road)
+
+
+def _stations(run, line, spacing, phase, clear, side):
+    """(point (3,), away-from-the-road unit (2,)) on a sidewalk run at the road's stations phase + k spacing
+    (arc length along the road line, so every tile and anchor gets the same ones), END_CLEAR_M from the run's
+    ends."""
+    s_run = _project(line, run[:, :2])
+    lo, hi = min(s_run[0], s_run[-1]), max(s_run[0], s_run[-1])
+    k0, k1 = math.ceil((lo - phase) / spacing), math.floor((hi - phase) / spacing)
+    if k1 < k0:
+        return []
+    p_road, _ = _at(line, phase + spacing * np.arange(k0, k1 + 1))
+    s_on_run = _project(run, p_road[:, :2])
+    L = _arclen(run)[-1]
+    out = []
+    for s in s_on_run:
+        if s < clear or s > L - clear:
+            continue
+        p, d = _at(run, np.array([s]))
+        out.append((p[0], np.array([-d[0][1], d[0][0]]) * side))   # away from the road (sidewalks.run_geometry)
+    return out
+
+
 def place(roads, walks, box, curb_h=0.15, wires=None):
     """Rows [group, x, y, z, yaw, scale, height, rank] (trees.lua's tile rows) of the lamps and poles of a
     tile box (x0, y0, x1, y1). roads: build_tile's (fid, spec, centreline (k, 3), lon); walks: its sidewalk
@@ -210,41 +238,35 @@ def place(roads, walks, box, curb_h=0.15, wires=None):
         if fid is None or "pts" not in wk or fid not in by_fid:
             continue
         spec, line = by_fid[fid]
-        rule = LAMP_SPACING.get(spec.cls)
-        if rule is None:
-            continue
-        spacing, both = rule
-        side = wk["side"]
-        lamp_side = 1 if _h01(fid, "side") < 0.5 else -1
-        if not both and side != lamp_side:
-            continue
-        lit.add(fid)
         run = np.asarray(wk["pts"], np.float64)
         if len(run) < 2:
             continue
-        phase = _h01(fid, "phase") * spacing + (spacing / 2 if (both and side < 0) else 0.0)
-        s_run = _project(line, run[:, :2])
-        lo, hi = min(s_run[0], s_run[-1]), max(s_run[0], s_run[-1])
-        k0, k1 = math.ceil((lo - phase) / spacing), math.floor((hi - phase) / spacing)
-        if k1 < k0:
-            continue
-        s_road = phase + spacing * np.arange(k0, k1 + 1)
-        # back to the run: the run point nearest each road station
-        p_road, _ = _at(line, s_road)
-        s_on_run = _project(run, p_road[:, :2])
-        L = _arclen(run)[-1]
-        for s in s_on_run:
-            if s < END_CLEAR_M or s > L - END_CLEAR_M:
-                continue
-            p, d = _at(run, np.array([s]))
-            p, d = p[0], d[0]
-            out = np.array([-d[1], d[0]]) * side            # away from the road (sidewalks.run_geometry)
-            w = wk.get("w", 2.5)
-            q = p[:2] - out * (w / 2 - LAMP_CURB_M)
-            if not (x0 <= q[0] < x1 and y0 <= q[1] < y1):
-                continue
-            rows.append([G_LAMP, round(float(q[0]), 2), round(float(q[1]), 2), round(float(p[2] + curb_h), 2),
-                         round(_yaw(-out[0], -out[1]), 1), 1.0, 9.0, 0.0])
+        side = wk["side"]
+        w = wk.get("w", 2.5)
+
+        def put(group, spacing, phase, curb_off, height, yaw_fn, clear=END_CLEAR_M):
+            for p, out in _stations(run, line, spacing, phase, clear, side):
+                q = p[:2] - out * (w / 2 - curb_off)
+                if x0 <= q[0] < x1 and y0 <= q[1] < y1:
+                    rows.append([group, round(float(q[0]), 2), round(float(q[1]), 2), round(float(p[2] + curb_h), 2),
+                                 round(yaw_fn(out), 1), 1.0, height, 0.0])
+        rule = LAMP_SPACING.get(spec.cls)
+        if rule is not None:
+            spacing, both = rule
+            lamp_side = 1 if _h01(fid, "side") < 0.5 else -1
+            if both or side == lamp_side:
+                lit.add(fid)
+                phase = _h01(fid, "phase") * spacing + (spacing / 2 if (both and side < 0) else 0.0)
+                put(G_LAMP, spacing, phase, LAMP_CURB_M, 9.0, lambda out: _yaw(-out[0], -out[1]))
+        if spec.urban:
+            # fire hydrants at the curb (US practice ~90-150 m apart), alternating sides
+            put(G_HYDRANT, HYDRANT_SPACING, _h01(fid, "hyd") * HYDRANT_SPACING + (HYDRANT_SPACING / 2 if side < 0 else 0),
+                0.45, 0.9, lambda out: _h01(fid, "hy") * 360.0)
+        if spec.urban and spec.cls in MAJOR:
+            # benches at the back of the sidewalk facing the street, bins at the curb
+            put(G_BENCH, BENCH_SPACING, _h01(fid, side, "bench") * BENCH_SPACING, w - 0.45, 0.9,
+                lambda out: _yaw(-out[0], -out[1]) + BENCH_YAW)
+            put(G_BIN, BIN_SPACING, _h01(fid, side, "bin") * BIN_SPACING, 0.7, 1.1, lambda out: _yaw(-out[0], -out[1]))
     rows.extend(junction_props(roads, box, curb_h))
     for fid, spec, line, _ in roads:
         if spec.urban or fid in lit or spec.cls not in POLE_CLASSES or len(line) < 2:

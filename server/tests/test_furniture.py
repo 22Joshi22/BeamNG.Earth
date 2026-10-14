@@ -43,8 +43,17 @@ class LampTest(unittest.TestCase):
         side = 1 if furniture._h01("b", "side") < 0.5 else -1
         a = furniture.place([r], self.walks(r, side), (0, 0, 256, 256))
         b = furniture.place([r], self.walks(r, side), (256, 0, 512, 256))
-        xs = sorted(x[1] for x in a + b)
+        xs = sorted(x[1] for x in a + b if x[0] == furniture.G_LAMP)
         self.assertTrue(np.allclose(np.diff(xs), furniture.LAMP_SPACING["residential"][0], atol=0.5))
+
+    def test_hydrants_on_town_streets(self):
+        r = road("h", "residential", True, x0=-300, x1=900)
+        rows = []
+        for side in (1, -1):
+            rows += furniture.place([r], self.walks(r, side), (0, 0, 600, 256))
+        hy = sorted(x[1] for x in rows if x[0] == furniture.G_HYDRANT)
+        self.assertGreaterEqual(len(hy), 8)
+        self.assertTrue(np.allclose(np.diff(hy), furniture.HYDRANT_SPACING / 2, atol=1.0), "alternating sides")
 
 
 class PoleTest(unittest.TestCase):
