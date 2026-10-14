@@ -90,6 +90,9 @@ SIDEWALK_CLASSES = {"residential", "tertiary", "secondary", "primary", "unclassi
 CENTRE_CLASSES = {"primary", "secondary", "tertiary", "trunk"}
 EDGE_LINE_CLASSES = {"primary", "secondary", "tertiary", "trunk", "motorway"}
 LANE_CLASSES = {"primary", "secondary", "tertiary", "trunk", "motorway"}
+# urban arterials not lined by buildings (roadwidth.py measures those): 4 lanes (Moab's Main Street, US-191,
+# 4 lanes + a turn lane in the photos, was drawn 9 m)
+URBAN_ARTERIAL = {"trunk": 13.2, "primary": 13.2}
 LANE_M = 3.3            # m per lane when counting the lanes a carriageway holds
 LANE_LINE = {"m": "line_dashed_long", "tl": 12.0, "p": 6, "w": 0.12}     # West Coast USA's 3 m dash, 9 m gap
 CUT_MARGIN = 0.5                # m: a sidewalk / line stops this far outside a crossing road's carriageway
@@ -250,6 +253,8 @@ def carriageway(cls, kind, urban, rule_width=None, oneway=False):
         w = ONEWAY_STYLE[cls]
     if kind not in BUILT:
         return w
+    if urban and not oneway and cls in URBAN_ARTERIAL:
+        return URBAN_ARTERIAL[cls]          # four lanes, no parking (a walled street is measured instead)
     if urban and cls in PARKING_CLASSES:
         return w + (1 if oneway else 2) * PARKING_M
     if not urban and cls != "service":
@@ -723,7 +728,8 @@ def extras(spec, pts, lon):
             out.append((look, CENTRE["w"], offset_polyline(pts, side * CENTRE["gap"])))
     if kind == "paved" and cls in LANE_CLASSES:
         # lane lines (white dashes) where the driving width holds two or more lanes a direction
-        drive = w - (2 * PARKING_M if urban and not spec.oneway else PARKING_M if urban else 0.0)
+        parked = urban and cls in PARKING_CLASSES and not (not spec.oneway and cls in URBAN_ARTERIAL)
+        drive = w - ((PARKING_M if spec.oneway else 2 * PARKING_M) if parked else 0.0)
         lanes = int(drive // LANE_M)
         if spec.oneway and lanes >= 2:
             lw = drive / lanes
