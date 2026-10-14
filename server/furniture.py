@@ -15,7 +15,7 @@ import math
 import numpy as np
 
 # class: (spacing m, both sides staggered)
-LAMP_SPACING = {"primary": (30.0, True), "secondary": (32.0, True), "tertiary": (36.0, True),
+LAMP_SPACING = {"trunk": (30.0, True), "primary": (30.0, True), "secondary": (32.0, True), "tertiary": (36.0, True),
                 "residential": (40.0, False), "unclassified": (42.0, False), "living_street": (36.0, False)}
 LAMP_CURB_M = 0.5           # m from the curb onto the sidewalk
 POLE_SPACING = 45.0
