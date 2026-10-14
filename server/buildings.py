@@ -219,7 +219,7 @@ def oriented_box(p):
 
 class Spec:
     """What is built for one footprint (decided by plan())."""
-    __slots__ = ("ring", "floors", "floor_h", "height", "roof", "roof_mat", "facade", "band", "shop", "plain", "min_h", "wall",
+    __slots__ = ("ring", "floors", "floor_h", "height", "roof", "roof_mat", "facade", "band", "shop", "plain", "min_h", "wall", "door",
                  "seed")
 
     def __init__(self, **kw):
@@ -412,6 +412,7 @@ def _band_v(band, k):
 WIN_UV = (53 / 1024, 154 / 1024, 1.0 - (512 + 238) / 1024, 1.0 - (512 + 45) / 1024)
 WIN_W, WIN_H, WIN_SILL = 1.05, 1.75, 0.85   # m
 HOUSE_BAY_M = 3.4           # m between a house's windows
+DOOR_GAP_M = 0.75           # m each side of a front door kept free of the ground floor's windows
 WIN_OUT_M = 0.03            # m the window stands proud of its wall
 
 
@@ -484,15 +485,35 @@ def _walls(m, spec, ring, z0, z_eave, mat_idx, lite=False):
                 if len(spec.band) > 2 and nb >= 1 and not lite:     # the good bays only, one quad each
                     v0, v1 = _band_v(spec.band, band_k)
                     good = spec.band[2]
+                    dk = None
+                    if f == 0 and spec.door and spec.door[0] == i and spec.roof == "flat":
+                        dk = min(nb - 1, int(spec.door[1] / L * nb))      # the bay behind the front door
                     for k in range(nb):
                         g = good[int(_hash01(spec.seed, i, f, k) * len(good))]
                         pa, pb = a + (b - a) * (k / nb), a + (b - a) * ((k + 1) / nb)
+                        if k == dk:
+                            m.quad((pa[0], pa[1], za), (pb[0], pb[1], za), (pb[0], pb[1], zb), (pa[0], pa[1], zb),
+                                   (0.002, v0), (0.012, v0), (0.012, v0 + 0.01), (0.002, v0 + 0.01), mat)
+                            continue
                         m.quad((pa[0], pa[1], za), (pb[0], pb[1], za), (pb[0], pb[1], zb), (pa[0], pa[1], zb),
                                (g / bays_per_tile, v0), ((g + 1) / bays_per_tile, v0), ((g + 1) / bays_per_tile, v1),
                                (g / bays_per_tile, v1), mat)
                     za = zb
                     continue
             v0, v1 = _band_v(spec.band, band_k)
+            door = spec.door if (f == 0 and spec.roof == "flat" and spec.door and spec.door[0] == i) else None
+            if door is not None and DOOR_GAP_M < door[1] < L - DOOR_GAP_M:
+                # the band either side of the door; a plain strip of the sheet's wall behind it
+                s0, s1 = door[1] - DOOR_GAP_M, door[1] + DOOR_GAP_M
+                for ta, tb in ((0.0, s0), (s1, L)):
+                    pa, pb = a + (b - a) * (ta / L), a + (b - a) * (tb / L)
+                    m.quad((pa[0], pa[1], za), (pb[0], pb[1], za), (pb[0], pb[1], zb), (pa[0], pa[1], zb),
+                           (uu * ta / L, v0), (uu * tb / L, v0), (uu * tb / L, v1), (uu * ta / L, v1), mat)
+                pa, pb = a + (b - a) * (s0 / L), a + (b - a) * (s1 / L)
+                m.quad((pa[0], pa[1], za), (pb[0], pb[1], za), (pb[0], pb[1], zb), (pa[0], pa[1], zb),
+                       (0.002, v0), (0.012, v0), (0.012, v0 + 0.01), (0.002, v0 + 0.01), mat)
+                za = zb
+                continue
             # the foundation and the parapet stretch the band a little; the windows stay a floor's height
             m.quad((a[0], a[1], za), (b[0], b[1], za), (b[0], b[1], zb), (a[0], a[1], zb),
                    (0, v0), (uu, v0), (uu, v1), (0, v1), mat)
@@ -859,12 +880,13 @@ def doors(items, lines, x0, y0):
             if float(np.dot(q[k] - mid, out)) <= 0:
                 continue                                 # the wall faces away from that road
             if best is None or dist[k] < best[0]:
-                best = (dist[k], a, e / Le, Le, out)
+                best = (dist[k], a, e / Le, Le, out, i)
         if best is None:
             continue
-        _, a, d, Le, out = best
+        _, a, d, Le, out, edge = best
         narrow = Le < 9.0
         f = (0.22 if _hash01(spec.seed, "door") < 0.5 else 0.78) if narrow else 0.5
+        spec.door = (edge, Le * f)          # _walls leaves the ground floor's band plain there
         p = a + d * (Le * f) + out * 0.03
         base = gmax                                      # the ground floor (_walls: floors from the highest ground)
         rows.append([G_DOOR, round(float(p[0]), 2), round(float(p[1]), 2), round(base, 2),

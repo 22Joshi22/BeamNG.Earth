@@ -84,8 +84,6 @@ M.CATALOG = {
   door = {     -- the stock Building Architect kit (art_shapes.zip; global materials)
     { '/art/shapes/common/building_architect_modules/doors/R_HS_A_DR_01_100x210', 2.2 },
     { '/art/shapes/common/building_architect_modules/doors/R_HS_B_DR_03_100x210', 2.2 },
-    { '/art/shapes/common/building_architect_modules/doors/R_HS_A_DR_01_90x220', 2.3 },
-    { '/art/shapes/common/building_architect_modules/doors/R_HS_A_DR_02_100x210', 2.5 },
   },
   signal = { { '/art/shapes/objects/s_trafficlight_boom_sn', 9.4 } },
   stop = { { '/levels/east_coast_usa/art/shapes/signs_usa/sign_stop', 3.0 } },
