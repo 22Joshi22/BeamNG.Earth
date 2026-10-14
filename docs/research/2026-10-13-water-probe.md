@@ -62,3 +62,14 @@ So the plan stays the roadmap's: bounded water per area near the player (blocks 
 - **The runtime WaterBlock is dead for physics too:** with a 30 m block around the parked car (surface 0.5 m above the ground), `obj:inWater` was false for all 950 nodes. That held whether the block was moved after registering or placed before.
 - **A WaterPlane works for both:** 0.5 m above the ground, it drew (it flooded everything lower, `plane_test.jpg`) and 379 of 950 nodes were in water.
 - **Not tested:** whether a runtime WaterBlock works in a stock level. The open question is whether WaterBlocks need something our level lacks or are broken at runtime everywhere.
+
+## Third probe: River objects (2026-10-13 evening, Arizona desert, user's car)
+
+- **Lead:** BeamNG's docs ([level classes: water](https://documentation.beamng.com/modding/levels/level_classes/water/)) list three water classes. Italy uses a `River` with two nodes and a 160 m width as a rectangle of water.
+- **A runtime River draws.** Made with `Sim.deserializeObjectFromText(jsonEncode(def), true, true)` from a stock-style definition (`nodes`: {x, y, z, width, depth, nx, ny, nz}, core ripple / foam / depth-ramp textures), 40 m x 15 m. It shows as a dark sheet (no reflection cubemap set yet).
+- **Physics: only after the vehicle is reset.** The River was around the car, 1.5 m deep:
+  - before a reset, 0 of 950 nodes were in water (`be:reloadCollision()` did not help);
+  - after `obj:requestReset(RESET_PHYSICS)`, 894 of 950 were.
+  So a vehicle seems to take the water objects that exist when it spawns or resets. The runtime WaterPlane was seen without a reset.
+- **A runtime WaterBlock stays dead** even after a reset: 0 of 950 nodes, not drawn.
+- **So:** lakes and rivers can use River objects. Open question: a way to refresh a vehicle's water objects without a reset (a reset stops the car).
