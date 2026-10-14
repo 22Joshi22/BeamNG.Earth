@@ -1349,7 +1349,9 @@ position; vehicles see water they drive into, but not water that appears around 
   tiles, when the player is within 64 m of its edge, or when the level under it changes by > 5 cm.
   A car in the water (below the level + 1 m) and slower than 1 m/s is then re-placed where it is.
   Tile edges at Fells Point: 950 / 950 nodes in water.
-- **Cost (Sandy Point, 83 tiles, 2026-10-13):** 99 vs 102 fps at eye level, 108 vs 119 from 200 m.
+- **Cost (Sandy Point, 2026-10-13):** 83 tiles (512 m minimum): 99 vs 102 fps at eye level, 108 vs 119
+  from 200 m. 39 tiles (2048 m minimum, with lakes): 108 vs 109 at eye level, 110 vs 119 from 200 m
+  (water over most of the screen).
 - **Lakes (2026-10-13):** Overture `lake`, `reservoir`, `pond` and `water` polygons (not fountains,
   pools, basins, drains or intermittent water) go into the same per-cell raster as the sea, which now
   holds a depth and a level per pixel (cache `seacarve/v2/<release>/lakes/`). A lake's level is the
