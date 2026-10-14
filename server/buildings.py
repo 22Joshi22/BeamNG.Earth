@@ -235,7 +235,7 @@ def oriented_box(p):
 class Spec:
     """What is built for one footprint (decided by plan())."""
     __slots__ = ("ring", "floors", "floor_h", "height", "roof", "roof_mat", "facade", "band", "shop", "plain", "min_h", "wall", "door", "windows", "front", "steeple", "stoop",
-                 "sign", "seed")
+                 "sign", "porch", "seed")
 
     def __init__(self, **kw):
         for k in self.__slots__:
@@ -405,9 +405,14 @@ def plan(ring, attrs, neighbours=0, lat=None, lon=None, look=None, town=False, d
         k = (len(tints) - 1 - int(_hash01(seed, "red") * 2)) if barn and _hash01(seed, "barn") < 0.5 else \
             int(_hash01(seed, "sc") * (len(tints) - 2))
         facade = f"{SIDING}|{k}"
+    # a front porch (the photos of Lancaster, Ocean City, Frederick, Moab: most houses have one): pitched-roof
+    # houses, a regional share; doors() puts it on the front door's wall
+    west = lon is not None and lon < -102.0
+    porch = (house and roof != "flat" and not barn and not shed and area < 300
+             and _hash01(seed, "porch") < (PORCH_SHARE_WEST if west else PORCH_SHARE))
     return Spec(ring=ring, floors=nf, floor_h=floor_h, height=h, roof=roof, roof_mat=roof_mat, facade=facade,
                 band=band, shop=shop and not shed and nf >= 1, plain=plain, seed=seed, min_h=0.0, wall=wall,
-                windows=windows, steeple=church and roof == "gabled" and area < 2500)
+                windows=windows, steeple=church and roof == "gabled" and area < 2500, porch=porch)
 
 
 class Mesh:
@@ -647,6 +652,37 @@ def _signs(m, spec, ring, z_top, mat_idx):
         t, k = t1, k + 1
 
 
+PORCH_SHARE = 0.55          # pitched-roof houses with a front porch (East, Midwest, South) ...
+PORCH_SHARE_WEST = 0.25     # ... and in the West
+PORCH_DEPTH_M = 2.2
+PORCH_H_M = 2.7             # the porch roof's underside above the floor
+PORCH_DECK_M = 0.35         # the deck's top above the ground
+
+
+def _porch(m, spec, base, mat_idx):
+    """A front porch on the front door's wall (spec.door: (edge, distance along it) of spec.ring): a deck, three
+    posts and a shallow roof, the house's trim white and its roof's colour."""
+    edge, sd = spec.door
+    ring = spec.ring
+    a, b = ring[edge], ring[(edge + 1) % len(ring)]
+    L = float(math.hypot(*(b - a)))
+    if L < 4.0:
+        return
+    d = (b - a) / L
+    out = np.array([d[1], -d[0]])
+    w = min(L * 0.75, 7.5)
+    c0 = float(np.clip(sd, w / 2, L - w / 2))
+    c = a + d * c0
+    white = mat_idx["bne_bld_fac_white"]
+    D = PORCH_DEPTH_M
+    _box(m, c + out * (D / 2), d, w / 2, D / 2, base - 0.3, base + PORCH_DECK_M, white)              # deck
+    top = base + PORCH_DECK_M + PORCH_H_M
+    for t in (-w / 2 + 0.15, 0.0, w / 2 - 0.15):                                                   # posts
+        _box(m, c + d * t + out * (D - 0.15), d, 0.08, 0.08, base + PORCH_DECK_M, top, white)
+    roof = mat_idx[spec.roof_mat] if spec.roof_mat else white
+    _box(m, c + out * (D / 2 + 0.1), d, w / 2 + 0.15, D / 2 + 0.1, top, top + 0.18, roof)          # roof
+
+
 def _stoop(m, spec, ring, base, mat_idx):
     """Two white steps out from the front door (spec.stoop: (edge, distance along it))."""
     edge, sd = spec.stoop
@@ -779,6 +815,8 @@ def build(specs_and_ground, lite=False):
             _steeple(m, spec, z_eave, mat_idx)
         if spec.stoop and not lite:
             _stoop(m, spec, ring, gmax, mat_idx)
+        if spec.porch and spec.door and not lite:
+            _porch(m, spec, gmax, mat_idx)
         if spec.sign is not None and spec.roof == "flat" and not lite:
             if spec.windows is False:           # a big box: over its storefront band (_plain_wall_with_windows)
                 z_top = min(gmax + GROUND_FLOOR_SHOP_M + 1.15, z_eave)
@@ -1084,7 +1122,7 @@ def doors(items, lines, x0, y0, drives=None):
                 drives.append({"m": DRIVEWAY["m"], "w": DRIVEWAY_W, "tl": DRIVEWAY["tl"], "p": DRIVEWAY["p"],
                                "n": [[round(float(pp[0]), 3), round(float(pp[1]), 3), 0.0] for pp in pts]})
         p = a + d * (Le * f) + out * 0.03
-        base = gmax + (STOOP_H if spec.stoop else 0.0)   # the ground floor (_walls: floors from the highest ground)
+        base = gmax + (STOOP_H if spec.stoop else 0.0) + (PORCH_DECK_M if spec.porch else 0.0)   # (the deck / stoop)
         rows.append([G_DOOR, round(float(p[0]), 2), round(float(p[1]), 2), round(base, 2),
                      round(math.degrees(math.atan2(d[1], d[0])) % 360.0, 1), 1.0, 2.2,
                      round(_hash01(spec.seed, "dv"), 3)])

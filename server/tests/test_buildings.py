@@ -159,6 +159,23 @@ class DoorTest(unittest.TestCase):
         self.assertAlmostEqual(n[0, 1], 19.8, delta=0.3, msg="from the front wall")
         self.assertAlmostEqual(n[-1, 1], 10.1, delta=0.3, msg="to the road's edge")
 
+    def test_porches_on_the_front_of_some_houses(self):
+        with_porch = 0
+        for k in range(40):
+            spec = bld.plan(rect(k * 40, 0, 10, 8), {"class": "house"}, 0, 39.4, -77.4)
+            bld.doors([(spec, 0.0, 0.0)], [(np.array([(-50.0, -6.0), (2000.0, -6.0)]), 4.0, "residential", True)], 0.0, 0.0)
+            if not spec.porch or not spec.door:
+                continue
+            with_porch += 1
+            m = bld.Mesh()
+            bld._porch(m, spec, 1.0, bld._Looks(spec.seed))
+            P = np.array(m.P)
+            self.assertTrue(m.n > 0)
+            self.assertAlmostEqual(P[:, 1].min(), -(bld.PORCH_DEPTH_M + 0.2), delta=0.01, msg="out in front of the south wall")
+            self.assertGreaterEqual(P[:, 1].max(), -0.01)
+            self.assertAlmostEqual(P[:, 2].max(), 1.0 + bld.PORCH_DECK_M + bld.PORCH_H_M + 0.18, places=3)
+        self.assertTrue(10 < with_porch < 35, with_porch)
+
     def test_no_door_without_a_road(self):
         spec = bld.plan(rect(0, 0, 10, 8), {"class": "house"})
         self.assertEqual(bld.doors([(spec, 0.0, 0.0)], [(np.array([(500.0, 0), (600.0, 0)]), 4.0)], 0, 0), [])
