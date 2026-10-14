@@ -12,6 +12,7 @@ local M = {}
 
 M.EDGE_M = 60           -- graph nodes this far inside the block's ground box only
 M.MIN_GAP_S = 1.0
+M.UI_MAP = false        -- send our graph to the UI (the big map) on every apply
 M.RULES_FILE = '/temp/beamngEarth/roadRules.json'
 M.rules = { rightHandDrive = false, turnOnRed = true }    -- US; `rightHandDrive = true` means driving on the left
 M.enabled = true
@@ -31,6 +32,7 @@ local persistent = nil  -- the node table handed out once (research §2.7.2)
 local ours = false
 local foreign = false
 local stats = { applies = 0, lastMs = 0, nodes = 0, edges = 0 }
+local pendingSignals = nil -- the clipped nodes whose signals go in next frame
 local started = false
 local respawnAll = false
 local lastGuard = -math.huge
@@ -101,25 +103,37 @@ M.SIGNAL_TYPE = 'lightsBasic'
 -- the switchable head (the stock boom, instanced_trafficlight material): one TSStatic per approach where the
 -- road tile's static boom stands (trees.lua's signal group is hidden while these exist)
 M.SIGNAL_SHAPE = '/art/shapes/objects/s_trafficlight_boom_sn.dae'
-local heads = {}        -- TSStatic ids of the heads made for the graph in use
+local heads = {}        -- instance name -> {id, x, y}: the heads in the scene (kept across applies)
+local seenHeads = {}
 
-local function clearHeads()
-  for _, id in ipairs(heads) do
-    local o = scenetree.findObjectById(id)
-    if o then o:delete() end
+local function clearHeads(keep)
+  for name, h in pairs(heads) do
+    if not (keep and keep[name]) then
+      local o = scenetree.findObjectById(h.id)
+      if o then o:delete() end
+      heads[name] = nil
+    end
   end
-  heads = {}
 end
 
+-- A head for instance inst at a's prop transform: the one already standing there is kept (it is linked by
+-- the instance's name, which stays the same: setupSignals finds it again), so a new graph costs only the new ones.
 local function makeHead(inst, a)
   if not a[8] or not inst.createSignalObject then return end
+  seenHeads[inst.name] = true
+  local h = heads[inst.name]
+  if h and math.abs(h.x - a[8]) < 0.05 and math.abs(h.y - a[9]) < 0.05 and scenetree.findObjectById(h.id) then return end
+  if h then
+    local old = scenetree.findObjectById(h.id)
+    if old then old:delete() end
+  end
   local o = inst:createSignalObject(M.SIGNAL_SHAPE, vec3(a[8], a[9], a[10]), quat(0, 0, 0, 1))
   if not o then return end
   local m = MatrixF(true)
   m:setFromEuler(vec3(0, 0, math.rad(a[11] or 0)))      -- as trees.lua turns the static boom
   m:setPosition(vec3(a[8], a[9], a[10]))
   o:setTransform(m)
-  heads[#heads + 1] = o:getID()
+  heads[inst.name] = { id = o:getID(), x = a[8], y = a[9] }
 end
 
 local function signalData(nodes)
@@ -182,19 +196,26 @@ local function apply(b)
   local ts = signalsSystem()
   -- before the reset: its onNavgraphReloaded would place the old instances on the new graph (research §2.8)
   if ts then pcall(ts.resetSignals) end
-  clearHeads()
   writeFile(M.RULES_FILE, jsonEncode({ roadRules = M.rules }))
   local orig = path.getPathLevelInfo
   path.getPathLevelInfo = function() return M.RULES_FILE end
+  -- the reset sends the whole map to the UI (NavigationMapChanged, research §2.3): only the big map uses it,
+  -- and it is a good part of the reset's frame; dropped during ours (M.UI_MAP = true keeps it)
+  local trig = guihooks and guihooks.trigger
+  if trig and not M.UI_MAP then
+    guihooks.trigger = function(name, ...) if name ~= 'NavigationMapChanged' then return trig(name, ...) end end
+  end
   local t0 = os.clock()
   ours = true
   local ok, err = pcall(map.reset, nodes)
   ours = false
+  if trig then guihooks.trigger = trig end
   path.getPathLevelInfo = orig
   if not ok then
     log('E', 'beamngEarth', 'navgraph: map.reset: ' .. tostring(err))
     return false
   end
+  stats.resetMs = (os.clock() - t0) * 1000
   local m = map.getMap()
   if persistent and persistent ~= m.nodes then
     table.clear(persistent)
@@ -204,22 +225,31 @@ local function apply(b)
     persistent = m.nodes
   end
   be:queueAllObjectLua('mapmgr.requestMap()')
-  if ts then
-    local okS, err2 = pcall(function()
-      local data, ns = signalData(nodes)
-      ts.setupSignals(data, false, true)
-      -- a vehicle holding signals reads the state-change mailbox every frame and dies on one never written
-      -- ("lpack: unexpected end of buffer", in game 2026-10-14): write an empty update before handing them out
-      be:sendToMailbox('trafficSignalUpdates', lpack.encodeBin({}))
-      be:queueAllObjectLua('mapmgr.setSignals(' .. serialize(ts.getMapNodeSignals()) .. ')')
-      stats.junctions = ns
-      -- the road tiles' static booms stand where the switchable heads are now
-      require('beamngEarth/trees').GROUP_MAX_M.signal = #heads > 0 and 0 or 500
-    end)
-    if not okS then log('W', 'beamngEarth', 'navgraph: signals: ' .. tostring(err2)) end
-  end
+  pendingSignals = ts and nodes or nil     -- next frame: a second, smaller hitch instead of one big one
   stats.applies, stats.lastMs, stats.nodes, stats.edges = stats.applies + 1, (os.clock() - t0) * 1000, nn, ne
   return true
+end
+
+-- The signals of the graph applied last frame (core_trafficSignals resolves them on the new map).
+local function applySignals(nodes)
+  local ts = core_trafficSignals
+  if not ts then return end
+  local t1 = os.clock()
+  local okS, err2 = pcall(function()
+    seenHeads = {}
+    local data, ns = signalData(nodes)
+    clearHeads(seenHeads)                   -- the heads of junctions no longer in the graph
+    ts.setupSignals(data, false, true)
+    -- a vehicle holding signals reads the state-change mailbox every frame and dies on one never written
+    -- ("lpack: unexpected end of buffer", in game 2026-10-14): write an empty update before handing them out
+    be:sendToMailbox('trafficSignalUpdates', lpack.encodeBin({}))
+    be:queueAllObjectLua('mapmgr.setSignals(' .. serialize(ts.getMapNodeSignals()) .. ')')
+    stats.junctions = ns
+    -- the road tiles' static booms stand where the switchable heads are now
+    require('beamngEarth/trees').GROUP_MAX_M.signal = next(heads) and 0 or 500
+  end)
+  stats.signalsMs = (os.clock() - t1) * 1000
+  if not okS then log('W', 'beamngEarth', 'navgraph: signals: ' .. tostring(err2)) end
 end
 
 local function trafficSystem()
@@ -283,7 +313,14 @@ function M.update(aid, b)
     graph = nil
     return
   end
-  if b and applied and (applied.box[1] ~= b[1] or applied.box[2] ~= b[2]) then dirty = true end
+  if pendingSignals then
+    local nodes = pendingSignals
+    pendingSignals = nil
+    applySignals(nodes)
+    return
+  end
+  -- a block move alone does not re-apply (each apply is a ~40 ms frame): the next graph (every 400 m) is clipped
+  -- to the block of its time, and the guard keeps the cars on the ground in between
   if not (dirty or foreign) then return end
   local t = os.clock()
   if t - lastApply < M.MIN_GAP_S and not foreign then return end
@@ -316,6 +353,7 @@ end
 function M.status()
   return { graph = graph and graph.serial or nil, applies = stats.applies, lastMs = stats.lastMs,
            nodes = stats.nodes, edges = stats.edges, junctions = stats.junctions, started = started,
+           resetMs = stats.resetMs, signalsMs = stats.signalsMs,
            traffic = gameplay_traffic and gameplay_traffic.getState() or nil }
 end
 
@@ -323,6 +361,7 @@ function M.reset()
   heads = {}            -- (the level took them with it)
   graph, applied, dirty, lastApply, persistent, ours, foreign = nil, nil, false, -math.huge, nil, false, false
   started, respawnAll, lastGuard, heldActive = false, false, -math.huge, nil
+  pendingSignals = nil
   stats = { applies = 0, lastMs = 0, nodes = 0, edges = 0 }
 end
 
