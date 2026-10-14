@@ -1,0 +1,6 @@
+{
+  "displayName": "Keyboard",
+  "bindings": [
+    {"control": "alt m", "action": "beamngEarth_mapToggle"}
+  ]
+}

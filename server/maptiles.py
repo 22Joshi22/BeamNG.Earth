@@ -170,7 +170,7 @@ class MapTiles:
             method, path, _ = line.split(" ", 2)
         except ValueError:
             method, path = "", ""
-        if method:
+        if method and path.startswith("/"):
             status, ctype, body = await asyncio.get_running_loop().run_in_executor(
                 None, self.respond, method, path)
         else:
