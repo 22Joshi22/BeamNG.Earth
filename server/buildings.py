@@ -1161,7 +1161,8 @@ def _wall_sign(spec, a, d, Le, out, gmax):
         return []
     zc = gmax + spec.height - 0.6 - h / 2               # its top 0.6 m under the parapet
     p = a + d * (Le / 2) + out * 0.35
-    yaw = math.degrees(math.atan2(out[1], out[0])) - (0.0 if thin_x else 90.0)
+    # the logo faces the model's local -x (Lemon, Logistics, Rentabox: seen in game 2026-10-14) or its -y
+    yaw = math.degrees(math.atan2(out[1], out[0])) + (180.0 if thin_x else 90.0)
     return [[group, round(float(p[0]), 2), round(float(p[1]), 2), round(float(zc), 2), round(yaw % 360.0, 1), 1.0,
              round(h, 2), 0.0]]
 
