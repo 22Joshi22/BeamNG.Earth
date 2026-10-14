@@ -73,13 +73,14 @@ def _deck_z(decks, fid, x, y):
     return None if best is None else best[1]
 
 
-def build(frame, feats_list, elev, centre, urban_fn=None, window=WINDOW_M, decks=None):
+def build(frame, feats_list, elev, centre, urban_fn=None, window=WINDOW_M, decks=None, widths=None):
     """{"nodes": {name: [x, y, z, radius]}, "edges": [[in, out, oneway, lanes_out, lanes_in, speed m/s,
     drivability, radius]]} of the drivable roads in the square of half size `window` around centre (x, y) of
     the anchor frame. feats_list: the "roads" mapgeom.Features of the cells around (duplicates across cells
     are taken once). elev(lat, lon) -> metres. decks: fid -> [(xy, z)] of the bridge parts (roads.BridgeProfiles):
     nodes on a bridge take its deck height (else traffic would spawn on the ground under it), and roads that are
-    bridge all along are in the graph (road_specs leaves them to the bridge builder)."""
+    bridge all along are in the graph (road_specs leaves them to the bridge builder). widths: the road tiles'
+    measured street widths (roadwidth.py), so the AI's lanes are on the carriageway the road mesh draws."""
     cx, cy = centre
     nodes, edges, seen = {}, [], set()
     arms = {}               # connector name -> [(fid, spec, unit vector away, point, neighbour, incoming)]
@@ -88,7 +89,7 @@ def build(frame, feats_list, elev, centre, urban_fn=None, window=WINDOW_M, decks
     for feats in feats_list:
         if feats is None or len(feats) == 0:
             continue
-        specs = roads.road_specs(feats, urban_fn)
+        specs = roads.road_specs(feats, urban_fn, widths)
         bspecs = roads.bridge_specs(feats)
         specs = [sp if sp is not None else bs for sp, bs in zip(specs, bspecs)]
         rules = feats.rules
