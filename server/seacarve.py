@@ -31,7 +31,7 @@ import mapcells
 
 log = logging.getLogger("earthd.seacarve")
 
-VERSION = 4
+VERSION = 6
 SEA_E = 0.0                 # m: the sea surface (the DEMs' heights are above mean sea level)
 DEPTH_SLOPE = 0.15          # floor depth per metre from the shoreline (1 : 6.7)
 DEPTH_CAP = 6.0             # m: the floor's depth away from the shore without bathymetry (Chesapeake mean
@@ -63,7 +63,10 @@ RIVER_SUBTYPES = ("river", "stream")  # polygons whose level follows the DEM, pi
 RIVER_SKIP_CLASSES = ("drain", "ditch")
 RIVER_DEPTH_CAP = 3.0       # m
 RIVER_DEM_STEP = 4          # river levels: the DEM every 4th pixel (~7.5 m), the lowest of 3 x 3 such
-                            # samples (the flattened surface, not a bank)
+                            # samples (the flattened surface, not a bank),
+RIVER_SMOOTH = 4            # ... then the lowest of the river's samples within 4 more (~70 m along it)
+WATER_BANK_M = 1.0          # m: a lake / river pixel whose DEM is higher than its level by more is dry
+                            # (outlines that include banks, islands, a floodplain)
 LAKE_SKIP_CLASSES = ("fountain", "swimming_pool", "wastewater", "basin", "drain", "fish_pass")
 LAKE_DEPTH_CAP = 4.0        # m: lakes and ponds (no bathymetry); the slope is DEPTH_SLOPE
 LAKE_MIN_PX = 100           # a lake smaller than this in the 3 x 3 cells' raster (~350 m^2) is left out
@@ -234,6 +237,7 @@ class SeaCarver:
             if lv <= SEA_HI:            # a lagoon, a tidal pond: part of the sea
                 sea |= m
                 continue
+            m &= ~self._lake_dry(m, lv, ox, oy)
             kmax = int(math.ceil(LAKE_DEPTH_CAP / DEPTH_SLOPE / px)) + 2
             st = shore_steps(m, kmax).astype(np.float32)
             depth[m] = np.minimum(LAKE_DEPTH_CAP, DEPTH_SLOPE * (st[m] - 0.5) * px)
@@ -307,10 +311,8 @@ class SeaCarver:
         ok = np.isin(sub, RIVER_SUBTYPES) & ~np.isin(cls, RIVER_SKIP_CLASSES) & (f.kind == 3)
         return np.flatnonzero(ok & ~np.asarray(inter, bool))
 
-    def _river_levels(self, m, ox, oy):
-        """The water level of every river pixel (m): the DEM every RIVER_DEM_STEP pixels, the lowest of
-        the 3 x 3 samples around (the flattened surface rather than a bank), quantised to LEVEL_Q;
-        NaN elsewhere. None without a DEM."""
+    def _coarse_dem(self, m, ox, oy):
+        """The DEM every RIVER_DEM_STEP pixels over m's bounding box: (grid, j0, i0), None without one."""
         jj, ii = np.nonzero(m)
         k = RIVER_DEM_STEP
         j0, j1 = jj.min() // k, jj.max() // k + 1
@@ -320,13 +322,46 @@ class SeaCarver:
         try:
             e = np.asarray(self.dem.sample(lat.ravel(), lon.ravel(), LAKE_DEM_ZOOM), np.float64).reshape(gj.shape)
         except Exception as ex:
-            log.debug("river levels: %s", ex)
+            log.debug("water levels: %s", ex)
             return None
-        p = np.pad(e, 1, mode="edge")
-        lo = np.min(np.stack([p[a:a + e.shape[0], b:b + e.shape[1]] for a in range(3) for b in range(3)]), axis=0)
+        return e, j0, i0
+
+    def _river_levels(self, m, ox, oy):
+        """The water level of every river pixel (m): from the DEM every RIVER_DEM_STEP pixels, the lowest of
+        the river's own samples within RIVER_SMOOTH (the channel's flattened surface, not a bank, a sandbar
+        or the floodplain an outline may include), quantised to LEVEL_Q; NaN elsewhere and where the DEM
+        stands more than WATER_BANK_M above that level (not water, whatever the outline says). None
+        without a DEM."""
+        c = self._coarse_dem(m, ox, oy)
+        if c is None:
+            return None
+        e, j0, i0 = c
+        k = RIVER_DEM_STEP
+        jj, ii = np.nonzero(m)
+        cm = np.zeros(e.shape, bool)
+        cm[jj // k - j0, ii // k - i0] = True
+        lo = np.where(cm, e, np.inf)
+        for _ in range(RIVER_SMOOTH):   # the lowest within RIVER_SMOOTH samples (a min filter, 3 x 3 steps)
+            p = np.pad(lo, 1, constant_values=np.inf)
+            lo = np.min(np.stack([p[a:a + e.shape[0], b:b + e.shape[1]] for a in range(3) for b in range(3)]), axis=0)
+        cj, ci = jj // k - j0, ii // k - i0
+        lvl = np.round(lo[cj, ci] / LEVEL_Q) * LEVEL_Q
         out = np.full(m.shape, np.nan, np.float32)
-        out[jj, ii] = np.round(lo[jj // k - j0, ii // k - i0] / LEVEL_Q) * LEVEL_Q
+        out[jj, ii] = np.where(e[cj, ci] <= lvl + WATER_BANK_M, lvl, np.nan)
         return out
+
+    def _lake_dry(self, m, level, ox, oy):
+        """The pixels of a lake (m) whose DEM stands more than WATER_BANK_M above its level: banks and
+        islands its outline includes, left dry."""
+        c = self._coarse_dem(m, ox, oy)
+        dry = np.zeros(m.shape, bool)
+        if c is None:
+            return dry
+        e, j0, i0 = c
+        k = RIVER_DEM_STEP
+        jj, ii = np.nonzero(m)
+        dry[jj, ii] = e[jj // k - j0, ii // k - i0] > level + WATER_BANK_M
+        return dry
 
     @staticmethod
     def _lake_rows(f):

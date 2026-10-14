@@ -1370,6 +1370,13 @@ position; vehicles see water they drive into, but not water that appears around 
   from `plan_lakes`, split until one spans at most 0.3 m of the river's fall. Susquehanna at
   Harrisburg: 89.8 m down to 89.2 m across the area. Plans: 0.4-1 s warm, so the server plans again
   only when the player enters another 512 m square, or every 30 s (late map data).
+- **Seams fixed (2026-10-13, the user saw lines on a creek near Harrisburg):** tiles 1.6 m apart within
+  300 m made steps at their edges. River levels are now the lowest of the river's own DEM samples within
+  ~70 m (the channel's surface), and any lake / river pixel whose DEM stands > 1 m above its level is dry
+  (outlines that include banks, islands or a floodplain: no water, no trench). Inland tiles are planes
+  fitted to their water (least squares; split while a sample is > 0.15 m off), tilted to match, and the
+  physics block takes the tilted surface's height at the player. Ground carved > 5 cm under water gets
+  the MUD layer (no grass through the surface).
 - **Bathymetry (2026-10-13):** per cell, one export of NOAA NCEI's DEM global mosaic (CUDEM ~3 m along
   the US coasts; host policy `gis.ngdc.noaa.gov`), 4x coarser than the raster and aligned with it. The
   sea floor reaches NOAA's depth (1-80 m) from the shore at 0.3 m/m; without it (offline, refused) the

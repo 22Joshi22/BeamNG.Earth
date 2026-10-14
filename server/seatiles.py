@@ -120,15 +120,28 @@ LAKE_FLOOD_M = 1.0          # land inside a lake tile lower than the lake by mor
                             # (a valley below a dam; the banks themselves are ~ at the lake's level)
 LAKE_MAX_TILES = 60         # nearest first
 LAKE_DEM_ZOOM = 15
-LEVEL_TOL_M = 0.3            # a tile spans at most this much of a river's fall (else it is split)
+LEVEL_TOL_M = 0.15           # a tile's water is at most this far from its plane (else it is split)
+
+
+def _plane(u, v, z):
+    """Least-squares plane z = a + b u + c v through the points (a level plane when they are too few or in
+    a line)."""
+    if len(z) < 3:
+        return float(np.median(z)), 0.0, 0.0
+    A = np.stack([np.ones_like(u), u, v], -1)
+    sol, _, rank, _ = np.linalg.lstsq(A, z, rcond=None)
+    if rank < 3:
+        return float(np.median(z)), 0.0, 0.0
+    return float(sol[0]), float(sol[1]), float(sol[2])
 
 
 def plan_lakes(frame, x, y, lake_at, ground_at, radius=None):
     """Water tiles for the lakes and rivers around (x, y): lake_at(lat, lon) -> the inland water's level at
     the points (NaN away from it, seacarve.SeaCarver.lake_at), ground_at(lat, lon) -> the DEM there. A square of the
     LAKE_TILE_MAX lattice holding lake water becomes one tile at that level when every other point in it
-    is land no lower than the lake by more than LAKE_FLOOD_M and its water spans at most LEVEL_TOL_M of
-    level (a river's fall), else it is split, down to LAKE_TILE_MIN (kept there when at least half of
+    is land no lower than the water's plane by more than LAKE_FLOOD_M and the water is within LEVEL_TOL_M
+    of that plane (a least-squares fit: a river falls across a tile, which is tilted to match), else it
+    is split, down to LAKE_TILE_MIN (kept there when at least half of
     it is water; at the median level). So a reservoir's tile never floods the valley below its dam. Tilted to
     the local vertical like the sea's tiles."""
     r = LAKE_RADIUS_M if radius is None else radius
@@ -163,23 +176,30 @@ def plan_lakes(frame, x, y, lake_at, ground_at, radius=None):
         lat, lon = samples(todo, s)
         g = np.asarray(ground_at(lat, lon), np.float64).reshape(len(todo), -1)
         nxt = []
+        u = (f - 0.5) * s                               # sample offsets from the tile's centre
+        U = np.tile(u, LAKE_SAMPLES)                    # [j, i] raveled: i fastest
+        V = np.repeat(u, LAKE_SAMPLES)
         for (x0, y0), l, gr in zip(todo, lv, g):
             wet = np.isfinite(l)
-            level = float(np.median(l[wet]))
-            one_level = np.ptp(l[wet]) <= LEVEL_TOL_M
-            clear = np.all(gr[~wet] >= level - LAKE_FLOOD_M)
-            if (one_level and clear) or (s <= LAKE_TILE_MIN and wet.mean() >= 0.5 and one_level):
-                out.append((x0, y0, s, level))
+            # the water as a plane over the tile (a river falls across it): level at the centre, slope
+            a, bx, by = _plane(U[wet], V[wet], l[wet])
+            fit = np.abs(l[wet] - (a + bx * U[wet] + by * V[wet])).max() <= LEVEL_TOL_M
+            plane = a + bx * U + by * V
+            clear = np.all(gr[~wet] >= plane[~wet] - LAKE_FLOOD_M)
+            if (fit and clear) or (s <= LAKE_TILE_MIN and wet.mean() >= 0.5 and fit):
+                out.append((x0, y0, s, a, bx, by))
             elif s > LAKE_TILE_MIN:
                 h = s / 2
                 nxt += [(x0 + a * h, y0 + b * h) for a in (0, 1) for b in (0, 1)]
         todo, s = nxt, s / 2
     out.sort(key=lambda t: _dist(x, y, t[0], t[1], t[2]))
     tiles = []
-    for x0, y0, s, level in out[:LAKE_MAX_TILES]:
+    for x0, y0, s, level, bx, by in out[:LAKE_MAX_TILES]:
         cx, cy = x0 + s / 2, y0 + s / 2
         la, lo, _ = frame.enu_to_geodetic(cx, cy, 0.0)
         z = float(np.asarray(frame.geodetic_to_enu(la, lo, level)[2]))
+        # the tilt: the local vertical, then the water's own slope (a surface rising by b per metre in x
+        # leans its normal by -b in x)
         tiles.append(Tile(f"L{int(s)}_{int(x0 // s)}_{int(y0 // s)}_{int(round(level * 10))}", cx, cy, z, s,
-                          cx / EARTH_R, cy / EARTH_R))
+                          cx / EARTH_R - bx, cy / EARTH_R - by))
     return tiles

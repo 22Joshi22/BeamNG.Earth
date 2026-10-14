@@ -175,11 +175,15 @@ function M.update(anchorId, player)
     local t = tileAt(player)
     if not t then
       if phys then removePhys() end
-    elseif (physStale and n == 0) or not phys or math.abs(player.x - phys.x) > M.PHYS_SIZE / 2 - M.PHYS_MARGIN
-        or math.abs(player.y - phys.y) > M.PHYS_SIZE / 2 - M.PHYS_MARGIN or math.abs(t.z - phys.z) > 0.05 then
-      makePhys(player, t.z)
-      physStale = false
-      if player.z < t.z + 1 then nudge = true end      -- in the water: its physics must take this one
+    else
+      -- the tile's (tilted) surface under the player: a river falls across its tile
+      local z = t.z - (t.nx or 0) * (player.x - t.x) - (t.ny or 0) * (player.y - t.y)
+      if (physStale and n == 0) or not phys or math.abs(player.x - phys.x) > M.PHYS_SIZE / 2 - M.PHYS_MARGIN
+          or math.abs(player.y - phys.y) > M.PHYS_SIZE / 2 - M.PHYS_MARGIN or math.abs(z - phys.z) > 0.05 then
+        makePhys(player, z)
+        physStale = false
+        if player.z < z + 1 then nudge = true end      -- in the water: its physics must take this one
+      end
     end
     if n > 0 then physStale = true end
   end

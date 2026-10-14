@@ -53,7 +53,7 @@ sea.onMessage({ type = 'sea', anchorId = 1, tiles = six })
 sea.update(1, player); sea.update(1, player)
 T.check(car.nudged >= 1, 'a parked car inside a new tile is re-placed (its physics sees the water)')
 local pb = physBlock()
-T.check(pb and pb.renderEnabled == false and pb.pos.x == 100 and pb.pos.z == 0 and pb.scale.x == sea.PHYS_SIZE,
+T.check(pb and pb.renderEnabled == false and pb.pos.x == 100 and math.abs(pb.pos.z) < 0.01 and pb.scale.x == sea.PHYS_SIZE,
   'a physics block around the player at the level of its tile, not drawn')
 local made0 = sea.physMade
 sea.update(1, player)

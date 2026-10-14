@@ -72,6 +72,7 @@ class _State:
 
 
 ANCHORS_KEPT = 2
+WATER_BED_M = 0.05           # ground carved deeper than this under the water gets the bed layer (MUD)
 
 
 def load_airports(cache_dir, dem):
@@ -180,6 +181,8 @@ def build(aid, lat, lon, hm_zoom, q, cx, cy, size, out_dir, name, ter_name=None)
         t1 = time.perf_counter()
         classes, complete = _s.surface.classes(keep["lat"], keep["lon"])
         idx = surfacemod.classify(classes, keep["u"], heightmap.SQUARE)
+        if _s.sea is not None:          # under water: the bed (no grass growing through the surface)
+            idx[_s.sea.depth(keep["lat"], keep["lon"]) > WATER_BED_M] = surfacemod.MUD
         road_feats, roads_complete = _s.surface.roads(keep["lat"], keep["lon"])
         stages["landcover"] = time.perf_counter() - t1
         t1 = time.perf_counter()

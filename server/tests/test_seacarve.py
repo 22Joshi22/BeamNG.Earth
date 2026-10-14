@@ -199,6 +199,8 @@ class LakeDem:
         e[(lon > LAKE_LON + 1.2 * D) & (lat < LAKE_LAT + D)] = 30.0
         in1 = (lat > LAKE_LAT) & (lat < LAKE_LAT + D) & (lon > LAKE_LON) & (lon < LAKE_LON + D)
         e[in1] = 50.0
+        island = (np.abs(lat - LAKE_LAT - 0.75 * D) < 0.08 * D) & (np.abs(lon - LAKE_LON - 0.75 * D) < 0.08 * D)
+        e[island] = 56.0                # an island inside the outline
         in3 = (lat > LAKE_LAT + 2 * D) & (lat < LAKE_LAT + 3 * D) & (lon > LAKE_LON) & (lon < LAKE_LON + D)
         e[in3] = 40.0 + (lat[in3] - LAKE_LAT - 2 * D) / D * 20.0
         return e
@@ -218,6 +220,9 @@ class LakeTest(unittest.TestCase):
         self.assertTrue(np.isnan(self.sc.lake_at(*land)[0]))
         steep = (np.array([LAKE_LAT + 2.5 * D]), np.array([LAKE_LON + D / 2]))
         self.assertTrue(np.isnan(self.sc.lake_at(*steep)[0]), "not flat: not a lake")
+        island = (np.array([LAKE_LAT + 0.75 * D]), np.array([LAKE_LON + 0.75 * D]))
+        self.assertTrue(np.isnan(self.sc.lake_at(*island)[0]), "an island in the outline stays dry")
+        self.assertEqual(float(self.sc.carve(*island, np.array([56.0]))[0]), 56.0, "and is not carved")
         tiny = (np.array([LAKE_LAT + 0.00002]), np.array([LAKE_LON + 2 * D + 0.00002]))
         self.assertTrue(np.isnan(self.sc.lake_at(*tiny)[0]), "too small")
         sea = (np.array([south(100)]), np.array([LON0]))
