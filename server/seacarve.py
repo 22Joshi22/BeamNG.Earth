@@ -16,10 +16,12 @@ only on its position and the map data (deterministic, the same in every process)
 The mod draws the sea as WaterBlock tiles that follow the Earth's curve (seatiles.py). Beyond the
 carved levels the far tiles' DEM sea (SEA_LO..SEA_HI) is sunk SINK_M so it never shows through them.
 """
+import io
 import logging
 import math
 import os
 import threading
+import time
 from collections import OrderedDict
 
 import numpy as np
@@ -29,10 +31,20 @@ import mapcells
 
 log = logging.getLogger("earthd.seacarve")
 
-VERSION = 3
+VERSION = 4
 SEA_E = 0.0                 # m: the sea surface (the DEMs' heights are above mean sea level)
 DEPTH_SLOPE = 0.15          # floor depth per metre from the shoreline (1 : 6.7)
-DEPTH_CAP = 6.0             # m: the floor's depth away from the shore (Chesapeake mean ~6.4 m)
+DEPTH_CAP = 6.0             # m: the floor's depth away from the shore without bathymetry (Chesapeake mean
+                            # ~6.4 m)
+# Bathymetry: NOAA NCEI's DEM global mosaic (the best depths NOAA has: CUDEM ~3 m along the US coasts,
+# coarser elsewhere; public domain). One export per cell, aligned with its raster at BATHY_DOWN x coarser.
+BATHY_URL = ("https://gis.ngdc.noaa.gov/arcgis/rest/services/DEM_mosaics/DEM_global_mosaic/ImageServer/exportImage"
+             "?bbox={x0},{y0},{x1},{y1}&bboxSR=3857&imageSR=3857&size={n},{n}&format=tiff&pixelType=F32"
+             "&interpolation=RSP_BilinearInterpolation&f=image")
+BATHY_DOWN = 4              # ~7.5 m pixels
+BATHY_MIN, BATHY_MAX = 1.0, 80.0    # m: a sea floor this deep at least / at most
+BATHY_RETRY_S = 120.0       # s: a cell built without bathymetry is built again after this (in memory)
+SHORE_SLOPE = 0.3           # m/m: with bathymetry, the floor reaches its depth from the shore this steeply
 PX_ZOOM = 16                # raster pixels: Web-Mercator z16 (256 px tiles): 1024 px per z14 cell
 CELL_PX = 256 << (PX_ZOOM - mapcells.ZOOM)      # raster pixels per cell edge (1024)
 PAD_PX = 32                 # margin rasterised from the neighbouring cells (> the cap's distance)
@@ -113,7 +125,7 @@ class SeaCarver:
         self.md = md
         self.dem = dem                  # dem.Dem for the lakes' levels (None: no lakes)
         self.dir = os.path.join(cache_dir, "seacarve", f"v{VERSION}") if cache_dir else None
-        self._mem = OrderedDict()       # (x, y) -> (depth, level) rasters or None
+        self._mem = OrderedDict()       # (x, y) -> ((depth, level) or None, complete, built at)
         self._lock = threading.Lock()
         self._cell_locks = {}
 
@@ -130,18 +142,22 @@ class SeaCarver:
         (x * CELL_PX - 1 + i + 0.5, y * CELL_PX - 1 + j + 0.5); level NaN away from water (spread
         LEVEL_PAD_PX onto the shore, for the lookups next to it); None when the cell has no water."""
         k = (x, y)
+        now = time.monotonic()
         with self._lock:
-            if k in self._mem:
+            hit = self._mem.get(k)
+            if hit is not None and (hit[1] or now - hit[2] < BATHY_RETRY_S):
                 self._mem.move_to_end(k)
-                return self._mem[k]
+                return hit[0]
             lock = self._cell_locks.setdefault(k, threading.Lock())
         with lock:
             with self._lock:
-                if k in self._mem:
-                    return self._mem[k]
-            r = self._load(x, y)
+                hit = self._mem.get(k)
+                if hit is not None and (hit[1] or now - hit[2] < BATHY_RETRY_S):
+                    return hit[0]
+            r, complete = self._load(x, y)
             with self._lock:
-                self._mem[k] = r
+                self._mem[k] = (r, complete, time.monotonic())
+                self._mem.move_to_end(k)
                 while len(self._mem) > MEM_CELLS:
                     self._mem.popitem(last=False)
             return r
@@ -156,21 +172,22 @@ class SeaCarver:
         if p and os.path.exists(p):
             with np.load(p, allow_pickle=False) as f:
                 if not f["any"]:
-                    return None
-                return f["depth"].astype(np.float32) / 20.0, f["level"].astype(np.float32)
+                    return None, True
+                return (f["depth"].astype(np.float32) / 100.0, f["level"].astype(np.float32)), True
         r = self._build(x, y)
+        complete = r is None or r[2]
         if r is not None:
-            r = (np.round(r[0] * 20.0).astype(np.float32) / 20.0, r[1])     # the values the file gives back
-        if p:
+            r = (np.round(r[0] * 100.0).astype(np.float32) / 100.0, r[1])   # the values the file gives back
+        if p and complete:              # an incomplete raster (no bathymetry yet) is built again later
             os.makedirs(os.path.dirname(p), exist_ok=True)
             tmp = f"{p}.{os.getpid()}.{threading.get_ident()}.tmp"
             with open(tmp, "wb") as fh:
                 if r is None:
                     np.savez_compressed(fh, any=False)
                 else:
-                    np.savez_compressed(fh, any=True, depth=np.round(r[0] * 20.0).astype(np.uint8), level=r[1])
+                    np.savez_compressed(fh, any=True, depth=np.round(r[0] * 100.0).astype(np.uint16), level=r[1])
             os.replace(tmp, p)
-        return r
+        return r, complete
 
     def _build(self, x, y):
         own = self._water((mapcells.ZOOM, x, y))
@@ -229,10 +246,20 @@ class SeaCarver:
                 st = shore_steps(river, kmax).astype(np.float32)
                 depth[river] = np.minimum(RIVER_DEPTH_CAP, DEPTH_SLOPE * (st[river] - 0.5) * px)
                 level[river] = rl[river]
+        complete = True
         if sea.any():
-            kmax = int(math.ceil(DEPTH_CAP / DEPTH_SLOPE / px)) + 2
-            st = shore_steps(sea, kmax).astype(np.float32)
-            depth[sea] = np.minimum(DEPTH_CAP, DEPTH_SLOPE * (st[sea] - 0.5) * px)
+            bathy = self._bathy(ox, oy, n)
+            if bathy is None:           # no bathymetry (offline, refused): the generic floor, not cached
+                complete = False
+                kmax = int(math.ceil(DEPTH_CAP / DEPTH_SLOPE / px)) + 2
+                st = shore_steps(sea, kmax).astype(np.float32)
+                depth[sea] = np.minimum(DEPTH_CAP, DEPTH_SLOPE * (st[sea] - 0.5) * px)
+            else:
+                target = np.where(np.isfinite(bathy) & (bathy < -BATHY_MIN), np.clip(-bathy, BATHY_MIN, BATHY_MAX),
+                                  BATHY_MIN)
+                kmax = int(math.ceil(BATHY_MAX / SHORE_SLOPE / px)) + 2
+                st = shore_steps(sea, kmax).astype(np.float32)
+                depth[sea] = np.minimum(target[sea], SHORE_SLOPE * (st[sea] - 0.5) * px)
             level[sea] = SEA_E
         if not np.isfinite(level[PAD_PX:-PAD_PX, PAD_PX:-PAD_PX]).any():
             return None
@@ -243,7 +270,32 @@ class SeaCarver:
                 fill = np.nanmax(np.where(np.isfinite(nb), nb, -np.inf), axis=0)
             level = np.where(np.isnan(level) & np.isfinite(fill), fill, level).astype(np.float32)
         c = slice(PAD_PX - 1, PAD_PX + CELL_PX + 1)
-        return depth[c, c].copy(), level[c, c].copy()
+        return depth[c, c].copy(), level[c, c].copy(), complete
+
+    def _bathy(self, ox, oy, n):
+        """NOAA's elevations (m, negative below the sea) on the n x n raster at z16 pixel (ox, oy), or None
+        when it can't be had now."""
+        fetcher = getattr(self.md, "fetcher", None)
+        if fetcher is None:
+            return None
+        res = 2 * math.pi * 6378137.0 / (256 << PX_ZOOM)
+        half = math.pi * 6378137.0
+        x0, x1 = ox * res - half, (ox + n) * res - half
+        y1, y0 = half - oy * res, half - (oy + n) * res
+        m = n // BATHY_DOWN
+        url = BATHY_URL.format(x0=round(x0, 2), y0=round(y0, 2), x1=round(x1, 2), y1=round(y1, 2), n=m)
+        try:
+            body = fetcher.get(url).body
+            from PIL import Image
+            im = Image.open(io.BytesIO(body))
+            if im.mode != "F" or im.size != (m, m):
+                raise ValueError(f"unexpected bathymetry image {im.mode} {im.size}")
+            a = np.array(im.resize((n, n), Image.BILINEAR), np.float32)
+        except Exception as e:          # netfetch.FetchError, a bad image: later
+            log.info("sea: no bathymetry for the cell at %d,%d (%s)", ox, oy, e)
+            return None
+        a[(a < -11000) | (a > 9000)] = np.nan     # nodata
+        return a
 
     @staticmethod
     def _river_rows(f):

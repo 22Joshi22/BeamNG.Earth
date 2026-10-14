@@ -50,6 +50,31 @@ class FakeMapData:
         return Cell(Water([("ocean", ocean), ("lake", lake)]))
 
 
+class FakeBathy:
+    """netfetch.Fetcher-like: NOAA's export, a sea floor BATHY m deep everywhere (a float TIFF)."""
+    BATHY = -10.0
+
+    def __init__(self):
+        self.calls = 0
+
+    def get(self, url, kind="demand"):
+        import io
+        import re
+        from types import SimpleNamespace
+        from PIL import Image
+        self.calls += 1
+        n = int(re.search(r"size=(\d+),", url).group(1))
+        buf = io.BytesIO()
+        Image.fromarray(np.full((n, n), self.BATHY, np.float32), mode="F").save(buf, "TIFF")
+        return SimpleNamespace(body=buf.getvalue())
+
+
+class BathyMapData(FakeMapData):
+    def __init__(self):
+        super().__init__()
+        self.fetcher = FakeBathy()
+
+
 def south(m):
     """The point m metres south of (SEA_LAT, LON0) (negative: north, on land)."""
     return SEA_LAT - m / 111320.0
@@ -94,13 +119,28 @@ class SeaCarveTest(unittest.TestCase):
     def test_cached_on_disk_and_deterministic(self):
         lat = np.array([south(7.3), south(31)])
         lon = np.array([LON0, LON0 + 0.001])
-        a = self.sc.depth(lat, lon)
-        md = FakeMapData()
+        a = seacarve.SeaCarver(BathyMapData(), self.tmp.name).depth(lat, lon)
+        md = BathyMapData()
         b = seacarve.SeaCarver(md, self.tmp.name).depth(lat, lon)
-        self.assertEqual(md.calls, 0, "read back from disk")
+        self.assertEqual(md.calls + md.fetcher.calls, 0, "read back from disk")
         np.testing.assert_array_equal(a, b)
         with tempfile.TemporaryDirectory() as other:
-            np.testing.assert_array_equal(a, seacarve.SeaCarver(FakeMapData(), other).depth(lat, lon))
+            np.testing.assert_array_equal(a, seacarve.SeaCarver(BathyMapData(), other).depth(lat, lon))
+
+    def test_without_bathymetry_not_cached(self):
+        lat, lon = np.array([south(50)]), np.array([LON0])
+        self.sc.depth(lat, lon)
+        md = FakeMapData()
+        seacarve.SeaCarver(md, self.tmp.name).depth(lat, lon)
+        self.assertGreater(md.calls, 0, "built again (the bathymetry may come later)")
+
+    def test_bathymetry_depths(self):
+        sc = seacarve.SeaCarver(BathyMapData(), None)
+        d = [float(sc.depth(np.array([south(m)]), np.array([LON0]))[0]) for m in (-20, 3, 10, 100)]
+        self.assertEqual(d[0], 0.0)
+        self.assertAlmostEqual(d[2], seacarve.SHORE_SLOPE * 10, delta=1.0)
+        self.assertAlmostEqual(d[3], -FakeBathy.BATHY, places=1)
+        self.assertTrue(0 < d[1] < d[2] < d[3])
 
     def test_no_map_data_no_sea(self):
         sc = seacarve.SeaCarver(FakeMapData(fail=True), None)

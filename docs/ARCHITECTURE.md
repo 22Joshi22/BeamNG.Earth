@@ -1358,6 +1358,11 @@ position; vehicles see water they drive into, but not water that appears around 
   from `plan_lakes`, split until one spans at most 0.3 m of the river's fall. Susquehanna at
   Harrisburg: 89.8 m down to 89.2 m across the area. Plans: 0.4-1 s warm, so the server plans again
   only when the player enters another 512 m square, or every 30 s (late map data).
+- **Bathymetry (2026-10-13):** per cell, one export of NOAA NCEI's DEM global mosaic (CUDEM ~3 m along
+  the US coasts; host policy `gis.ngdc.noaa.gov`), 4x coarser than the raster and aligned with it. The
+  sea floor reaches NOAA's depth (1-80 m) from the shore at 0.3 m/m; without it (offline, refused) the
+  generic 0.15 m/m to 6 m floor is used, not written to disk and built again after 2 min. Depths are
+  stored in cm (uint16; cache `seacarve/v4`). Baltimore harbour off Fells Point: 12.9 m.
 - **Drive cost (Fells Point east along the waterfront, 30 m/s, 6 km, 2026-10-13):** 75.7 fps with water,
   79.3 without; p99 22.4 vs 21.9 ms, worst frame 55 vs 53 ms.
 - Tests: `server/tests/test_seacarve.py`, `mod/tests/test_sea.lua`.
