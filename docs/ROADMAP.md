@@ -727,7 +727,10 @@ centrelines, carved channels, ripples flowing downstream, a current). Known issu
 - **Decoration:** trees, rocks and other scatter.
 - **Airport buildings:** terminals, the control tower, hangars (the runways themselves look good).
 - **LOD quality settings** (after the performance work, closer to the final look): at 4K on a large
-  monitor, the terrain from half distance outward looks low quality.
+  monitor, the terrain from half distance outward looks low quality. 2026-10-14 A/B at Lancaster farms:
+  `--tex 256,256,512,1024` (2-4x far textures, finer imagery) shows no difference in 2560x1440 shots from
+  10 and 200 ft, loads in 205 s instead of 171 s, same frame time. Default kept; the user to try it at 4K.
+  If it doesn't help either, look at haze and mip filtering next.
 
 ## "Make the world look alive" (user, 2026-10-13 night; references from stock maps + many street photos)
 Built 2026-10-14 (ARCHITECTURE "Buildings", "Street furniture", "Trees"):
