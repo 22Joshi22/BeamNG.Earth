@@ -15,6 +15,13 @@ M.MIN_GAP_S = 1.0
 M.RULES_FILE = '/temp/beamngEarth/roadRules.json'
 M.rules = { rightHandDrive = false, turnOnRed = true }    -- US; `rightHandDrive = true` means driving on the left
 M.enabled = true
+-- Traffic (gameplay_traffic, the player's traffic amount): started once the first graph is in the map; a car
+-- within GUARD_M of the block's edge (or past it, where there is no ground) is respawned on the graph
+-- (gameplay_traffic.forceTeleport), checked every GUARD_S; after a teleport every car is, once the new
+-- place's graph is in.
+M.GUARD_M = 40
+M.GUARD_S = 0.5
+M.EXTENSIONS = { 'core_multiSpawn', 'gameplay_traffic' }
 
 local graph = nil       -- the server's last graph {anchor, nodes, edges}
 local applied = nil     -- {anchor, serial, box} of the graph in the game's map now
@@ -24,6 +31,9 @@ local persistent = nil  -- the node table handed out once (research §2.7.2)
 local ours = false
 local foreign = false
 local stats = { applies = 0, lastMs = 0, nodes = 0, edges = 0 }
+local started = false
+local respawnAll = false
+local lastGuard = -math.huge
 
 -- Pure: point inside box {x0, y0, x1, y1} shrunk by m (no box: anywhere).
 function M.inside(b, x, y, m)
@@ -109,9 +119,63 @@ local function apply(b)
   return true
 end
 
--- Every frame: a new graph, a moved block or a foreign reset applies the graph again.
+local function trafficSystem()
+  if not (gameplay_traffic and core_multiSpawn) and extensions and extensions.load then
+    pcall(extensions.load, unpack(M.EXTENSIONS))
+  end
+  return gameplay_traffic
+end
+
+local function playerId() return be and be.getPlayerVehicleID and be:getPlayerVehicleID(0) or -1 end
+
+-- Traffic cars the block left behind (or all, after a teleport) are respawned on the graph.
+local function guard(b, all)
+  local gt = gameplay_traffic
+  if not gt or gt.getState() ~= 'on' then return end
+  local me = playerId()
+  for id in pairs(gt.getTrafficData() or {}) do
+    if id ~= me then
+      local o = getObjectByID(id)
+      if o and o:getActive() then
+        local p = o:getPosition()
+        if all or not M.inside(b, p.x, p.y, M.GUARD_M) then pcall(gt.forceTeleport, id) end
+      end
+    end
+  end
+end
+
+local function startTraffic()
+  started = true
+  local amount = settings and settings.getValue and tonumber(settings.getValue('trafficAmount')) or 0
+  local gt = trafficSystem()
+  if amount > 0 and gt and gt.getState() ~= 'on' then
+    local ok, err = pcall(gt.setupTraffic, amount)
+    if not ok then log('W', 'beamngEarth', 'navgraph: setupTraffic: ' .. tostring(err)) end
+  end
+end
+
+-- The player teleported: the traffic cars go inactive (no physics: their old positions have no ground) and come
+-- back on the new place's graph once it is in.
+local heldActive = nil
+function M.onTeleport()
+  respawnAll = true
+  local gt = gameplay_traffic
+  if gt and gt.getState() == 'on' and not heldActive then
+    local vars = gt.getTrafficVars and gt.getTrafficVars() or {}
+    heldActive = vars.activeAmount or math.huge
+    pcall(gt.setActiveAmount, 0)
+  end
+end
+
+-- Every frame: a new graph, a moved block or a foreign reset applies the graph again; the traffic guard.
 function M.update(aid, b)
   if not M.enabled or not graph then return end
+  local t0 = os.clock()
+  if applied and t0 - lastGuard >= M.GUARD_S then
+    lastGuard = t0
+    local ok, err = pcall(guard, b, false)
+    if not ok then log('W', 'beamngEarth', 'navgraph guard: ' .. tostring(err)) end
+  end
   if graph.anchor ~= aid then
     graph = nil
     return
@@ -124,6 +188,20 @@ function M.update(aid, b)
   dirty, foreign = false, false
   if apply(b) then
     applied = { anchor = aid, serial = graph.serial, box = b and { b[1], b[2], b[3], b[4] } or {} }
+    if not started then
+      startTraffic()
+      respawnAll = false
+    elseif respawnAll then
+      respawnAll = false
+      local gt = gameplay_traffic
+      if gt and heldActive then
+        pcall(gt.setActiveAmount, heldActive)
+        heldActive = nil
+        if gt.forceTeleportAll then pcall(gt.forceTeleportAll) end
+      else
+        pcall(guard, b, true)
+      end
+    end
   end
 end
 
@@ -134,11 +212,13 @@ end
 
 function M.status()
   return { graph = graph and graph.serial or nil, applies = stats.applies, lastMs = stats.lastMs,
-           nodes = stats.nodes, edges = stats.edges }
+           nodes = stats.nodes, edges = stats.edges, started = started,
+           traffic = gameplay_traffic and gameplay_traffic.getState() or nil }
 end
 
 function M.reset()
   graph, applied, dirty, lastApply, persistent, ours, foreign = nil, nil, false, -math.huge, nil, false, false
+  started, respawnAll, lastGuard, heldActive = false, false, -math.huge, nil
   stats = { applies = 0, lastMs = 0, nodes = 0, edges = 0 }
 end
 

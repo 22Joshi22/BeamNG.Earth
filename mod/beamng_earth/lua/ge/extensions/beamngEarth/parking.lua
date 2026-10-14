@@ -23,6 +23,7 @@ M.SPOT_SCL = { 2.5, 6.0, 3.0 }      -- the stock spot size (city.sites.json)
 M.EDGE_M = 80
 M.GUARD_M = 30
 M.GUARD_S = 0.5
+M.FALL_MS = -12         -- a parked car falling faster than this (m/s) is off the ground: moved too
 M.enabled = true
 
 local spots = {}        -- tile key -> { anchor, rows }
@@ -49,8 +50,18 @@ function M.dropKey(key)
   end
 end
 
--- The player teleported: the parked cars go to the new place's spots once it has them.
-function M.onTeleport() scatterPending = true end
+-- The player teleported: the parked cars go inactive (their old positions have no ground) and come back on the
+-- new place's spots once it has them.
+local heldActive = nil
+function M.onTeleport()
+  scatterPending = true
+  local gp = gameplay_parking
+  if gp and gp.getState() and not heldActive then
+    local vars = gp.getParkingVars and gp.getParkingVars() or {}
+    heldActive = vars.activeAmount or math.huge
+    pcall(gp.setActiveAmount, 0)
+  end
+end
 
 -- the stock extensions the parked cars need (a level without traffic support loads none of them;
 -- setupVehicles spawns its group through core_multiSpawn)
@@ -87,6 +98,7 @@ function M.inside(b, x, y, m)
 end
 
 -- Rebuilds the sites from the spots near the player; returns the number of spots within START_M.
+local newAnchor = false   -- the next rebuild is the first of an anchor
 local function rebuild(player)
   sites = sites or newSites()
   local list = sites.parkingSpots
@@ -114,7 +126,16 @@ local function rebuild(player)
   list:sort()
   sites:finalizeSites()
   local gp = parkingSystem()
-  if gp then gp.setSites(sites) end
+  if gp then
+    gp.setSites(sites)
+    if newAnchor and gp.getState() and gp.onVehicleResetted and be then
+      -- the stock system caches the spots it found near the player (currParkingSpots): an anchor's spots are
+      -- in another frame, so it looks again (its player-reset path)
+      local me = be:getPlayerVehicleID(0)
+      if me and me >= 0 then pcall(gp.onVehicleResetted, me) end
+    end
+  end
+  newAnchor = false
   return near
 end
 
@@ -126,7 +147,8 @@ local function guard(player)
     local o = getObjectByID(id)
     if o and o:getActive() then
       local p = o:getPosition()
-      if not M.inside(box, p.x, p.y, M.GUARD_M) then
+      local falling = o:getVelocity().z < M.FALL_MS               -- off the ground (a stale spot): rescue it
+      if falling or not M.inside(box, p.x, p.y, M.GUARD_M) then
         pcall(gp.forceTeleport, id, vec3(player.x, player.y, player.z), 0, M.START_M)
       end
     end
@@ -139,6 +161,7 @@ function M.update(aid, player, blk)
     anchorId = aid
     objs = {}
     dirty = true
+    newAnchor = true
   end
   if blk and (not box or blk[1] ~= box[1] or blk[2] ~= box[2]) then
     box = { blk[1], blk[2], blk[3], blk[4] }
@@ -170,7 +193,11 @@ function M.update(aid, player, blk)
     scatterPending = false
   elseif scatterPending then
     scatterPending = false
-    if gp.getState() then gp.scatterParkedCars() end
+    if heldActive then
+      pcall(gp.setActiveAmount, heldActive)
+      heldActive = nil
+    end
+    if gp.getState() then pcall(gp.scatterParkedCars) end
   end
 end
 
@@ -184,7 +211,7 @@ end
 -- The level ended: the stock system forgets our sites with it.
 function M.reset()
   spots, objs, anchorId, dirty, lastBuild, sites = {}, {}, nil, false, -math.huge, nil
-  box, lastGuard = nil, -math.huge
+  box, lastGuard, heldActive = nil, -math.huge, nil
   started, scatterPending = false, false
 end
 

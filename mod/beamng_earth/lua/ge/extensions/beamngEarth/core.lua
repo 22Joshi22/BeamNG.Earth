@@ -1174,6 +1174,7 @@ teleportTo = function(lat, lon, name, kind)
   if requestAnchor(lat, lon, 'teleport') then
     setStatus(string.format('Preparing terrain at %.5f, %.5f ...', lat, lon))
     parking.onTeleport()
+    navgraph.onTeleport()
     if kind ~= 'tool' then
       local ok, err = pcall(places.noteTeleport, lat, lon, name, kind)
       if not ok then log('W', 'beamngEarth', 'recent places: ' .. tostring(err)) end
