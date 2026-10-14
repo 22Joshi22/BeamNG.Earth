@@ -87,13 +87,102 @@ function M.onMessage(msg, currentAnchor)
   if not M.enabled or msg.anchorId ~= currentAnchor then return false end
   local ok, g = pcall(jsonDecode, readFile(msg.path) or '')
   if not ok or type(g) ~= 'table' or type(g.nodes) ~= 'table' or type(g.edges) ~= 'table' then return false end
-  graph = { anchor = msg.anchorId, serial = msg.serial, nodes = g.nodes, edges = g.edges }
+  graph = { anchor = msg.anchorId, serial = msg.serial, nodes = g.nodes, edges = g.edges,
+            signals = type(g.signals) == 'table' and g.signals or {} }
   dirty = true
   return true
 end
 
+-- Traffic signals and stop signs (core_trafficSignals, research §5): the server's controlled junctions whose
+-- node and approach nodes are in the clipped graph. A signalled junction is one sequence of two phases (its
+-- approaches split by axis, US lightsBasic timings from the approach speed), a stop junction shares one signStop
+-- controller; an instance's pos is the stop point on its approach's right half, dir the travel direction.
+M.SIGNAL_TYPE = 'lightsBasic'
+-- the switchable head (the stock boom, instanced_trafficlight material): one TSStatic per approach where the
+-- road tile's static boom stands (trees.lua's signal group is hidden while these exist)
+M.SIGNAL_SHAPE = '/art/shapes/objects/s_trafficlight_boom_sn.dae'
+local heads = {}        -- TSStatic ids of the heads made for the graph in use
+
+local function clearHeads()
+  for _, id in ipairs(heads) do
+    local o = scenetree.findObjectById(id)
+    if o then o:delete() end
+  end
+  heads = {}
+end
+
+local function makeHead(inst, a)
+  if not a[8] or not inst.createSignalObject then return end
+  local o = inst:createSignalObject(M.SIGNAL_SHAPE, vec3(a[8], a[9], a[10]), quat(0, 0, 0, 1))
+  if not o then return end
+  local m = MatrixF(true)
+  m:setFromEuler(vec3(0, 0, math.rad(a[11] or 0)))      -- as trees.lua turns the static boom
+  m:setPosition(vec3(a[8], a[9], a[10]))
+  o:setTransform(m)
+  heads[#heads + 1] = o:getID()
+end
+
+local function signalData(nodes)
+  local ts = core_trafficSignals
+  local inst, ctrls, seqs = {}, {}, {}
+  local stop = nil
+  local ns = 0
+  for _, j in ipairs(graph.signals or {}) do
+    local jn = nodes[j.j]
+    if jn and type(j.app) == 'table' then
+      local apps = {}
+      for _, a in ipairs(j.app) do if nodes[a[1]] then apps[#apps + 1] = a end end
+      if #apps > 0 then
+        ns = ns + 1
+        local cs = {}
+        if j.kind == 'signal' then
+          local speed = 13
+          for _, l in pairs(jn.links) do speed = math.max(speed, l.speedLimit or 0) end
+          for ph = 0, 1 do
+            local c = ts.newController({ name = 'bne_' .. j.j .. '_' .. ph })
+            c:applyDefinition(M.SIGNAL_TYPE)
+            if c.autoSetTimings then c:autoSetTimings(speed, 2 * jn.radius + 6) end
+            ctrls[#ctrls + 1] = c
+            cs[ph] = c
+          end
+          local seq = ts.newSequence({ name = 'bne_' .. j.j, phases = { { controllerIds = { cs[0].id } },
+            { controllerIds = { cs[1].id } } } })
+          seqs[#seqs + 1] = seq
+          for i, a in ipairs(apps) do
+            local s = ts.newSignal({ name = 'bne_' .. j.j .. '_' .. i, pos = vec3(a[2], a[3], a[4]),
+              dir = vec3(a[5], a[6], 0), controllerId = cs[a[7] == 1 and 1 or 0].id, sequenceId = seq.id })
+            inst[#inst + 1] = s
+            local okH, errH = pcall(makeHead, s, a)
+            if not okH then log('W', 'beamngEarth', 'navgraph: signal head: ' .. tostring(errH)) end
+          end
+        else
+          if not stop then
+            stop = ts.newController({ name = 'bne_stop' })
+            stop:applyDefinition('signStop')
+            ctrls[#ctrls + 1] = stop
+          end
+          for i, a in ipairs(apps) do
+            inst[#inst + 1] = ts.newSignal({ name = 'bne_' .. j.j .. '_' .. i, pos = vec3(a[2], a[3], a[4]),
+              dir = vec3(a[5], a[6], 0), controllerId = stop.id })
+          end
+        end
+      end
+    end
+  end
+  return { instances = inst, controllers = ctrls, sequences = seqs }, ns
+end
+
+local function signalsSystem()
+  if not core_trafficSignals and extensions and extensions.load then pcall(extensions.load, 'core_trafficSignals') end
+  return core_trafficSignals
+end
+
 local function apply(b)
   local nodes, nn, ne = M.toNodes(graph, b, M.EDGE_M, M.rules.rightHandDrive)
+  local ts = signalsSystem()
+  -- before the reset: its onNavgraphReloaded would place the old instances on the new graph (research §2.8)
+  if ts then pcall(ts.resetSignals) end
+  clearHeads()
   writeFile(M.RULES_FILE, jsonEncode({ roadRules = M.rules }))
   local orig = path.getPathLevelInfo
   path.getPathLevelInfo = function() return M.RULES_FILE end
@@ -115,6 +204,20 @@ local function apply(b)
     persistent = m.nodes
   end
   be:queueAllObjectLua('mapmgr.requestMap()')
+  if ts then
+    local okS, err2 = pcall(function()
+      local data, ns = signalData(nodes)
+      ts.setupSignals(data, false, true)
+      -- a vehicle holding signals reads the state-change mailbox every frame and dies on one never written
+      -- ("lpack: unexpected end of buffer", in game 2026-10-14): write an empty update before handing them out
+      be:sendToMailbox('trafficSignalUpdates', lpack.encodeBin({}))
+      be:queueAllObjectLua('mapmgr.setSignals(' .. serialize(ts.getMapNodeSignals()) .. ')')
+      stats.junctions = ns
+      -- the road tiles' static booms stand where the switchable heads are now
+      require('beamngEarth/trees').GROUP_MAX_M.signal = #heads > 0 and 0 or 500
+    end)
+    if not okS then log('W', 'beamngEarth', 'navgraph: signals: ' .. tostring(err2)) end
+  end
   stats.applies, stats.lastMs, stats.nodes, stats.edges = stats.applies + 1, (os.clock() - t0) * 1000, nn, ne
   return true
 end
@@ -212,11 +315,12 @@ end
 
 function M.status()
   return { graph = graph and graph.serial or nil, applies = stats.applies, lastMs = stats.lastMs,
-           nodes = stats.nodes, edges = stats.edges, started = started,
+           nodes = stats.nodes, edges = stats.edges, junctions = stats.junctions, started = started,
            traffic = gameplay_traffic and gameplay_traffic.getState() or nil }
 end
 
 function M.reset()
+  heads = {}            -- (the level took them with it)
   graph, applied, dirty, lastApply, persistent, ours, foreign = nil, nil, false, -math.huge, nil, false, false
   started, respawnAll, lastGuard, heldActive = false, false, -math.huge, nil
   stats = { applies = 0, lastMs = 0, nodes = 0, edges = 0 }

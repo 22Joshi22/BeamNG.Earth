@@ -155,6 +155,26 @@ def _arms(roads):
     return ends
 
 
+def junction_controls(arms, k):
+    """[(arm, G_SIGNAL | G_STOP)] of an urban junction's arms (fid, spec, unit vector away, point): signals on
+    every arm where two or more major roads meet, stop signs on the minor arms meeting a major road, on the
+    stem of a minor T and on half the minor four-ways (hashed by k, the junction's key). Shared with
+    navgraph.py, so the AI's signals and stop signs are where the props stand."""
+    major = [a for a in arms if a[1].cls in MAJOR]
+    minor = [a for a in arms if a[1].cls in MINOR]
+    signalled = len(major) >= 3 or (len(major) >= 2 and len(arms) >= 4)
+    if signalled:
+        return [(a, G_SIGNAL) for a in arms if a[1].cls in MAJOR | MINOR]
+    if major:
+        return [(a, G_STOP) for a in minor]
+    if len(arms) == 3:
+        # the stem: the arm least in line with another
+        def straightest(a):
+            return max(-float(a[2] @ b[2]) for b in arms if b is not a)
+        return [(min(arms, key=straightest), G_STOP)] if all(a[1].cls in MINOR for a in arms) else []
+    return [(a, G_STOP) for a in minor] if _h01("allway", k) < 0.5 else []
+
+
 def junction_props(roads, box, curb_h=0.15):
     """Signals at urban junctions of two or more major roads (every arm), stop signs at urban junctions
     of minor roads (the minor arms meeting a major road; the stem of a T; half the four-way ones, hashed).
@@ -167,20 +187,7 @@ def junction_props(roads, box, curb_h=0.15):
         p = arms[0][3]
         if not (x0 <= p[0] < x1 and y0 <= p[1] < y1):
             continue
-        major = [a for a in arms if a[1].cls in MAJOR]
-        minor = [a for a in arms if a[1].cls in MINOR]
-        signalled = len(major) >= 3 or (len(major) >= 2 and len(arms) >= 4)
-        if signalled:
-            put = [(a, G_SIGNAL) for a in arms if a[1].cls in MAJOR | MINOR]
-        elif major:
-            put = [(a, G_STOP) for a in minor]
-        elif len(arms) == 3:
-            # the stem: the arm least in line with another
-            def straightest(a):
-                return max(-float(a[2] @ b[2]) for b in arms if b is not a)
-            put = [(min(arms, key=straightest), G_STOP)] if all(a[1].cls in MINOR for a in arms) else []
-        else:
-            put = [(a, G_STOP) for a in minor] if _h01("allway", k) < 0.5 else []
+        put = junction_controls(arms, k)
         if not put:
             continue
         wide = max(a[1].width for a in arms) / 2

@@ -63,6 +63,7 @@ def build(frame, feats_list, elev, centre, urban_fn=None, window=WINDOW_M):
     are taken once). elev(lat, lon) -> metres."""
     cx, cy = centre
     nodes, edges, seen = {}, [], set()
+    arms = {}               # connector name -> [(fid, spec, unit vector away, point, neighbour, incoming)]
     pending = {}            # name -> (x, y) of nodes whose z is still to sample
     for feats in feats_list:
         if feats is None or len(feats) == 0:
@@ -141,6 +142,19 @@ def build(frame, feats_list, elev, centre, urban_fn=None, window=WINDOW_M):
                     if ow.start[r] <= mid <= ow.end[r]:
                         direction = int(ow.value[r])
             lo, li = _lanes(w, direction != 0)
+            # the junction arms at this road's two ends (furniture.junction_controls decides the signals)
+            for end in (0, -1):
+                j, nb = (0, 1) if end == 0 else (len(names) - 1, len(names) - 2)
+                if not names[j].startswith("c") or names[j] == names[nb]:
+                    continue
+                d = xy[nb] - xy[j]
+                dl = float(np.hypot(*d))
+                if dl < 1e-6:
+                    continue
+                # traffic comes into the junction on this arm unless it is one-way out of it
+                incoming = direction == 0 or (direction > 0) == (end == -1)
+                arms.setdefault(names[j], []).append(
+                    (fid, spec, d / dl, np.array([xy[j][0], xy[j][1], 0.0]), names[nb], incoming))
             for j in range(len(names) - 1):
                 a, b = names[j], names[j + 1]
                 if a == b:
@@ -167,6 +181,7 @@ def build(frame, feats_list, elev, centre, urban_fn=None, window=WINDOW_M):
                 radius[nm] = max(radius.get(nm, 0.0), e[7])
         for nm, x, y, z in zip(used, X, Y, Z):
             nodes[nm] = [round(float(x), 2), round(float(y), 2), round(float(z), 2), radius[nm]]
+    signals = _signals(arms, nodes)
     # one edge per node pair (two segments joining the same connectors: keep the first)
     uniq, pairs = [], set()
     for e in edges:
@@ -174,7 +189,50 @@ def build(frame, feats_list, elev, centre, urban_fn=None, window=WINDOW_M):
         if k not in pairs:
             pairs.add(k)
             uniq.append(e)
-    return {"nodes": nodes, "edges": uniq}
+    return {"nodes": nodes, "edges": uniq, "signals": signals}
+
+
+STOP_BACK_M = 2.0           # the stop point: this far before the junction's widest road edge
+
+
+def _signals(arms, nodes):
+    """[{"j": junction node, "kind": "signal" | "stop", "app": [[approach node, x, y, z, dir x, dir y, phase]]}] of
+    the urban junctions furniture.junction_controls controls: per incoming approach, its stop point on the right
+    half of the approach (where the AI's closest-edge search finds that approach) and the travel direction; the
+    signals' phase (0 / 1) by the approach's axis."""
+    import furniture
+    out = []
+    for name, a in arms.items():
+        if name not in nodes or len(a) < 3 or not all(x[1].urban for x in a):
+            continue
+        p = a[0][3]
+        k = (round(float(p[0]) / furniture.JUNCTION_SNAP_M), round(float(p[1]) / furniture.JUNCTION_SNAP_M))
+        put = furniture.junction_controls([x[:4] for x in a], k)
+        if not put:
+            continue
+        kind = "signal" if put[0][1] == furniture.G_SIGNAL else "stop"
+        axis = put[0][0][2]
+        wide = max(x[1].width for x in a) / 2
+        jx, jy, jz = nodes[name][:3]
+        app = []
+        for arm, _ in put:
+            full = next(x for x in a if x[:4] is arm or (x[0] == arm[0] and x[2] is arm[2]))
+            fid, spec, u, _, nb, incoming = full
+            if not incoming or nb not in nodes:
+                continue
+            inc = -u
+            right = np.array([inc[1], -inc[0]])
+            q = np.array([jx, jy]) + u * (wide + STOP_BACK_M) + right * (spec.width / 4)
+            phase = 0 if abs(float(u @ axis)) > 0.7 else 1
+            # the head's prop where furniture.junction_props stands it (the switchable stock boom replaces it)
+            pp = np.array([jx, jy]) + u * (wide + 2.5) + right * (spec.width / 2 + 1.0)
+            app.append([nb, round(float(q[0]), 2), round(float(q[1]), 2), round(jz, 2),
+                        round(float(inc[0]), 4), round(float(inc[1]), 4), phase,
+                        round(float(pp[0]), 2), round(float(pp[1]), 2), round(jz + 0.15, 2),
+                        round(furniture._yaw(right[0], right[1]), 1)])
+        if app:
+            out.append({"j": name, "kind": kind, "app": app})
+    return out
 
 
 REBUILD_M = 400.0           # a new graph once the player is this far from the last one's centre
