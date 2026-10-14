@@ -421,6 +421,32 @@ local function playerHeading()
   return (math.deg(math.atan2(dir.x, dir.y)) + 360) % 360
 end
 
+-- The map's basemap tiles as files (the game's UI browser cancels every http request, even to 127.0.0.1): list
+-- {{z, x, y}, ...} the map shows; returns the keys "z/x/y" whose file is there (/temp/beamngEarth/maptiles/z/x/y.jpg)
+-- and asks the server for the others (map_tiles; each at most every MAP_ASK_S).
+M.MAP_ASK_S = 8
+M.MAP_TILES_DIR = '/temp/beamngEarth/maptiles/'
+local mapAsked = {}
+function M.mapTiles(list)
+  local ready, missing = {}, {}
+  local now = os.clock()
+  for _, t in ipairs(type(list) == 'table' and list or {}) do
+    local z, x, y = tonumber(t[1]), tonumber(t[2]), tonumber(t[3])
+    if z and x and y then
+      local key = string.format('%d/%d/%d', z, x, y)
+      if FS:fileExists(M.MAP_TILES_DIR .. key .. '.jpg') then
+        ready[#ready + 1] = key
+      elseif not mapAsked[key] or now - mapAsked[key] > M.MAP_ASK_S then
+        mapAsked[key] = now
+        missing[#missing + 1] = { z, x, y }
+      end
+    end
+  end
+  local core = ext('beamngEarth_core')
+  if #missing > 0 and core and core.requestMapTiles then core.requestMapTiles(missing) end
+  return ready
+end
+
 -- What the map polls every second: the player, the places, the tile endpoint, the credits.
 function M.uiMapState()
   local core = ext('beamngEarth_core')

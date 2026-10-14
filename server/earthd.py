@@ -515,6 +515,7 @@ class Server:
                         if imagery else None)
         self.imagery_failures = 0           # tiles that fell back to the palette (network trouble)
         self.map_port = None                # the in-game map's tile endpoint (maptiles.py), hello.mapPort
+        self.map_tiles = None               # its MapTiles: also written as files on request (map_tiles message)
         # (anchorId, key) of cached tiles built with the palette because the imagery failed; shown in
         # the status note (re-texturing them once the host is back is a ROADMAP follow-up)
         self.degraded = set()
@@ -1766,6 +1767,47 @@ class Connection:
         self.ground_sent = None                 # (anchor id, z, monotonic) of the last ground_ahead sent
         self.following = True                   # the mod moves its block (pose "follow"; false high up)
 
+    MAP_TILES_MAX = 48          # tiles per map_tiles request
+
+    async def map_tiles(self, msg):
+        """The world map's basemap tiles {"tiles": [[z, x, y], ...]}: each written once to
+        <user>/temp/beamngEarth/maptiles/z/x/y.jpg (the game's UI loads it from there: its browser cancels every
+        http request, even to 127.0.0.1), then map_tiles_ready {"tiles": [[z, x, y, ok], ...]}."""
+        mt = getattr(self.s, "map_tiles", None)
+        if mt is None:
+            return
+        want = []
+        for t in (msg.get("tiles") or [])[:self.MAP_TILES_MAX]:
+            try:
+                z, x, y = (int(v) for v in t[:3])
+                maptilesmod.check_tile(z, x, y)
+            except (TypeError, ValueError, IndexError):
+                continue
+            want.append((z, x, y))
+        root = os.path.join(self.s.root, "maptiles")
+
+        def build():
+            out = []
+            for z, x, y in want:
+                path = os.path.join(root, str(z), str(x), f"{y}.jpg")
+                ok = os.path.exists(path)
+                if not ok:
+                    try:
+                        r = mt.tile(z, x, y)
+                    except Exception as e:      # an unreachable source: the UI asks again later
+                        log.debug("map tile %d/%d/%d: %s", z, x, y, e)
+                        r = None
+                    if r is not None:
+                        os.makedirs(os.path.dirname(path), exist_ok=True)
+                        with open(path + ".tmp", "wb") as f:
+                            f.write(r[0])
+                        os.replace(path + ".tmp", path)
+                        ok = True
+                out.append([z, x, y, ok])
+            return out
+        out = await asyncio.to_thread(build)
+        self.send({"type": "map_tiles_ready", "tiles": out})
+
     def send(self, msg):
         if not self.writer.is_closing():
             self.writer.write(protocol.encode(msg))
@@ -1887,6 +1929,8 @@ class Connection:
             self.commit_terrain(msg)
         elif kind == "pose":
             self.on_pose(msg)
+        elif kind == "map_tiles":               # the in-game map's tiles, as files (the UI cannot fetch http)
+            self.spawn(self.map_tiles(msg))
         elif kind == "cache":
             self.on_cache(msg)
         elif kind == "roads_reset":             # the mod dropped its roads (settings): send them all again
@@ -2694,8 +2738,8 @@ async def main_async(args):
     map_srv = None
     if getattr(args, "map_tiles", "on") == "on" and server.imagery is not None:
         try:                        # the world map's tiles, 127.0.0.1 only (a failure only loses the map)
-            map_srv, server.map_port = await maptilesmod.MapTiles(server.imagery).start(
-                getattr(args, "map_port", 0))
+            server.map_tiles = maptilesmod.MapTiles(server.imagery)
+            map_srv, server.map_port = await server.map_tiles.start(getattr(args, "map_port", 0))
             log.info("map tiles on http://127.0.0.1:%d/tiles/{z}/{x}/{y}.jpg", server.map_port)
         except OSError as e:
             log.warning("map tiles off: %s", e)

@@ -106,6 +106,7 @@ MOD_TO_SERVER = {
     "cache": {"capGb": F(NUM, OPT), "clear": F(bool, OPT)},
     # roads (roads.py; additive): the mod removed its roads (switched off and on again): send them again
     "roads_reset": {},
+    "map_tiles": {"tiles": F(list)},       # the world map's basemap tiles as files (settings.mapTiles)
 }
 CAM = {"x", "y", "z", "fx", "fy", "fz", "fovDeg"}
 TERRAIN = {"cx": F(NUM), "cy": F(NUM), "heightmap": F(str), "size": F(int), "squareSize": F(NUM),
@@ -114,6 +115,7 @@ TERRAIN = {"cx": F(NUM), "cy": F(NUM), "heightmap": F(str), "size": F(int), "squ
            "base": F(str, OPT), "baseSize": F(NUM, OPT),           # --near-visual detail: the block's photo
            "ter": F(str, OPT)}                                     # the block as a .ter (swapped in, no import)
 SERVER_TO_MOD = {
+    "map_tiles_ready": {"tiles": F(list)},  # [z, x, y, ok] each: written to <user>/temp/beamngEarth/maptiles
     "hello": {"protocol": F(int), "format": F(int), "serverVersion": F(str), "sessionId": F(str),
               "farFormat": F(str), "material": F(str),
               "nearVisual": F(str), "attribution": F(str),          # protocol 4
@@ -186,7 +188,8 @@ EXERCISED_ELSEWHERE = {"far_retex", "roads_tile", "roads_drop",   # roads: needs
                        "sea",                                        # --sea on: needs map data (test_seacarve)
                        "veg_tile", "veg_drop",                       # --trees on: needs map data
                        "bldfar_tile", "bldfar_drop",                 # --buildings on: needs map data
-                       "navgraph"}                                   # --traffic on: needs map data
+                       "navgraph",                                   # --traffic on: needs map data
+                       "map_tiles_ready"}                            # only when the world map asks (map_tiles)
 # events the mod's net.lua makes up itself (not on the wire)
 MOD_INTERNAL = {"_connected": set(), "_disconnected": {"error"}}
 

@@ -97,7 +97,7 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, onUnmounted, nextTick } from "vue"
+import { ref, computed, watch, onMounted, onUnmounted, nextTick } from "vue"
 import * as mm from "./mapmath.js"
 
 const props = defineProps({ embedded: { type: Boolean, default: false } })
@@ -137,13 +137,35 @@ function poll() {
   })
 }
 
-const tileBase = computed(() => (state.value.mapPort ? `http://127.0.0.1:${state.value.mapPort}/tiles/` : null))
-
-const tiles = computed(() => {
+// Tiles are files the server writes into the game's temp folder on request (the game's UI browser cancels every
+// http request, even to 127.0.0.1): beamngEarth_settings.mapTiles reports which are there and asks for the rest.
+const TILE_DIR = "/temp/beamngEarth/maptiles/"
+const readyTiles = ref(new Set())
+const tileBase = computed(() => (state.value.mapPort ? TILE_DIR : null))
+const wanted = computed(() => {
   if (!tileBase.value) return []
   const v = view.value
-  return mm.visibleTiles(v.lat, v.lon, v.z, w.value, h.value).map(t => ({ ...t, src: `${tileBase.value}${t.z}/${t.x}/${t.y}.jpg` }))
+  return mm.visibleTiles(v.lat, v.lon, v.z, w.value, h.value)
 })
+function askTiles() {
+  const want = wanted.value.filter(t => !readyTiles.value.has(`${t.z}/${t.x}/${t.y}`))
+  if (!want.length) return
+  const list = JSON.stringify(want.slice(0, 48).map(t => [t.z, t.x, t.y]))
+  engineLua(`beamngEarth_settings and beamngEarth_settings.mapTiles and beamngEarth_settings.mapTiles(jsonDecode('${list}')) or {}`, r => {
+    if (!Array.isArray(r) || !r.length) return
+    const s = new Set(readyTiles.value)
+    r.forEach(k => s.add(k))
+    readyTiles.value = s
+  })
+}
+let askTimer = null
+watch(wanted, () => { clearTimeout(askTimer); askTimer = setTimeout(askTiles, 120) })
+const askLoop = setInterval(askTiles, 1000)
+onUnmounted(() => { clearInterval(askLoop); clearTimeout(askTimer) })
+
+const tiles = computed(() => wanted.value
+  .filter(t => readyTiles.value.has(`${t.z}/${t.x}/${t.y}`))
+  .map(t => ({ ...t, src: `${TILE_DIR}${t.z}/${t.x}/${t.y}.jpg` })))
 
 function onTileLoad() { tileLoads.value++ }
 function onTileError(ev, t) {

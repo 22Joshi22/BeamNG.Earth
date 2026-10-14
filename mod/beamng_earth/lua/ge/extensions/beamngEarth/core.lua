@@ -695,6 +695,8 @@ local function onMessage(msg)
     roads.onFarTile(msg, st.anchorId)
   elseif t == 'bldfar_drop' then
     roads.onFarDrop(msg)
+  elseif t == 'map_tiles_ready' then
+    -- the world map's tile files are written (settings.mapTiles: the map finds them on its next poll)
   elseif t == 'navgraph' then
     -- the AI road graph around the player (server navgraph.py, --traffic on): map.reset (navgraph.lua)
     navgraph.onMessage(msg, st.anchorId)
@@ -1104,9 +1106,9 @@ end
 
 local function onLevelStart()
   -- the connection outlives levels: keep its session and the request id sequence
-  local sessionId, nextRequestId = st.sessionId, st.nextRequestId
+  local sessionId, nextRequestId, mapPort = st.sessionId, st.nextRequestId, st.mapPort
   resetState()
-  st.sessionId, st.nextRequestId = sessionId, nextRequestId
+  st.sessionId, st.nextRequestId, st.mapPort = sessionId, nextRequestId, mapPort   -- the connection's (hello)
   farfield.forget()
   terrain.onLevelChanged()
   st.inOurLevel = getCurrentLevelIdentifier() == LEVEL_ID
@@ -1158,9 +1160,9 @@ local function onClientEndMission()
   trees.reset()
   parking.reset()
   navgraph.reset()
-  local sessionId, nextRequestId = st.sessionId, st.nextRequestId
+  local sessionId, nextRequestId, mapPort = st.sessionId, st.nextRequestId, st.mapPort
   resetState()
-  st.sessionId, st.nextRequestId = sessionId, nextRequestId
+  st.sessionId, st.nextRequestId, st.mapPort = sessionId, nextRequestId, mapPort   -- the connection's (hello)
 end
 
 local function onExtensionLoaded()
@@ -1348,6 +1350,11 @@ function M.cacheQuery()
   if not cacheReady() then return false end
   net.send({ type = 'cache' })
   return true
+end
+
+-- The world map asks for basemap tiles as files (settings.mapTiles; {{z, x, y}, ...}).
+function M.requestMapTiles(tiles)
+  if net.isConnected() then net.send({ type = 'map_tiles', tiles = tiles }) end
 end
 
 function M._state() return st end -- read-only: the dev tools and the settings page
