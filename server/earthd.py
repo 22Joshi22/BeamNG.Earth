@@ -431,7 +431,7 @@ class Server:
                  block=BLOCK_DEFAULT, horizon=False, deshadow="off", weather=None, gravity=None, net=None,
                  colormatch="off", credits=None, cache=None, retex_rate=RETEX_RATE, surface=None,
                  mapdata=None, grading=False, road_widths=False, block_pools=(), sidewalks=True, buildings=False, traffic=False, far_pool=None,
-                 road_pool=None, airports_db=None, sea=None, vegetation=None):
+                 road_pool=None, airports_db=None, sea=None, vegetation=None, leaf_on=True, season_mode="off"):
         """kfun: K(L) for every level (default: the layout's K table); near_radii: the min-level
         radii (default: the layout's); cells: 32 (v1.3.1) or 64 (M1, mesh mode only); tex: texture
         px per level from the finest (default: tex_near, tex_near, tex_far with 32 cells,
@@ -509,7 +509,8 @@ class Server:
         self._retex_timer = None
         self.retex_stats = {"started": 0, "sent": 0, "dropped": 0}
         self.imagery = (imagerymod.Imagery(os.path.join(cache_dir, "imagery"), imagery, tone=tone,
-                                           deshadow=self.deshadow, colormatch=self.colormatch, fetcher=self.net)
+                                           deshadow=self.deshadow, colormatch=self.colormatch, fetcher=self.net,
+                                           leaf_on=leaf_on, season_mode=season_mode)
                         if imagery else None)
         self.imagery_failures = 0           # tiles that fell back to the palette (network trouble)
         # (anchorId, key) of cached tiles built with the palette because the imagery failed; shown in
@@ -2618,6 +2619,7 @@ async def main_async(args):
     server = Server(args.user_dir, args.cache_dir, args.workers, kfun, args.hysteresis, args.far_radius, fmt,
                     imagery=args.imagery, near_visual=args.near_visual, tex_near=args.tex_near,
                     tex_far=args.tex_far, tone=args.tone, near_radii=radii,
+                    leaf_on=args.leaf_on == "on", season_mode=args.season,
                     status_interval=args.status_interval, cells=args.cells, tex=args.tex, block=args.block,
                     horizon=args.horizon, deshadow=args.deshadow, colormatch=args.colormatch,
                     weather=(weathermod.Service(fetch=lambda lat, lon: weathermod.fetch(lat, lon, net=net))
@@ -2782,6 +2784,12 @@ def main():
     ap.add_argument("--tex-near", type=parse_tex_px, default=TEX_NEAR,
                     help="32 cells: texture size (px) of the two finest levels")
     ap.add_argument("--tex-far", type=parse_tex_px, default=TEX_FAR, help="32 cells: texture size (px) of the other levels")
+    ap.add_argument("--leaf-on", choices=("on", "off"), default="on",
+                    help="leaf-off imagery (Maryland's six-inch photos: bare trees, dormant grass) takes the summer "
+                         "mosaic's colour in its vegetation (season.py; default on)")
+    ap.add_argument("--season", choices=("auto", "fall", "off"), default="auto",
+                    help="the season in the imagery: auto = today's date at the place (fall colours in the tree "
+                         "canopy from about October at 40 N), fall = full fall, off = the summer look (season.py)")
     ap.add_argument("--tone", type=float, default=1.0,
                     help="strength of the imagery tone curve (0 = the imagery as downloaded)")
     ap.add_argument("--deshadow", choices=deshadowmod.MODES, default="off",

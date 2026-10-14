@@ -44,6 +44,7 @@ from PIL import Image, ImageFilter
 import cache as cachemod
 import dem as demmod
 import netfetch
+import season
 
 log = logging.getLogger("earthd.imagery")
 
@@ -94,6 +95,9 @@ class Source:
     bounds: tuple = ()
     # The colour an export source fills outside its data with ("black" or "white"), see NODATA_*
     nodata: str = "black"
+    # Flown leaf-off (bare trees, dormant grass): render() gives its vegetation the summer reference's colour
+    # (season.leaf_on) when the Imagery's leaf_on is set
+    leaf_off: bool = False
 
 
 SOURCES = {
@@ -133,7 +137,7 @@ SOURCES["md6in"] = Source(
     "md6in", "https://mdgeodata.md.gov/imagery/rest/services/SixInch/SixInchImagery2023_2024_2025/MapServer/export"
              "?bbox={bbox}&bboxSR=3857&imageSR=3857&size={size},{size}&format=jpg&f=image",
     17, "State of Maryland, MD iMAP / DoIT six-inch imagery", min_zoom=17, export=2, lazy=True,
-    bounds=(37.88, -79.49, 39.73, -75.04), nodata="white")
+    bounds=(37.88, -79.49, 39.73, -75.04), nodata="white", leaf_off=True)
 DEFAULT_CHAIN = ("md6in", "naipusda", "naip", "usgs", "eox2023", "eox2016")
 # The line the mod shows (V1_3_SPEC §C), for the default chain: every source's own credit, EOX's in
 # its June 2026 wording (docs/research/2026-10-10-rate-limits.md: "EOxCloudless https://cloudless.eox.at
@@ -269,18 +273,22 @@ class Imagery:
     disk = cachemod.NONE    # the server's cache.Cache (last use per file, the size cap); set by earthd
 
     def __init__(self, cache_dir, chain=DEFAULT_CHAIN, fetch_workers=FETCH_WORKERS, mem_tiles=MEM_TILES,
-                 tone=1.0, deshadow=None, colormatch=None, fetcher=None):
+                 tone=1.0, deshadow=None, colormatch=None, fetcher=None, leaf_on=True, season_mode="off"):
         """deshadow: an optional deshadow.Deshadow (--deshadow lambert|full): _mosaic relights its
         source's tiles; None = the imagery as served (byte-identical textures).
         colormatch: an optional colormatch.ColorMatch (--colormatch s2): _mosaic removes the colour
         seams of its source's tiles, after the relight and before the tone curve; None = off.
-        fetcher: the server's netfetch.Fetcher (shared limits); None = one of its own."""
+        fetcher: the server's netfetch.Fetcher (shared limits); None = one of its own.
+        leaf_on: leaf-off sources' vegetation takes the summer reference's colour (season.leaf_on).
+        season_mode: the season grade of every texture (season.amounts_for: "auto" = today's, "fall", "off")."""
         self.cache_dir = cache_dir
         self.chain = tuple(SOURCES[s] if isinstance(s, str) else s for s in chain)
         self.fetcher = fetcher if fetcher is not None else netfetch.Fetcher()
         self.fetcher.register_chain("imagery", [s.url for s in self.chain])
         self.pool = ThreadPoolExecutor(min(fetch_workers, FETCH_WORKERS), thread_name_prefix="img-fetch")
         self.mem_tiles = mem_tiles
+        self.leaf_on = leaf_on
+        self.season_mode = season_mode
         self.lut = tone_lut(tone)
         self.lut_table = self.lut.tolist() * 3          # Image.point: one LUT per band
         self.deshadow = deshadow
@@ -796,16 +804,38 @@ class Imagery:
         around it (USGS, colour-matched and de-shadowed) without a seam (in-game 2026-10-13, Annapolis: the
         NAIP block was a darker, greener square, its water much darker)."""
         rgb, used = self._render(frame, x0, y0, size, px, pending)
-        if not any(s.lazy and s.name in used for s in self.chain) or all(s.lazy for s in self.chain):
-            return rgb, used
-        # the reference only gives the colour above MATCH_SIGMA_M: rendered and matched at MATCH_DOWN times
-        # coarser texels (64x fewer texels to render, blur and stream through memory than at full size)
-        small = max(MATCH_MIN_PX, px // MATCH_DOWN)
-        try:
-            ref, _ = self._render(frame, x0, y0, size, small, pending, skip_lazy=True)
-        except ImageryError:            # the reference is unreachable: NAIP as served
-            return rgb, used
-        return match_colours(rgb, ref, MATCH_SIGMA_M / (size / small)), used
+        if any(s.lazy and s.name in used for s in self.chain) and not all(s.lazy for s in self.chain):
+            # the reference only gives the colour above MATCH_SIGMA_M: rendered and matched at MATCH_DOWN times
+            # coarser texels (64x fewer texels to render, blur and stream through memory than at full size)
+            small = max(MATCH_MIN_PX, px // MATCH_DOWN)
+            try:
+                ref, _ = self._render(frame, x0, y0, size, small, pending, skip_lazy=True)
+            except ImageryError:            # the reference is unreachable: NAIP as served
+                ref = None
+            if ref is not None:
+                rgb = match_colours(rgb, ref, MATCH_SIGMA_M / (size / small))
+                if self.leaf_on and any(s.leaf_off and s.name in used for s in self.chain):
+                    rgb = season.leaf_on(rgb, ref)
+                    used["leafon"] = sum(used.get(s.name, 0) for s in self.chain if s.leaf_off)
+        return self._seasoned(frame, x0, y0, size, rgb), used
+
+    SEASON_GRID = 17            # world positions for the season noise: on this grid, bilinear in between
+
+    def _seasoned(self, frame, x0, y0, size, rgb):
+        """rgb graded toward the season (season.grade; season_mode "off": unchanged)."""
+        if self.season_mode in (None, "off", "summer"):
+            return rgb
+        n = self.SEASON_GRID
+        k = np.linspace(0.0, size, n)
+        E, N = np.meshgrid(x0 + k, y0 + size - k)               # row 0 = north
+        lat, lon, _ = frame.enu_to_geodetic(E, N, 0.0)
+        amounts = season.amounts_for(self.season_mode, float(np.mean(lat)))
+        if not any(v > 0 for v in amounts.values()):
+            return rgb
+        xm, ym = season.world_metres(lat, lon)
+        px = rgb.shape[0]
+        up = lambda a: np.asarray(Image.fromarray(a.astype(np.float32), "F").resize((px, px), Image.BILINEAR))
+        return season.grade(rgb, up(xm - xm.min()) + float(xm.min()), up(ym - ym.min()) + float(ym.min()), amounts)
 
     def _render(self, frame, x0, y0, size, px, pending=None, skip_lazy=False):
         """Texture of the ENU square [x0, x0+size] x [y0, y0+size] (anchor `frame`), px x px,
