@@ -224,7 +224,7 @@ def oriented_box(p):
 
 class Spec:
     """What is built for one footprint (decided by plan())."""
-    __slots__ = ("ring", "floors", "floor_h", "height", "roof", "roof_mat", "facade", "band", "shop", "plain", "min_h", "wall", "door", "windows", "front",
+    __slots__ = ("ring", "floors", "floor_h", "height", "roof", "roof_mat", "facade", "band", "shop", "plain", "min_h", "wall", "door", "windows", "front", "steeple",
                  "seed")
 
     def __init__(self, **kw):
@@ -256,6 +256,7 @@ def plan(ring, attrs, neighbours=0, lat=None, lon=None, look=None, town=False):
     cls = (attrs.get("class") or "").lower()
     name = str(attrs.get("name") or "").lower()
     terminal = any(w in name for w in ("terminal", "concourse"))
+    church = cls in ("church", "chapel", "cathedral") or any(w in name for w in ("church", "chapel", "cathedral"))
     if "hangar" in name:
         cls = "hangar"
     garage = cls in ("parking", "parking_garage") or "parking garage" in name or (
@@ -275,11 +276,15 @@ def plan(ring, attrs, neighbours=0, lat=None, lon=None, look=None, town=False):
         nf = 4 + int(seed * 2)
     if cls == "hangar" and (h is None or not np.isfinite(h)):
         h, nf = 12.0, 1
+    if church and (h is None or not np.isfinite(h)) and (nf is None or not np.isfinite(nf)) and area < 2500:
+        nf = 1                                          # a nave: one tall storey under a steep gable
     h = None if h is None or not np.isfinite(h) or h <= 0 else float(h)
     nf = None if nf is None or not np.isfinite(nf) or nf <= 0 else int(round(nf))
     floor_h = FLOOR_M
     if industrial:
         floor_h = 4.5
+    if church and area < 2500:
+        floor_h = 7.5
     barn = cls in BARN_CLASSES or (shed and area >= 150)
     if barn:
         floor_h = 5.5 if area >= 150 else 3.5          # one tall storey; the gable above it
@@ -309,7 +314,9 @@ def plan(ring, attrs, neighbours=0, lat=None, lon=None, look=None, town=False):
         roof = "gabled"
     else:
         detached_house = (cls in HOUSE_CLASSES or (area < 260 and not shop and not row)) and not industrial
-        if neighbours >= 1:
+        if church and neighbours == 0:
+            roof = "gabled"
+        elif neighbours >= 1:
             roof = "flat"                           # attached: a pitched roof would show its gable to the neighbour
         elif barn:
             roof = "gabled"
@@ -387,7 +394,7 @@ def plan(ring, attrs, neighbours=0, lat=None, lon=None, look=None, town=False):
         facade = f"{SIDING}|{k}"
     return Spec(ring=ring, floors=nf, floor_h=floor_h, height=h, roof=roof, roof_mat=roof_mat, facade=facade,
                 band=band, shop=shop and not shed and nf >= 1, plain=plain, seed=seed, min_h=0.0, wall=wall,
-                windows=windows)
+                windows=windows, steeple=church and roof == "gabled" and area < 2500)
 
 
 class Mesh:
@@ -605,6 +612,25 @@ def _box(m, c, u, hx, hy, z0, z1, mat):
     m.quad(*[(p[0], p[1], z1) for p in k], *uv, mat)
 
 
+def _steeple(m, spec, z_eave, mat_idx):
+    """A church's square tower with a pyramid spire, at one end of its nave (hashed)."""
+    c, u, hl, hw = oriented_box(spec.ring)
+    if _hash01(spec.seed, "steeple") < 0.5:
+        u = -u
+    side = float(np.clip(1.1 * hw, 3.0, 6.0)) / 2
+    p = c + u * (hl - side)
+    rise = (hw + EAVE_M) * math.tan(math.radians(PITCH["gabled"]))
+    top = z_eave + rise + 6.0
+    _box(m, p, u, side, side, z_eave - 1.0, top, mat_idx[spec.facade])
+    v = np.array([-u[1], u[0]])
+    k = [p + u * sx * side + v * sy * side for sx, sy in ((-1, -1), (1, -1), (1, 1), (-1, 1))]
+    apex = (float(p[0]), float(p[1]), top + 2.6 * side * 2)
+    rm = mat_idx[f"{ROOF_SLATE}|3"]
+    for i in range(4):
+        a, b = k[i], k[(i + 1) % 4]
+        m.tri((a[0], a[1], top), (b[0], b[1], top), apex, (0, 0), (1, 0), (0.5, 2.0), rm)
+
+
 ROOF_CLUTTER_M2 = 250.0     # flat roofs this large get boxes: air-conditioning units, stair bulkheads
 
 
@@ -698,6 +724,8 @@ def build(specs_and_ground, lite=False):
             _cornice(m, spec, ring, z_eave, mat_idx)
         if not lite:
             _clutter(m, spec, ring, z_eave, mat_idx)
+        if spec.steeple:
+            _steeple(m, spec, z_eave, mat_idx)
     if m.n == 0:
         return None
     P, UV, T, M, C = m.arrays()
