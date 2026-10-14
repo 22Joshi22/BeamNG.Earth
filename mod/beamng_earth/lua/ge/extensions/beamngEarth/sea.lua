@@ -41,6 +41,11 @@ local FIELDS = {
   { 'foamDir', 0, '0 1' }, { 'foamDir', 1, '0 -1' }, { 'foamSpeed', 0, '0.01' }, { 'foamSpeed', 1, '0.01' },
   { 'foamOpacity', 1, '5' }, { 'foamTexScale', 1, '4 4' },
 }
+-- Lakes and rivers (the server's "L..." keys): fresh water, greener and browner than the bay
+local INLAND = {
+  { 'baseColor', 0, '44 74 60 255' }, { 'underwaterColor', 0, '52 78 58 240' }, { 'clarity', 0, '0.12' },
+  { 'overallWaveMagnitude', 0, '0.04' }, { 'overallRippleMagnitude', 0, '0.12' },
+}
 local TEXTURES = {      -- field, East Coast's file, the core fallback
   { 'rippleTex', '/levels/east_coast_usa/art/water/ripple3.dds', '/core/art/water/ripple_nm.normal.dds' },
   { 'depthGradientTex', '/levels/east_coast_usa/art/water/depthcolor_ramp.dds',
@@ -106,6 +111,9 @@ end
 local function create(key, t)
   local o = createObject('WaterBlock')
   for _, f in ipairs(FIELDS) do o:setField(f[1], f[2], f[3]) end
+  if key:sub(1, 1) == 'L' then
+    for _, f in ipairs(INLAND) do o:setField(f[1], f[2], f[3]) end
+  end
   for _, x in ipairs(TEXTURES) do o:setField(x[1], 0, exists(x[2]) and x[2] or x[3]) end
   o:setField('cubemap', 0, 'BNG_Sky_01_cubemap')
   o:setField('gridElementSize', 0, tostring(math.max(4, t.size / 64)))

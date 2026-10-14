@@ -45,6 +45,12 @@ local t0 = b[sea.PREFIX .. '512_0_0']
 T.check(t0 and t0.pos.x == 256 and t0.pos.z == 0 and t0.scale.x == 512 and t0.scale.z == sea.DEPTH_M,
   'surface at the position, the tile\'s size, DEPTH_M deep')
 T.check(t0.canSave == false and t0.fields.baseColor ~= nil and t0.fields.rotation ~= nil, 'not saved, styled, tilted')
+sea.onMessage({ type = 'sea', anchorId = 1, tiles = { six[1], tile('L512_0_0_895', 256, 256, 89.5, 512) } })
+sea.update(1, player)
+local lake = blocks()[sea.PREFIX .. 'L512_0_0_895']
+T.check(lake and lake.fields.baseColor ~= t0.fields.baseColor, 'lakes and rivers have their own colour')
+sea.onMessage({ type = 'sea', anchorId = 1, tiles = six })
+sea.update(1, player); sea.update(1, player)
 T.check(car.nudged >= 1, 'a parked car inside a new tile is re-placed (its physics sees the water)')
 local pb = physBlock()
 T.check(pb and pb.renderEnabled == false and pb.pos.x == 100 and pb.pos.z == 0 and pb.scale.x == sea.PHYS_SIZE,
@@ -63,11 +69,12 @@ sea.update(1, player)
 T.check(sea.physMade == made0 + 1 and physBlock().pos.x == player.x, 'made again around the player near its edge')
 player.x = 100
 
+local c0 = sea.created
 sea.onMessage({ type = 'sea', anchorId = 1, tiles = { six[1], six[2], tile('1024_1_0', 1536, 512, -0.2, 1024) } })
 sea.update(1, player)
 b = blocks()
 T.check(count(b) == 3 and b[sea.PREFIX .. '1024_1_0'] and not b[sea.PREFIX .. '512_5_0'], 'a new set: changed tiles only')
-T.check(sea.created == 7, 'the kept ones not made again')
+T.check(sea.created == c0 + 1, 'the kept ones not made again')
 
 player.vx = 20
 local nudged = car.nudged
