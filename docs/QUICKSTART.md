@@ -40,9 +40,18 @@ driving with the game's **radial menu** (the traffic entry). The amounts are the
 settings (Options > Gameplay > Traffic).
 
 ## Something wrong? Tell us
-See the in-game report tool (**Ctrl+Shift+N**) to note what you saw and where. Issues go to
-<https://github.com/TecnaGamer/BeamNG.Earth/issues>: say where you were (the place or its latitude,
-longitude), what you expected, and add a screenshot if you can.
+In the game, press **Ctrl+Shift+N** where it happens: the mod takes a screenshot and notes the place,
+the frame rate and your hardware and graphics settings. Pick the kind (**Map issue**, **Performance
+issue**, **Bug**, **Idea / suggestion**), type a short title and what you saw, and Save. For stutters
+or low fps, press **Ctrl+Shift+B** instead while it happens: the **performance profiler** records 30 s
+of frame times, then opens the same window.
+
+Each report is a folder (the window shows where) with `issue.md`, a ready-to-post GitHub issue you
+can edit first. To post it, run `python3 tools/reports.py issue` (the newest report; `python3
+tools/reports.py` lists them all): it opens issue.md in your editor, then the new-issue page on
+<https://github.com/TecnaGamer/BeamNG.Earth/issues> with your text, and the report folder, so you
+can drag `screenshot.jpg` into the issue. The "Open GitHub issue page" button in the game does the
+same without the edit step.
 
 ## Troubleshooting
 - **"Looking for the world server" / "server not connected" banner** in the game: the server is not

@@ -12,15 +12,15 @@
 "order": 91,
 "ctx": "tlua",
 "onDown": "if beamngEarth_report then beamngEarth_report.note() end",
-"title": "BeamNG.Earth: note / report",
-"desc": "Captures a screenshot, the location and the performance now, and opens a window for a note (Ctrl+Shift+N)."
+"title": "BeamNG.Earth: report an issue / idea",
+"desc": "Captures a screenshot, the location, the performance and your hardware now, and opens a window to describe a map issue, performance issue, bug or idea; saves a ready-to-post GitHub issue (Ctrl+Shift+N)."
 },
 "beamngEarth_reportBench": {
 "cat": "gameplay",
 "order": 92,
 "ctx": "tlua",
-"onDown": "if beamngEarth_report then beamngEarth_report.benchmark() end",
-"title": "BeamNG.Earth: 30 s benchmark",
-"desc": "Records 30 s of frame times while you drive and saves a report (Ctrl+Shift+B)."
+"onDown": "if beamngEarth_report then beamngEarth_report.profiler() end",
+"title": "BeamNG.Earth: performance profiler (30 s)",
+"desc": "Records 30 s of frame times while you drive, then opens the report window for a performance issue (Ctrl+Shift+B)."
 }
 }

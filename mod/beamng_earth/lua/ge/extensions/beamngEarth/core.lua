@@ -61,6 +61,8 @@ local seasonlook = require('beamngEarth/seasonlook')   -- the trees' leaves in t
 
 local LEVEL_ID = 'beamng_earth'
 local MOD_VERSION = '0.4.0'
+M.MOD_VERSION = MOD_VERSION
+local lastHello = nil     -- the last server hello (scalars only; report.lua's hardware.json)
 local PROTOCOL = 4
 -- Far-tile artefact formats the mod reads: 3 (v1.3.1, 32-cell tiles) and 4 (docs/V1_4_SPEC.md 3.1
 -- M1: 64-cell tiles down to L-1, hello.cells, far_tile.tex). hello.format = the newest (FORMAT).
@@ -542,6 +544,8 @@ local function onMessage(msg)
     setStatus('Disconnected from companion server: ' .. tostring(msg.error))
   elseif t == 'hello' then
     st.sessionId = msg.sessionId
+    lastHello = {}           -- the server's version and options, for the reports' hardware.json
+    for k, v in pairs(msg) do if k ~= 'attribution' and type(v) ~= 'table' then lastHello[k] = v end end
     -- road tiles belong to the session that sent them: a restarted server (anchor ids start again
     -- at 1) never drops the old session's tiles, so they stayed forever (2026-10-11: meshes of four
     -- sessions in the scene, some built by older code)
@@ -1274,6 +1278,14 @@ end
 -- Far-tile streaming budget per frame in ms (the governor's target, 1-4 ms; default 2). Returns the value in use.
 function M.setFarBudget(ms)
   return gov:setTarget(ms)
+end
+
+-- The connected server's hello (its version and options; nil before one arrived), for the reports.
+function M.serverHello()
+  if not lastHello then return nil end
+  local c = {}
+  for k, v in pairs(lastHello) do c[k] = v end
+  return c
 end
 
 function M.status()
