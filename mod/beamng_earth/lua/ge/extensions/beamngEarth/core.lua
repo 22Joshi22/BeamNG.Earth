@@ -56,7 +56,8 @@ local sea = require('beamngEarth/sea') -- the sea's WaterBlock tiles (server sea
 local trees = require('beamngEarth/trees') -- trees, bushes, rocks (server vegetation.py)
 local parking = require('beamngEarth/parking') -- parked cars on the road tiles' spots (stock gameplay_parking)
 local navgraph = require('beamngEarth/navgraph')
-local postfx = require('beamngEarth/postfx')       -- no far depth-of-field blur in our level -- the AI road graph for the stock traffic and AI (map.reset)
+local postfx = require('beamngEarth/postfx')       -- no far depth-of-field blur in our level
+local seasonlook = require('beamngEarth/seasonlook')   -- the trees' leaves in the season (hello.season) -- the AI road graph for the stock traffic and AI (map.reset)
 
 local LEVEL_ID = 'beamng_earth'
 local MOD_VERSION = '0.4.0'
@@ -554,6 +555,7 @@ local function onMessage(msg)
     if w and w.clearGravity then w.clearGravity() end
     st.deshadow = msg.deshadow -- server-side imagery de-shadowing ('lambert' / 'full'; nil = off), shown on the settings page
     st.colormatch = msg.colormatch -- server-side imagery colour-seam removal ('s2'; nil = off), likewise
+    seasonlook.setMode(msg.season) -- the imagery's season (server --season): the leaves follow it
     -- the download cache: the new server's usage follows its hello; it gets the page's size cap (the
     -- server keeps it for its next start too)
     cacheInfo = nil
@@ -996,6 +998,7 @@ end
 local function onUpdate(dtReal, dtSim)
   dtReal = dtReal or 0
   postfx.update(st.inOurLevel)
+  seasonlook.update(st.inOurLevel, st.anchor and st.anchor.lat)
   local frameMs = frameTimer and frameTimer:stopAndReset() or dtReal * 1000
   local cf = st.commitFrames
   if cf then                    -- the commit frame and the two after it (wall ms between updates)
@@ -1131,6 +1134,7 @@ end
 
 local function onClientEndMission()
   postfx.restore()
+  seasonlook.restore()
   -- runs before the level deletes its objects (server/server.lua:19 vs :34): delete the far tiles
   -- ourselves first, so their per-tile materials (not level objects) can go after them
   farfield.clear()

@@ -1857,6 +1857,9 @@ class Connection:
                 m["deshadow"] = self.s.deshadow.mode
             if self.s.colormatch is not None:   # --colormatch s2: likewise
                 m["colormatch"] = self.s.colormatch.mode
+            season_mode = getattr(self.s.imagery, "season_mode", "off") if self.s.imagery is not None else "off"
+            if season_mode not in (None, "off"):    # --season: the mod tints the trees' leaves to match (seasonlook.lua)
+                m["season"] = season_mode
             # a game that outlived its server: keep the session folders its tiles still use
             self.s.claim_sessions(self, msg.get("sessions"))
             self.send(m)

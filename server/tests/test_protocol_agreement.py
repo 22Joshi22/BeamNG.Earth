@@ -121,7 +121,8 @@ SERVER_TO_MOD = {
               "blockSize": F(int, OPT),         # v1.4 M4: terrain block size, only when not 1024 (--block 512)
               "horizon": F(bool, OPT),          # v1.4 M1h: true with --horizon only
               "deshadow": F(str, OPT),          # --deshadow lambert|full only (the settings page shows it)
-              "colormatch": F(str, OPT)},       # --colormatch s2 only (likewise)
+              "colormatch": F(str, OPT),        # --colormatch s2 only (likewise)
+              "season": F(str, OPT)},           # --season auto / fall (seasonlook.lua tints the leaves)
     "status": {"text": F(str),
                "backlog": F(int),           # v1.4 M0: desired - shown far tiles of the current anchor
                "radius": F(NUM, OPT)},      # v1.4 M1h: the far-field radius (m), --horizon only
