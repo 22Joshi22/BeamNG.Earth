@@ -236,6 +236,19 @@ local function apply(b)
   return true
 end
 
+-- The vehicle Lua that hands a vehicle the signals (a serialized table). A traffic car keeps the junction it
+-- is approaching across map changes (ai.lua's trafficStates.intersection; stock maps never change) and
+-- reads signalsData[node][nextNode][idx] without a check: a new graph without that junction (a teleport,
+-- or the junction left the window) disabled every car near one (in game 2026-10-14, "attempt to index a
+-- nil value" at ai.lua trafficActions). So the new table keeps the old entries it lacks: their nodes are
+-- not on the new graph's paths (ai.lua's other reads check first), only a remembered junction resolves.
+function M.setSignalsLua(data)
+  return 'do local old, new = mapmgr.signalsData, ' .. data .. '\n'
+    .. 'if old and new then for a, t in pairs(old) do local n = new[a] if not n then new[a] = t else '
+    .. 'for b, u in pairs(t) do if n[b] == nil then n[b] = u end end end end end\n'
+    .. 'mapmgr.setSignals(new) end'
+end
+
 -- The signals of the graph applied last frame (core_trafficSignals resolves them on the new map).
 local function applySignals(nodes)
   local ts = core_trafficSignals
@@ -249,7 +262,7 @@ local function applySignals(nodes)
     -- a vehicle holding signals reads the state-change mailbox every frame and dies on one never written
     -- ("lpack: unexpected end of buffer", in game 2026-10-14): write an empty update before handing them out
     be:sendToMailbox('trafficSignalUpdates', lpack.encodeBin({}))
-    be:queueAllObjectLua('mapmgr.setSignals(' .. serialize(ts.getMapNodeSignals()) .. ')')
+    be:queueAllObjectLua(M.setSignalsLua(serialize(ts.getMapNodeSignals())))
     stats.junctions = ns
     -- the road tiles' static booms stand where the switchable heads are now
     local trees = require('beamngEarth/trees')

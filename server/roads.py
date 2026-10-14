@@ -65,8 +65,9 @@ LOOK = {
     "gravel": {"m": "m_dirt_road", "tl": 88.0, "p": 21},
     "dirt": {"m": "m_dirt_road", "tl": 88.0, "p": 21},
 }
-Spec = namedtuple("Spec", "width kind urban cls oneway walk", defaults=(False, 2.5))   # road_specs' result per feature
-# (walk: the sidewalk width, measured from the buildings where known: roadwidth.py)
+Spec = namedtuple("Spec", "width kind urban cls oneway walk dir kmh", defaults=(False, 2.5, 0, None))
+# road_specs' result per feature (walk: the sidewalk width, measured from the buildings where known: roadwidth.py;
+# dir: a one-way road's direction along its geometry, +1 / -1, 0 two-way; kmh: its speed limit, None unknown)
 # (width = carriageway). One-way driving widths (Overture's divided roads are two one-way segments, each
 # drawn before as a full two-way street: 2026-10-11 orthophoto of Broadway, 14-15 m drawn for 8-9 m)
 ONEWAY_STYLE = {"primary": 6.5, "secondary": 6.5, "tertiary": 4.0, "residential": 3.5, "living_street": 3.5,
@@ -262,6 +263,14 @@ def carriageway(cls, kind, urban, rule_width=None, oneway=False):
     return w
 
 
+def _dir_kmh(rules, i):
+    """(one-way direction along the geometry +1 / -1 or 0, speed limit km/h or None) of feature i."""
+    v = _rule_value(rules.get("oneway"), i)
+    d = 0 if v is None else (-1 if float(v) < 0 else 1)
+    k = _rule_value(rules.get("max_speed_kmh"), i)
+    return d, (float(k) if k is not None and float(k) > 0 else None)
+
+
 def road_specs(feats, urban_fn=None, widths=None):
     """Per feature: None (left out) or (width m, surface kind). urban_fn(lat, lon) -> bool array (built-up
     land cover), None = rural everywhere; called once for every candidate's points (its cost is per
@@ -282,22 +291,23 @@ def road_specs(feats, urban_fn=None, widths=None):
         rule_w = float(width) if width is not None and 1.0 <= float(width) <= 40.0 else None
         kind = surface_kind(cls, _rule_value(rules.get("surface"), i))
         ow = _rule_value(rules.get("oneway"), i) is not None
+        dk = _dir_kmh(rules, i)
         if urban_fn is not None and rule_w is None and kind in BUILT:
             a = feats.coord_off[feats.ring_off[feats.part_off[i]]]
             b = feats.coord_off[feats.ring_off[feats.part_off[i + 1]]]
             if b > a:
-                ask.append((len(out), cls, kind, a, b, ow))
+                ask.append((len(out), cls, kind, a, b, ow, dk))
                 out.append(None)
                 continue
-        out.append(Spec(carriageway(cls, kind, False, rule_w, ow), kind, False, cls, ow))
+        out.append(Spec(carriageway(cls, kind, False, rule_w, ow), kind, False, cls, ow, 2.5, *dk))
     if ask:
-        ll = np.concatenate([feats.lonlat[a:b] for _, _, _, a, b, _ in ask])
+        ll = np.concatenate([feats.lonlat[a:b] for _, _, _, a, b, _, _ in ask])
         u = np.asarray(urban_fn(ll[:, 1], ll[:, 0]), bool)
         k = 0
-        for j, cls, kind, a, b, ow in ask:
+        for j, cls, kind, a, b, ow, dk in ask:
             urban = float(np.mean(u[k:k + (b - a)])) >= URBAN_SHARE
             k += b - a
-            out[j] = Spec(carriageway(cls, kind, urban, None, ow), kind, urban, cls, ow)
+            out[j] = Spec(carriageway(cls, kind, urban, None, ow), kind, urban, cls, ow, 2.5, *dk)
     if widths is not None:                      # measured between the buildings (roadwidth.py)
         for j, sp in enumerate(out):
             if sp is None or sp.kind not in BUILT or sp.cls not in SIDEWALK_CLASSES or sp.cls in MEASURE_SKIP:
@@ -696,11 +706,29 @@ def cut_outside(pts, blockers, spacing=2.0):
     return out
 
 
+ARTERIAL_KMH = 73.0             # a divided urban trunk this slow (45 mph) is a town arterial, not an expressway
+
+
 def has_sidewalks(spec):
     # a two-way urban trunk is a town's main street on a state highway (Bishop's US-395, Moab's US-191);
-    # divided expressway trunks are one-way per carriageway and get none
+    # divided trunks are one-way per carriageway: expressways get none, slow ones (Ocean City's Coastal
+    # Highway, 35 mph, 2026-10-14 street photos) one on their outer side (walk_sides)
     return spec.kind in BUILT and spec.urban and (spec.cls in SIDEWALK_CLASSES
-                                                  or (spec.cls == "trunk" and not spec.oneway))
+                                                  or (spec.cls == "trunk" and (not spec.oneway or _arterial(spec))))
+
+
+def _arterial(spec):
+    return spec.oneway and spec.kmh is not None and spec.kmh <= ARTERIAL_KMH
+
+
+def walk_sides(spec, left_hand=False):
+    """The sides (+1 left of the geometry, -1 right) of a road with sidewalks that get one: both, or a
+    divided trunk carriageway's outer side only (the curb on the driver's right, left where they drive on
+    the left; the other side is the median)."""
+    if spec.cls == "trunk" and spec.oneway:
+        right = -1 if spec.dir >= 0 else 1
+        return (-right,) if left_hand else (right,)
+    return (1, -1)
 
 
 def sidewalk_stop(spec, fid, other, ofid):
@@ -713,7 +741,7 @@ def sidewalk_stop(spec, fid, other, ofid):
     return other.width / 2
 
 
-def extras(spec, pts, lon):
+def extras(spec, pts, lon, left_hand=False):
     """The sidewalk / gutter / marking polylines of one road: [(look dict with m / tl / p, width, pts)].
     pts: its centreline (k, 3) in the anchor frame; lon: its longitude (centre line colour). Pure."""
     out = []
@@ -721,7 +749,7 @@ def extras(spec, pts, lon):
     if kind not in BUILT:
         return out
     if has_sidewalks(spec):
-        for side in (1, -1):
+        for side in walk_sides(spec, left_hand):
             out.append(({**SIDEWALK, "side": side}, spec.walk,
                         offset_polyline(pts, side * (w / 2 + spec.walk / 2))))
             out.append(({**GUTTER, "side": side}, GUTTER["w"], offset_polyline(pts, side * (w / 2 - GUTTER["w"] / 2))))
@@ -1239,7 +1267,7 @@ def build_tile(frame, tx, ty, cells, elev, urban_fn=None, walks=None, bridges=No
                 look = junctions.STOP_LINE if cw.get("stop") else junctions.CROSSWALK
                 chunks.append(_chunk(look, cw["w"], np.array([cw["a"], cw["b"]])))
     for fid, spec, pts, lon in roads:
-        ex = extras(spec, pts, lon) if fid not in jinternal else []    # inside a junction: none
+        ex = extras(spec, pts, lon, left_hand) if fid not in jinternal else []    # inside a junction: none
         if not ex:
             continue
         blockers = [(p2[:, :2], s2.width / 2 + CUT_MARGIN) for f2, s2, p2, _ in roads if f2 != fid]

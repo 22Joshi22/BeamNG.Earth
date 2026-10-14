@@ -24,6 +24,8 @@ M.EDGE_M = 80
 M.GUARD_M = 30
 M.GUARD_S = 0.5
 M.FALL_MS = -12         -- a parked car falling faster than this (m/s) is off the ground: moved too
+M.OFF_SPOT_M = 4        -- ... and one this far from its spot (none, or another frame's) ...
+M.OFF_SPOT_FAR_M = 60   -- ... once the player is this far from it (a car the player pushed stays in view)
 M.enabled = true
 
 local spots = {}        -- tile key -> { anchor, rows }
@@ -139,16 +141,31 @@ local function rebuild(player)
   return near
 end
 
--- Parked cars the block left behind go to a spot near the player (gameplay_parking.forceTeleport).
+-- Pure: a parked car at p is off its spot ps (none, gone with its anchor or tile, or more than OFF_SPOT_M away)
+-- and far enough from the player (pp) to be moved unseen.
+function M.offSpot(p, ps, pp)
+  local dx, dy = p.x - pp.x, p.y - pp.y
+  if dx * dx + dy * dy < M.OFF_SPOT_FAR_M * M.OFF_SPOT_FAR_M then return false end
+  if not ps or ps.missing or not ps.pos then return true end
+  local sx, sy = p.x - ps.pos.x, p.y - ps.pos.y
+  return sx * sx + sy * sy > M.OFF_SPOT_M * M.OFF_SPOT_M
+end
+
+-- Parked cars the block left behind go to a spot near the player (gameplay_parking.forceTeleport), and so do
+-- cars off their spot: one the scatter after a teleport missed keeps its old frame's position, which is any
+-- place in the new one (Fells Point 2026-10-14: two stood in a one-lane street and traffic queued behind them).
 local function guard(player)
   local gp = gameplay_parking
   if not box or not gp or not gp.getState() then return end
+  local data = (not scatterPending and sites and gp.getParkedCarsData) and gp.getParkedCarsData() or nil
   for _, id in ipairs(gp.getParkedCarsList() or {}) do
     local o = getObjectByID(id)
     if o and o:getActive() then
       local p = o:getPosition()
       local falling = o:getVelocity().z < M.FALL_MS               -- off the ground (a stale spot): rescue it
-      if falling or not M.inside(box, p.x, p.y, M.GUARD_M) then
+      local d = data and data[id]
+      local off = d and M.offSpot(p, d.parkingSpotId and sites.parkingSpots.objects[d.parkingSpotId], player)
+      if falling or off or not M.inside(box, p.x, p.y, M.GUARD_M) then
         pcall(gp.forceTeleport, id, vec3(player.x, player.y, player.z), 0, M.START_M)
       end
     end

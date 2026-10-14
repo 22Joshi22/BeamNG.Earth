@@ -135,6 +135,21 @@ class BuildTileTest(unittest.TestCase):
         self.assertEqual(track["m"], roads.LOOK["dirt"]["m"])
         self.assertTrue(all(abs(n[2] - 10.0) < 0.05 for n in prim["n"]), "z on the DEM (flat, near the anchor)")
 
+    def test_divided_trunk_sidewalk_outer_side_only_when_slow(self):
+        pts = np.array([(0.0, 0.0, 0.0), (100.0, 0.0, 0.0)])
+
+        def walks(spec, left_hand=False):
+            return [line[0][1] for look, w, line in roads.extras(spec, pts, -75.0, left_hand)
+                    if look["m"] == roads.SIDEWALK["m"]]
+        slow = roads.Spec(7.0, "paved", True, "trunk", True, 2.5, 1, 56.0)
+        self.assertEqual(len(walks(slow)), 1)
+        self.assertLess(walks(slow)[0], 0, "driving east on the right: the curb is south, the median north")
+        self.assertGreater(walks(slow._replace(dir=-1))[0], 0)
+        self.assertGreater(walks(slow, left_hand=True)[0], 0)
+        self.assertEqual(walks(slow._replace(kmh=100.0)), [], "an expressway carriageway: none")
+        self.assertEqual(walks(slow._replace(kmh=None)), [], "unknown limit: none")
+        self.assertEqual(len(walks(roads.Spec(9.0, "paved", True, "trunk", False))), 2, "a two-way main street")
+
     def test_city_street_sidewalks_and_lines_stop_at_crossings(self):
         f = features([[(-300, 100), (300, 100)], [(120, -100), (120, 300)]], ["secondary", "residential"])
         chunks = roads.build_tile(FRAME, 0, 0, [f], flat, lambda la, lo: np.ones(np.shape(la), bool))

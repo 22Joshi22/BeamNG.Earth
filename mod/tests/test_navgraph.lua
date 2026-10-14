@@ -20,4 +20,16 @@ T.check(ab.speedLimit == 11.2 and ab.lanes == '-+' and not ab.oneWay and ab.inRa
 local bc = nodes.b.links.c
 T.check(bc.oneWay and bc.lanes == '+' and bc.inNode == 'b', 'one-way: in -> out is the allowed direction')
 T.check(N.inside(nil, 1e9, 0, 60) and not N.inside({ 0, 0, 100, 100 }, 50, 50, 60), 'inside')
+
+-- a new signals table keeps the junctions a car may still remember (ai.lua reads them unchecked)
+local got
+mapmgr = { signalsData = { j1 = { a = { { action = 2 } } }, j2 = { b = { { action = 0 } }, c = { { action = 1 } } } },
+           setSignals = function(d) got = d; mapmgr.signalsData = d end }
+local f = loadstring(N.setSignalsLua('{ j2 = { b = { { action = 3 } } }, j3 = { d = { { action = 0 } } } }'))
+f()
+T.check(got.j3.d[1].action == 0 and got.j2.b[1].action == 3, 'the new signals')
+T.check(got.j1.a[1].action == 2 and got.j2.c[1].action == 1, 'old junctions / approaches kept')
+mapmgr = { setSignals = function(d) got = d end }
+loadstring(N.setSignalsLua('{ j9 = {} }'))()
+T.check(got.j9 and not got.j1, 'no old table: the new one as is')
 T.done('test_navgraph')

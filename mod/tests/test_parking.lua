@@ -115,4 +115,10 @@ T.check(maxX <= 200.01 and #given.parkingSpots.sorted == 30, 'spots near the blo
 
 P.reset()
 T.check(P.status().spots == 0 and not P.status().started, 'reset')
+local P0 = { x = 0, y = 0 }
+T.check(not P.offSpot({ x = 10, y = 0 }, nil, P0), 'near the player: never moved (one it pushed stays in view)')
+T.check(P.offSpot({ x = 100, y = 0 }, nil, P0) and P.offSpot({ x = 100, y = 0 }, { missing = true }, P0),
+  'far, no spot (or another frame\'s): moved')
+T.check(not P.offSpot({ x = 100, y = 0 }, { pos = { x = 101, y = 1 } }, P0), 'on its spot: stays')
+T.check(P.offSpot({ x = 100, y = 0 }, { pos = { x = 110, y = 0 } }, P0), 'off its spot: moved')
 T.done('test_parking')
