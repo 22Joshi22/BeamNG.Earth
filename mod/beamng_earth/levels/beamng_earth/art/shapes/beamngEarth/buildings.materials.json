@@ -1,10 +1,10 @@
 {
- "bne_bld_fac_white": {
-  "name": "bne_bld_fac_white",
-  "mapTo": "bne_bld_fac_white",
+ "bne_bld_facade": {
+  "name": "bne_bld_facade",
+  "mapTo": "bne_bld_facade",
   "class": "Material",
   "version": 1.5,
-  "persistentId": "09aeecb1-fb30-5bda-b910-74549ae05654",
+  "persistentId": "48ecf509-38ed-51bc-b80a-c073f111fcff",
   "Stages": [
    {
     "baseColorMap": "/assets/materials/trim/plaster/t_highrise_plaster/t_highrise_plaster_b.color.png",
@@ -13,93 +13,13 @@
     "ambientOcclusionMap": "/assets/materials/trim/plaster/t_highrise_plaster/t_highrise_plaster_ao.data.png",
     "metallicMap": "/assets/materials/trim/plaster/t_highrise_plaster/t_highrise_plaster_m.data.png",
     "baseColorFactor": [
-     1.0,
-     1.0,
-     1.0,
+     1,
+     1,
+     1,
      1
     ],
-    "emissiveMap": "/assets/materials/trim/plaster/t_highrise_plaster/t_highrise_plaster_e.color.png"
-   },
-   {},
-   {},
-   {}
-  ],
-  "translucent": false
- },
- "bne_bld_fac_cream": {
-  "name": "bne_bld_fac_cream",
-  "mapTo": "bne_bld_fac_cream",
-  "class": "Material",
-  "version": 1.5,
-  "persistentId": "c58fb4a2-f360-5fea-9275-845f04eeced8",
-  "Stages": [
-   {
-    "baseColorMap": "/assets/materials/trim/plaster/t_highrise_plaster/t_highrise_plaster_b.color.png",
-    "normalMap": "/assets/materials/trim/plaster/t_highrise_plaster/t_highrise_plaster_nm.normal.png",
-    "roughnessMap": "/assets/materials/trim/plaster/t_highrise_plaster/t_highrise_plaster_r.data.png",
-    "ambientOcclusionMap": "/assets/materials/trim/plaster/t_highrise_plaster/t_highrise_plaster_ao.data.png",
-    "metallicMap": "/assets/materials/trim/plaster/t_highrise_plaster/t_highrise_plaster_m.data.png",
-    "baseColorFactor": [
-     1.0,
-     0.93,
-     0.8,
-     1
-    ],
-    "emissiveMap": "/assets/materials/trim/plaster/t_highrise_plaster/t_highrise_plaster_e.color.png"
-   },
-   {},
-   {},
-   {}
-  ],
-  "translucent": false
- },
- "bne_bld_fac_sand": {
-  "name": "bne_bld_fac_sand",
-  "mapTo": "bne_bld_fac_sand",
-  "class": "Material",
-  "version": 1.5,
-  "persistentId": "87da5aab-baf6-565e-87ba-be1e24052b34",
-  "Stages": [
-   {
-    "baseColorMap": "/assets/materials/trim/plaster/t_highrise_plaster/t_highrise_plaster_b.color.png",
-    "normalMap": "/assets/materials/trim/plaster/t_highrise_plaster/t_highrise_plaster_nm.normal.png",
-    "roughnessMap": "/assets/materials/trim/plaster/t_highrise_plaster/t_highrise_plaster_r.data.png",
-    "ambientOcclusionMap": "/assets/materials/trim/plaster/t_highrise_plaster/t_highrise_plaster_ao.data.png",
-    "metallicMap": "/assets/materials/trim/plaster/t_highrise_plaster/t_highrise_plaster_m.data.png",
-    "baseColorFactor": [
-     0.92,
-     0.82,
-     0.68,
-     1
-    ],
-    "emissiveMap": "/assets/materials/trim/plaster/t_highrise_plaster/t_highrise_plaster_e.color.png"
-   },
-   {},
-   {},
-   {}
-  ],
-  "translucent": false
- },
- "bne_bld_fac_grey": {
-  "name": "bne_bld_fac_grey",
-  "mapTo": "bne_bld_fac_grey",
-  "class": "Material",
-  "version": 1.5,
-  "persistentId": "0e3c9b49-ff6c-596a-9919-3368a48cc722",
-  "Stages": [
-   {
-    "baseColorMap": "/assets/materials/trim/plaster/t_highrise_plaster/t_highrise_plaster_b.color.png",
-    "normalMap": "/assets/materials/trim/plaster/t_highrise_plaster/t_highrise_plaster_nm.normal.png",
-    "roughnessMap": "/assets/materials/trim/plaster/t_highrise_plaster/t_highrise_plaster_r.data.png",
-    "ambientOcclusionMap": "/assets/materials/trim/plaster/t_highrise_plaster/t_highrise_plaster_ao.data.png",
-    "metallicMap": "/assets/materials/trim/plaster/t_highrise_plaster/t_highrise_plaster_m.data.png",
-    "baseColorFactor": [
-     0.8,
-     0.82,
-     0.84,
-     1
-    ],
-    "emissiveMap": "/assets/materials/trim/plaster/t_highrise_plaster/t_highrise_plaster_e.color.png"
+    "emissiveMap": "/assets/materials/trim/plaster/t_highrise_plaster/t_highrise_plaster_e.color.png",
+    "vertColor": true
    },
    {},
    {},
@@ -125,7 +45,8 @@
      1,
      1,
      1
-    ]
+    ],
+    "vertColor": true
    },
    {},
    {},
@@ -151,7 +72,8 @@
      1,
      1,
      1
-    ]
+    ],
+    "vertColor": true
    },
    {},
    {},
@@ -173,11 +95,12 @@
     "ambientOcclusionMap": "/assets/materials/tileable/roofing/asphalt_roof/t_asphalt_roof_ao.data.png",
     "metallicFactor": 0,
     "baseColorFactor": [
-     0.85,
-     0.85,
-     0.85,
+     1,
+     1,
+     1,
      1
-    ]
+    ],
+    "vertColor": true
    },
    {},
    {},
@@ -203,7 +126,8 @@
      1,
      1,
      1
-    ]
+    ],
+    "vertColor": true
    },
    {},
    {},
@@ -224,11 +148,12 @@
     "roughnessFactor": 0.85,
     "metallicFactor": 0,
     "baseColorFactor": [
-     0.75,
-     0.72,
-     0.7,
+     1,
+     1,
+     1,
      1
-    ]
+    ],
+    "vertColor": true
    },
    {},
    {},
@@ -250,173 +175,12 @@
     "ambientOcclusionMap": "/assets/materials/tileable/wood/weatherboards/t_weatherboards_ao.data.png",
     "metallicFactor": 0,
     "baseColorFactor": [
-     0.93,
-     0.92,
-     0.88,
-     1
-    ]
-   },
-   {},
-   {},
-   {}
-  ],
-  "translucent": false
- },
- "bne_bld_fac_brickdark": {
-  "name": "bne_bld_fac_brickdark",
-  "mapTo": "bne_bld_fac_brickdark",
-  "class": "Material",
-  "version": 1.5,
-  "persistentId": "3abf8b6f-a5bb-5370-89f8-f4b7279b62bb",
-  "Stages": [
-   {
-    "baseColorMap": "/assets/materials/trim/plaster/t_highrise_plaster/t_highrise_plaster_b.color.png",
-    "normalMap": "/assets/materials/trim/plaster/t_highrise_plaster/t_highrise_plaster_nm.normal.png",
-    "roughnessMap": "/assets/materials/trim/plaster/t_highrise_plaster/t_highrise_plaster_r.data.png",
-    "ambientOcclusionMap": "/assets/materials/trim/plaster/t_highrise_plaster/t_highrise_plaster_ao.data.png",
-    "metallicMap": "/assets/materials/trim/plaster/t_highrise_plaster/t_highrise_plaster_m.data.png",
-    "baseColorFactor": [
-     0.78,
-     0.72,
-     0.7,
+     1,
+     1,
+     1,
      1
     ],
-    "emissiveMap": "/assets/materials/trim/plaster/t_highrise_plaster/t_highrise_plaster_e.color.png"
-   },
-   {},
-   {},
-   {}
-  ],
-  "translucent": false
- },
- "bne_bld_fac_brickwarm": {
-  "name": "bne_bld_fac_brickwarm",
-  "mapTo": "bne_bld_fac_brickwarm",
-  "class": "Material",
-  "version": 1.5,
-  "persistentId": "a5dac963-17ba-59a2-a141-2e1cf1cb3854",
-  "Stages": [
-   {
-    "baseColorMap": "/assets/materials/trim/plaster/t_highrise_plaster/t_highrise_plaster_b.color.png",
-    "normalMap": "/assets/materials/trim/plaster/t_highrise_plaster/t_highrise_plaster_nm.normal.png",
-    "roughnessMap": "/assets/materials/trim/plaster/t_highrise_plaster/t_highrise_plaster_r.data.png",
-    "ambientOcclusionMap": "/assets/materials/trim/plaster/t_highrise_plaster/t_highrise_plaster_ao.data.png",
-    "metallicMap": "/assets/materials/trim/plaster/t_highrise_plaster/t_highrise_plaster_m.data.png",
-    "baseColorFactor": [
-     1.0,
-     0.88,
-     0.8,
-     1
-    ],
-    "emissiveMap": "/assets/materials/trim/plaster/t_highrise_plaster/t_highrise_plaster_e.color.png"
-   },
-   {},
-   {},
-   {}
-  ],
-  "translucent": false
- },
- "bne_bld_fac_blue": {
-  "name": "bne_bld_fac_blue",
-  "mapTo": "bne_bld_fac_blue",
-  "class": "Material",
-  "version": 1.5,
-  "persistentId": "719f5327-955c-5abb-8799-3c656e5544d4",
-  "Stages": [
-   {
-    "baseColorMap": "/assets/materials/trim/plaster/t_highrise_plaster/t_highrise_plaster_b.color.png",
-    "normalMap": "/assets/materials/trim/plaster/t_highrise_plaster/t_highrise_plaster_nm.normal.png",
-    "roughnessMap": "/assets/materials/trim/plaster/t_highrise_plaster/t_highrise_plaster_r.data.png",
-    "ambientOcclusionMap": "/assets/materials/trim/plaster/t_highrise_plaster/t_highrise_plaster_ao.data.png",
-    "metallicMap": "/assets/materials/trim/plaster/t_highrise_plaster/t_highrise_plaster_m.data.png",
-    "baseColorFactor": [
-     0.8,
-     0.87,
-     0.96,
-     1
-    ],
-    "emissiveMap": "/assets/materials/trim/plaster/t_highrise_plaster/t_highrise_plaster_e.color.png"
-   },
-   {},
-   {},
-   {}
-  ],
-  "translucent": false
- },
- "bne_bld_fac_green": {
-  "name": "bne_bld_fac_green",
-  "mapTo": "bne_bld_fac_green",
-  "class": "Material",
-  "version": 1.5,
-  "persistentId": "639f1afe-f33f-5251-90d5-da5cd5296233",
-  "Stages": [
-   {
-    "baseColorMap": "/assets/materials/trim/plaster/t_highrise_plaster/t_highrise_plaster_b.color.png",
-    "normalMap": "/assets/materials/trim/plaster/t_highrise_plaster/t_highrise_plaster_nm.normal.png",
-    "roughnessMap": "/assets/materials/trim/plaster/t_highrise_plaster/t_highrise_plaster_r.data.png",
-    "ambientOcclusionMap": "/assets/materials/trim/plaster/t_highrise_plaster/t_highrise_plaster_ao.data.png",
-    "metallicMap": "/assets/materials/trim/plaster/t_highrise_plaster/t_highrise_plaster_m.data.png",
-    "baseColorFactor": [
-     0.84,
-     0.92,
-     0.82,
-     1
-    ],
-    "emissiveMap": "/assets/materials/trim/plaster/t_highrise_plaster/t_highrise_plaster_e.color.png"
-   },
-   {},
-   {},
-   {}
-  ],
-  "translucent": false
- },
- "bne_bld_fac_rose": {
-  "name": "bne_bld_fac_rose",
-  "mapTo": "bne_bld_fac_rose",
-  "class": "Material",
-  "version": 1.5,
-  "persistentId": "a010714e-b06a-586c-927f-6b02a37b681c",
-  "Stages": [
-   {
-    "baseColorMap": "/assets/materials/trim/plaster/t_highrise_plaster/t_highrise_plaster_b.color.png",
-    "normalMap": "/assets/materials/trim/plaster/t_highrise_plaster/t_highrise_plaster_nm.normal.png",
-    "roughnessMap": "/assets/materials/trim/plaster/t_highrise_plaster/t_highrise_plaster_r.data.png",
-    "ambientOcclusionMap": "/assets/materials/trim/plaster/t_highrise_plaster/t_highrise_plaster_ao.data.png",
-    "metallicMap": "/assets/materials/trim/plaster/t_highrise_plaster/t_highrise_plaster_m.data.png",
-    "baseColorFactor": [
-     0.99,
-     0.86,
-     0.82,
-     1
-    ],
-    "emissiveMap": "/assets/materials/trim/plaster/t_highrise_plaster/t_highrise_plaster_e.color.png"
-   },
-   {},
-   {},
-   {}
-  ],
-  "translucent": false
- },
- "bne_bld_fac_yellow": {
-  "name": "bne_bld_fac_yellow",
-  "mapTo": "bne_bld_fac_yellow",
-  "class": "Material",
-  "version": 1.5,
-  "persistentId": "9c97cc80-44f3-51ee-a4db-559e7e404937",
-  "Stages": [
-   {
-    "baseColorMap": "/assets/materials/trim/plaster/t_highrise_plaster/t_highrise_plaster_b.color.png",
-    "normalMap": "/assets/materials/trim/plaster/t_highrise_plaster/t_highrise_plaster_nm.normal.png",
-    "roughnessMap": "/assets/materials/trim/plaster/t_highrise_plaster/t_highrise_plaster_r.data.png",
-    "ambientOcclusionMap": "/assets/materials/trim/plaster/t_highrise_plaster/t_highrise_plaster_ao.data.png",
-    "metallicMap": "/assets/materials/trim/plaster/t_highrise_plaster/t_highrise_plaster_m.data.png",
-    "baseColorFactor": [
-     1.0,
-     0.95,
-     0.72,
-     1
-    ],
-    "emissiveMap": "/assets/materials/trim/plaster/t_highrise_plaster/t_highrise_plaster_e.color.png"
+    "vertColor": true
    },
    {},
    {},

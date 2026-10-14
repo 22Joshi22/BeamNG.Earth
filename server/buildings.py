@@ -44,7 +44,38 @@ ROOF_FLAT = "bne_bld_roof_flat"
 ROOF_SLATE = "bne_bld_roof_slate"
 ROOF_SHINGLE = "bne_bld_roof_shingle"
 SIDING = "bne_bld_siding"
-MATERIALS = FACADE_TINTS + BRICK_TINTS[1:] + PAINT_TINTS + (SHOP, OFFICE, ROOF_FLAT, ROOF_SLATE, ROOF_SHINGLE, SIDING)
+FACADE = "bne_bld_facade"    # the plaster window sheet, tinted per building by vertex colour
+# The mesh's materials (vertColor: each building's colours are its vertices'); the names above are the
+# looks plan() picks, each one of these with a colour (LOOKS).
+MATERIALS = (FACADE, SHOP, OFFICE, ROOF_FLAT, ROOF_SLATE, ROOF_SHINGLE, SIDING)
+LOOKS = {
+    "bne_bld_fac_white": (FACADE, (1.0, 1.0, 1.0)), "bne_bld_fac_cream": (FACADE, (1.0, 0.93, 0.80)),
+    "bne_bld_fac_sand": (FACADE, (0.92, 0.82, 0.68)), "bne_bld_fac_grey": (FACADE, (0.80, 0.82, 0.84)),
+    "bne_bld_fac_brickdark": (FACADE, (0.78, 0.72, 0.70)), "bne_bld_fac_brickwarm": (FACADE, (1.0, 0.88, 0.80)),
+    "bne_bld_fac_blue": (FACADE, (0.80, 0.87, 0.96)), "bne_bld_fac_green": (FACADE, (0.84, 0.92, 0.82)),
+    "bne_bld_fac_rose": (FACADE, (0.99, 0.86, 0.82)), "bne_bld_fac_yellow": (FACADE, (1.0, 0.95, 0.72)),
+    SHOP: (SHOP, (1.0, 1.0, 1.0)), OFFICE: (OFFICE, (1.0, 1.0, 1.0)), SIDING: (SIDING, (0.93, 0.92, 0.88)),
+}
+ROOF_TINTS = {               # per roof material: the colours a building's roof takes (hashed)
+    ROOF_FLAT: ((0.85, 0.85, 0.85), (0.62, 0.62, 0.64), (0.95, 0.93, 0.88), (0.45, 0.45, 0.46), (0.75, 0.70, 0.64)),
+    ROOF_SLATE: ((1.0, 1.0, 1.0), (0.80, 0.66, 0.56), (0.76, 0.80, 0.90), (0.62, 0.62, 0.62)),
+    ROOF_SHINGLE: ((0.75, 0.72, 0.70), (0.55, 0.50, 0.48), (0.70, 0.56, 0.48), (0.62, 0.66, 0.72)),
+}
+for _m, _cs in ROOF_TINTS.items():
+    for _k, _c in enumerate(_cs):
+        LOOKS[f"{_m}|{_k}"] = (_m, _c)
+JITTER = 0.06               # a building's colour varies this much (one factor, hashed)
+
+
+class _Looks:
+    """name -> (material index, RGBA bytes) for one building (its hashed brightness jitter)."""
+
+    def __init__(self, seed):
+        self.f = 1.0 + JITTER * (2.0 * _hash01(seed, "jit") - 1.0)
+
+    def __getitem__(self, name):
+        mat, c = LOOKS[name]
+        return MATERIALS.index(mat), tuple(int(max(0, min(255, round(255 * v * self.f)))) for v in c) + (255,)
 
 # The window sheets' bands, top of the image first (v in Collada convention: v = 1 at the image top).
 # (sheet, band index, bays per 1024 px)
@@ -290,15 +321,17 @@ def plan(ring, attrs, neighbours=0, lat=None, lon=None):
                     band = (BAND_SASH, BAND_TALL, BAND_PANEL)[int(seed * 104729) % 3]
         plain = False
     roof_mat = ROOF_FLAT if roof == "flat" else (ROOF_SLATE if seed < 0.5 else ROOF_SHINGLE)
+    roof_mat = f"{roof_mat}|{int(_hash01(seed, 'roof') * len(ROOF_TINTS[roof_mat]))}"
     return Spec(ring=ring, floors=nf, floor_h=floor_h, height=h, roof=roof, roof_mat=roof_mat, facade=facade,
                 band=band, shop=shop and not shed and nf >= 1, plain=plain, seed=seed)
 
 
 class Mesh:
-    """Positions, uvs, triangles and their material index, appended to."""
+    """Positions, uvs, colours, triangles and their material index, appended to. A material is a token
+    (index, RGBA) as _Looks gives."""
 
     def __init__(self):
-        self.P, self.UV, self.T, self.M = [], [], [], []
+        self.P, self.UV, self.C, self.T, self.M = [], [], [], [], []
         self.n = 0
 
     def quad(self, a, b, c, d, uva, uvb, uvc, uvd, mat):
@@ -306,16 +339,18 @@ class Mesh:
         i = self.n
         self.P += [a, b, c, d]
         self.UV += [uva, uvb, uvc, uvd]
+        self.C += [mat[1]] * 4
         self.T += [(i, i + 1, i + 2), (i, i + 2, i + 3)]
-        self.M += [mat, mat]
+        self.M += [mat[0], mat[0]]
         self.n += 4
 
     def tri(self, a, b, c, uva, uvb, uvc, mat):
         i = self.n
         self.P += [a, b, c]
         self.UV += [uva, uvb, uvc]
+        self.C += [mat[1]] * 3
         self.T.append((i, i + 1, i + 2))
-        self.M.append(mat)
+        self.M.append(mat[0])
         self.n += 3
 
     def poly(self, pts3, uv, mat):
@@ -324,13 +359,15 @@ class Mesh:
         i = self.n
         self.P += [tuple(p) for p in pts3]
         self.UV += [tuple(u) for u in uv]
+        self.C += [mat[1]] * len(pts3)
         self.T += [(i + a, i + b, i + c) for a, b, c in tris]
-        self.M += [mat] * len(tris)
+        self.M += [mat[0]] * len(tris)
         self.n += len(pts3)
 
     def arrays(self):
         return (np.array(self.P, np.float64).reshape(-1, 3), np.array(self.UV, np.float64).reshape(-1, 2),
-                np.array(self.T, np.int64).reshape(-1, 3), np.array(self.M, np.int64))
+                np.array(self.T, np.int64).reshape(-1, 3), np.array(self.M, np.int64),
+                np.array(self.C, np.uint8).reshape(-1, 4))
 
 
 def _band_v(band, k):
@@ -395,7 +432,7 @@ def _walls(m, spec, ring, z0, z_eave, mat_idx, lite=False):
 
 def _cornice(m, spec, ring, z_eave, mat_idx):
     """A box moulding round a flat roof's edge (row houses' cornices, parapets), the plain white plaster."""
-    mat = mat_idx[FACADE_TINTS[0]]
+    mat = mat_idx["bne_bld_fac_white"]
     o, z0, z1 = CORNICE_OUT_M, z_eave - CORNICE_DOWN_M, z_eave + CORNICE_UP_M
     uv = ((0.002, 0.995), (0.012, 0.995), (0.012, 0.999), (0.002, 0.999))
     n = len(ring)
@@ -466,8 +503,8 @@ def build(specs_and_ground, lite=False):
     (positions, uvs, tris, tri material indices, MATERIALS) or None if empty. lite (far tiles): no
     cornices, whole walls instead of one quad per bay."""
     m = Mesh()
-    mat_idx = {name: i for i, name in enumerate(MATERIALS)}
     for spec, gmin, gmax in specs_and_ground:
+        mat_idx = _Looks(spec.seed)
         ring = spec.ring
         if spec.roof != "flat":
             c, u, hl, hw = oriented_box(ring)
@@ -481,8 +518,8 @@ def build(specs_and_ground, lite=False):
             _cornice(m, spec, ring, z_eave, mat_idx)
     if m.n == 0:
         return None
-    P, UV, T, M = m.arrays()
-    return P, UV, T, M, MATERIALS
+    P, UV, T, M, C = m.arrays()
+    return P, UV, T, M, MATERIALS, C
 
 
 # ------------------------------------------------------------------------------------------- a tile
@@ -591,8 +628,8 @@ def collider_boxes(items, x0, y0):
 def write(path, mesh):
     """The tile's .cdae (cdae.encode with one primitive per material)."""
     import cdae
-    P, UV, T, M, mats = mesh
-    return cdae.write(path, P, T, uvs=UV, material=list(mats), tri_materials=M, object_name="buildings")
+    P, UV, T, M, mats, C = mesh
+    return cdae.write(path, P, T, uvs=UV, material=list(mats), tri_materials=M, object_name="buildings", colors=C)
 
 
 DOOR_ROAD_M = 30.0          # a front door on the wall facing the nearest road within this
