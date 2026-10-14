@@ -21,6 +21,10 @@ class AmountsTest(unittest.TestCase):
         self.assertEqual(season.season_amounts(datetime.date(2026, 10, 14), -39.2)["fall"], 0.0, "southern spring")
         self.assertEqual(season.amounts_for("off", 39.2)["fall"], 0.0)
         self.assertEqual(season.amounts_for("fall", 39.2)["fall"], 1.0)
+        jan = season.season_amounts(datetime.date(2026, 1, 15), 39.2)
+        self.assertEqual((jan["winter"], jan["fall"], jan["spring"]), (1.0, 0.0, 0.0))
+        self.assertGreater(season.season_amounts(datetime.date(2026, 4, 22), 39.2)["spring"], 0.8)
+        self.assertEqual(season.season_amounts(datetime.date(2026, 7, 1), 39.2)["winter"], 0.0)
 
 
 class ColourTest(unittest.TestCase):
@@ -52,6 +56,10 @@ class ColourTest(unittest.TestCase):
         self.assertGreater(float(np.mean(turned > 20)), 0.2, "a good share of the canopy turned yellow / red")
         self.assertLess(float(np.max((h0 - h1)[:, 70:])), 25, "the lawn only yellowed a little")
         self.assertTrue(np.array_equal(season.grade(rgb, xs, -ys, {"fall": 0.0}), rgb), "summer: unchanged")
+        win = season.grade(rgb, xs, -ys, season.amounts_for("winter", 39.2))
+        _, s0, _ = season._hsv(rgb)
+        _, s1, _ = season._hsv(win)
+        self.assertLess(float(s1[:, :64].mean()), 0.7 * float(s0[:, :64].mean()), "winter: the canopy greys")
         # world-anchored: the same place graded alone gives the same texels
         part = season.grade(rgb[:, :64], xs[:, :64], -ys[:, :64], {"fall": 1.0})
         self.assertLess(np.abs(part[:, 10:54].astype(int) - out[:, 10:54].astype(int)).max(), 2)

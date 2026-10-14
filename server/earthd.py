@@ -2790,9 +2790,11 @@ def main():
     ap.add_argument("--leaf-on", choices=("on", "off"), default="on",
                     help="leaf-off imagery (Maryland's six-inch photos: bare trees, dormant grass) takes the summer "
                          "mosaic's colour in its vegetation (season.py; default on)")
-    ap.add_argument("--season", choices=("auto", "fall", "off"), default="auto",
-                    help="the season in the imagery: auto = today's date at the place (fall colours in the tree "
-                         "canopy from about October at 40 N), fall = full fall, off = the summer look (season.py)")
+    ap.add_argument("--season", choices=("auto", "spring", "fall", "winter", "off"), default="auto",
+                    help="the season in the imagery and the trees' leaves: auto = today's date at the place (fall "
+                         "colours from about October at 40 N, bare winter canopy from late November, the spring "
+                         "flush in April), spring / fall / winter = that season in full, off = the summer look "
+                         "(season.py, the mod's seasonlook.lua)")
     ap.add_argument("--tone", type=float, default=1.0,
                     help="strength of the imagery tone curve (0 = the imagery as downloaded)")
     ap.add_argument("--deshadow", choices=deshadowmod.MODES, default="off",

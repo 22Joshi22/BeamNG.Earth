@@ -36,6 +36,7 @@ NOISE_GRID = 128            # the noise is computed on at most this many cells a
 CANOPY_TEXTURE_MAX_M = 2.5  # coarser texels: the canopy by brightness only
 FALL_PEAK_DOY_40N = 300     # ~Oct 27 at 40 degrees; 2.5 days earlier per degree further from the equator
 FALL_HALF_DAYS = 28.0
+WINTER_BARE_DESAT = 0.7     # saturation lost by bare canopy at full winter
 
 
 def _smooth(x, a, b):
@@ -43,25 +44,38 @@ def _smooth(x, a, b):
     return t * t * (3.0 - 2.0 * t)
 
 
+WINTER_DOY_40N = (330, 365 + 60)   # bare from ~Nov 26 to ~Mar 1 at 40 N (ramps of WINTER_RAMP_DAYS either side)
+WINTER_RAMP_DAYS = 20.0
+SPRING_PEAK_DOY_40N = 112           # ~Apr 22: the fresh flush
+SPRING_HALF_DAYS = 22.0
+
+
 def season_amounts(date, lat):
-    """{"fall": 0..1} at a date (datetime.date) and latitude: how far the leaves have turned (0 in the tropics;
-    the southern hemisphere half a year later). Pure."""
+    """{"fall", "winter", "spring": 0..1} at a date (datetime.date) and latitude: how far the leaves have turned,
+    how bare the deciduous canopy is, how fresh the spring flush is (0 in the tropics; the southern hemisphere half a
+    year later; 2.5 days earlier per degree north for fall, later for spring). Pure."""
     if abs(lat) < 23.0:
-        return {"fall": 0.0}
+        return {"fall": 0.0, "winter": 0.0, "spring": 0.0}
     doy = date.timetuple().tm_yday
     if lat < 0:
         doy = (doy + 182) % 365
-    peak = FALL_PEAK_DOY_40N - (abs(lat) - 40.0) * 2.5
-    return {"fall": float(max(0.0, 1.0 - abs(doy - peak) / FALL_HALF_DAYS))}
+    shift = (abs(lat) - 40.0) * 2.5
+    fall = max(0.0, 1.0 - abs(doy - (FALL_PEAK_DOY_40N - shift)) / FALL_HALF_DAYS)
+    w0, w1 = WINTER_DOY_40N[0] - shift, WINTER_DOY_40N[1] + shift
+    d = doy if doy >= w0 - WINTER_RAMP_DAYS else doy + 365          # Jan-Mar count from the previous year
+    winter = min(max(0.0, (d - (w0 - WINTER_RAMP_DAYS)) / WINTER_RAMP_DAYS),
+                 max(0.0, (w1 + WINTER_RAMP_DAYS - d) / WINTER_RAMP_DAYS), 1.0)
+    spring = max(0.0, 1.0 - abs(doy - (SPRING_PEAK_DOY_40N + shift)) / SPRING_HALF_DAYS)
+    return {"fall": float(fall), "winter": float(winter), "spring": float(spring)}
 
 
 def amounts_for(mode, lat, today=None):
-    """season_amounts for --season: "auto" (today's date), "summer" / "off" (none), "fall" (full fall)."""
-    if mode == "fall":
-        return {"fall": 1.0}
+    """season_amounts for --season: "auto" (today's date), "off" (none), "fall" / "winter" / "spring" (full)."""
+    if mode in ("fall", "winter", "spring"):
+        return {"fall": 0.0, "winter": 0.0, "spring": 0.0, mode: 1.0}
     if mode == "auto":
         return season_amounts(today or datetime.date.today(), lat)
-    return {"fall": 0.0}
+    return {"fall": 0.0, "winter": 0.0, "spring": 0.0}
 
 
 def leaf_on(rgb, ref):
@@ -142,7 +156,7 @@ GRADE_HALF_PX = 512         # textures this big are graded at half size and appl
 def grade(rgb, xm, ym, amounts):
     """season grade (grade_full) of rgb; at GRADE_HALF_PX or more, computed on a half-size copy and applied as a
     per-channel ratio (the colour change is a few metres coarse at most, the detail stays the texture's own)."""
-    if float(amounts.get("fall", 0.0)) <= 0.0:
+    if not any(float(amounts.get(k, 0.0)) > 0.0 for k in ("fall", "winter", "spring")):
         return rgb
     hh, ww = rgb.shape[:2]
     if min(hh, ww) < GRADE_HALF_PX:
@@ -162,7 +176,9 @@ def grade_full(rgb, xm, ym, amounts):
     world position in metres (east, north: noise anchored to the world). Unchanged when every amount is 0. Only
     the vegetation's texels are converted; the noise is computed on a grid of ~2 m and interpolated."""
     fall = float(amounts.get("fall", 0.0))
-    if fall <= 0.0:
+    winter = float(amounts.get("winter", 0.0))
+    spring = float(amounts.get("spring", 0.0))
+    if fall <= 0.0 and winter <= 0.0 and spring <= 0.0:
         return rgb
     v = rgb.max(-1).astype(np.float32) / 255.0
     # vegetation hues (60-175 deg) have green as their largest channel: only those texels are converted
@@ -202,8 +218,24 @@ def grade_full(rgb, xm, ym, amounts):
     w = vg * cg * turned * min(1.0, fall * 1.6)
     nh = hv + (55.0 - hv) * vg * FALL_YELLOW * fall
     nh = nh + (th - nh) * w
+    ns = sv * (1 + (ts - 1) * w)
+    nv = vv * (1 + (tv - 1) * w)
+    if winter > 0.0:
+        # bare deciduous canopy: grey-brown twigs over leaf litter (most of it; conifers by the noise stay); dormant
+        # grass: tan
+        bare = vg * cg * winter * _smooth(n, 0.25, 0.4)
+        grass = vg * (1.0 - cg) * winter
+        nh = nh + (30.0 - nh) * bare + (45.0 - nh) * grass
+        ns = ns * (1.0 - WINTER_BARE_DESAT * bare) * (1.0 - 0.45 * grass)
+        nv = nv * (1.0 + 0.15 * bare)
+    if spring > 0.0:
+        # the fresh flush: lighter, yellower green
+        f = vg * spring
+        nh = nh + (82.0 - nh) * 0.5 * f
+        nv = nv * (1.0 + 0.08 * f)
+        ns = ns * (1.0 + 0.1 * f)
     out = rgb.copy()
-    out[sel] = _rgb(nh, np.clip(sv * (1 + (ts - 1) * w), 0, 1), np.clip(vv * (1 + (tv - 1) * w), 0, 1))
+    out[sel] = _rgb(nh, np.clip(ns, 0, 1), np.clip(nv, 0, 1))
     return out
 
 
