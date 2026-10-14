@@ -83,6 +83,24 @@ function M.sweep()
   return n
 end
 
+-- The road surfaces drawn opaque (2026-10-14): the stock decal materials are all translucent, and inside
+-- one road mesh the markings showed only while the engine happened to draw them after the asphalt; with
+-- many more translucent objects in view (buildings' windows, signals) they vanished. Opaque asphalt is
+-- drawn first, always, and the translucent lines, crossings and gutters over it.
+M.OPAQUE = { 'road_asphalt_2lane', 'italy_cobblestone' }
+
+local function loadMaterials()
+  if loadedMaterials then return end
+  for _, f in ipairs(M.MATERIAL_FILES) do loadJsonMaterialsFile(f) end
+  for _, name in ipairs(M.OPAQUE) do
+    local m = scenetree.findObject(name)
+    if m then
+      pcall(function() m:setField('translucent', 0, '0'); m:flush(); m:reload() end)
+    end
+  end
+  loadedMaterials = true
+end
+
 local function tileKey(aid, k) return tostring(aid) .. ':' .. tostring(k) end
 
 local function now() return os.clock() * 1000 end
@@ -241,10 +259,7 @@ local function updateFar(gov)
     local f = far[key]
     if f and not f.id then
       local t0 = now()
-      if not loadedMaterials then
-        for _, mf in ipairs(M.MATERIAL_FILES) do loadJsonMaterialsFile(mf) end
-        loadedMaterials = true
-      end
+      loadMaterials()
       local ok, id = pcall(createWalk, { shape = f.shape, pos = f.pos }, false)
       if ok then f.id = id else lastError = tostring(id) end
       gov:charge('roadWalk', now() - t0)
@@ -276,10 +291,7 @@ function M.update(gov, currentAnchor)
     local t = tiles[q.key]
     if t then
       local t0 = now()
-      if not loadedMaterials then
-        for _, f in ipairs(M.MATERIAL_FILES) do loadJsonMaterialsFile(f) end
-        loadedMaterials = true
-      end
+      loadMaterials()
       local ok, id = pcall(createChunk, q.chunk)
       if ok then t.objs[#t.objs + 1] = id else lastError = tostring(id) end
       t.queued = t.queued - 1
@@ -297,10 +309,7 @@ function M.update(gov, currentAnchor)
     end
     if t then
       local t0 = now()
-      if not loadedMaterials then
-        for _, f in ipairs(M.MATERIAL_FILES) do loadJsonMaterialsFile(f) end
-        loadedMaterials = true
-      end
+      loadMaterials()
       local isRoad = q.what == 'road' or q.what == 'wire'   -- render-only meshes
       local ok, id = pcall(createWalk, q.walk, not isRoad)
       if ok then

@@ -982,8 +982,10 @@ three days of testing: dem 741 MB / 7.5k files, imagery 1.4 GB / 35k, deshadow 7
   cut every 2 m and both edges sampled from the physics elevation in one call per tile. The result
   is one render-only TSStatic per tile: about 6k triangles / 360 KB, built in ~0.03 s. The same
   terrain-signal test now costs 8-12 ms, and roads show beyond the physics block too.
-  - The stock decal materials render on a mesh (translucent with zwrite: fixed draw order inside
-    one mesh, no flicker).
+  - The stock decal materials render on a mesh (translucent with zwrite). The draw order inside one
+    mesh is not guaranteed: with many translucent objects in view (2026-10-14, buildings and signals)
+    the markings vanished under the asphalt. `roads.lua` now makes the asphalt and cobble materials
+    opaque when it loads them (`M.OPAQUE`), so the translucent lines always draw over them.
   - On a MeshRoad, `sidewalk_concrete` drew nothing.
 - **Road lift.** The physics ground (block + road heights) is raised `grading.ROAD_LIFT` (4 cm)
   under roads, tapering with the grading weight. The visible ground tiles are not raised. So the road
