@@ -92,8 +92,8 @@ class VegetationTest(unittest.TestCase):
             np.testing.assert_array_equal(getattr(a, f), getattr(b, f))
 
     def test_thin_keeps_the_tallest(self):
-        jj = np.array([10, 10, 11, 40])          # crown radius of the 14 m top: 0.8 (0.12 h + 1) / 1.2 = 1.8 px
-        ii = np.array([11, 12, 11, 40])
+        jj = np.array([10, 10, 11, 40])          # crown radius of the 14 m top: 0.5 (0.12 h + 1) / 1.2 = 1.1 px
+        ii = np.array([12, 12, 12, 40])
         h = np.array([10.0, 14.0, 9.0, 8.0])
         kj, ki = veg._thin(jj, ii, h, 1.2)
         self.assertEqual(sorted(zip(kj.tolist(), ki.tolist())), [(10, 12), (40, 40)])

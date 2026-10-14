@@ -31,8 +31,9 @@ import mapcells
 
 log = logging.getLogger("earthd.vegetation")
 
-VERSION = 1
+VERSION = 2
 TREE_MIN_M = 3.0
+CROWN_SPACING = 0.5          # tops kept this many crown radii apart (0.8 looked sparse: the user, 2026-10-13)
 BUSH_MIN_M = 1.0
 KIND_TREE, KIND_BUSH, KIND_ROCK = 0, 1, 2
 GROUPS = ("deciduous", "conifer", "shrub", "rock")
@@ -44,6 +45,7 @@ ROAD_HALF_DEFAULT_M = 2.5
 SCATTER_CELL_M = 6.0        # the hashed scatter's grid (one candidate per cell)
 SCATTER_P = {20: (0.10, 0.04), 30: (0.01, 0.003), 60: (0.0, 0.08), 100: (0.02, 0.02)}   # class: (bush, rock)
 MEM_CELLS = 16
+WARM_M = 1200.0              # cells within this of the player are built ahead (warm_around)
 WC = {"tree": 10, "shrub": 20, "grass": 30, "crop": 40, "built": 50, "bare": 60, "snow": 70,
       "water": 80, "wetland": 90, "mangrove": 95, "moss": 100}
 
@@ -106,6 +108,8 @@ class Vegetation:
         self._mem = OrderedDict()
         self._lock = threading.Lock()
         self._cell_locks = {}
+        self._warm, self._warm_thread = [], None
+        self._warm_cv = threading.Condition()
 
     def cell(self, key):
         """The Items of map-data cell key ((z, x, y) or CellKey)."""
@@ -125,6 +129,37 @@ class Vegetation:
                 while len(self._mem) > MEM_CELLS:
                     self._mem.popitem(last=False)
             return items
+
+    def warm_around(self, lat, lon, radius_m=WARM_M):
+        """Build the cells within radius_m of (lat, lon) in the background (nearest first): the tiles
+        near a teleport's destination then find them ready instead of waiting ~3.5 s each."""
+        d = radius_m / 111320.0
+        dl = d / max(math.cos(math.radians(lat)), 0.01)
+        try:
+            keys = mapcells.cells_for_bbox(lat - d, lon - dl, lat + d, lon + dl, max_cells=64)
+        except ValueError:
+            return
+        keys = sorted(keys, key=lambda k: (k.center()[0] - lat) ** 2 + ((k.center()[1] - lon) * math.cos(math.radians(lat))) ** 2)
+        with self._warm_cv:
+            for k in keys:
+                kk = (int(k.x), int(k.y))
+                if kk not in self._warm and not self.ready(k):
+                    self._warm.append(kk)
+            if self._warm_thread is None:
+                self._warm_thread = threading.Thread(target=self._warm_loop, daemon=True, name="veg-warm")
+                self._warm_thread.start()
+            self._warm_cv.notify()
+
+    def _warm_loop(self):
+        while True:
+            with self._warm_cv:
+                while not self._warm:
+                    self._warm_cv.wait()
+                x, y = self._warm.pop(0)
+            try:
+                self.cell((mapcells.ZOOM, x, y))
+            except Exception:
+                log.exception("vegetation: building cell %s", (x, y))
 
     def ready(self, key):
         k = (int(key[1]), int(key[2]))
@@ -265,11 +300,11 @@ class Vegetation:
 
 def _thin(jj, ii, h, px):
     """Non-maximum suppression: the tallest tops first, each removing the others within its crown
-    radius (0.12 h + 1 m, as a fraction of 0.8). Deterministic (ties broken by position)."""
+    radius (0.12 h + 1 m, times CROWN_SPACING). Deterministic (ties broken by position)."""
     if len(jj) == 0:
         return jj, ii
     order = np.lexsort((ii, jj, -h))
-    rad = (0.8 * (0.12 * h + 1.0) / px)
+    rad = (CROWN_SPACING * (0.12 * h + 1.0) / px)
     cell = max(1, int(np.ceil(rad.max())))
     grid = {}
     keep = np.zeros(len(jj), bool)
@@ -383,7 +418,7 @@ def _mask_roads(f, mask, chm):
 TILE = 256.0                # m, as the road tiles (roads.tile_bbox)
 SEND_M = 768.0              # tiles this close to the player (Chebyshev) are sent ...
 DROP_M = 1024.0             # ... and dropped beyond this
-BUILD_PER_POSE = 4
+BUILD_PER_POSE = 8
 
 
 def tile_items(frame, tx, ty, veg, cell_ready, elev, sea=None):
