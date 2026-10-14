@@ -739,15 +739,13 @@ Next, from the photo comparisons (docs/research/streetview/fp*, base_*):
 - Facade variety: painted brick, formstone, siding colours per region; window sheet per era.
 - Wires between utility poles; signs (stop, speed limits) from data where present.
 - Odd dark mounds of ground near some Harbor East buildings (raised plazas or DEM remnants).
-- Road widths on through-town highways (Moab's Main Street, US-191: 4 lanes + a turn lane; ours 2):
-  Overture has no lane counts; options: OSM `lanes` for the segment's source record, or a wider
-  default for urban primary / trunk roads checked against more photos.
-- Curb ramps: the whole 1.8 m slope is the (near white) tactile texture; real US ramps are concrete
-  with a 0.6 m yellow / red truncated-dome pad at the curb (split the slope strip, tint the pad).
+- Road widths: urban trunks / primaries not lined by buildings default to 4 lanes since 2026-10-14
+  (Moab's Main Street); real lane counts would need OSM `lanes` (Overture has none).
+- Curb ramps: the pad is the first 0.6 m of the slope since 2026-10-14; tint it yellow / red.
 - Building heights stay predicted where Overture has none (Baltimore 98 %): the canopy height model
   masks buildings (~0 m on roofs, checked 2026-10-14), so it cannot fill them.
-- Near ground looks pale (Moab, Frederick photos: grey-white where lawns are green): inspect the
-  detail-mode ground material and the NAIP base photo there.
+- Near ground looked pale grey in towns: built-up land was the asphalt layer (the dirt layer since
+  2026-10-14; check more places).
 
 ## Bugs to look at (reported, not fixed yet)
 - **Rain particles "spazzing out"** (user, 2026-10-11): some raindrops jump around or streak across the
