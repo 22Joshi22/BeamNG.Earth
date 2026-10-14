@@ -786,6 +786,11 @@ Next, from the photo comparisons (docs/research/streetview/fp*, base_*):
   watch the frame time on wooded roads (about +20k bushes per z14 cell).
 
 ## Bugs to look at (reported, not fixed yet)
+- **Roundabouts** (user report 2026-10-14, Harbor Point, 39.2801, -76.5890): the ring is cobbles with a D-shaped
+  sidewalk island, odd sidewalk pieces at the entries and road patches that do not meet; needs proper roundabout
+  handling (Overture junction=roundabout rings: one-way ring road, a raised round island, splitter islands).
+- **Mount Whitney summit hut** (user report 2026-10-14): the plain grey box is the real stone summit shelter
+  (Overture building); small huts / shelters above the tree line could use a stone wall look.
 - **Rain particles "spazzing out"** (user, 2026-10-11): some raindrops jump around or streak across the
   view (seen in Fells Point's real rain). Suspects: the Precipitation object's box following the
   camera or the rebase, or the wind gusts (weather.lua) changing its speed every frame.
