@@ -343,12 +343,31 @@ local function guard(b, all)
   end
 end
 
+-- The player's traffic choice (the user, 2026-10-14: "if a player has them on then yes, if not then no"): the
+-- level-start configurator's (Disabled / Parked only / Normal / Police; freeroam's spawningOptionsHelper), taken at
+-- mission start by M.takeChoice. Off by default; the radial menu's traffic entries work at any time as on stock maps.
+M.choice = { traffic = false, parked = false, police = false, trafficAmount = -1, parkedAmount = -1 }
+
+-- Pure on its argument: the choice in freeroam's spawning options `o`, which are then set to disabled: freeroam would
+-- spawn at camera-ready, before our first road graph is in the map; we start them once it is.
+function M.takeChoice(o)
+  if type(o) ~= 'table' then
+    M.choice = { traffic = false, parked = false, police = false, trafficAmount = -1, parkedAmount = -1 }
+    return M.choice
+  end
+  M.choice = { traffic = o.trafficMode == 'enabled', parked = o.trafficParked == 'enabled',
+               police = o.trafficPolice == 'enabled', trafficAmount = tonumber(o.trafficAmount) or -1,
+               parkedAmount = tonumber(o.trafficParkedAmount) or -1 }
+  o.trafficMode, o.trafficParked, o.trafficPolice = 'disabled', 'disabled', 'disabled'
+  return M.choice
+end
+
 local function startTraffic()
   started = true
-  local amount = settings and settings.getValue and tonumber(settings.getValue('trafficAmount')) or 0
-  local gt = trafficSystem()
-  if amount > 0 and gt and gt.getState() ~= 'on' then
-    local ok, err = pcall(gt.setupTraffic, amount)
+  local c = M.choice
+  local gt = c.traffic and trafficSystem() or nil
+  if gt and gt.getState() ~= 'on' then
+    local ok, err = pcall(gt.setupTraffic, c.trafficAmount ~= 0 and c.trafficAmount or -1, { police = c.police })
     if not ok then log('W', 'beamngEarth', 'navgraph: setupTraffic: ' .. tostring(err)) end
   end
 end

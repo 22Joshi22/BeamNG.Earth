@@ -202,9 +202,11 @@ function M.update(aid, player, blk)
   if not gp or near < M.START_MIN then return end
   if not started then
     started = true
-    local amount = settings and settings.getValue and tonumber(settings.getValue('trafficParkedAmount')) or 0
-    if amount > 0 and not gp.getState() then
-      local okS, err = pcall(gp.setupVehicles, -1, { pos = vec3(player.x, player.y, player.z) })
+    -- the player's level-start choice (navgraph.choice; the radial menu works at any time)
+    local c = require('beamngEarth/navgraph').choice
+    if c.parked and not gp.getState() then
+      local amount = (c.parkedAmount and c.parkedAmount > 0) and c.parkedAmount or -1
+      local okS, err = pcall(gp.setupVehicles, amount, { pos = vec3(player.x, player.y, player.z) })
       if not okS then log('W', 'beamngEarth', 'parking: setupVehicles: ' .. tostring(err)) end
     end
     scatterPending = false

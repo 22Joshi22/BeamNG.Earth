@@ -1104,6 +1104,8 @@ local function onLevelStart()
   -- the pause-menu settings page it is a compact HUD, hidden unless the settings show it.
   ui.visible = st.inOurLevel and not settings.hudHiddenAtStart()
   if not st.inOurLevel then return end
+  -- the player's traffic / parked cars choice, before freeroam spawns them on a map without our roads yet
+  navgraph.takeChoice(rawget(_G, 'freeroam_freeroam') and freeroam_freeroam.spawningOptionsHelper)
 
   activateWorld()
   -- Something to stand on until the first anchor arrives (our level has no GroundPlane).

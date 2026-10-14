@@ -39,6 +39,8 @@ local clock = 0
 os.clock = function() return clock end
 
 local P = require('beamngEarth/parking')
+local NG = require('beamngEarth/navgraph')
+NG.takeChoice({ trafficMode = 'disabled', trafficParked = 'enabled' })   -- the player chose parked cars
 local player = { x = 0, y = 0, z = 0 }
 
 local function rows(n, x0, y)
@@ -58,7 +60,7 @@ T.check(given.finalized == 1, 'quadtree built')
 local s1 = given.parkingSpots.sorted[1]
 T.check(s1.scl.x == 2.5 and s1.scl.y == 6.0 and s1.customFields.tags.street and s1.customFields.tags.forwards,
   'stock spot size, street + forwards tags')
-T.check(setupCalls == 1, 'parked cars started (trafficParkedAmount 16)')
+T.check(setupCalls == 1, 'parked cars started (the player chose them)')
 P.onRows(1, '1:0_1', { { 50, 50, 1.0, 0, 1 } })
 clock = clock + 3
 P.update(1, player)

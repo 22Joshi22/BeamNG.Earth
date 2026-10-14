@@ -35,4 +35,11 @@ T.check(got.j9 and not got.j1, 'no old table: the new one as is')
 T.check(not N.stuck(nil, 100, 500), 'moving: not stuck')
 T.check(not N.stuck(60, 100, 500), 'still 40 s: a long signal, not stuck yet')
 T.check(N.stuck(50, 100, 500) and not N.stuck(50, 100, 20), 'still 50 s: stuck, unless next to the player')
+local o = { trafficMode = 'enabled', trafficParked = 'enabled', trafficPolice = 'disabled', trafficAmount = -1,
+            trafficParkedAmount = 10 }
+local c = N.takeChoice(o)
+T.check(c.traffic and c.parked and not c.police and c.parkedAmount == 10, 'the configurator choice taken')
+T.check(o.trafficMode == 'disabled' and o.trafficParked == 'disabled', 'freeroam spawns nothing before our roads')
+T.check(not N.takeChoice({ trafficMode = 'fromSetting', trafficParked = 'disabled' }).traffic, 'fromSetting: off')
+T.check(not N.takeChoice(nil).parked, 'no freeroam: off (the radial menu still works)')
 T.done('test_navgraph')

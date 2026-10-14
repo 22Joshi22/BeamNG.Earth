@@ -2837,9 +2837,10 @@ def main():
     ap.add_argument("--buildings", choices=("on", "off"), default="off",
                     help="3D buildings from the Overture footprints with the road tiles (buildings.py; needs --roads "
                          "on): heights and roofs predicted where the data has none")
-    ap.add_argument("--traffic", choices=("on", "off"), default="off",
+    ap.add_argument("--traffic", choices=("on", "off"), default="on",
                     help="the AI road graph around the player for BeamNG's own traffic and AI (navgraph.py; needs "
-                         "--roads on): the mod hands it to map.reset")
+                         "--roads on): the mod hands it to map.reset. On by default since 2026-10-14: whether cars "
+                         "spawn is the player's choice in the game (level-start options, radial menu)")
     ap.add_argument("--road-widths", choices=("on", "off"), default="on",
                     help="street widths measured between the buildings that line them (roadwidth.py; Overture "
                          "buildings); off = class defaults")

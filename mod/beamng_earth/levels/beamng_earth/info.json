@@ -12,6 +12,6 @@
   "roads": "None (v1)",
   "authors": "BeamNG.Earth",
   "defaultSpawnPointName": "spawn_default",
-  "supportsTraffic": false,
+  "supportsTraffic": true,
   "supportsTimeOfDay": true
 }
