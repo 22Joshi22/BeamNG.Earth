@@ -111,6 +111,7 @@ import heightmap  # noqa: E402
 import imagery as imagerymod  # noqa: E402
 import maptiles as maptilesmod  # noqa: E402
 import geocode as geocodemod  # noqa: E402
+import routing as routingmod  # noqa: E402
 import netfetch  # noqa: E402
 import protocol  # noqa: E402
 import weather as weathermod  # noqa: E402
@@ -1809,6 +1810,21 @@ class Connection:
         out = await asyncio.to_thread(build)
         self.send({"type": "map_tiles_ready", "tiles": out})
 
+    async def route(self, msg):
+        """{"id", "lat0", "lon0", "lat1", "lon1"} -> route_result {"id", "points": [[lat, lon]...], "dist", "dur",
+        "error"?}."""
+        out = {"type": "route_result", "id": msg.get("id"), "points": [], "dist": 0.0, "dur": 0.0}
+        try:
+            r = await asyncio.to_thread(routingmod.plan, float(msg["lat0"]), float(msg["lon0"]), float(msg["lat1"]),
+                                        float(msg["lon1"]), self.s.net)
+            out.update(r)
+        except Exception as e:          # offline, no route, rate limited: the mod falls back to steering
+            out["error"] = f"{type(e).__name__}: {e}"[:200]
+        log.info("route %d (%s, %s -> %s, %s): %d points, %.1f km%s", int(msg.get("id") or 0), msg.get("lat0"),
+                 msg.get("lon0"), msg.get("lat1"), msg.get("lon1"), len(out["points"]), out["dist"] / 1000,
+                 (" (" + out["error"] + ")") if "error" in out else "")
+        self.send(out)
+
     async def geocode(self, msg):
         """The map's search {"id", "q", "lat"?, "lon"?} -> geocode_result {"id", "results": [...], "error"?}."""
         q = str(msg.get("q") or "")[:200]
@@ -1946,6 +1962,8 @@ class Connection:
             self.spawn(self.map_tiles(msg))
         elif kind == "geocode":                 # the map's search box: addresses and places (geocode.py)
             self.spawn(self.geocode(msg))
+        elif kind == "route":                   # the GPS: the whole road route (routing.py)
+            self.spawn(self.route(msg))
         elif kind == "cache":
             self.on_cache(msg)
         elif kind == "roads_reset":             # the mod dropped its roads (settings): send them all again

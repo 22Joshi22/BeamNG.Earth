@@ -11,4 +11,14 @@ T.check(G.setDestination(39.28, -76.59, 'x') and G.status().name == 'x', 'destin
 T.check(not G.setDestination(nil, 1), 'a bad destination refused')
 G.clear()
 T.check(G.status() == nil, 'cleared')
+local xs, ys = { 0, 100, 100 }, { 0, 0, 100 }
+local si, st, sd = G.nearestSegment(xs, ys, 50, 10)
+T.check(si == 1 and math.abs(st - 0.5) < 1e-9 and math.abs(sd - 10) < 1e-9, 'on the first segment, halfway, 10 m off')
+si, st, sd = G.nearestSegment(xs, ys, 120, 60)
+T.check(si == 2 and math.abs(st - 0.6) < 1e-9 and math.abs(sd - 20) < 1e-9, 'on the second segment')
+local gnodes = { a = { pos = { x = 0, y = 0, z = 1 }, links = { b = {} } }, b = { pos = { x = 200, y = 0, z = 3 }, links = { a = {} } } }
+local segs = G.edgeSegments(gnodes)
+T.check(#segs == 1, 'one edge, once')
+local ed, ez = G.nearestEdge(segs, 100, 10)
+T.check(math.abs(ed - 10) < 1e-9 and ez == 2, 'a point beside the middle of an edge: on the graph')
 T.done('test_gps')

@@ -34,10 +34,11 @@ in a few minutes. No programming needed.
   a typed "latitude, longitude"; pick a result to teleport there or set it as your GPS destination. Alt+M or Esc
   closes it. In the BeamNG.Earth level the game's own map key (**M**) and the pause menu's **Map**
   open this map too.
-- **Right-click** the map for a menu: **Teleport here**, **Set GPS destination** or **Save this
-  place**. The GPS uses the game's own route arrows on the road. The road network only exists
-  around you, so far destinations are routed in steps that update as you drive; the map shows the
-  remaining distance (**Clear** stops it).
+- **Left-click** the map (or a saved place, or a search result) to plan a GPS route there: the whole
+  road route is planned online (OSRM on OpenStreetMap; your start and destination are sent to it)
+  and drawn on the map with the distance and driving time left; the game's own route arrows follow
+  it on the road. Leave the route and it is planned again. **Clear** stops it, **Teleport** jumps there.
+- **Right-click** the map for **Teleport here**, **Set GPS destination** or **Save this place**.
 - The map's **Places** panel (on the right; "Places ›" hides it) lets you save where you are, type
   (or paste from Google Maps) a "latitude, longitude" and press **Go**, go to, rename or delete your
   saved places, and jump back to recent ones. Click a place's name to see it on the map.

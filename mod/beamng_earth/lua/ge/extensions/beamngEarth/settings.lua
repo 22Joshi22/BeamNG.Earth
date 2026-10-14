@@ -477,6 +477,11 @@ function M.uiMapGps(lat, lon, name)
   return { ok = gps.setDestination(lat, lon, name) }
 end
 
+-- The GPS's planned route for the map's line: { version, points = {{lat, lon}...}, dist, dur } or nil.
+function M.uiGpsRoute()
+  return require('beamngEarth/gps').route()
+end
+
 -- The map's search-as-you-type: send (q -> { id } or { error }) and poll (id -> nil while waiting, else
 -- { results = {{name, detail, kind, lat, lon}...}, error }). Biased toward the player.
 local geocodeId = 0

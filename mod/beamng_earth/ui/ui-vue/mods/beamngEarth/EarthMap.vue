@@ -20,6 +20,9 @@
         @error="onTileError($event, t)"
       />
       <svg class="map-grid" :width="w" :height="h">
+        <polyline v-if="routeDone" class="route-done" :points="routeDone" />
+        <polyline v-if="routeAhead" class="route-line-casing" :points="routeAhead" />
+        <polyline v-if="routeAhead" class="route-line" :points="routeAhead" />
         <g v-for="g in grid" :key="g.key">
           <line :x1="g.x1" :y1="g.y1" :x2="g.x2" :y2="g.y2" :class="g.cls" />
           <text v-if="g.label" :x="g.lx" :y="g.ly" class="grid-label">{{ g.label }}</text>
@@ -32,7 +35,7 @@
         class="marker place"
         :style="{ left: p.sx + 'px', top: p.sy + 'px' }"
         @mousedown.stop
-        @click.stop="askTeleport(p.lat, p.lon, p.name)"
+        @click.stop="setGps(p.lat, p.lon, p.name)"
       >
         <div class="pin"></div>
         <div class="marker-label">{{ p.name }}</div>
@@ -100,8 +103,12 @@
     <!-- the GPS destination -->
     <div v-if="state.gps" class="gps-chip" @mousedown.stop>
       <span>GPS: {{ state.gps.name || fmtLatLon(state.gps.lat, state.gps.lon) }}</span>
-      <span v-if="state.gps.dist != null" class="gps-dist">{{ fmtMiles(state.gps.dist) }}</span>
+      <span v-if="state.gps.planning && !routePts.length" class="gps-dist">planning route…</span>
+      <span v-else-if="state.gps.remaining != null" class="gps-dist">{{ fmtMiles(state.gps.remaining) }}<template
+        v-if="state.gps.eta != null">, {{ fmtDur(state.gps.eta) }}</template></span>
+      <span v-if="state.gps.routeError && !routePts.length" class="gps-warn" :title="state.gps.routeError">no road route: heading straight there</span>
       <button class="map-btn small" @click="showOnMap(state.gps)">Show</button>
+      <button class="map-btn small" :disabled="!!state.cannotGo" @click="askTeleport(state.gps.lat, state.gps.lon, state.gps.name)">Teleport</button>
       <button class="map-btn small" @click="clearGps">Clear</button>
     </div>
 
@@ -372,12 +379,16 @@ function onUp(ev) {
   const d = drag
   drag = null
   if (d && !d.moved) {
+    // a click sets the GPS route there (the user, 2026-10-14); delayed so a double-click only zooms
     const p = localXY(ev)
     const v = view.value
     const ll = mm.fromScreen(p.x, p.y, v.lat, v.lon, v.z, w.value, h.value)
-    askTeleport(ll.lat, ll.lon, "")
+    clearTimeout(clickTimer)
+    clickTimer = setTimeout(() => setGps(ll.lat, ll.lon, ""), 260)
   }
 }
+
+let clickTimer = null
 
 function onWheel(ev) {
   const p = localXY(ev)
@@ -389,6 +400,7 @@ function onWheel(ev) {
 }
 
 function onDblClick(ev) {
+  clearTimeout(clickTimer)
   const p = localXY(ev)
   const v = view.value
   view.value = mm.zoomAt(v.lat, v.lon, v.z, v.z + 1, p.x, p.y, w.value, h.value)
@@ -519,7 +531,11 @@ function ctxGps() {
 }
 function setGps(lat, lon, name) {
   engineLua(`beamngEarth_settings and beamngEarth_settings.uiMapGps(${luaNum(lat)}, ${luaNum(lon)}, ${luaStr(name || "")}) or nil`, r => {
-    if (r && r.ok) state.value = { ...state.value, gps: { lat, lon, name } }
+    if (r && r.ok) {
+      state.value = { ...state.value, gps: { lat, lon, name, planning: true } }
+      routePts.value = []
+      routeVersion = 0
+    }
   })
 }
 function clearGps() {
@@ -528,6 +544,36 @@ function clearGps() {
     state.value = { ...state.value, gps: null }
   })
 }
+// the planned route (server routing.py), fetched when its version changes; drawn done (grey) / ahead (blue)
+const routePts = ref([])
+let routeVersion = 0
+watch(() => state.value.gps && state.value.gps.routeVersion, v => {
+  if (!v) { routePts.value = []; routeVersion = 0; return }
+  if (v === routeVersion) return
+  engineLua("beamngEarth_settings and beamngEarth_settings.uiGpsRoute and beamngEarth_settings.uiGpsRoute() or nil", r => {
+    if (!r || !r.points) return
+    routeVersion = r.version
+    routePts.value = toArray(r.points).map(p => (Array.isArray(p) ? [Number(p[0]), Number(p[1])] : [Number(p["1"]), Number(p["2"])]))
+      .filter(p => isFinite(p[0]) && isFinite(p[1]))
+  })
+})
+watch(() => state.value.gps, g => { if (!g) { routePts.value = []; routeVersion = 0 } })
+function routePath(from, to) {
+  const pts = routePts.value.slice(from, to)
+  if (pts.length < 2) return ""
+  return pts.map(p => { const s = screen(p[0], p[1]); return `${s.x.toFixed(1)},${s.y.toFixed(1)}` }).join(" ")
+}
+const routeSplit = computed(() => {
+  const g = state.value.gps
+  return Math.max(0, Math.min(routePts.value.length - 1, (g && g.progress ? g.progress : 1) - 1))
+})
+const routeAhead = computed(() => { view.value; w.value; h.value; return routePath(routeSplit.value, routePts.value.length) })
+const routeDone = computed(() => { view.value; w.value; h.value; return routePath(0, routeSplit.value + 2) })
+function fmtDur(s) {
+  const m = Math.round(s / 60)
+  return m < 60 ? `${Math.max(1, m)} min` : `${Math.floor(m / 60)} h ${m % 60} min`
+}
+
 const gpsScreen = computed(() => {
   const g = state.value.gps
   return g ? screen(g.lat, g.lon) : null
@@ -621,7 +667,10 @@ function pickResult(r) {
   const name = r.name || ""
   query.value = name
   setTimeout(() => { searchSeq++; clearTimeout(searchTimer) }, 0)   // the watch on query must not search again
-  goTo(r.lat, r.lon, r.detail ? `${name}, ${r.detail}` : name)
+  const label = r.detail ? `${name}, ${r.detail}` : name
+  follow.value = false
+  view.value = { lat: r.lat, lon: r.lon, z: Math.max(view.value.z, 13) }
+  setGps(r.lat, r.lon, label)      // a search result: the route there (Teleport: the GPS box or right-click)
 }
 
 // ---- teleport ------------------------------------------------------------------------------
@@ -828,6 +877,11 @@ const fmtLatLon = mm.fmtLatLon
   padding: 5px 8px 5px 12px; font-size: 13px; background: rgba(15, 18, 22, 0.88); border: 1px solid #36a3ff; border-radius: 5px;
 }
 .gps-dist { color: #9fd3ff; }
+.gps-warn { color: #ffb08a; font-size: 12px; }
+.map-grid polyline { fill: none; stroke-linejoin: round; stroke-linecap: round; }
+.map-grid .route-line-casing { stroke: rgba(10, 40, 80, 0.85); stroke-width: 8; }
+.map-grid .route-line { stroke: #3aa0ff; stroke-width: 5; }
+.map-grid .route-done { stroke: rgba(200, 200, 200, 0.6); stroke-width: 4; }
 .marker.gps { z-index: 3; }
 .marker.gps .flag {
   position: absolute; left: -9px; top: -9px; width: 18px; height: 18px; border-radius: 50% 50% 50% 0;

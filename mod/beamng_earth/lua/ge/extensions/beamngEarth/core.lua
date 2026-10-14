@@ -528,6 +528,7 @@ local function formatKnown(f)
 end
 
 local geocodeResults = {}       -- the world map's address search answers: id -> { results, error }
+local routeResults = {}         -- the GPS's planned routes: id -> { points, dist, dur, error }
 
 local function onMessage(msg)
   local t = msg.type
@@ -698,6 +699,8 @@ local function onMessage(msg)
     roads.onFarTile(msg, st.anchorId)
   elseif t == 'bldfar_drop' then
     roads.onFarDrop(msg)
+  elseif t == 'route_result' then
+    if msg.id then routeResults[msg.id] = { points = msg.points or {}, dist = msg.dist, dur = msg.dur, error = msg.error } end
   elseif t == 'geocode_result' then
     if msg.id then geocodeResults[msg.id] = { results = msg.results or {}, error = msg.error } end
   elseif t == 'map_tiles_ready' then
@@ -1367,6 +1370,16 @@ function M.requestGeocode(id, q, lat, lon)
   if not net.isConnected() then return false end
   net.send({ type = 'geocode', id = id, q = q, lat = lat, lon = lon })
   return true
+end
+function M.requestRoute(id, lat0, lon0, lat1, lon1)
+  if not net.isConnected() then return false end
+  net.send({ type = 'route', id = id, lat0 = lat0, lon0 = lon0, lat1 = lat1, lon1 = lon1 })
+  return true
+end
+function M.takeRoute(id)
+  local r = routeResults[id]
+  routeResults[id] = nil
+  return r
 end
 function M.takeGeocode(id)
   local r = geocodeResults[id]
