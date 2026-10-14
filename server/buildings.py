@@ -245,7 +245,7 @@ def brick_share(lat, lon):
     return 0.15
 
 
-def plan(ring, attrs, neighbours=0, lat=None, lon=None, look=None, town=False):
+def plan(ring, attrs, neighbours=0, lat=None, lon=None, look=None, town=False, dense=False):
     """The Spec of a footprint (local ring (n, 2) in metres, counter-clockwise) from its Overture attributes
     (dict: class, height, num_floors, min_height, roof_shape, roof_height) and the number of buildings
     sharing a wall with it. Height and roof are predicted when not given."""
@@ -263,7 +263,8 @@ def plan(ring, attrs, neighbours=0, lat=None, lon=None, look=None, town=False):
     garage = cls in ("parking", "parking_garage") or "parking garage" in name or (
         "garage" in name and area > 800)
     narrow = hw < 4.2 and hl > 2.2 * hw                 # a row house: ~4-8 m wide, deep
-    row = cls in ROW_CLASSES or (narrow and neighbours >= 1)
+    # in a dense core small buildings are row houses even where the footprints leave gaps (Fells Point)
+    row = cls in ROW_CLASSES or (narrow and (neighbours >= 1 or dense)) or (dense and area < 260 and not shop)
     shed = cls in SHED_CLASSES or (area < 40 and not row)
     shop = cls in SHOP_CLASSES
     industrial = cls in INDUSTRIAL_CLASSES or (area > 2500 and cls in ("", "commercial"))
@@ -883,14 +884,15 @@ def tile_buildings(frame, x0, y0, x1, y1, layers, elev, water=None, part_layers=
     if not rings:
         return []
     shared = _shared_walls(rings)
-    town = sum(_area2(r) / 2 for r, mh in zip(rings, mins) if mh <= 0.5) / ((x1 - x0) * (y1 - y0)) < TOWN_COVERAGE
+    cover = sum(_area2(r) / 2 for r, mh in zip(rings, mins) if mh <= 0.5) / ((x1 - x0) * (y1 - y0))
+    town, dense = cover < TOWN_COVERAGE, cover > BRICK_WALK_COVERAGE
     clat, clon, _ = frame.enu_to_geodetic((x0 + x1) / 2, (y0 + y1) / 2, 0.0)
     clat, clon = float(clat), float(clon)
     out = []
     for ring, at, sh, look, mh in zip(rings, attrs, shared, looks, mins):
         if mh > 0.5 and at.get("height") is not None and np.isfinite(at["height"]) and look is None:
             at = dict(at, height=max(2.5, float(at["height"]) - mh))     # a building's own height range
-        spec = plan(ring, at, int(sh) if look is None else 0, clat, clon, look, town)
+        spec = plan(ring, at, int(sh) if look is None else 0, clat, clon, look, town, dense)
         spec.min_h = mh
         e = ring[:, 0] + x0
         n = ring[:, 1] + y0
