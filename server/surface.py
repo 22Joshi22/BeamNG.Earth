@@ -47,15 +47,23 @@ MATERIALS = (
     ("bngEarthGroundSnow", "SNOW"),
     ("bngEarthGroundMud", "MUD"),
     ("bngEarthGroundCobble", "COBBLESTONE"),      # roads with paving stones / setts (roads.py "cobble")
+    ("bngEarthGroundLawn", "GRASS"),              # mown yards in towns (short grass only, groundcover.lua)
     ("beamngEarthDirt", "DIRT"),
 )
-ASPHALT, GRASS, DUSTY, LOOSE, ROCK, SNOW, MUD, COBBLE, DIRT = range(len(MATERIALS))
+ASPHALT, GRASS, DUSTY, LOOSE, ROCK, SNOW, MUD, COBBLE, LAWN, DIRT = range(len(MATERIALS))
 # WorldCover class -> material (§5.4 of the world-data research). Built-up land is the plain dirt layer
 # (2026-10-14): its yards, lawns and lots took the asphalt layer's grey detail and macro textures, which
 # washed whole towns pale grey in the street photos (Moab, Frederick); the roads are painted asphalt anyway
 # (paint_roads), and the photo's own colours now show through.
 CLASS_MATERIAL = {0: DIRT, 10: GRASS, 20: DUSTY, 30: GRASS, 40: DIRT, 50: DIRT, 60: LOOSE, 70: SNOW,
                   80: MUD, 90: MUD, 95: MUD, 100: GRASS}
+# Lawns (2026-10-14, street photos of Ocean City, Lancaster, Frederick, Moab): built-up land between the
+# buildings is mostly mown grass, which the dirt layer drew pale and bare. A share of it is LAWN, in patches
+# of smooth noise on a fixed world grid: most of it where the climate is humid, less in the dry West (yards
+# of gravel and dirt there). The rest stays dirt (lots, gravel, bare yards); roads and lots paint over both.
+LAWN_SHARE_HUMID = 0.75
+LAWN_SHARE_DRY = 0.3
+LAWN_PATCH_M = 30.0
 ROCK_SLOPE_DEG = 35.0       # steeper ground is rock (cliffs, scree), except snow
 # Organic borders (user 2026-10-11: rectangular grass in Monument Valley). WorldCover's 10 m square
 # pixels give stair-stepped, ruler-straight class borders, which the grass makes visible. Every
@@ -71,11 +79,33 @@ for _c, _m in CLASS_MATERIAL.items():
     _LUT[_c] = _m
 
 
-def classify(classes, u, square):
+def dry_west(lat, lon):
+    """The arid West (a coarse climate stand-in, vegetation.regional's): its towns have fewer lawns."""
+    lat, lon = np.asarray(lat), np.asarray(lon)
+    return (lon < -102.0) & (lat > 25.0) & (lat < 46.0) & ~((lon < -121.0) & (lat > 37.0))
+
+
+def lawns(lat, lon):
+    """True where built-up land is a lawn (LAWN_* above). A pure function of the world position."""
+    lat = np.asarray(lat, np.float64)
+    lon = np.asarray(lon, np.float64)
+    xm = lon * M_PER_DEG * np.cos(np.radians(lat))
+    ym = lat * M_PER_DEG
+    n = 0.65 * _value_noise(xm / LAWN_PATCH_M, ym / LAWN_PATCH_M, 5) \
+        + 0.35 * _value_noise(xm / (LAWN_PATCH_M / 3), ym / (LAWN_PATCH_M / 3), 6)
+    share = np.where(dry_west(lat, lon), LAWN_SHARE_DRY, LAWN_SHARE_HUMID)
+    # threshold near the noise sum's share quantile (measured: 0.79 humid, 0.25 dry)
+    return n > (0.5 - share) * 1.1
+
+
+def classify(classes, u, square, lat=None, lon=None):
     """Material index per sample: the land-cover class's material, ROCK where the slope of the
     height grid u (metres, [row, col], `square` m apart) is steeper than ROCK_SLOPE_DEG (snow stays
-    snow). Pure."""
-    idx = _LUT[np.asarray(classes, np.uint8)]
+    snow). With the samples' positions, built-up land is LAWN where lawns() says. Pure."""
+    classes = np.asarray(classes, np.uint8)
+    idx = _LUT[classes]
+    if lat is not None and lon is not None:
+        idx = np.where((classes == 50) & lawns(lat, lon), np.uint8(LAWN), idx)
     u = np.asarray(u, np.float64)
     if min(u.shape) < 2:            # no slope from a single row / column
         return idx.astype(np.uint8)

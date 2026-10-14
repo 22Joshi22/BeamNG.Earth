@@ -41,6 +41,17 @@ class ClassifyTest(unittest.TestCase):
         gentle = np.tile(np.arange(n) * 2.0 * 0.5, (n, 1))     # 27 deg: not rock
         self.assertTrue((sf.classify(grass, gentle, 2.0) == sf.GRASS).all())
 
+    def test_town_yards_are_mostly_lawn_in_the_east_less_in_the_dry_west(self):
+        def share(lat, lon):
+            la, lo = np.meshgrid(np.linspace(lat, lat + 0.02, 200), np.linspace(lon, lon + 0.02, 200))
+            idx = sf.classify(np.full(la.shape, 50, np.uint8), np.zeros(la.shape), 2.0, la, lo)
+            self.assertTrue(np.isin(idx, (sf.LAWN, sf.DIRT)).all())
+            return float((idx == sf.LAWN).mean())
+        self.assertGreater(share(39.28, -76.60), 0.6, "Baltimore")
+        self.assertLess(share(38.57, -109.56), 0.4, "Moab")
+        grass = np.full((2, 2), 30, np.uint8)
+        self.assertTrue((sf.classify(grass, np.zeros((2, 2)), 2.0, np.full((2, 2), 39.3), np.full((2, 2), -76.6)) == sf.GRASS).all())
+
 
 class WarpTest(unittest.TestCase):
     """Organic class borders: the land cover is read a few metres off, by smooth world-fixed noise."""

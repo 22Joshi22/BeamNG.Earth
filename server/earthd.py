@@ -991,7 +991,7 @@ class Server:
             # rows flipped as the heightmap's (row 0 = north)
             t1 = time.perf_counter()
             classes, complete = self.surface.classes(keep["lat"], keep["lon"])
-            idx = surfacemod.classify(classes, keep["u"], heightmap.SQUARE)
+            idx = surfacemod.classify(classes, keep["u"], heightmap.SQUARE, keep["lat"], keep["lon"])
             if self.sea is not None:    # under water: the bed (no grass through the surface)
                 idx[self.sea.depth(keep["lat"], keep["lon"]) > blockworker.WATER_BED_M] = surfacemod.MUD
             road_feats, roads_complete = self.surface.roads(keep["lat"], keep["lon"])

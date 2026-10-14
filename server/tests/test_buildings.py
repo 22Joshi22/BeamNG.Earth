@@ -188,5 +188,16 @@ class PartsTest(unittest.TestCase):
         self.assertAlmostEqual(P[:, 2][P[:, 2] < 90.5].max(), 90.0, delta=0.01)
 
 
+class PhotoFillTest(unittest.TestCase):
+    def test_big_footprint_fills_from_the_ground_around(self):
+        rgb = np.zeros((512, 512, 3), np.uint8)
+        rgb[:] = (40, 160, 60)
+        mask = np.zeros((512, 512), bool)
+        mask[10:500, 10:500] = True         # far wider than the first blur
+        rgb[mask] = (200, 200, 200)
+        out = bld.fill_photo(rgb, mask, 256.0, 512)
+        self.assertTrue(np.allclose(out[mask].astype(int), (40, 160, 60), atol=4), "no black holes, no roof colour")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -180,7 +180,7 @@ def build(aid, lat, lon, hm_zoom, q, cx, cy, size, out_dir, name, ter_name=None)
     if _s.surface is not None:
         t1 = time.perf_counter()
         classes, complete = _s.surface.classes(keep["lat"], keep["lon"])
-        idx = surfacemod.classify(classes, keep["u"], heightmap.SQUARE)
+        idx = surfacemod.classify(classes, keep["u"], heightmap.SQUARE, keep["lat"], keep["lon"])
         if _s.sea is not None:          # under water: the bed (no grass growing through the surface)
             idx[_s.sea.depth(keep["lat"], keep["lon"]) > WATER_BED_M] = surfacemod.MUD
         road_feats, roads_complete = _s.surface.roads(keep["lat"], keep["lon"])
