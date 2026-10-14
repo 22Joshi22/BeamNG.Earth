@@ -5,21 +5,22 @@ the mod's sea.lua; docs/research/2026-10-13-water-probe.md).
 
 A quadtree on a lattice of TILE_MAX squares in the anchor frame: a square is split while the player is
 closer than SPLIT_K times its size (down to TILE_MIN), so the tiles are small near the player and large
-far away (<= 76 over open sea; 83 tiles cost 3-9 % fps at Sandy Point, 2026-10-13). A leaf is kept when sea_at
+far away (<= 34 over open sea; 83 tiles cost 3-9 % fps at Sandy Point, 2026-10-13). A leaf is kept when sea_at
 says it holds sea. Each tile's surface is the sea level (seacarve.SEA_E) at its centre, its normal the
-local vertical there, so its surface is at most (size/2)^2 / 2R off the true sea: 5 mm for 512 m tiles,
-1.3 m at the corners of 8192 m ones (which are >= 8 km away).
+local vertical there, so its surface is at most (size/2)^2 / 2R off the true sea: 0.17 m at the corners
+of 2048 m tiles, 1.3 m at the corners of 8192 m ones (which are >= 6 km away).
 """
 import math
 from dataclasses import dataclass
 
 import numpy as np
 
-TILE_MIN = 512.0
+TILE_MIN = 2048.0           # the sea's tiles: 6 inches off the curve at the corners of the smallest
+PLAN_SQUARE = 512.0         # the server plans again when the player enters another square of this size
 TILE_MAX = 8192.0
-SPLIT_K = 0.75              # a square closer to the player than SPLIT_K * its size is split (<= 76 tiles)
+SPLIT_K = 0.75              # a square closer to the player than SPLIT_K * its size is split (<= 34 tiles)
 RADIUS_M = 8192.0           # tiles within this of the player; beyond, the far tiles' photo
-SAMPLES = 16                # sea_at is asked on a SAMPLES x SAMPLES grid per tile
+SAMPLES = 64                # sea_at is asked on a SAMPLES x SAMPLES grid per tile (32-128 m apart)
 EARTH_R = 6371000.0
 
 
@@ -46,8 +47,8 @@ def _dist(x, y, x0, y0, s):
 
 
 def square_of(x, y):
-    """The TILE_MIN square the plans start from (the same plan anywhere inside it)."""
-    return math.floor(x / TILE_MIN), math.floor(y / TILE_MIN)
+    """The PLAN_SQUARE the player is in: the plans are the same anywhere inside it."""
+    return math.floor(x / PLAN_SQUARE), math.floor(y / PLAN_SQUARE)
 
 
 def squares(x, y, radius=None):
@@ -131,8 +132,8 @@ def plan_lakes(frame, x, y, lake_at, ground_at, radius=None):
     it is water; at the median level). So a reservoir's tile never floods the valley below its dam. Tilted to
     the local vertical like the sea's tiles."""
     r = LAKE_RADIUS_M if radius is None else radius
-    x = (math.floor(x / TILE_MIN) + 0.5) * TILE_MIN
-    y = (math.floor(y / TILE_MIN) + 0.5) * TILE_MIN
+    x = (math.floor(x / PLAN_SQUARE) + 0.5) * PLAN_SQUARE
+    y = (math.floor(y / PLAN_SQUARE) + 0.5) * PLAN_SQUARE
     s0 = LAKE_TILE_MAX
     i0, i1 = math.floor((x - r) / s0), math.floor((x + r) / s0)
     j0, j1 = math.floor((y - r) / s0), math.floor((y + r) / s0)

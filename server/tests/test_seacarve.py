@@ -142,6 +142,22 @@ class SeaCarveTest(unittest.TestCase):
         self.assertAlmostEqual(d[3], -FakeBathy.BATHY, places=1)
         self.assertTrue(0 < d[1] < d[2] < d[3])
 
+    def test_without_waiting(self):
+        """Cells not at hand: the DEM band now, the cell built in the background for the next ask."""
+        import time
+
+        class Dem:
+            def sample(self, lat, lon, zoom, progress=None):
+                return np.full(np.shape(lat), 25.0)         # land by the band everywhere
+        sc = seacarve.SeaCarver(BathyMapData(), self.tmp.name)
+        p = (np.array([south(100)]), np.array([LON0]))
+        self.assertFalse(sc.sea_at(Dem(), *p, 512.0, wait=False)[0], "the band (cell not at hand)")
+        for _ in range(100):
+            if sc.ready(*map(int, np.floor(np.array(seacarve._merc(*p)) / seacarve.CELL_PX).ravel())):
+                break
+            time.sleep(0.05)
+        self.assertTrue(sc.sea_at(Dem(), *p, 512.0, wait=False)[0], "the polygons once built")
+
     def test_no_map_data_no_sea(self):
         sc = seacarve.SeaCarver(FakeMapData(fail=True), None)
         self.assertFalse(sc.depth(np.array([south(100)]), np.array([LON0])).any())

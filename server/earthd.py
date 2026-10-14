@@ -159,8 +159,8 @@ NEAR_VISUALS = ("mesh", "terrain", "detail")
 # as in terrain mode. MESH_LAYOUT: the modes on the mesh-mode tile layout; BLOCK_DRAWN: the block is seen.
 MESH_LAYOUT = ("mesh", "detail")
 BLOCK_DRAWN = ("terrain", "detail")
-SEA_CHECK_S = 30.0          # sea (--sea on): the water tiles planned again when the player enters another
-                            # 512 m square, or after this long (map data that arrived late; seatiles.py)
+SEA_CHECK_S = 15.0          # sea (--sea on): the water tiles planned again when the player enters another
+                            # 512 m square, or after this long (cells built meanwhile; seatiles.py)
 GROUND_RESEND_M, GROUND_RESEND_S = 1.0, 1.5   # ground_ahead: sent on a change, else this often (the mod's
                                                # follow.GROUND_STALE_S is 3 s)
 DETAIL_RING_M = 128.0           # detail mode: L-1 tiles this far beyond the block (forced())
@@ -2070,8 +2070,10 @@ class Connection:
         async def run():
             try:
                 def plan():
-                    return (seatilesmod.plan(frame, x, y, lambda la, lo, size: sea.sea_at(dem, la, lo, size))
-                            + seatilesmod.plan_lakes(frame, x, y, sea.lake_at,
+                    # with the cells at hand (the others are built in the background and used by the
+                    # next plan, SEA_CHECK_S later): water appears at once at a new place
+                    return (seatilesmod.plan(frame, x, y, lambda la, lo, size: sea.sea_at(dem, la, lo, size, False))
+                            + seatilesmod.plan_lakes(frame, x, y, lambda la, lo: sea.lake_at(la, lo, False),
                                                      lambda la, lo: dem.sample(la, lo, seatilesmod.LAKE_DEM_ZOOM)))
                 tiles = await self.loop.run_in_executor(self.s.ground_pool, plan)
                 msg = [t.to_msg() for t in tiles]

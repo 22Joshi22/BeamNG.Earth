@@ -1326,14 +1326,16 @@ position; vehicles see water they drive into, but not water that appears around 
   road tiles and the far tiles up to L1 are carved. Coarser far tiles have no map data: their DEM sea
   (-0.5..0.3 m) is sunk 1.5 m (`sink`), so it never shows through the water tiles.
 - **Water tiles (`seatiles.plan`):** a quadtree on an 8192 m lattice in the anchor frame, planned from the
-  centre of the player's 512 m square (the set changes only when the player crosses into another one):
-  a square closer than 0.75 x its size is split, down to 512 m, out to 8192 m. That gives <= 76 tiles over
-  open sea. A tile is kept when one of its 16 x 16 samples is sea: the polygon depth for tiles up to
-  1024 m, the DEM band for larger ones. Its surface is the sea level at its centre in the anchor frame and
-  its normal the local vertical there (tilt cx / R, cy / R), so it follows the Earth's curve: 5 mm off at
-  the corners of 512 m tiles, 1.3 m at those of 8192 m ones (>= 6 km away). No land is moved for it.
+  centre of the player's 2048 m square: a square closer than 0.75 x its size is split, down to 2048 m,
+  out to 8192 m. That gives <= 34 tiles over open sea (it was <= 76 with 512 m tiles; a 2048 m tile is
+  0.17 m off the curve at its corners). A tile is kept when one of its 64 x 64 samples is sea: the
+  polygon depth for tiles up to 2048 m, the DEM band for larger ones. Its surface is the sea level at its
+  centre in the anchor frame and its normal the local vertical there (tilt cx / R, cy / R), so it
+  follows the Earth's curve. No land is moved for it. The server plans with the cells at hand
+  (`wait=False`: a cell not built yet uses the DEM band and is built by a background thread), so water
+  appears within ~2 s at a new place (Annapolis) and the polygons take over at the next plan.
 - **Message:** `sea` {anchorId, tiles: [[key, x, y, z, size, nx, ny], ...]}: planned in the ground pool
-  after 128 m or 5 s, sent when the set changed.
+  when the player enters another 512 m square or every 15 s, sent when the set changed.
 - **Mod (`sea.lua`):** one WaterBlock per tile (`bngEarthSea_<key>`): position = the surface, scale
   (size, size, 40) (water to 20 m down), `rotation` the tilt, East Coast USA's ocean look (murkier),
   `gridElementSize` size / 64. Four made per frame; changed keys only. A car slower than 1 m/s inside a

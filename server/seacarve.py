@@ -52,7 +52,7 @@ SEA_SUBTYPES = ("ocean",)
 SEA_LO, SEA_HI = -0.5, 0.3  # m: DEM heights in this band are the sea where no polygons are at hand (far
                             # tiles, the large water tiles): the DEMs' sea surfaces are flat at ~0
 SINK_M = 1.5                # m: such ground sunk below the surface (no flicker through the water tiles)
-POLY_TILE_MAX = 1024.0      # water tiles up to this size are placed from the polygons, larger ones by
+POLY_TILE_MAX = 2048.0      # water tiles up to this size are placed from the polygons, larger ones by
                             # the DEM band (map data is fetched near the player only)
 CARVE_MAX_LEVEL = 2         # far tiles up to this level are carved (their map data is near the player:
                             # L2 reaches ~3 km, past the lakes' water tiles, seatiles.LAKE_RADIUS_M);
@@ -128,6 +128,8 @@ class SeaCarver:
         self._mem = OrderedDict()       # (x, y) -> ((depth, level) or None, complete, built at)
         self._lock = threading.Lock()
         self._cell_locks = {}
+        self._warm, self._warm_thread = [], None    # cells to build in the background (warm)
+        self._warm_cv = threading.Condition()
 
     # --- rasters --------------------------------------------------------------------------------
     def _water(self, key):
@@ -380,20 +382,58 @@ class SeaCarver:
             water[j0:j1, i0:i1] |= inside.reshape(j1 - j0, i1 - i0)
 
     # --- queries --------------------------------------------------------------------------------
-    def water(self, lat, lon):
+    def ready(self, x, y):
+        """Cell (x, y)'s raster is at hand (in memory or on disk): a lookup will not wait for the network."""
+        with self._lock:
+            if (x, y) in self._mem:
+                return True
+        p = self._path(x, y)
+        return bool(p and os.path.exists(p))
+
+    def _warm_loop(self):
+        while True:
+            with self._warm_cv:
+                while not self._warm:
+                    self._warm_cv.wait()
+                k = self._warm.pop(0)
+            try:
+                self.raster(*k)
+            except Exception:
+                log.exception("sea: building cell %s", k)
+
+    def warm(self, keys):
+        """Build these cells' rasters in the background (one thread, in order)."""
+        with self._warm_cv:
+            for k in keys:
+                if k not in self._warm:
+                    self._warm.append(k)
+            if self._warm_thread is None:
+                self._warm_thread = threading.Thread(target=self._warm_loop, daemon=True, name="sea-warm")
+                self._warm_thread.start()
+            self._warm_cv.notify()
+
+    def water(self, lat, lon, wait=True):
         """(floor depth below the surface, the surface's level) at the points: depth 0 and level NaN on
-        land; the depth bilinear (continuous across the shore), the level of the nearest pixel."""
+        land; the depth bilinear (continuous across the shore), the level of the nearest pixel.
+        wait=False: cells not at hand are left out (and built in the background); a third array then
+        says which points were known."""
         lat = np.asarray(lat, np.float64)
         lon = np.asarray(lon, np.float64)
         d = np.zeros(lat.shape, np.float32)
         lv = np.full(lat.shape, np.nan, np.float32)
+        known = np.ones(lat.shape, bool)
         if lat.size == 0:
-            return d, lv
+            return (d, lv) if wait else (d, lv, known)
         mx, my = _merc(lat, lon)
         cx = np.floor(mx / CELL_PX).astype(np.int64)
         cy = np.floor(my / CELL_PX).astype(np.int64)
         keys = np.unique(np.stack([cx.ravel(), cy.ravel()], -1), axis=0)
+        later = []
         for kx, ky in keys:
+            if not wait and not self.ready(int(kx), int(ky)):
+                later.append((int(kx), int(ky)))
+                known[(cx == kx) & (cy == ky)] = False
+                continue
             r = self.raster(int(kx), int(ky))
             if r is None:
                 continue
@@ -409,7 +449,9 @@ class SeaCarver:
             ni = np.clip(np.floor(fx + 0.5).astype(np.int64), 0, rl.shape[1] - 1)
             nj = np.clip(np.floor(fy + 0.5).astype(np.int64), 0, rl.shape[0] - 1)
             lv[sel] = rl[nj, ni]
-        return d, lv
+        if later:
+            self.warm(later)
+        return (d, lv) if wait else (d, lv, known)
 
     def depth(self, lat, lon):
         """Floor depth below the water surface at the points (0 on land and away from water)."""
@@ -424,10 +466,10 @@ class SeaCarver:
         z = np.asarray(z, np.float64)
         return np.where(wet, np.minimum(z, np.where(wet, lv, 0.0) - d), z)
 
-    def lake_at(self, lat, lon):
+    def lake_at(self, lat, lon, wait=True):
         """The level of the inland water (lakes, rivers above sea level) at the points (NaN on land, at
-        sea and away from water)."""
-        d, lv = self.water(lat, lon)
+        sea and away from water; wait=False: also in cells not at hand yet, built in the background)."""
+        d, lv = self.water(lat, lon, wait=wait)[:2]
         return np.where((d > 0) & (lv > SEA_HI), lv, np.nan)
 
     def near(self, lat, lon, radius_m, step_m=250.0):
@@ -441,18 +483,29 @@ class SeaCarver:
         d, lv = self.water(la, lo)
         return bool(((d > 0) & (np.abs(lv - SEA_E) < 0.01)).any())
 
-    def sea_at(self, dem, lat, lon, size):
-        """Which points of a water tile of `size` m are sea (seatiles.plan): the polygons for the small
-        tiles near the player, the DEM band for larger ones."""
-        if size <= POLY_TILE_MAX:
-            d, lv = self.water(lat, lon)
-            return (d > 0) & (np.abs(lv - SEA_E) < 0.01)
+    def sea_at(self, dem, lat, lon, size, wait=True):
+        """Which points of a water tile of `size` m are sea (seatiles.plan): the polygons for the tiles near
+        the player, the DEM band for larger tiles (wait=False: also for the cells not at hand yet, which
+        are built in the background)."""
         import dem as demmod
         lat = np.asarray(lat, np.float64)
+        known = np.zeros(lat.shape, bool)
+        if size <= POLY_TILE_MAX:       # the polygons (wait=False: where the cells are at hand; the rest are
+            d, lv, known = self.water(lat, lon, wait=False)   # built meanwhile)
+            if wait and not known.all():
+                d, lv = self.water(lat, lon)
+                known[:] = True
+            sea = (d > 0) & (np.abs(lv - SEA_E) < 0.01)
+            if known.all():
+                return sea
+        else:
+            sea = np.zeros(lat.shape, bool)
         z = demmod.zoom_for(float(np.mean(lat)), size / 16.0)
         z = min(max(z, getattr(demmod, "MIN_ZOOM", 0)), demmod.MAX_ZOOM)
-        e = np.asarray(dem.sample(lat, np.asarray(lon, np.float64), z), np.float64)
-        return (e >= SEA_LO) & (e <= SEA_HI)
+        lon = np.asarray(lon, np.float64)
+        e = np.asarray(dem.sample(lat[~known], lon[~known], z), np.float64)
+        sea[~known] = (e >= SEA_LO) & (e <= SEA_HI)
+        return sea
 
 
 def sink(e):
