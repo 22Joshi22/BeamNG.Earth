@@ -2748,7 +2748,9 @@ def main():
     home = os.path.expanduser("~")
     ap = argparse.ArgumentParser(description="BeamNG.Earth companion server")
     ap.add_argument("--port", type=int, default=47613, help="TCP port on 127.0.0.1 (0 = any free port)")
-    ap.add_argument("--user-dir", default=os.path.join(home, ".local/share/BeamNG/BeamNG.drive/current"),
+    ap.add_argument("--user-dir", default=(os.path.join(os.environ.get("LOCALAPPDATA", home), "BeamNG", "BeamNG.drive",
+                                                     "current") if sys.platform == "win32"
+                                        else os.path.join(home, ".local/share/BeamNG/BeamNG.drive/current")),
                     help="BeamNG user folder; output goes to <user-dir>/temp/beamngEarth/<sessionId>/")
     ap.add_argument("--cache-dir", default=os.path.join(home, ".cache/beamng-earth"),
                     help="download cache root (DEM tiles go to <cache-dir>/dem/)")
@@ -2892,8 +2894,13 @@ def main():
                         format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     if args.nice:
         try:
-            os.nice(args.nice)          # all threads: below the game's main and physics threads
-        except OSError as e:
+            if hasattr(os, "nice"):
+                os.nice(args.nice)      # all threads: below the game's main and physics threads
+            elif sys.platform == "win32":   # Windows: the "below normal" priority class
+                import ctypes
+                k32 = ctypes.windll.kernel32
+                k32.SetPriorityClass(k32.GetCurrentProcess(), 0x4000)
+        except (OSError, AttributeError) as e:
             log.warning("could not lower the process priority: %s", e)
     try:
         asyncio.run(main_async(args))
