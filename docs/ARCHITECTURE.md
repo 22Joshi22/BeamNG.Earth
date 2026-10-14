@@ -1505,6 +1505,9 @@ The user: "make the world look alive ... look like a professionally made map".
     shopfronts on the ground floors along urban main streets; towns (< 16 % footprint cover) mostly
     1-2 storeys; airport terminals / hangars / parking garages by name (Overture names them, no class).
   - driveways (asphalt strips in the road mesh) from siding / stucco houses to the road's edge.
+  - churches (class or name): a tall gabled nave and a square tower with a slate spire; brick row houses
+    get white marble stoops (two steps, the door raised to them); in dense cores (> 35 % cover) small
+    buildings are row houses even where Overture's footprints leave gaps.
 - **Far tiles** (`bldfar_tile` / `bldfar_drop`, 256 m squares to 1600 m): the same buildings, lite mesh (no
   cornices, boxes, per-bay quads), render-only; `roads.lua` hides one while the road tile of its square
   shows its own colliding buildings, and makes them only once the near meshes are all made (they share
@@ -1517,6 +1520,8 @@ The user: "make the world look alive ... look like a professionally made map".
 - Towns (road tiles under 30 % footprint cover): wired wooden utility poles every 40 m on one side with
   a cobra-head lamp on every other pole, instead of metal lamp posts; dense cores keep the posts.
 - Hydrants every 120 m on town streets (alternating sides), benches and bins on major ones.
+- Street trees: half the town streets (hashed per street) get a row of small broadleaves in pits every
+  11 m, 0.9 m from the curb, both sides (the canopy model has few in dense streets).
 
 - Street lights on the sidewalk runs, 0.5 m from the curb, arm over the road (East Coast USA's
   `eca_lamppost`): residential streets one side every 40 m, tertiary / secondary / primary both sides
