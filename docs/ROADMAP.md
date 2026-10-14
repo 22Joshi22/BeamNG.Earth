@@ -718,6 +718,22 @@ centrelines, carved channels, ripples flowing downstream, a current). Known issu
 - **LOD quality settings** (after the performance work, closer to the final look): at 4K on a large
   monitor, the terrain from half distance outward looks low quality.
 
+## "Make the world look alive" (user, 2026-10-13 night; references from stock maps + many street photos)
+Built 2026-10-14 (ARCHITECTURE "Buildings", "Street furniture", "Trees"):
+- Buildings v1 (`--buildings on`): footprints with predicted heights / roofs, stock window sheets, brick
+  by region, cornices, front doors, far render-only tiles to 1600 m.
+- Street lights along sidewalks, utility poles along country roads.
+- Regional tree species (West pines / oaks / palms, junipers and desert scatter), street trees moved
+  out of the road corridor onto the verge, denser crowns, cells built ahead after a teleport.
+Next, from the photo comparisons (docs/research/streetview/fp*, base_*):
+- Parked cars along urban curbs (the photos are full of them), traffic lights at signalled junctions,
+  stop signs (Mapillary map features have real positions in cities: 42 street lights in 170 m square
+  of Fells Point; the API is slow, so per-cell cache).
+- Building parts (Overture `building_part`): towers' podiums and setbacks; roof clutter (HVAC boxes).
+- Facade variety: painted brick, formstone, siding colours per region; window sheet per era.
+- Wires between utility poles; signs (stop, speed limits) from data where present.
+- Odd dark mounds of ground near some Harbor East buildings (raised plazas or DEM remnants).
+
 ## Bugs to look at (reported, not fixed yet)
 - **Rain particles "spazzing out"** (user, 2026-10-11): some raindrops jump around or streak across the
   view (seen in Fells Point's real rain). Suspects: the Precipitation object's box following the

@@ -80,10 +80,16 @@ class VegetationTest(unittest.TestCase):
         md = FakeMapData()
         it = veg.Vegetation(md, None).cell(KEY)
         trees = it.take(it.kind == veg.KIND_TREE)
-        self.assertEqual(len(trees), 1, "the building's and the road's crowns are left out")
+        self.assertEqual(len(trees), 2, "the building's crown is left out, the road's moves off the road")
         lon, lat = md.lonlat(100, 100)
-        self.assertLess(abs(trees.lon[0] - lon) * 85000 + abs(trees.lat[0] - lat) * 111000, 4.0)
-        self.assertGreaterEqual(trees.height[0], 12.0)
+        free = np.argmin(abs(trees.lon - lon) * 85000 + abs(trees.lat - lat) * 111000)
+        self.assertLess(abs(trees.lon[free] - lon) * 85000 + abs(trees.lat[free] - lat) * 111000, 4.0)
+        self.assertGreaterEqual(trees.height[free], 12.0)
+        rlon, rlat = md.lonlat(100, 400)                   # on the residential road's centreline
+        street = 1 - free
+        off = abs(trees.lat[street] - rlat) * 111000
+        self.assertGreater(off, veg.ROAD_HALF_WIDTH_M["residential"] + veg.ROAD_CLEAR_M - 1.0, "beside the road")
+        self.assertLess(off, veg.ROAD_HALF_WIDTH_M["residential"] + veg.ROAD_CLEAR_M + 3.0)
 
     def test_deterministic(self):
         a = veg.Vegetation(FakeMapData(), None).cell(KEY)

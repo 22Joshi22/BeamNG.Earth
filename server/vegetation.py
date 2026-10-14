@@ -31,7 +31,7 @@ import mapcells
 
 log = logging.getLogger("earthd.vegetation")
 
-VERSION = 3
+VERSION = 4
 TREE_MIN_M = 3.0
 CROWN_SPACING = 0.5          # tops kept this many crown radii apart (0.8 looked sparse: the user, 2026-10-13)
 BUSH_MIN_M = 1.0
@@ -241,6 +241,9 @@ class Vegetation:
             return _empty()
         # the blocked pixels: buildings, roads, water (on the CHM grid, with the neighbours' features)
         blocked = np.zeros(h.shape, bool)
+        road = np.zeros(h.shape, bool)
+        push = np.zeros((3,) + h.shape, np.float32)
+        push[2] = np.inf
         for dy in (-1, 0, 1):
             for dx in (-1, 0, 1):
                 kk = (mapcells.ZOOM, x + dx, y + dy)
@@ -251,7 +254,7 @@ class Vegetation:
                     continue
                 _mask_polys(c2.layers.get("buildings"), blocked, chm, 1.0)
                 _mask_polys(c2.layers.get("water"), blocked, chm, 0.0, kind=3)
-                _mask_roads(c2.layers.get("roads"), blocked, chm)
+                _mask_roads(c2.layers.get("roads"), road, chm, push)
         # smoothed heights (3 x 3 mean), then the local maxima by height band
         p = np.pad(h, 1, mode="edge")
         hs = sum(p[a:a + n_r, b:b + n_c] for a in range(3) for b in range(3)) / 9.0
@@ -263,6 +266,24 @@ class Vegetation:
         tops &= ~blocked
         tops[~rj, :] = False
         tops[:, ~ci] = False
+        # street trees: a top over a road corridor (its crown overhangs the street) moves just out of it,
+        # onto the verge / sidewalk, unless that lands on a building, water or another road
+        on_road = tops & road
+        tops &= ~road
+        rj_, ri_ = np.nonzero(on_road)
+        if len(rj_):
+            nc = np.rint(ri_ + push[0, rj_, ri_]).astype(np.int64)
+            nr = np.rint(rj_ + push[1, rj_, ri_]).astype(np.int64)
+            ok = (nc >= 0) & (nc < n_c) & (nr >= 0) & (nr < n_r)
+            ok[ok] &= ~blocked[nr[ok], nc[ok]] & ~road[nr[ok], nc[ok]]
+            moved = np.zeros(h.shape, bool)
+            moved[nr[ok], nc[ok]] = True
+            moved[~rj, :] = False
+            moved[:, ~ci] = False
+            hs = hs.copy()
+            hs[nr[ok], nc[ok]] = np.maximum(hs[nr[ok], nc[ok]], hs[rj_[ok], ri_[ok]])     # keep its height
+            tops |= moved
+        blocked |= road
         jj, ii = np.nonzero(tops)
         jj, ii = _thin(jj, ii, hs[jj, ii], chm.dx)     # one top per crown (flat crowns had several)
         th = hs[jj, ii]
@@ -418,16 +439,20 @@ def _mask_polys(f, mask, chm, grow_m, kind=3):
             mask[r0:r1, c0:c1] |= inside.reshape(r1 - r0, c1 - c0)
 
 
-def _mask_roads(f, mask, chm):
-    """Mark road corridors (half width by class + ROAD_CLEAR_M) on the CHM-grid mask."""
+def _mask_roads(f, mask, chm, push=None):
+    """Mark road corridors (half width by class + ROAD_CLEAR_M) on the CHM-grid mask. push (optional, (3, rows,
+    cols) float32: dx, dy in px and the distance to the nearest road, inf where none) gets, per corridor
+    pixel, the move that takes it just out of its nearest road's corridor (street trees: vegetation._build)."""
     if f is None:
         return
     n_r, n_c = mask.shape
     cls = f.attrs.get("class", np.full(len(f.kind), "", object))
     for i in np.flatnonzero(f.kind == 2):
-        hw = (ROAD_HALF_WIDTH_M.get(str(cls[i]), ROAD_HALF_DEFAULT_M) + ROAD_CLEAR_M) / chm.dx
+        hw_m = ROAD_HALF_WIDTH_M.get(str(cls[i]), ROAD_HALF_DEFAULT_M) + ROAD_CLEAR_M
         for part in f.parts(i):
             for ring in part:
+                # ground metres to Web-Mercator pixels (a 3857 metre is 1 / cos(lat) of a ground metre)
+                hw = hw_m / (chm.dx * max(math.cos(math.radians(float(np.mean(ring[:, 1])))), 0.05))
                 x, y = _to3857(ring[:, 0], ring[:, 1])
                 c, r = _grid(chm, x, y)
                 q = np.stack([c, r], -1)
@@ -443,8 +468,22 @@ def _mask_roads(f, mask, chm):
                     ab = b - a
                     L2 = float(ab @ ab) or 1e-9
                     t = np.clip(((gc - a[0]) * ab[0] + (gr - a[1]) * ab[1]) / L2, 0, 1)
-                    d = np.hypot(gc - (a[0] + t * ab[0]), gr - (a[1] + t * ab[1]))
+                    ox, oy = gc - (a[0] + t * ab[0]), gr - (a[1] + t * ab[1])
+                    d = np.hypot(ox, oy)
                     mask[r0:r1, c0:c1] |= d <= hw
+                    if push is not None:
+                        win = push[:, r0:r1, c0:c1]
+                        closer = (d <= hw) & (d < win[2])
+                        if closer.any():
+                            # away from the centreline (sideways if on it: the segment's normal)
+                            nx, ny = -ab[1], ab[0]
+                            nl = math.hypot(nx, ny) or 1.0
+                            ux = np.where(d > 1e-3, ox / np.maximum(d, 1e-3), nx / nl)
+                            uy = np.where(d > 1e-3, oy / np.maximum(d, 1e-3), ny / nl)
+                            go = hw + 0.6 - d
+                            win[0][closer] = (ux * go)[closer]
+                            win[1][closer] = (uy * go)[closer]
+                            win[2][closer] = d[closer]
 
 
 # --- tiles for the mod --------------------------------------------------------------------------------
