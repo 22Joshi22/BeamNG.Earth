@@ -198,7 +198,7 @@ def junction_props(roads, box, curb_h=0.15):
 
 G_HYDRANT, G_BENCH, G_BIN = "hydrant", "bench", "bin"
 G_POLELAMP = "polelamp"     # a cobra-head arm on a utility pole (East Coast USA's electrical_pole_lamp)
-TOWN_POLE_CLASSES = {"residential", "tertiary", "unclassified", "secondary", "living_street"}
+TOWN_POLE_CLASSES = {"residential", "tertiary", "unclassified", "secondary", "living_street", "primary", "trunk"}
 TOWN_POLE_SPACING = 40.0
 POLE_LAMP_Z = 7.0           # m above the pole's base
 HYDRANT_SPACING = 120.0

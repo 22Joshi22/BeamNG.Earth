@@ -251,5 +251,29 @@ class ServerSurfaceTest(unittest.TestCase):
         self.assertIn('ap.add_argument("--surface", choices=("on", "off"), default="on"', src)
 
 
+class LotTest(unittest.TestCase):
+    def test_parking_lot_painted_asphalt(self):
+        lat0, lon0 = 40.0, -76.0
+        lat = lat0 + np.arange(50)[:, None] * 2e-5 + np.zeros((1, 50))
+        lon = lon0 + np.arange(50)[None, :] * 2.6e-5 + np.zeros((50, 1))
+
+        class Lots:
+            kind = np.array([3, 3], np.uint8)
+            attrs = {"class": np.array(["parking", "fuel"], object)}
+
+            def __len__(self):
+                return 2
+
+            def parts(self, i):
+                a, b = lon0 + 10 * 2.6e-5, lon0 + 20 * 2.6e-5
+                c, d = lat0 + 10 * 2e-5, lat0 + 20 * 2e-5
+                return [[np.array([(a, c), (b, c), (b, d), (a, d), (a, c)])]]
+        idx = np.full((50, 50), sf.GRASS, np.uint8)
+        out = sf.paint_lots(idx, lat, lon, [Lots()])
+        self.assertEqual(out[15, 15], sf.ASPHALT)
+        self.assertEqual(out[40, 40], sf.GRASS)
+        self.assertEqual(int((out == sf.ASPHALT).sum()), int((sf.paint_lots(idx, lat, lon, [Lots()]) == sf.ASPHALT).sum()))
+
+
 if __name__ == "__main__":
     unittest.main()

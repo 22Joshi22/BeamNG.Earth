@@ -92,7 +92,7 @@ EDGE_LINE_CLASSES = {"primary", "secondary", "tertiary", "trunk", "motorway"}
 LANE_CLASSES = {"primary", "secondary", "tertiary", "trunk", "motorway"}
 # urban arterials not lined by buildings (roadwidth.py measures those): 4 lanes (Moab's Main Street, US-191,
 # 4 lanes + a turn lane in the photos, was drawn 9 m)
-URBAN_ARTERIAL = {"trunk": 13.2, "primary": 13.2}
+URBAN_ARTERIAL = {"trunk": 13.2}     # primaries in towns are often 2 lanes (Lancaster County's PA-340)
 LANE_M = 3.3            # m per lane when counting the lanes a carriageway holds
 LANE_LINE = {"m": "line_dashed_long", "tl": 12.0, "p": 6, "w": 0.12}     # West Coast USA's 3 m dash, 9 m gap
 CUT_MARGIN = 0.5                # m: a sidewalk / line stops this far outside a crossing road's carriageway

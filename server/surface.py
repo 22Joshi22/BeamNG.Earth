@@ -188,6 +188,40 @@ def paint_roads(idx, lat, lon, feats_list, square, urban_fn=None, widths=None):
     return out
 
 
+PARKING_CLASSES = {"parking"}     # Overture infrastructure (transit) polygons drawn as asphalt: no grass on a lot
+
+
+def paint_lots(idx, lat, lon, feats_list):
+    """idx with the parking lots (infrastructure polygons of class "parking") of feats_list drawn in as
+    asphalt (Lancaster County's photos: the grass layer's ground cover grew on lots). Pure."""
+    h, w = idx.shape
+    to_px = grid_affine(lat, lon)
+    im = Image.new("L", (w, h), 0)
+    draw = ImageDraw.Draw(im)
+    n = 0
+    for feats in feats_list:
+        if feats is None or len(feats) == 0:
+            continue
+        cls = feats.attrs.get("class")
+        if cls is None:
+            continue
+        for i in np.flatnonzero(np.isin(cls.astype(str), list(PARKING_CLASSES)) & (feats.kind == 3)):
+            for part in feats.parts(i):
+                if not part:
+                    continue
+                ring = np.asarray(part[0], np.float64)
+                c, r = to_px(ring[:, 0], ring[:, 1])
+                if c.max() < 0 or c.min() > w or r.max() < 0 or r.min() > h:
+                    continue
+                draw.polygon(list(zip(c.tolist(), r.tolist())), fill=255)
+                n += 1
+    if n == 0:
+        return idx
+    out = idx.copy()
+    out[np.asarray(im) > 0] = ASPHALT
+    return out
+
+
 def mask_names(stem):
     return [f"{stem}_m{i}.png" for i in range(len(MATERIALS))]
 
@@ -311,6 +345,22 @@ class Surface:
                 log.debug("surface: roads of %s: %s: %s", key, type(e).__name__, e)
                 complete = False
         return out, complete
+
+    def lots(self, lat, lon):
+        """The "infrastructure" Features of the cells around the points that are cached (parking lots);
+        never waits (missing cells are fetched in the background)."""
+        lat = np.asarray(lat, np.float64)
+        lon = np.asarray(lon, np.float64)
+        out = []
+        for key in mapcells.cells_for_bbox(float(lat.min()), float(lon.min()), float(lat.max()), float(lon.max())):
+            if self.md._load(self.md.path(key, "infrastructure")) is None:
+                self._queue(key, ("infrastructure",))
+                continue
+            try:
+                out.append(self.md.cell(key, layers=("infrastructure",), kind="background").layers.get("infrastructure"))
+            except Exception as e:      # an unreadable cache file: like a missing one
+                log.debug("surface: lots of %s: %s: %s", key, type(e).__name__, e)
+        return out
 
     def urban(self, lat, lon):
         """Built-up land cover (WorldCover 50) at the points: roads.road_specs's urban_fn. Uncached cells
