@@ -1,0 +1,265 @@
+{
+ "bne_bld_fac_white": {
+  "name": "bne_bld_fac_white",
+  "mapTo": "bne_bld_fac_white",
+  "class": "Material",
+  "version": 1.5,
+  "persistentId": "09aeecb1-fb30-5bda-b910-74549ae05654",
+  "Stages": [
+   {
+    "baseColorMap": "/assets/materials/trim/plaster/t_highrise_plaster/t_highrise_plaster_b.color.png",
+    "normalMap": "/assets/materials/trim/plaster/t_highrise_plaster/t_highrise_plaster_nm.normal.png",
+    "roughnessMap": "/assets/materials/trim/plaster/t_highrise_plaster/t_highrise_plaster_r.data.png",
+    "ambientOcclusionMap": "/assets/materials/trim/plaster/t_highrise_plaster/t_highrise_plaster_ao.data.png",
+    "metallicMap": "/assets/materials/trim/plaster/t_highrise_plaster/t_highrise_plaster_m.data.png",
+    "baseColorFactor": [
+     1.0,
+     1.0,
+     1.0,
+     1
+    ],
+    "emissiveMap": "/assets/materials/trim/plaster/t_highrise_plaster/t_highrise_plaster_e.color.png"
+   },
+   {},
+   {},
+   {}
+  ],
+  "translucent": false
+ },
+ "bne_bld_fac_cream": {
+  "name": "bne_bld_fac_cream",
+  "mapTo": "bne_bld_fac_cream",
+  "class": "Material",
+  "version": 1.5,
+  "persistentId": "c58fb4a2-f360-5fea-9275-845f04eeced8",
+  "Stages": [
+   {
+    "baseColorMap": "/assets/materials/trim/plaster/t_highrise_plaster/t_highrise_plaster_b.color.png",
+    "normalMap": "/assets/materials/trim/plaster/t_highrise_plaster/t_highrise_plaster_nm.normal.png",
+    "roughnessMap": "/assets/materials/trim/plaster/t_highrise_plaster/t_highrise_plaster_r.data.png",
+    "ambientOcclusionMap": "/assets/materials/trim/plaster/t_highrise_plaster/t_highrise_plaster_ao.data.png",
+    "metallicMap": "/assets/materials/trim/plaster/t_highrise_plaster/t_highrise_plaster_m.data.png",
+    "baseColorFactor": [
+     1.0,
+     0.93,
+     0.8,
+     1
+    ],
+    "emissiveMap": "/assets/materials/trim/plaster/t_highrise_plaster/t_highrise_plaster_e.color.png"
+   },
+   {},
+   {},
+   {}
+  ],
+  "translucent": false
+ },
+ "bne_bld_fac_sand": {
+  "name": "bne_bld_fac_sand",
+  "mapTo": "bne_bld_fac_sand",
+  "class": "Material",
+  "version": 1.5,
+  "persistentId": "87da5aab-baf6-565e-87ba-be1e24052b34",
+  "Stages": [
+   {
+    "baseColorMap": "/assets/materials/trim/plaster/t_highrise_plaster/t_highrise_plaster_b.color.png",
+    "normalMap": "/assets/materials/trim/plaster/t_highrise_plaster/t_highrise_plaster_nm.normal.png",
+    "roughnessMap": "/assets/materials/trim/plaster/t_highrise_plaster/t_highrise_plaster_r.data.png",
+    "ambientOcclusionMap": "/assets/materials/trim/plaster/t_highrise_plaster/t_highrise_plaster_ao.data.png",
+    "metallicMap": "/assets/materials/trim/plaster/t_highrise_plaster/t_highrise_plaster_m.data.png",
+    "baseColorFactor": [
+     0.92,
+     0.82,
+     0.68,
+     1
+    ],
+    "emissiveMap": "/assets/materials/trim/plaster/t_highrise_plaster/t_highrise_plaster_e.color.png"
+   },
+   {},
+   {},
+   {}
+  ],
+  "translucent": false
+ },
+ "bne_bld_fac_grey": {
+  "name": "bne_bld_fac_grey",
+  "mapTo": "bne_bld_fac_grey",
+  "class": "Material",
+  "version": 1.5,
+  "persistentId": "0e3c9b49-ff6c-596a-9919-3368a48cc722",
+  "Stages": [
+   {
+    "baseColorMap": "/assets/materials/trim/plaster/t_highrise_plaster/t_highrise_plaster_b.color.png",
+    "normalMap": "/assets/materials/trim/plaster/t_highrise_plaster/t_highrise_plaster_nm.normal.png",
+    "roughnessMap": "/assets/materials/trim/plaster/t_highrise_plaster/t_highrise_plaster_r.data.png",
+    "ambientOcclusionMap": "/assets/materials/trim/plaster/t_highrise_plaster/t_highrise_plaster_ao.data.png",
+    "metallicMap": "/assets/materials/trim/plaster/t_highrise_plaster/t_highrise_plaster_m.data.png",
+    "baseColorFactor": [
+     0.8,
+     0.82,
+     0.84,
+     1
+    ],
+    "emissiveMap": "/assets/materials/trim/plaster/t_highrise_plaster/t_highrise_plaster_e.color.png"
+   },
+   {},
+   {},
+   {}
+  ],
+  "translucent": false
+ },
+ "bne_bld_shop": {
+  "name": "bne_bld_shop",
+  "mapTo": "bne_bld_shop",
+  "class": "Material",
+  "version": 1.5,
+  "persistentId": "c226ecd3-da01-5f28-a803-1beda5dcd6be",
+  "Stages": [
+   {
+    "baseColorMap": "/assets/materials/trim/metal/t_highrise_metal/t_highrise_metal_b.color.png",
+    "normalMap": "/assets/materials/trim/metal/t_highrise_metal/t_highrise_metal_nm.normal.png",
+    "roughnessMap": "/assets/materials/trim/metal/t_highrise_metal/t_highrise_metal_r.data.png",
+    "ambientOcclusionMap": "/assets/materials/trim/metal/t_highrise_metal/t_highrise_metal_ao.data.png",
+    "metallicMap": "/assets/materials/trim/metal/t_highrise_metal/t_highrise_metal_m.data.png",
+    "baseColorFactor": [
+     1,
+     1,
+     1,
+     1
+    ]
+   },
+   {},
+   {},
+   {}
+  ],
+  "translucent": false
+ },
+ "bne_bld_office": {
+  "name": "bne_bld_office",
+  "mapTo": "bne_bld_office",
+  "class": "Material",
+  "version": 1.5,
+  "persistentId": "453c7d5a-c75d-5d6b-ba29-f8b38ff02ba7",
+  "Stages": [
+   {
+    "baseColorMap": "/assets/materials/trim/metal/t_highrise_metal/t_highrise_metal_02_b.color.png",
+    "normalMap": "/assets/materials/trim/metal/t_highrise_metal/t_highrise_metal_nm.normal.png",
+    "roughnessMap": "/assets/materials/trim/metal/t_highrise_metal/t_highrise_metal_r.data.png",
+    "ambientOcclusionMap": "/assets/materials/trim/metal/t_highrise_metal/t_highrise_metal_ao.data.png",
+    "metallicMap": "/assets/materials/trim/metal/t_highrise_metal/t_highrise_metal_m.data.png",
+    "baseColorFactor": [
+     1,
+     1,
+     1,
+     1
+    ]
+   },
+   {},
+   {},
+   {}
+  ],
+  "translucent": false
+ },
+ "bne_bld_roof_flat": {
+  "name": "bne_bld_roof_flat",
+  "mapTo": "bne_bld_roof_flat",
+  "class": "Material",
+  "version": 1.5,
+  "persistentId": "a56c907e-1cdf-5110-8223-f3e855a30dd1",
+  "Stages": [
+   {
+    "baseColorMap": "/assets/materials/tileable/roofing/asphalt_roof/t_asphalt_roof_b.color.png",
+    "normalMap": "/assets/materials/tileable/roofing/asphalt_roof/t_asphalt_roof_nm.normal.png",
+    "roughnessMap": "/assets/materials/tileable/roofing/asphalt_roof/t_asphalt_roof_r.data.png",
+    "ambientOcclusionMap": "/assets/materials/tileable/roofing/asphalt_roof/t_asphalt_roof_ao.data.png",
+    "metallicFactor": 0,
+    "baseColorFactor": [
+     0.85,
+     0.85,
+     0.85,
+     1
+    ]
+   },
+   {},
+   {},
+   {}
+  ],
+  "translucent": false
+ },
+ "bne_bld_roof_slate": {
+  "name": "bne_bld_roof_slate",
+  "mapTo": "bne_bld_roof_slate",
+  "class": "Material",
+  "version": 1.5,
+  "persistentId": "cdc4bc3d-ba8e-50a6-9ce6-cc002edbc3f5",
+  "Stages": [
+   {
+    "baseColorMap": "/assets/materials/tileable/roofing/m_roof_slates_square/t_roof_slates_square_b.color.png",
+    "normalMap": "/assets/materials/tileable/roofing/m_roof_slates_square/t_roof_slates_square_nm.normal.png",
+    "roughnessMap": "/assets/materials/tileable/roofing/m_roof_slates_square/t_roof_slates_square_r.data.png",
+    "ambientOcclusionMap": "/assets/materials/tileable/roofing/m_roof_slates_square/t_roof_slates_square_ao.data.png",
+    "metallicFactor": 0,
+    "baseColorFactor": [
+     1,
+     1,
+     1,
+     1
+    ]
+   },
+   {},
+   {},
+   {}
+  ],
+  "translucent": false
+ },
+ "bne_bld_roof_shingle": {
+  "name": "bne_bld_roof_shingle",
+  "mapTo": "bne_bld_roof_shingle",
+  "class": "Material",
+  "version": 1.5,
+  "persistentId": "f6cbbd2a-2d9f-5901-b24b-ed5b7306c7cb",
+  "Stages": [
+   {
+    "baseColorMap": "/levels/Utah/art/shapes/buildings/utah_roof_shingles_d.dds",
+    "normalMap": "/levels/Utah/art/shapes/buildings/utah_roof_shingles_n.dds",
+    "roughnessFactor": 0.85,
+    "metallicFactor": 0,
+    "baseColorFactor": [
+     0.75,
+     0.72,
+     0.7,
+     1
+    ]
+   },
+   {},
+   {},
+   {}
+  ],
+  "translucent": false
+ },
+ "bne_bld_siding": {
+  "name": "bne_bld_siding",
+  "mapTo": "bne_bld_siding",
+  "class": "Material",
+  "version": 1.5,
+  "persistentId": "79ed7a32-27ca-5682-b363-ad657d843232",
+  "Stages": [
+   {
+    "baseColorMap": "/assets/materials/tileable/wood/weatherboards/t_weatherboards_b.color.png",
+    "normalMap": "/assets/materials/tileable/wood/weatherboards/t_weatherboards_nm.normal.png",
+    "roughnessMap": "/assets/materials/tileable/wood/weatherboards/t_weatherboards_r.data.png",
+    "ambientOcclusionMap": "/assets/materials/tileable/wood/weatherboards/t_weatherboards_ao.data.png",
+    "metallicFactor": 0,
+    "baseColorFactor": [
+     0.93,
+     0.92,
+     0.88,
+     1
+    ]
+   },
+   {},
+   {},
+   {}
+  ],
+  "translucent": false
+ }
+}

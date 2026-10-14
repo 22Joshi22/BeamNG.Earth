@@ -1290,7 +1290,7 @@ class Tracker:
         conn.send({"type": "roads_tile", "anchorId": aid, "key": f"{key[0]}_{key[1]}", "path": path, "n": n})
 
 
-def write_tile(out_dir, vfs_dir, aid, tx, ty, chunks, walks=None, road_mesh=None, deck_mesh=None):
+def write_tile(out_dir, vfs_dir, aid, tx, ty, chunks, walks=None, road_mesh=None, deck_mesh=None, bld=None):
     """Write a tile's chunks (atomically), its sidewalk mesh (walks: build_tile's runs, if any:
     `walks_<a>_<tx>_<ty>.cdae`, announced in the tile as "walk": {shape, pos}) and its road mesh
     (road_mesh: roadmesh.build's result: `road_<a>_<tx>_<ty>.cdae`, "road": {shape, pos}; the mod then
@@ -1327,6 +1327,13 @@ def write_tile(out_dir, vfs_dir, aid, tx, ty, chunks, walks=None, road_mesh=None
             b.write(os.path.join(out_dir, shape))
             data["walk"] = {"shape": f"{vfs_dir}/{shape}", "pos": [x0, y0, 0.0]}
     boxes = collider_boxes(walks if data.get("walk") else None, chunks if data.get("deck") else None)
+    if bld is not None:             # buildings.road_tile: the tile's buildings, colliding ("bld")
+        import buildings
+        x0, y0, _, _ = tile_bbox(tx, ty)
+        shape = f"bld_{aid}_{tx}_{ty}.cdae"
+        buildings.write(os.path.join(out_dir, shape), bld[0])
+        data["bld"] = {"shape": f"{vfs_dir}/{shape}", "pos": [x0, y0, 0.0]}
+        boxes["bld"] = bld[1]
     if boxes:
         data["colliders"] = boxes
     tmp = path + ".tmp"

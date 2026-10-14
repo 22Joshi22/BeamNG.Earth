@@ -27,7 +27,8 @@ M.MATERIAL_FILES = { '/levels/west_coast_usa/art/road/main.materials.json',
   '/levels/west_coast_usa/art/shapes/roads/main.materials.json',   -- curbs, sidewalk1 (the sidewalk mesh)
   '/levels/johnson_valley/art/decalroad/main.materials.json',
   '/levels/italy/art/shapes/buildings/main.materials.json',        -- italy_cobblestone (paving stones)
-  '/levels/driver_training/art/road/main.materials.json' }         -- m_metal_grid_drain (storm drains)
+  '/levels/driver_training/art/road/main.materials.json',          -- m_metal_grid_drain (storm drains)
+  '/levels/beamng_earth/art/shapes/beamngEarth/buildings.materials.json' }  -- buildings (server/buildings.py)
 M.FADE = '450 150'          -- distanceFade: start, range (m)
 M.enabled = true
 -- be:reloadCollision() at most this often: every rebuild is a ~20 ms physics frame (2026-10-13, the
@@ -91,6 +92,7 @@ local function dropTile(key)
   if t.walk then deleteQ[#deleteQ + 1] = t.walk end
   if t.road then deleteQ[#deleteQ + 1] = t.road end
   if t.deck then deleteQ[#deleteQ + 1] = t.deck end
+  if t.bld then deleteQ[#deleteQ + 1] = t.bld end
   tiles[key] = nil
 end
 
@@ -169,7 +171,7 @@ function M.onTile(msg, currentAnchor)
   else
     for _, c in ipairs(data.chunks) do createQ[#createQ + 1] = { key = key, chunk = c } end
   end
-  for _, what in ipairs({ 'walk', 'deck' }) do  -- sidewalks and bridge decks: colliding meshes
+  for _, what in ipairs({ 'walk', 'deck', 'bld' }) do  -- sidewalks, bridge decks, buildings: colliding meshes
     local w = data[what]
     if type(w) == 'table' and w.shape and type(w.pos) == 'table' then
       walkQ[#walkQ + 1] = { key = key, walk = w, what = what }
@@ -340,15 +342,16 @@ function M.setEnabled(on)
 end
 
 function M.status()
-  local nt, no, nw, nr, nd = 0, 0, 0, 0, 0
+  local nt, no, nw, nr, nd, nb = 0, 0, 0, 0, 0, 0
   for _, t in pairs(tiles) do
     nt = nt + 1; no = no + #t.objs
     if t.walk then nw = nw + 1 end
     if t.road then nr = nr + 1 end
     if t.deck then nd = (nd or 0) + 1 end
+    if t.bld then nb = nb + 1 end
   end
   return { enabled = M.enabled, tiles = nt, roads = no, queued = #createQ, deleting = #deleteQ, anchor = anchorId,
-    walks = nw, roadMeshes = nr, decks = nd, walksQueued = #walkQ, solidAround = M.solidAround or 0,
+    walks = nw, roadMeshes = nr, decks = nd, buildings = nb, walksQueued = #walkQ, solidAround = M.solidAround or 0,
     quietS = sinceChange() / 1000, error = lastError }
 end
 

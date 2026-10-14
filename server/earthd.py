@@ -101,7 +101,8 @@ import airportgrade as airportgrademod  # noqa: E402
 import airports as airportsmod  # noqa: E402
 import seacarve as seacarvemod  # noqa: E402
 import seatiles as seatilesmod  # noqa: E402
-import vegetation as vegetationmod  # noqa: E402
+import vegetation as vegetationmod
+import buildings as buildingsmod  # noqa: E402
 import riverlines as riverlinesmod  # noqa: E402
 import groundahead as groundaheadmod  # noqa: E402
 import heightmap  # noqa: E402
@@ -427,7 +428,7 @@ class Server:
                  tone=1.0, near_radii=None, status_interval=STATUS_INTERVAL, cells=CELLS_DEFAULT, tex=None,
                  block=BLOCK_DEFAULT, horizon=False, deshadow="off", weather=None, gravity=None, net=None,
                  colormatch="off", credits=None, cache=None, retex_rate=RETEX_RATE, surface=None,
-                 mapdata=None, grading=False, road_widths=False, block_pools=(), sidewalks=True, far_pool=None,
+                 mapdata=None, grading=False, road_widths=False, block_pools=(), sidewalks=True, buildings=False, far_pool=None,
                  road_pool=None, airports_db=None, sea=None, vegetation=None):
         """kfun: K(L) for every level (default: the layout's K table); near_radii: the min-level
         radii (default: the layout's); cells: 32 (v1.3.1) or 64 (M1, mesh mode only); tex: texture
@@ -582,6 +583,7 @@ class Server:
         self.grading = bool(grading) and mapdata is not None   # ground graded under roads (grading.py)
         # street widths measured between the buildings (roadwidth.py), decided once per road per run
         self.sidewalks = sidewalks  # raised sidewalk meshes with the road tiles (sidewalks.py)
+        self.buildings = buildings  # building meshes with the road tiles (buildings.py)
         self.road_widths = (roadwidthmod.RoadWidths(
             lambda key: mapdata.cell(key, layers=("buildings",), kind="demand").layers.get("buildings")).get
             if road_widths and mapdata is not None else None)
@@ -815,7 +817,8 @@ class Server:
         if self.road_pool is not None:
             return self.road_pool.submit(
                 blockworker.roads_tile, aid, anchor.lat, anchor.lon, anchor.zooms[0], tx, ty, self.out_dir,
-                self.vfs_dir, self.sidewalks, DETAIL_ROAD_LIFT if self.near_visual == "detail" else 0.0).result()
+                self.vfs_dir, self.sidewalks, DETAIL_ROAD_LIFT if self.near_visual == "detail" else 0.0,
+                self.buildings).result()
         cells = [self.mapdata.cell(k, layers=("roads",), kind="demand").layers.get("roads")
                  for k in roadsmod.cells_of_tile(anchor.frame, tx, ty)]
         zoom = anchor.zooms[0]
@@ -839,8 +842,12 @@ class Server:
         mesh = roadmeshmod.build(anchor.frame, chunks, elev, (x0, y0, 0.0),
                                  DETAIL_ROAD_LIFT if self.near_visual == "detail" else 0.0)
         dmesh = roadmeshmod.deck(chunks, (x0, y0, 0.0))
+        bld = None
+        if self.buildings:
+            bld = buildingsmod.road_tile(anchor.frame, tx, ty, self.mapdata,
+                                         lambda la, lo: self.ground(anchor.frame, la, lo, self.dem.sample(la, lo, zoom)))
         return roadsmod.write_tile(self.out_dir, self.vfs_dir, aid, tx, ty, chunks, walks if self.sidewalks else None,
-                                   mesh, dmesh)
+                                   mesh, dmesh, bld)
 
     def ground(self, frame, la, lo, z):
         """blockworker.ground here: runways graded in, the sea floor carved."""
@@ -2014,6 +2021,10 @@ class Connection:
         if self.s.mapdata is not None and aid == self.active:
             self.roads.on_pose(self, aid, *self.focus, asyncio.get_running_loop(), self.s.build_roads_tile)
         if self.s.veg is not None and aid == self.active:
+            anchor = self.s.anchors.get(aid)
+            if anchor is not None:                            # a teleport's cells built at once, ahead
+                la, lo, _ = anchor.frame.enu_to_geodetic(*self.focus, 0.0)
+                self.s.veg.warm_around(float(la), float(lo))
             self.veg.on_pose(self, aid, *self.focus, asyncio.get_running_loop(), self.s.build_veg_tile)
         self.refresh_status()
         self.credits.poke(self)             # the player moved: the near / far credits may change
@@ -2504,6 +2515,7 @@ async def main_async(args):
                     grading=args.grading == "on" and args.roads == "on",
                     road_widths=args.road_widths == "on" and args.roads == "on",
                     sidewalks=args.sidewalks == "on",
+                    buildings=args.buildings == "on" and args.roads == "on",
                     block_pools=block_pools, far_pool=far_pool, road_pool=road_pool, airports_db=airports_db,
                     sea=seacarvemod.SeaCarver(mapdata, args.cache_dir) if args.sea == "on" else None,
                     vegetation=(vegetationmod.Vegetation(mapdata, args.cache_dir) if args.trees == "on" else None))
@@ -2705,6 +2717,9 @@ def main():
     ap.add_argument("--sidewalks", choices=("on", "off"), default="on",
                     help="raised sidewalks (curbs and slabs, sidewalks.py) with the road tiles; off = the roads "
                          "without them")
+    ap.add_argument("--buildings", choices=("on", "off"), default="off",
+                    help="3D buildings from the Overture footprints with the road tiles (buildings.py; needs --roads "
+                         "on): heights and roofs predicted where the data has none")
     ap.add_argument("--road-widths", choices=("on", "off"), default="on",
                     help="street widths measured between the buildings that line them (roadwidth.py; Overture "
                          "buildings); off = class defaults")
