@@ -31,7 +31,7 @@ import mapcells
 
 log = logging.getLogger("earthd.vegetation")
 
-VERSION = 4
+VERSION = 5
 TREE_MIN_M = 3.0
 CROWN_SPACING = 0.5          # tops kept this many crown radii apart (0.8 looked sparse: the user, 2026-10-13)
 BUSH_MIN_M = 1.0
@@ -108,6 +108,8 @@ def regional(group, height, lat, lon, lcls, u):
     tropics = np.abs(lat) < 23.5
     warm_coast = ((lat < 30.5) & (lon > -100.0) & (lon < -79.0)) | ((lat < 34.6) & (lon < -114.0) & (lat > 20.0))
     built = lcls == WC["built"]
+    # towns of the dry West are irrigated broadleaves (cottonwoods, elms) far more than conifers (Moab's photos)
+    g = np.where(dry_west & built & (g == G_CONIFER) & (u < 0.8), G_DECIDUOUS, g)
     tree = (g == G_DECIDUOUS) | (g == G_CONIFER)
     # the west: pines for the conifers, oaks for the small broadleaves
     g = np.where(west_coast & (g == G_CONIFER), G_PINE_WEST, g)
