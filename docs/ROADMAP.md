@@ -762,6 +762,10 @@ Next, from the photo comparisons (docs/research/streetview/fp*, base_*):
 - Ocean City's yards and park read as pale sand: its imagery is late-season (dormant grass the colour of
   pavement, excess green ~2 on both), so photo_lawns keeps 2 % of the lawn candidates. A season-proof
   lawn test (texture, or imagery from another date) would be needed; left as is.
+- Maryland's six-inch imagery (first in the chain since 2026-10-13) is leaf-off spring: brown dormant grass
+  and bare branches in every Maryland place; the colour match to USGS only reaches olive. Leaf-on chain
+  (`--imagery naipusda,naip,usgs,eox2023,eox2016`): green, a little softer, 87 s vs 81 s at Columbia. Asked
+  the user 2026-10-14 (recommended leaf-on); default unchanged until they answer.
 - Divided town arterials (Overture one-way trunks at 45 mph or less: Coastal Highway) get a sidewalk on the
   curb side since 2026-10-14; expressway trunks (faster or no limit) none.
 - Building heights stay predicted where Overture has none (Baltimore 98 %): the canopy height model
