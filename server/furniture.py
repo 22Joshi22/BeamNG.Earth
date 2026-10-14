@@ -197,6 +197,11 @@ def junction_props(roads, box, curb_h=0.15):
 
 
 G_HYDRANT, G_BENCH, G_BIN = "hydrant", "bench", "bin"
+G_STREET_TREE = "deciduous"     # trees.lua's broadleaf group (the variant nearest each tree's height)
+STREET_TREE_CLASSES = {"residential", "tertiary", "secondary", "living_street"}
+STREET_TREE_SHARE = 0.5         # streets with a row of trees (hashed per street)
+STREET_TREE_SPACING = 11.0
+STREET_TREE_CURB_M = 0.9
 G_POLELAMP = "polelamp"     # a cobra-head arm on a utility pole (East Coast USA's electrical_pole_lamp)
 TOWN_POLE_CLASSES = {"residential", "tertiary", "unclassified", "secondary", "living_street", "primary", "trunk"}
 TOWN_POLE_SPACING = 40.0
@@ -283,6 +288,17 @@ def place(roads, walks, box, curb_h=0.15, wires=None, town=False):
                 lit.add(fid)
                 phase = _h01(fid, "phase") * spacing + (spacing / 2 if (both and side < 0) else 0.0)
                 put(G_LAMP, spacing, phase, LAMP_CURB_M, 9.0, lambda out: _yaw(-out[0], -out[1]))
+        if spec.urban and spec.cls in STREET_TREE_CLASSES and _h01(fid, "trees") < STREET_TREE_SHARE:
+            # street trees in pits along the curb (the photos' dense streets have rows of them; the canopy
+            # model has few there): small broadleaves, both sides, clear of the junctions
+            for p, out in _stations(run, line, STREET_TREE_SPACING, _h01(fid, side, "tph") * STREET_TREE_SPACING,
+                                    END_CLEAR_M + 4.0, side):
+                q = p[:2] - out * (w / 2 - STREET_TREE_CURB_M)
+                if x0 <= q[0] < x1 and y0 <= q[1] < y1:
+                    h = 6.5 + 3.5 * _h01(fid, round(float(q[0]), 1), round(float(q[1]), 1))
+                    rows.append([G_STREET_TREE, round(float(q[0]), 2), round(float(q[1]), 2), round(float(p[2] + curb_h), 2),
+                                 round(_h01(q[0], q[1], "ty") * 360.0, 1), 1.0, round(h, 1),
+                                 round(_h01(fid, q[0], "tr"), 3)])
         if spec.urban:
             # fire hydrants at the curb (US practice ~90-150 m apart), alternating sides
             put(G_HYDRANT, HYDRANT_SPACING, _h01(fid, "hyd") * HYDRANT_SPACING + (HYDRANT_SPACING / 2 if side < 0 else 0),
