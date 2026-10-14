@@ -320,7 +320,7 @@ const grid = computed(() => {
     const lon = mm.wrapLon(k * step)
     const x = screen(v.lat, lon).x
     out.push({ key: "x" + k, x1: x, y1: 0, x2: x, y2: h.value, cls: Math.abs(lon) < 1e-9 ? "meridian" : "",
-      label: `${Math.abs(lon).toFixed(dec)}°${lon < 0 ? "W" : lon > 0 ? "E" : ""}`, lx: x + 4, ly: h.value - 34 })
+      label: `${Math.abs(lon).toFixed(dec)}°${lon < 0 ? "W" : lon > 0 ? "E" : ""}`, lx: x + 4, ly: 74 })   // under the top bar (the bottom has the game's footer)
   }
   for (let k = Math.ceil(br.lat / step); k * step <= tl.lat && out.length < 400; k++) {
     const lat = k * step
@@ -900,9 +900,17 @@ const fmtLatLon = mm.fmtLatLon
 .confirm-where { font-size: 13px; opacity: 0.85; }
 .confirm-warn { margin-top: 6px; font-size: 12px; color: #ffb27a; }
 .confirm-btns { display: flex; gap: 8px; margin-top: 10px; }
+/* above the game's own footer bars (player / version bottom left, button hints bottom right: ~5 % of the height,
+   scaling with it), which covered the cursor readout and the credits (the user, 2026-10-14) */
 .map-bottom {
-  position: absolute; left: 0; right: 0; bottom: 0; z-index: 10; display: flex; justify-content: space-between; gap: 16px;
-  padding: 4px 10px; font-size: 11px; background: rgba(0, 0, 0, 0.6); pointer-events: none;
+  position: absolute; left: 10px; right: 10px; bottom: calc(6.5vh + 4px); z-index: 10; display: flex;
+  justify-content: space-between; align-items: flex-end; gap: 16px; pointer-events: none; font-size: 11px;
 }
-.attribution { text-align: right; opacity: 0.85; }
+.cursor-pos, .attribution {
+  padding: 3px 8px; background: rgba(0, 0, 0, 0.65); border-radius: 4px;
+}
+.cursor-pos { white-space: nowrap; }
+.attribution { text-align: right; opacity: 0.9; max-width: 60%; }
+.map-view { bottom: 0; }
+.earth-map.embedded .map-bottom { bottom: 6px; }
 </style>
