@@ -135,6 +135,16 @@ class BuildTileTest(unittest.TestCase):
         self.assertEqual(track["m"], roads.LOOK["dirt"]["m"])
         self.assertTrue(all(abs(n[2] - 10.0) < 0.05 for n in prim["n"]), "z on the DEM (flat, near the anchor)")
 
+    def test_ramps_one_lane_wide(self):
+        f = features([[(0, 0), (100, 0)]] * 3, ["motorway", "motorway", "primary"])
+        f.rules["subclass"] = rules([(0, "link"), (2, "link")])
+        f.rules["oneway"] = rules([(0, 1.0), (1, 1.0)], "float")
+        s = roads.road_specs(f)
+        self.assertEqual(s[0].width, roads.LINK_M[1], "a one-way motorway ramp")
+        self.assertGreater(s[1].width, 10.0, "the motorway itself")
+        self.assertEqual(s[2].width, roads.LINK_M[2], "a two-way slip road")
+        self.assertEqual(roads.bridge_specs(features([[(0, 0), (100, 0)]], ["motorway"])), [None])
+
     def test_divided_trunk_sidewalk_outer_side_only_when_slow(self):
         pts = np.array([(0.0, 0.0, 0.0), (100.0, 0.0, 0.0)])
 

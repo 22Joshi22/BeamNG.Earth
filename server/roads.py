@@ -94,6 +94,9 @@ EDGE_LINE_CLASSES = {"primary", "secondary", "tertiary", "trunk", "motorway"}
 LANE_CLASSES = {"primary", "secondary", "tertiary", "trunk", "motorway"}
 # urban arterials not lined by buildings (roadwidth.py measures those): 4 lanes (Moab's Main Street, US-191,
 # 4 lanes + a turn lane in the photos, was drawn 9 m)
+# Ramps and slip roads (Overture subclass "link", any class): one lane and its shoulders, whatever the class
+# (Columbia's US-29 ramps were drawn 13 m wide, a whole motorway, 2026-10-14 photos): m paved by lanes a way.
+LINK_M = {1: 6.0, 2: 9.0}
 URBAN_ARTERIAL = {"trunk": 13.2}     # primaries in towns are often 2 lanes (Lancaster County's PA-340)
 LANE_M = 3.3            # m per lane when counting the lanes a carriageway holds
 LANE_LINE = {"m": "line_dashed_long", "tl": 12.0, "p": 6, "w": 0.12}     # West Coast USA's 3 m dash, 9 m gap
@@ -306,6 +309,8 @@ def road_specs(feats, urban_fn=None, widths=None):
         rule_w = float(width) if width is not None and 1.0 <= float(width) <= 40.0 else None
         kind = surface_kind(cls, _rule_value(rules.get("surface"), i))
         ow = _rule_value(rules.get("oneway"), i) is not None
+        if rule_w is None and _rule_value(rules.get("subclass"), i) == "link":
+            rule_w = LINK_M[1] if ow else LINK_M[2]
         dk = _dir_kmh(feats, i, ncon)
         if urban_fn is not None and rule_w is None and kind in BUILT:
             a = feats.coord_off[feats.ring_off[feats.part_off[i]]]
@@ -355,6 +360,8 @@ def bridge_specs(feats):
         rule_w = float(width) if width is not None and 1.0 <= float(width) <= 40.0 else None
         kind = surface_kind(cls, _rule_value(rules.get("surface"), i))
         ow = _rule_value(rules.get("oneway"), i) is not None
+        if rule_w is None and _rule_value(rules.get("subclass"), i) == "link":
+            rule_w = LINK_M[1] if ow else LINK_M[2]
         out.append(Spec(carriageway(cls, kind, False, rule_w, ow), kind, False, cls, ow))
     return out
 
