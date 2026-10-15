@@ -2042,7 +2042,11 @@ class Connection:
         if self.s.surface is not None:
             # the anchor's first block is built once and kept while the player stands still: give the
             # land cover around it a moment to arrive (blocks built while driving never wait)
-            await asyncio.get_running_loop().run_in_executor(None, self.s.surface.ready, lat, lon)
+            # (on the map's threads: the default pool is full of the old place's road / vegetation builds after a
+            # teleport, and this 2 s wait queued behind them for ~25 s, 2026-10-14)
+            tw = time.perf_counter()
+            await asyncio.get_running_loop().run_in_executor(self.s.ui_pool, self.s.surface.ready, lat, lon)
+            log.info("anchor %s: land cover wait %.2f s", anchor.id, time.perf_counter() - tw)
         try:
             info = await self.s.terrain(anchor, cx, cy, self._progress())
         except Exception as e:
