@@ -16,7 +16,7 @@ roads, water, navigation, traffic, cities).
   a dozen more US states, NAIP across the US, Switzerland, France, Spain, the Netherlands, Germany's states,
   Austria, Japan, parts of Australia and Canada, and more), Sentinel-2 cloudless everywhere else; shadows and
   colour seams taken out of the photos, the season's colours graded in, cliffs drawn as rock.
-- A real view distance out to the horizon, with the Earth's curvature, and no popping between levels of detail.
+- A real view distance out to the horizon, with the Earth's curvature.
 - Ground materials from land cover (grass, dirt, rock, sand, snow, mud, lawns, paved squares and parking
   lots) with 3D grass and bushes.
 - Trees and forests from a canopy height model, regional species (conifers, broadleaf, palms, desert
