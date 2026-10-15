@@ -142,6 +142,8 @@ def place_dir(name):
     return os.path.join(DATA, name)
 
 
+DRIVE_CLASSES = {"motorway", "trunk", "primary", "secondary", "tertiary", "residential", "unclassified",
+                 "living_street", "service"}
 SNAP_M = 25.0           # a photo inside a building is moved to the nearest road centreline this close
 
 
@@ -163,8 +165,9 @@ def snapper(lat, lon, radius):
             if f is None:
                 continue
             for i in range(len(f.kind)):
-                if layer == "roads" and str(f.attrs.get("subtype", ["road"] * len(f.kind))[i]) != "road":
-                    continue
+                if layer == "roads" and (str(f.attrs.get("subtype", ["road"] * len(f.kind))[i]) != "road"
+                                         or str(f.attrs["class"][i]) not in DRIVE_CLASSES):
+                    continue            # dashcams are on roads cars drive (a footway beside a wall is no spot)
                 a = f.coord_off[f.ring_off[f.part_off[i]]]
                 b = f.coord_off[f.ring_off[f.part_off[i] + 1]] if layer == "buildings" else \
                     f.coord_off[f.ring_off[f.part_off[i + 1]]]
