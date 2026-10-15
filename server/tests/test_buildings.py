@@ -78,6 +78,19 @@ class RegionStyleTest(unittest.TestCase):
         self.assertTrue(any(h.wall and h.wall.startswith(bld.STUCCO) and int(h.wall.split("|")[1]) >= 5 for h in lat),
                         "painted walls")
 
+    def test_attached_old_town_roofs(self):
+        """Terraced houses: flat in Baltimore, mostly gabled in Amsterdam."""
+        rng = np.random.default_rng(9)
+
+        def gabled(lat, lon):
+            n = 0
+            for i in range(200):
+                ring = np.array([[0, 0], [6, 0], [6, 15], [0, 15]], float) + rng.uniform(-900, 900, 2)
+                n += bld.plan(ring, {"class": "terrace"}, neighbours=2, lat=lat, lon=lon).roof != "flat"
+            return n
+        self.assertEqual(gabled(39.28, -76.59), 0)
+        self.assertGreater(gabled(52.37, 4.89), 100)
+
     def test_us_houses_keep_their_tints(self):
         for h in self.houses(39.29, -76.61):
             if h.roof != "flat":

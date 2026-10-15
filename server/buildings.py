@@ -272,14 +272,15 @@ class Style:
     plaster window sheet), wall_tints: the tint indices the plain walls take (None: all but barn red);
     paint: plaster houses painted (PAINT_TINTS); porch; flat: detached houses with flat roofs; hipped: of the
     pitched; roofs: (roof material, (tint indices)) to pick from; pitch: the roof pitch in degrees (None: PITCH);
-    wood: siding walls are stained wood (WOOD_TINTS).
+    wood: siding walls are stained wood (WOOD_TINTS); attached: low attached buildings (terraces, old town
+    blocks) with a pitched roof (the US: flat; Amsterdam's canal houses, Europe's old towns: gables).
     Coarse boxes by region until a facade-material map; the US ones keep their earlier behaviour."""
 
     def __init__(self, name, brick, walls, porch, flat, hipped, roofs, pitch=None, paint=0.3, wall_tints=None,
-                 wood=False):
+                 wood=False, attached=0.0):
         self.name, self.brick, self.walls, self.porch, self.flat = name, brick, walls, porch, flat
         self.hipped, self.roofs, self.pitch, self.paint, self.wall_tints = hipped, roofs, pitch, paint, wall_tints
-        self.wood = wood
+        self.wood, self.attached = wood, attached
 
 
 _US_ROOFS = ((ROOF_SLATE, (0, 1, 2, 3)), (ROOF_SHINGLE, (0, 1, 2, 3)))
@@ -292,18 +293,18 @@ STYLES = {
     "us_west": Style("us_west", 0.15, ((STUCCO, 0.65), (SIDING, 0.25)), 0.25, 0.0, 0.4, _US_ROOFS),
     # Alpine villages: white plaster ground floors, dark wooden chalets, low wide gables of dark or brown roofs
     "alpine": Style("alpine", 0.05, ((SIDING, 0.45),), 0.0, 0.03, 0.15, (_DARK, (ROOF_SLATE, (9, 5))), pitch=24.0,
-                    paint=0.05, wood=True),
+                    paint=0.05, wood=True, attached=0.85),
     # north-west / central Europe: brick (Low Countries, northern Germany, Britain) or plaster, steep tiled or
     # slate roofs
     "europe_north": Style("europe_north", 0.5, (), 0.02, 0.05, 0.3, (_CLAY, _DARK, (ROOF_SLATE, (5,))), pitch=42.0,
-                          paint=0.15),
+                          paint=0.15, attached=0.75),
     "mediterranean": Style("mediterranean", 0.08, ((STUCCO, 0.85),), 0.0, 0.35, 0.5, (_CLAY,), pitch=22.0,
-                           paint=0.1, wall_tints=(0, 1, 2, 3, 4, 5)),
+                           paint=0.1, wall_tints=(0, 1, 2, 3, 4, 5), attached=0.5),
     "latin_america": Style("latin_america", 0.25, ((STUCCO, 0.9),), 0.02, 0.7, 0.3, (_CLAY, (ROOF_METAL, (0, 1))),
                            pitch=22.0, paint=0.0, wall_tints=(0, 1, 2, 3, 5, 6, 7, 8, 9, 10)),
     "east_asia": Style("east_asia", 0.08, ((SIDING, 0.5), (STUCCO, 0.3)), 0.0, 0.35, 0.5,
                        (_DARK, (ROOF_SHINGLE, (6, 7)), (ROOF_METAL, (1, 4))), pitch=25.0, paint=0.0,
-                       wall_tints=(0, 1, 6, 5)),
+                       wall_tints=(0, 1, 6, 5), attached=0.3),
     "oceania": Style("oceania", 0.55, ((STUCCO, 0.5), (SIDING, 0.3)), 0.25, 0.05, 0.7, (_CLAY, (ROOF_METAL, (0, 1, 4))),
                      pitch=24.0, paint=0.1),
     # elsewhere (South Asia, Africa, the Middle East, ...): concrete and plaster, mostly flat roofs
@@ -436,7 +437,11 @@ def plan(ring, attrs, neighbours=0, lat=None, lon=None, look=None, town=False, d
         if church and neighbours == 0:
             roof = "gabled"
         elif neighbours >= 1:
-            roof = "flat"                           # attached: a pitched roof would show its gable to the neighbour
+            # attached: flat in the US (a pitched roof would show its gable to the neighbour); old European towns
+            # are gabled (the ridge on the long axis: a narrow deep house shows its gable to the street)
+            low = (nf or (h or 0) / FLOOR_M or 3) <= 6
+            roof = "gabled" if (style.attached and low and not industrial and not shop
+                                and _hash01(seed, "attached roof") < style.attached) else "flat"
         elif barn:
             roof = "gabled"
         elif shed and area < 80:
