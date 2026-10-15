@@ -62,7 +62,8 @@ roads, water, navigation, traffic, cities).
 
 **Interface and tools**
 - A slim status bar (street, town, country, loading, performance), a connection banner when something is
-  wrong, the data credits on screen, a one-time welcome page about the project.
+  wrong and the data credits on screen, as BeamNG UI apps in a ".Earth" app layout (based on Freeroam's;
+  move or resize them in the UI apps editor), and a one-time welcome page about the project.
 - Settings in the pause menu, keybinds, in-game reports (notes and performance recordings to share).
 - Easy setup: `install.py` installs everything, `start.py` keeps the mod in sync and starts the server.
 - Offline play from the download cache (with a size cap and "clear cache").

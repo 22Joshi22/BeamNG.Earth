@@ -837,7 +837,10 @@ Next, from the photo comparisons (docs/research/streetview/fp*, base_*):
   height model could correct them.
 - **Downtowns with towers** keep their DSM bumps (a cut deeper than a building could be is treated as a hill).
 
-### User request 2026-10-15 (morning, "do this later")
+### User request 2026-10-15 (morning, "do this later") - DONE 2026-10-15 15:20
+- Status bar, data credits and connection banner are UI apps (ui/modules/apps/BeamNGEarth*, hudapps.lua; the imgui
+  drawing steps aside while an app is on screen) and the ".Earth" layout (Freeroam's apps + ours, type beamngEarth)
+  is applied when our level starts. Left as imgui: the dev panels and the old compact window.
 - Turn our in-game HUD elements (status bar, data credits, connection banner, other imgui overlays) into BeamNG UI
   apps, and add a ".Earth" UI layout preset based on the Freeroam preset (the apps placed for our level).
 

@@ -120,6 +120,11 @@ local function drawImgui(im, text)
   return true
 end
 
+-- The bar's text now (the UI app's too: hudapps.lua), '' when there is nothing to say.
+function M.text(status)
+  return M.compose(loc, M.loadingLine(status), fps)
+end
+
 -- Once per frame: draw the bar. active: our world is shown; hidden: the game's UI covers it; status: core's status
 -- text. An error in the imgui calls turns the bar off (logged once).
 function M.draw(active, hidden, status)

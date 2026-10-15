@@ -50,6 +50,7 @@ local credits = require('beamngEarth/credits') -- the on-screen data credits (do
 local statusbar = require('beamngEarth/statusbar') -- the slim bar at the top: street, place, loading, fps
 local places = require('beamngEarth/places') -- saved and recent places (the settings page)
 local banner = require('beamngEarth/banner') -- the connection banner (docs/DEVTOOLS.md)
+local hudapps = require('beamngEarth/hudapps') -- the same three as BeamNG UI apps (the ".Earth" app layout)
 local edgeguard = require('beamngEarth/edgeguard') -- never fall off the last block (docs/ROADMAP.md)
 local groundcover = require('beamngEarth/groundcover') -- grass on the surface layers (docs/ROADMAP.md v1.5)
 local roads = require('beamngEarth/roads') -- DecalRoads from the server's road tiles (docs/ROADMAP.md v1.6)
@@ -1010,14 +1011,29 @@ end
 -- attribution line. Called every frame then, so no farfield.stats() table: its counters only.
 local function creditsFallback() return attributionText(farfield.counters()) end
 
+-- The UI apps' texts (hudapps.update calls it at most every SEND_S while an app is on screen).
+local hudInput = { banner = nil }
+local function hudTexts()
+  local shown = st.inOurLevel and st.active
+  hudInput.status = shown and statusbar.enabled and statusbar.text(st.status) or ''
+  hudInput.credits = st.active and credits.enabled and credits.text(creditsFallback) or ''
+  hudInput.banner = (st.inOurLevel or st.active) and banner.enabled and banner.current() or nil
+  hudInput.hidden = credits.hiddenByUi()
+  return hudInput
+end
+
 -- The imgui window, the on-screen credits (one text draw; the attribution line until the server
 -- sends credits) and the connection banner (in our level or world only; hidden like the credits).
 local function drawUi(dt)
   ui.draw(buildView(), { teleport = M.teleport, setRebaseDistance = M.setRebaseDistance })
-  credits.draw(st.active, creditsFallback)
+  -- each element drawn by imgui unless its UI app is on screen (hudapps.lua)
+  if not hudapps.mounted('credits') then credits.draw(st.active, creditsFallback) end
   updateBanner(dt)
-  banner.draw(st.inOurLevel or st.active, credits.hiddenByUi())
-  statusbar.draw(st.inOurLevel and st.active, credits.hiddenByUi(), st.status)
+  if not hudapps.mounted('banner') then banner.draw(st.inOurLevel or st.active, credits.hiddenByUi()) end
+  if not hudapps.mounted('status') then
+    statusbar.draw(st.inOurLevel and st.active, credits.hiddenByUi(), st.status)
+  end
+  hudapps.update(st.clock or 0, hudTexts)
 end
 
 -- Hitch attribution (the user, 2026-10-14: "there's definitely some performance issues sometimes"): each frame
@@ -1232,6 +1248,18 @@ end
 local function onClientStartMission()
   onLevelStart()
 end
+
+-- After the game's own freeroam setGameState (lua/ge/main.lua clientPostStartMission): our level gets the ".Earth" app
+-- layout (type beamngEarth: the player's own choice for that type, if any, is kept by the UI's layout map).
+M.APP_LAYOUT = 'beamngEarth'
+local function onClientPostStartMission(levelPath)
+  if type(levelPath) ~= 'string' or not levelPath:find('/' .. LEVEL_ID .. '/', 1, true) then return end
+  local gs = rawget(_G, 'core_gamestate')
+  if gs and gs.setGameState then pcall(gs.setGameState, 'freeroam', M.APP_LAYOUT, 'freeroam') end
+end
+
+-- The UI apps (ui/modules/apps/BeamNGEarth*) say when they are on screen: hudapps.lua.
+function M.hudApp(name, on) return hudapps.setMounted(name, on) end
 
 -- Before the level loads (freeroam spawns its traffic at camera-ready, which can come before our
 -- onClientStartMission): the player's traffic choice, for our level only.
@@ -1498,6 +1526,7 @@ M.onClientPreStartMission = onClientPreStartMission
 M.onNavgraphReloaded = function() navgraph.onReloaded() end
 M.onVehicleMapmgrUpdate = function(id) gps.onVehicleMapmgrUpdate(id) end
 M.onClientEndMission = onClientEndMission
+M.onClientPostStartMission = onClientPostStartMission
 M.onExtensionLoaded = onExtensionLoaded
 M.onExtensionUnloaded = onExtensionUnloaded
 
