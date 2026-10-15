@@ -793,7 +793,10 @@ Next, from the photo comparisons (docs/research/streetview/fp*, base_*):
   five roads where Overture's connectors sit ~10 m apart (a diagonal street and a N-S street meeting an E-W one at
   two nodes) get no curb returns on that side (junctions.py pairs arms at one node), so the sidewalks end in bare
   points with ground between. Needs junction clustering (connectors within ~15 m treated as one junction) before
-  the corner pairing.
+  the corner pairing. Diagnosed 2026-10-14 (junctions.find debug): at the north node both corners are rejected as
+  "short branch" (the 10 m link to the other node is shorter than the 12-13 m tangent), at the south node the 73
+  degree corner's arc lands "on carriageway" of that same link. Setting CONNECTOR_M (merge nodes joined by a short
+  road) alone changes nothing: the corners must be built across the merged junction from its outer branches.
 - **Sidewalk "grabbing the car and pulling it down"** (user report 2026-10-14 19:50, 39.28499, -76.60554): the
   pickup's wheel sank at a sidewalk end beside a grass verge; suspect the sidewalk slab's end face or a curb-ramp
   edge in the collision mesh. Needs an in-game look at that spot.
