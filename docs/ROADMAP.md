@@ -826,6 +826,10 @@ Next, from the photo comparisons (docs/research/streetview/fp*, base_*):
   height model could correct them.
 - **Downtowns with towers** keep their DSM bumps (a cut deeper than a building could be is treated as a hill).
 
+### User request 2026-10-15 (morning, "do this later")
+- Turn our in-game HUD elements (status bar, data credits, connection banner, other imgui overlays) into BeamNG UI
+  apps, and add a ".Earth" UI layout preset based on the Freeroam preset (the apps placed for our level).
+
 ## Bugs to look at (reported, not fixed yet)
 - **Roundabouts** (user report 2026-10-14, Harbor Point, 39.2801, -76.5890): the ring is cobbles with a D-shaped
   sidewalk island, odd sidewalk pieces at the entries and road patches that do not meet; needs proper roundabout

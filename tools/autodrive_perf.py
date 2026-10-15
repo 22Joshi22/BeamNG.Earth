@@ -249,6 +249,9 @@ def main():
     ap.add_argument("--settle", type=float, default=45.0, help="seconds to wait after the teleport")
     ap.add_argument("--obs", action="store_true", help="record the screen with OBS (writes drive.mp4, no audio)")
     ap.add_argument("--keep-going", action="store_true", help="drive on after a crash or a stop")
+    ap.add_argument("--rec", action="store_true", help="record the game's own frames (tools/gamerec.py: no screen "
+                    "capture, no permission dialog; ~15 ms a frame, so the frame times are not the game's then)")
+    ap.add_argument("--rec-fps", type=float, default=15.0)
     a = ap.parse_args()
     os.makedirs(a.out, exist_ok=True)
     mcp.quiet_ui()          # (the recording too: our welcome page closed and kept away this session)
@@ -258,6 +261,10 @@ def main():
     lua("beamngEarth_settings.uiMapGps(%r, %r, 'autodrive_perf') return 'ok'" % a.to)
     lua("return tostring(beamngEarth_settings.uiGpsAutodrive(true).autodrive)")
     obs = obs_start() if a.obs else None
+    grec = None
+    if a.rec:                       # the game's own frames (no screen capture: works unattended on Wayland)
+        import gamerec
+        grec = gamerec.start(a.rec_fps)
     rows, end = [], time.time() + a.minutes * 60
     evf = open(os.path.join(a.out, "events.jsonl"), "w")
     checks = Checks(lambda n, ev: shot(a.out, f"event_{n}_{ev['kind']}.jpg"))
@@ -286,6 +293,8 @@ def main():
                 time.sleep(max(0.0, POLL_S - (time.time() - t0)))
     finally:
         video = obs_stop(obs, os.path.join(a.out, "drive.mp4")) if obs is not None else None
+        if grec is not None:
+            video = grec.stop(os.path.join(a.out, "drive.mp4"))
         lua("beamngEarth_settings.uiGpsAutodrive(false) beamngEarth_settings.uiMapGps(nil) return 'ok'")
     evf.close()
     summary = summarize(rows[1:]) if len(rows) > 2 else {"polls": len(rows)}   # the first poll covers the setup
