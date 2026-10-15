@@ -53,6 +53,7 @@ local autoPath = nil    -- the node ids last given to the AI
 local autoSerial = nil  -- the graph (navgraph applies) they were taken from
 local stillSince = nil
 local paused = false    -- the AI holds the car (world server away)
+local targetS = nil     -- the route distance of the arrows' target
 
 -- Pure: the id and position {x, y, z} of the node in `nodes` (map.getMap().nodes: id -> { pos = {x, y, z} })
 -- nearest (tx, ty), and its distance; nil when there are none.
@@ -288,10 +289,53 @@ function M.aiCommand(ids, aggression)
     .. 'avoidCars = "on", aggression = ' .. string.format('%.2f', aggression or M.AUTO_AGGRESSION) .. '})'
 end
 
+-- Pure: the graph edge (from id, to id) the car at (px, py) heading (hx, hy) drives on: within 8 m, running its way.
+function M.edgeUnder(nodes, px, py, hx, hy)
+  local best, bd = nil, 8.0
+  for id, n in pairs(nodes or {}) do
+    local a = n.pos
+    for other, _ in pairs(n.links or {}) do
+      local o = nodes[other]
+      local b = o and o.pos
+      if a and b then
+        local dx, dy = b.x - a.x, b.y - a.y
+        local L = math.sqrt(dx * dx + dy * dy)
+        if L > 0.1 and (dx * hx + dy * hy) / L > 0.5 then
+          local t = math.max(0, math.min(1, ((px - a.x) * dx + (py - a.y) * dy) / (L * L)))
+          local qx, qy = a.x + t * dx - px, a.y + t * dy - py
+          local d = math.sqrt(qx * qx + qy * qy)
+          if d < bd then best, bd = { id, other }, d end
+        end
+      end
+    end
+  end
+  if best then return best[1], best[2] end
+end
+
+-- Pure: the AI's path starting on the edge (a -> b) under the car: the planner's path starts at the node nearest
+-- the car, which can be past a turn just ahead; the AI went straight for it, across the corner and into a pole
+-- (Fells Point 2026-10-14).
+function M.joinStart(ids, a, b, nodes)
+  if not a or #ids == 0 then return ids end
+  local out = {}
+  if ids[1] == b then
+    out[1] = a
+  elseif ids[1] ~= a then
+    local nb = nodes and nodes[b]
+    if not (nb and nb.links and nb.links[ids[1]]) then return ids end
+    out[1], out[2] = a, b
+  end
+  for _, id in ipairs(ids) do out[#out + 1] = id end
+  return out
+end
+
 local function driveArrowsPath(gm, nodes)
   local veh = playerVeh()
   if not veh or not gm.routePlanner then return end
   local ids = M.pathNodes(gm.routePlanner.path)
+  local p, d = veh:getPosition(), veh:getDirectionVector()
+  local hl = math.sqrt(d.x * d.x + d.y * d.y)
+  if hl > 0.1 then ids = M.joinStart(ids, M.edgeUnder(nodes, p.x, p.y, d.x / hl, d.y / hl), nodes) end
   if #ids < 2 then return end
   veh:queueLuaCommand(M.aiCommand(ids))
   autoPath, autoSerial, stillSince = ids, graphSerial(), nil
@@ -309,6 +353,7 @@ local function setArrows(key, target, tail, nodes)
     -- (not before the route is in: the AI would set off on its own way toward the destination)
     if auto and route ~= nil and not paused then pcall(driveArrowsPath, gm, nodes) end    -- before the tail: the AI drives the graph part only
     if tail then pcall(appendTail, gm, tail.e, tail.s, tail.z) end
+    return true
   end
 end
 
@@ -416,11 +461,16 @@ function M.update(anchor, player)
     local tg = nodes and routeTarget(e, nodes, i, t)
     if tg then
       -- set again only when the target moved on by a good stretch (each setPath re-plans the arrows)
-      local key = tg.final and 'final' or ('r' .. math.floor(tg.s / M.RETARGET_M))
+      -- only forward (the farthest point on the graph flickered between two 150 m steps, every second a new path
+      -- and the AI re-planning: Fells Point 2026-10-14), unless the old target is about reached
+      local here = e.cum[i] + t * (e.cum[i + 1] - e.cum[i])
+      local keep = targetS and type(routedTo) == 'string' and routedTo:sub(1, 1) == 'r'
+        and tg.s < targetS + M.RETARGET_M and targetS > here + 2 * M.RETARGET_M
+      local key = tg.final and 'final' or (keep and routedTo) or ('r' .. math.floor(tg.s / M.RETARGET_M))
       local wps = {}
       for _, w in ipairs(tg.via or {}) do wps[#wps + 1] = vec3(w.x, w.y, w.z) end
       wps[#wps + 1] = vec3(tg.x, tg.y, tg.z)
-      setArrows(key, wps, not tg.final and { e = e, s = tg.s, z = tg.z } or nil, nodes)
+      if setArrows(key, wps, not tg.final and { e = e, s = tg.s, z = tg.z } or nil, nodes) then targetS = tg.s end
       return
     end
   end
