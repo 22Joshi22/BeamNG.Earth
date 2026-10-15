@@ -244,14 +244,16 @@ def _causes(rows):
 # The car on the nearest road-graph node (a teleport lands it where the point is, a sidewalk or a field: the AI
 # then drove along a sidewalk into a pole, 2026-10-15), facing the linked node that points most toward the goal.
 SNAP_LUA = r"""
-local tlat, tlon = %r, %r
+local tlat, tlon, minSpeed = %r, %r, %r
 local m = map.getMap()
 local veh = getPlayerVehicle(0)
 if not (m and m.nodes and veh) then return 'snap: no graph' end
 local p = veh:getPosition()
 local best, bd = nil, math.huge
 for id, n in pairs(m.nodes) do
-  if n.pos and next(n.links or {}) then
+  local fast = minSpeed <= 0
+  for _, e in pairs(n.links or {}) do if (tonumber(e.speedLimit) or 0) >= minSpeed then fast = true end end
+  if n.pos and next(n.links or {}) and fast then
     local d = (n.pos.x - p.x) ^ 2 + (n.pos.y - p.y) ^ 2
     if d < bd then best, bd = id, d end
   end
@@ -294,6 +296,8 @@ def main():
     ap.add_argument("--rec", action="store_true", help="record the game's own frames (tools/gamerec.py: no screen "
                     "capture, no permission dialog; ~15 ms a frame, so the frame times are not the game's then)")
     ap.add_argument("--rec-fps", type=float, default=15.0)
+    ap.add_argument("--snap-kmh", type=float, default=0.0,
+                    help="start on a road this fast at least (the nearest such graph node): a motorway test")
     a = ap.parse_args()
     os.makedirs(a.out, exist_ok=True)
     mcp.quiet_ui()          # (the recording too: our welcome page closed and kept away this session)
@@ -315,7 +319,7 @@ def main():
             print("the teleport did not happen within 300 s", file=sys.stderr)
         time.sleep(a.settle)
     if a.start:                     # on the road: the nearest graph node, facing along its edge toward the goal
-        print(lua(SNAP_LUA % a.to), flush=True)
+        print(lua(SNAP_LUA % (a.to[0], a.to[1], a.snap_kmh / 3.6)), flush=True)
         time.sleep(3)
     lua("beamngEarth_settings.uiMapGps(%r, %r, 'autodrive_perf') return 'ok'" % a.to)
     lua("return tostring(beamngEarth_settings.uiGpsAutodrive(true).autodrive)")

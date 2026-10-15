@@ -107,6 +107,10 @@ def find(roads_list, is_oneway=lambda spec: bool(getattr(spec, "oneway", False))
                 continue
             if any(_inside(poly, c) for c in structures):
                 continue                                # a building inside: a city block, not an island
+            if any(_crosses(poly, edges[j][2]) for j in range(len(edges)) if j not in key):
+                continue                                # a road through it (a turn lane across the triangle, not
+                                                        # joined at its corners): the AI drove into the island's curb
+                                                        # and backed out, twice (Timisoara 2026-10-15)
             ccw = area > 0
             inner = {}
             for (k, fwd), p in zip(cyc, parts):
@@ -124,6 +128,26 @@ def find(roads_list, is_oneway=lambda spec: bool(getattr(spec, "oneway", False))
 
 RAYS = 72               # the island's curb traced along this many rays from its centre
 RAY_STEP_M = 0.2
+
+
+CROSS_MARGIN_M = 2.0    # a road's point this far inside a loop's centreline polygon is through it
+
+
+def _crosses(poly, pts):
+    """Does road pts (k, 3) run through the inside of loop poly (k, 2) (points every ~2 m, those within CROSS_MARGIN_M
+    of the loop's line not counted: roads joining at its corners)?"""
+    xy = np.asarray(pts, np.float64)[:, :2]
+    lo, hi = poly.min(0) - 1.0, poly.max(0) + 1.0
+    if (xy.max(0) < lo).any() or (xy.min(0) > hi).any():
+        return False
+    ring = np.vstack([poly, poly[:1]])
+    for a, b in zip(xy[:-1], xy[1:]):
+        n = max(1, int(np.hypot(*(b - a)) / 2.0))
+        for t in (np.arange(n) + 0.5) / n:
+            p = a + (b - a) * t
+            if _inside(poly, p) and _seg_dist(ring, p) > CROSS_MARGIN_M:
+                return True
+    return False
 
 
 def _seg_dist(pts, p):

@@ -30,6 +30,14 @@ class IslandTest(unittest.TestCase):
         self.assertTrue(np.all(np.abs(r - 13.0) < 0.8), "the curb line is the ring inset by its half width")
         self.assertTrue(islands.in_island(f, (0.0, 0.0)) and not islands.in_island(f, (40.0, 0.0)))
 
+    def test_a_road_through_the_loop_is_no_island(self):
+        ow = roads.Spec(6.0, "paved", True, "residential", True)
+        rs = [("r1", ow, arc(16, 0, math.pi), 0.0), ("r2", ow, arc(16, math.pi, 2 * math.pi), 0.0)]
+        self.assertEqual(len(islands.find(rs)), 1)
+        # a turn lane across it, joined to neither half at the loop's corners (Timisoara 2026-10-15)
+        lane = ("lane", ow, np.array([(-30.0, 3.0, 0.0), (30.0, 3.0, 0.0)]), 0.0)
+        self.assertEqual(islands.find(rs + [lane]), [])
+
     def test_turnaround_loop_with_a_two_way_link(self):
         ow = roads.Spec(5.8, "paved", True, "residential", True)
         two = roads.Spec(10.6, "paved", True, "residential", False)
