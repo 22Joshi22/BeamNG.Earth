@@ -29,7 +29,8 @@ Players: follow [docs/QUICKSTART.md](docs/QUICKSTART.md) (download, `install.py`
    `<BeamNG user folder>/current/mods/unpacked/beamng_earth/`.
 3. Start the server: `python3 server/earthd.py`
 4. Start BeamNG.drive and load the **BeamNG.Earth** level. The mod connects to the server and
-   streams the world; the BeamNG.Earth window shows the status and lets you teleport.
+   streams the world; the status bar at the top shows where you are and the loading, **M** opens the
+   world map (search, teleport, GPS routes, Autodrive).
 
 Release zip for sharing: `python3 tools/package.py` (writes `dist/BeamNG.Earth-<VERSION>.zip`;
 the version is the `VERSION` file).
@@ -39,10 +40,14 @@ Tests: `cd server && python3 -m unittest discover -s tests -p "test_*.py"` and
 
 ## Data sources and attribution
 The repository contains only code; all map data is downloaded at runtime and cached locally.
-- Imagery: USGS The National Map (public domain); Sentinel-2 cloudless by EOX IT Services GmbH
-  (https://s2maps.eu, contains modified Copernicus Sentinel data; 2016 release CC BY 4.0, 2023
-  release CC BY-NC-SA 4.0, non-commercial).
+- Imagery: state and national orthophoto services where they are open (Maryland, a dozen more US
+  states, Switzerland, France, Spain, the Netherlands, Germany's states, Japan, parts of Australia and
+  Canada, and more), USDA NAIP and USGS The National Map (public domain) in the US, and Sentinel-2
+  cloudless by EOX IT Services GmbH everywhere (https://s2maps.eu, contains modified Copernicus Sentinel
+  data; 2016 release CC BY 4.0, 2023 release CC BY-NC-SA 4.0, non-commercial).
 - Elevation: Mapterhorn (see https://mapterhorn.com/attribution), AWS Terrain Tiles / Mapzen.
+- Roads, buildings, water and places: Overture Maps / OpenStreetMap contributors; trees from a
+  canopy height model; airports from OurAirports.
 Each source's terms apply to the downloaded data; the in-game window shows the attribution line.
 The full list of data sources, services, libraries, tools and references, with licences and the
 credit each one asks for, is in [CREDITS.md](CREDITS.md).
