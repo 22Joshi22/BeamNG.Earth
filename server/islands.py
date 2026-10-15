@@ -46,10 +46,9 @@ def _offset(pts, d):
     return roads.offset_polyline(pts, d)
 
 
-def find(roads_list, is_oneway=lambda spec: bool(getattr(spec, "oneway", False)), structures=()):
-    """[{"poly": (k, 2) loop centreline (counter-clockwise), "inner": {fid: side (+1 left / -1 right of its
-    geometry)}, "ring": (k, 3) curb line counter-clockwise or None}] of roads_list [(fid, spec, pts (k, 3), lon)].
-    structures: building centres (x, y); a loop round one is a block, not an island."""
+def _graph(roads_list):
+    """(edges [(fid, spec, pts, a, b, length)], adjacency {node: [edge index]}) of roads_list: road ends closer than
+    JOIN_M are one node."""
     nodes = []                       # node xy
     def node_of(p):
         for i, q in enumerate(nodes):
@@ -57,7 +56,7 @@ def find(roads_list, is_oneway=lambda spec: bool(getattr(spec, "oneway", False))
                 return i
         nodes.append((float(p[0]), float(p[1])))
         return len(nodes) - 1
-    edges = []                       # (fid, spec, pts, a, b, length)
+    edges = []
     for fid, spec, pts, _ in roads_list:
         if len(pts) < 2:
             continue
@@ -70,8 +69,13 @@ def find(roads_list, is_oneway=lambda spec: bool(getattr(spec, "oneway", False))
     for k, (_, _, _, a, b, _) in enumerate(edges):
         adj.setdefault(a, []).append(k)
         adj.setdefault(b, []).append(k)
-    found, seen = [], set()
-    for k0, (fid0, _, _, a0, b0, L0) in enumerate(edges):
+    return edges, adj
+
+
+def _cycles(edges, adj, max_edges=MAX_EDGES, max_loop=MAX_LOOP_M):
+    """Each short cycle of the road graph once: [(edge index, traversed from its start)]."""
+    seen = set()
+    for k0, (_, _, _, a0, b0, L0) in enumerate(edges):
         if a0 == b0:                                    # a closed road: a loop by itself
             cycles = [[(k0, True)]]
         else:
@@ -79,7 +83,7 @@ def find(roads_list, is_oneway=lambda spec: bool(getattr(spec, "oneway", False))
             stack = [(b0, [(k0, True)], L0)]            # walk from b0 back to a0
             while stack:
                 n, path, L = stack.pop()
-                if len(path) > MAX_EDGES or L > MAX_LOOP_M:
+                if len(path) > max_edges or L > max_loop:
                     continue
                 for k in adj.get(n, []):
                     if any(k == q for q, _ in path):
@@ -89,40 +93,77 @@ def find(roads_list, is_oneway=lambda spec: bool(getattr(spec, "oneway", False))
                     nxt = b if fwd else a
                     if nxt == a0:
                         cycles.append(path + [(k, fwd)])
-                    elif len(path) < MAX_EDGES:
+                    elif len(path) < max_edges:
                         stack.append((nxt, path + [(k, fwd)], L + Lk))
         for cyc in cycles:
             key = frozenset(k for k, _ in cyc)
             if key in seen:
                 continue
             seen.add(key)
-            L = sum(edges[k][5] for k, _ in cyc)
-            ow = sum(edges[k][5] for k, _ in cyc if is_oneway(edges[k][1]))
-            if L > MAX_LOOP_M or ow < ONEWAY_SHARE * L:
-                continue
-            parts = [edges[k][2] if fwd else edges[k][2][::-1] for k, fwd in cyc]
-            poly = np.concatenate([p[:-1, :2] for p in parts])
-            area = _area(poly)
-            if not (MIN_AREA_M2 <= abs(area) <= MAX_AREA_M2):
-                continue
-            if any(_inside(poly, c) for c in structures):
-                continue                                # a building inside: a city block, not an island
-            if any(_crosses(poly, edges[j][2]) for j in range(len(edges)) if j not in key):
-                continue                                # a road through it (a turn lane across the triangle, not
-                                                        # joined at its corners): the AI drove into the island's curb
-                                                        # and backed out, twice (Timisoara 2026-10-15)
-            ccw = area > 0
-            inner = {}
-            for (k, fwd), p in zip(cyc, parts):
-                fid = edges[k][0]
-                # the traversed part's left is the inside on a counter-clockwise loop
-                side_trav = 1 if ccw else -1
-                inner[fid] = side_trav if fwd else -side_trav
-            if not ccw:
-                poly = poly[::-1]
-            z = float(np.mean(np.concatenate([edges[k][2][:, 2] for k, _ in cyc])))
-            ring = _island_ring(poly, [(edges[k][2][:, :2], edges[k][1].width / 2.0) for k, _ in cyc], z)
-            found.append({"poly": poly, "inner": inner, "ring": ring})
+            yield cyc
+
+
+RING_MAX_AREA_M2 = 12000.0  # a roundabout up to ~120 m across
+RING_MAX_LOOP_M = 450.0
+RING_MAX_EDGES = 10
+
+
+def ring_fids(roads_list):
+    """{fid} of the roads that form roundabout rings: small loops of one-way roads all driven the same way round
+    (spec.dir: +1 along the geometry, -1 against). A junction on a ring gets no signals or stop signs
+    (furniture.junction_controls): a ring entry looked like a crossroads of three major roads, and its signal poles
+    stood on the ring (Timisoara 2026-10-15). Shared by the road tiles and the road graph, so both decide the same."""
+    edges, adj = _graph(roads_list)
+    out = set()
+    for cyc in _cycles(edges, adj, RING_MAX_EDGES, RING_MAX_LOOP_M):
+        if not all(getattr(edges[k][1], "oneway", False) and getattr(edges[k][1], "dir", 0) for k, _ in cyc):
+            continue
+        along = [(edges[k][1].dir > 0) == fwd for k, fwd in cyc]     # driven round: all along, or all against
+        if not (all(along) or not any(along)):
+            continue
+        parts = [edges[k][2] if fwd else edges[k][2][::-1] for k, fwd in cyc]
+        poly = np.concatenate([p[:-1, :2] for p in parts])
+        if len(poly) < 3 or not (MIN_AREA_M2 <= abs(_area(poly)) <= RING_MAX_AREA_M2):
+            continue
+        out.update(edges[k][0] for k, _ in cyc)
+    return out
+
+
+def find(roads_list, is_oneway=lambda spec: bool(getattr(spec, "oneway", False)), structures=()):
+    """[{"poly": (k, 2) loop centreline (counter-clockwise), "inner": {fid: side (+1 left / -1 right of its
+    geometry)}, "ring": (k, 3) curb line counter-clockwise or None}] of roads_list [(fid, spec, pts (k, 3), lon)].
+    structures: building centres (x, y); a loop round one is a block, not an island."""
+    edges, adj = _graph(roads_list)
+    found = []
+    for cyc in _cycles(edges, adj):
+        key = {k for k, _ in cyc}
+        L = sum(edges[k][5] for k, _ in cyc)
+        ow = sum(edges[k][5] for k, _ in cyc if is_oneway(edges[k][1]))
+        if L > MAX_LOOP_M or ow < ONEWAY_SHARE * L:
+            continue
+        parts = [edges[k][2] if fwd else edges[k][2][::-1] for k, fwd in cyc]
+        poly = np.concatenate([p[:-1, :2] for p in parts])
+        area = _area(poly)
+        if not (MIN_AREA_M2 <= abs(area) <= MAX_AREA_M2):
+            continue
+        if any(_inside(poly, c) for c in structures):
+            continue                                # a building inside: a city block, not an island
+        if any(_crosses(poly, edges[j][2]) for j in range(len(edges)) if j not in key):
+            continue                                # a road through it (a turn lane across the triangle, not
+                                                    # joined at its corners): the AI drove into the island's curb
+                                                    # and backed out, twice (Timisoara 2026-10-15)
+        ccw = area > 0
+        inner = {}
+        for (k, fwd), p in zip(cyc, parts):
+            fid = edges[k][0]
+            # the traversed part's left is the inside on a counter-clockwise loop
+            side_trav = 1 if ccw else -1
+            inner[fid] = side_trav if fwd else -side_trav
+        if not ccw:
+            poly = poly[::-1]
+        z = float(np.mean(np.concatenate([edges[k][2][:, 2] for k, _ in cyc])))
+        ring = _island_ring(poly, [(edges[k][2][:, :2], edges[k][1].width / 2.0) for k, _ in cyc], z)
+        found.append({"poly": poly, "inner": inner, "ring": ring})
     return found
 
 

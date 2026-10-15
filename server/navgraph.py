@@ -121,6 +121,7 @@ def build(frame, feats_list, elev, centre, urban_fn=None, window=WINDOW_M, decks
     cx, cy = centre
     nodes, edges, seen = {}, [], set()
     prop_arms = {}          # connector name -> [(fid, spec, unit vector away, point, end, length)] (the props' view)
+    ring_cands = []         # the one-way roads the road tiles draw (fid, spec, pts, None): roundabout rings
     approaches = {}         # (connector, fid, end) -> (graph node next to it, traffic comes in)
     pending = {}            # name -> (x, y) of nodes whose z is still to sample
     node_fid = {}           # name -> the feature it was made on (its deck, if any)
@@ -150,6 +151,8 @@ def build(frame, feats_list, elev, centre, urban_fn=None, window=WINDOW_M, decks
             p = np.stack([e, n], 1)
             if (np.abs(p[:, 0] - cx).min() > window + 200) or (np.abs(p[:, 1] - cy).min() > window + 200):
                 continue
+            if rspecs[i] is not None and rspecs[i].oneway:
+                ring_cands.append((fid, rspecs[i], np.column_stack([p, np.zeros(len(p))]), None))
             seg = np.hypot(*np.diff(p, axis=0).T)
             s = np.concatenate([[0.0], np.cumsum(seg)])
             L = float(s[-1])
@@ -253,7 +256,8 @@ def build(frame, feats_list, elev, centre, urban_fn=None, window=WINDOW_M, decks
                 radius[nm] = max(radius.get(nm, 0.0), e[7])
         for nm, x, y, z in zip(used, X, Y, Z):
             nodes[nm] = [round(float(x), 2), round(float(y), 2), round(float(z), 2), radius[nm]]
-    signals = _signals(prop_arms, approaches, nodes, left_hand)
+    import islands
+    signals = _signals(prop_arms, approaches, nodes, left_hand, islands.ring_fids(ring_cands))
     # one edge per node pair (two segments joining the same connectors: keep the first)
     uniq, pairs = [], set()
     for e in edges:
@@ -271,7 +275,7 @@ STOP_BACK_M = 2.0           # the stop point: this far before the junction's wid
 SHORT_APPROACH_M = 15.0
 
 
-def _signals(arms, approaches, nodes, left_hand=False):
+def _signals(arms, approaches, nodes, left_hand=False, ring=None):
     """[{"j": junction node, "kind": "signal" | "stop", "app": [[approach node, x, y, z, dir x, dir y, phase, prop x,
     prop y, prop z, prop yaw]]}] of the urban junctions furniture.junction_controls controls, decided on the arms
     the road tiles' props see (arms) and built for the graph's approaches into them (approaches): per incoming
@@ -286,7 +290,7 @@ def _signals(arms, approaches, nodes, left_hand=False):
     for name, a in arms.items():
         if name not in nodes or len(a) < 3 or not all(x[1].urban for x in a):
             continue
-        put = furniture.junction_controls(farms[name], None, link_ok)
+        put = furniture.junction_controls(farms[name], None, link_ok, ring=ring)
         if not put:
             continue
         kind = "signal" if put[0][1] == furniture.G_SIGNAL else "stop"

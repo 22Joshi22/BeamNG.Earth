@@ -172,11 +172,14 @@ def _is_signalled(arms):
     return len(major) >= 3 or (len(major) >= 2 and len(arms) >= 4)
 
 
-def junction_controls(arms, k, link_ok=None):
+def junction_controls(arms, k, link_ok=None, ring=None):
     """[(arm, G_SIGNAL | G_STOP)] of an urban junction's arms (fid, spec, unit vector away, point): signals on
     every arm where two or more major roads meet, stop signs on the minor arms meeting a major road, on the
     stem of a minor T and on half the minor four-ways (hashed by the junction's 8 m cell; k is unused). Shared with
-    navgraph.py, so the AI's signals and stop signs are where the props stand."""
+    navgraph.py, so the AI's signals and stop signs are where the props stand. ring: the fids of roundabout rings
+    (islands.ring_fids): a junction on a ring (two of its arms) has none: traffic yields to the ring."""
+    if ring and sum(1 for a in arms if a[0] in ring) >= 2:
+        return []
     major = [a for a in arms if a[1].cls in MAJOR]
     minor = [a for a in arms if a[1].cls in MINOR]
     if _is_signalled(arms):
@@ -221,13 +224,15 @@ def junction_props(roads, box, curb_h=0.15, left_hand=False):
     rows = []
     junctions = _arms(roads)
     link_ok = _link_check(junctions)
+    import islands
+    ring = islands.ring_fids([r for r in roads if r[1].oneway])
     for k, arms in junctions.items():
         if len(arms) < 3 or not all(a[1].urban for a in arms):
             continue
         p = arms[0][3]
         if not (x0 <= p[0] < x1 and y0 <= p[1] < y1):
             continue
-        put = junction_controls(arms, k, link_ok)
+        put = junction_controls(arms, k, link_ok, ring)
         if not put:
             continue
         wide = max(a[1].width for a in arms) / 2

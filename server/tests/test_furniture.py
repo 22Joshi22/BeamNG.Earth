@@ -148,5 +148,16 @@ class SpeedSignTest(unittest.TestCase):
         self.assertEqual(furniture.speed_signs([r], {"t": 50 / 1.609344}, (-50, -50, 450, 150), mph_signs=False), [])
 
 
+class RoundaboutTest(unittest.TestCase):
+    def test_no_signals_on_a_ring_entry(self):
+        import numpy as np
+        ring = roads.Spec(7.0, "paved", True, "primary", True, 2.5, 1)
+        app = roads.Spec(9.0, "paved", True, "primary", False)
+        u = lambda x, y: np.array([x, y], float)
+        arms = [("r1", ring, u(0, 1), u(0, 0)), ("r2", ring, u(0, -1), u(0, 0)), ("a", app, u(1, 0), u(0, 0))]
+        self.assertTrue(furniture.junction_controls(arms, None), "three major arms: signals without the ring")
+        self.assertEqual(furniture.junction_controls(arms, None, ring={"r1", "r2"}), [], "a ring entry: none")
+
+
 if __name__ == "__main__":
     unittest.main()
