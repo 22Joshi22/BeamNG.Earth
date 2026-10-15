@@ -348,6 +348,37 @@ class PartsTest(unittest.TestCase):
         self.assertAlmostEqual(P[:, 2][P[:, 2] < 90.5].max(), 90.0, delta=0.01)
 
 
+class OverRoadTest(unittest.TestCase):
+    def setUp(self):
+        import geodesy
+        self.f = geodesy.EnuFrame(39.28, -76.59)
+
+    def ll(self, x, y, w, d):
+        e = np.array([x, x + w, x + w, x, x]); n = np.array([y, y, y + d, y + d, y])
+        la, lo, _ = self.f.enu_to_geodetic(e, n, 0.0)
+        return np.stack([lo, la], 1)
+
+    def test_underground_buildings_are_left_out(self):
+        # Shot Tower Metro (Baltimore): level -2, drawn as a box across the street the AI then drove into
+        b = Feats(["S", "T"], [self.ll(10, 10, 60, 40), self.ll(100, 10, 30, 30)],
+                  **{"class": ["train_station", ""], "height": [np.nan, 9.0], "level": [-2.0, np.nan]})
+        items = bld.tile_buildings(self.f, 0, 0, 256, 256, [b], lambda la, lo: np.zeros(np.shape(la)))
+        self.assertEqual(len(items), 1)
+
+    def test_a_footprint_over_a_street_is_lifted_over_it(self):
+        b = Feats(["O", "H"], [self.ll(10, 10, 80, 60), self.ll(150, 10, 30, 30)],
+                  **{"class": ["", ""], "height": [16.0, 9.0]})
+        street = np.array([[0.0, 40.0], [256.0, 40.0]])         # through the first, past the second
+        items = bld.tile_buildings(self.f, 0, 0, 256, 256, [b], lambda la, lo: np.zeros(np.shape(la)),
+                                   roads_xy=[street])
+        by_area = sorted(items, key=lambda it: -bld._area2(it[0].ring))
+        over, house = by_area[0][0], by_area[1][0]
+        self.assertEqual(over.min_h, bld.OVER_ROAD_CLEAR_M)
+        self.assertAlmostEqual(over.min_h + over.height, 16.0, delta=0.01, msg="its top where it was")
+        self.assertEqual(house.min_h, 0.0)
+        self.assertAlmostEqual(bld.road_through(over.ring, [street - 0]), 80.0, delta=2.5)
+
+
 class PhotoFillTest(unittest.TestCase):
     def test_big_footprint_fills_from_the_ground_around(self):
         rgb = np.zeros((512, 512, 3), np.uint8)

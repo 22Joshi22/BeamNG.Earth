@@ -1058,7 +1058,55 @@ def _part_heights(a, i):
     return float(top) - mh, mh
 
 
-def tile_buildings(frame, x0, y0, x1, y1, layers, elev, water=None, part_layers=(), west_town=False):
+ROAD_THROUGH_M = 15.0       # a footprint that public roads run through this far is a structure over them
+OVER_ROAD_CLEAR_M = 5.5     # ... lifted this high (an expressway's or a station's slab over the streets: Baltimore's
+                            # 17,500 m2 one by I-83, the AI drove into its wall at 35 mph, 2026-10-14)
+THROUGH_CLASSES = {"motorway", "trunk", "primary", "secondary", "tertiary", "residential", "unclassified",
+                   "living_street"}
+
+
+def road_lines(frame, road_layers, x0, y0, margin=50.0, size=256.0):
+    """Polylines (k, 2) relative to (x0, y0) of the public roads on the ground near the tile (for road_through)."""
+    import roads as roadsmod
+    out = []
+    for f in road_layers:
+        if f is None or len(f.kind) == 0:
+            continue
+        cls = f.attrs.get("class")
+        for i in range(len(f.kind)):
+            if cls is None or str(cls[i]) not in THROUGH_CLASSES or roadsmod.level_ranges(f, i):
+                continue
+            a = f.coord_off[f.ring_off[f.part_off[i]]]
+            b = f.coord_off[f.ring_off[f.part_off[i + 1]]]
+            ll = f.lonlat[a:b]
+            if len(ll) < 2:
+                continue
+            e, n, _ = frame.geodetic_to_enu(ll[:, 1], ll[:, 0], np.zeros(len(ll)))
+            xy = np.stack([e - x0, n - y0], 1)
+            if xy[:, 0].max() < -margin or xy[:, 0].min() > size + margin or xy[:, 1].max() < -margin \
+                    or xy[:, 1].min() > size + margin:
+                continue
+            out.append(xy)
+    return out
+
+
+def road_through(ring, lines, step=2.0):
+    """Metres of the polylines lines (k, 2) inside ring (sampled every step m)."""
+    lo, hi = ring.min(0), ring.max(0)
+    total = 0.0
+    for ln in lines:
+        if ln[:, 0].max() < lo[0] or ln[:, 0].min() > hi[0] or ln[:, 1].max() < lo[1] or ln[:, 1].min() > hi[1]:
+            continue
+        for p, q in zip(ln[:-1], ln[1:]):
+            L = float(np.hypot(*(q - p)))
+            k = max(1, int(L / step))
+            for t in (np.arange(k) + 0.5) / k:
+                if _inside(ring, p + (q - p) * t):
+                    total += L / k
+    return total
+
+
+def tile_buildings(frame, x0, y0, x1, y1, layers, elev, water=None, part_layers=(), west_town=False, roads_xy=None):
     """[(Spec, gmin, gmax)] of the buildings whose footprint centroid is in the tile [x0, x1) x [y0, y1)
     (anchor frame), rings relative to (x0, y0). layers: mapgeom.Features of buildings (one per map cell; a
     building in two cells is taken once, by id); elev(lat, lon) the physics ground. part_layers: the
@@ -1096,6 +1144,9 @@ def tile_buildings(frame, x0, y0, x1, y1, layers, elev, water=None, part_layers=
         for i in range(len(f.kind)):
             if a.get("is_underground") is not None and bool(a["is_underground"][i]):
                 continue
+            lv = a["level"][i] if a.get("level") is not None else None
+            if lv is not None and np.isfinite(lv) and lv < 0:
+                continue                # below ground (Shot Tower Metro, level -2, stood across a Baltimore street)
             key = ids[i] if ids is not None else None
             if key is not None and key in seen:
                 continue
@@ -1137,10 +1188,16 @@ def tile_buildings(frame, x0, y0, x1, y1, layers, elev, water=None, part_layers=
             if key is not None:
                 seen.add(key)
             rings.append(ring)
+            mh = at.get("min_height")
+            mh = float(mh) if mh is not None and np.isfinite(mh) and mh > 0 else 0.0
+            if mh <= 0.5 and roads_xy and road_through(ring, roads_xy) >= ROAD_THROUGH_M:
+                mh = OVER_ROAD_CLEAR_M
+                h = at.get("height")
+                if h is None or not np.isfinite(h) or h < mh + 3.0:
+                    at = dict(at, height=mh + 3.0)      # keeps its top; at least a slab's worth over the clearance
             attrs.append(at)
             looks.append(None)
-            mh = at.get("min_height")
-            mins.append(float(mh) if mh is not None and np.isfinite(mh) and mh > 0 else 0.0)
+            mins.append(mh)
     if not rings:
         return []
     shared = _shared_walls(rings)
@@ -1393,11 +1450,12 @@ def road_tile_items(frame, tx, ty, md, ground):
     """tile_buildings of road tile (tx, ty), from the map cells under it."""
     import roads
     x0, y0, x1, y1 = roads.tile_bbox(tx, ty)
-    cds = [md.cell(k, layers=("buildings", "building_parts"), kind="demand")
+    cds = [md.cell(k, layers=("buildings", "building_parts", "roads"), kind="demand")
            for k in roads.cells_of_tile(frame, tx, ty, margin=0.0)]
     return tile_buildings(frame, x0, y0, x1, y1, [c.layers.get("buildings") for c in cds], ground,
                           part_layers=[c.layers.get("building_parts") for c in cds],
-                          west_town=district_town(frame, tx, ty, md))
+                          west_town=district_town(frame, tx, ty, md),
+                          roads_xy=road_lines(frame, [c.layers.get("roads") for c in cds], x0, y0))
 
 
 TOWN_COVERAGE = 0.16        # a tile whose footprints cover less than this share is a town / suburb (heights)
