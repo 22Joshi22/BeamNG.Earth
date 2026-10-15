@@ -10,6 +10,14 @@
       @contextmenu.prevent="onContext"
     >
       <img
+        v-for="t in fallback"
+        :key="t.key"
+        class="map-tile"
+        :src="t.src"
+        :style="{ left: t.left + 'px', top: t.top + 'px', width: t.size + 1 + 'px', height: t.size + 1 + 'px' }"
+        draggable="false"
+      />
+      <img
         v-for="t in tiles"
         :key="t.key"
         class="map-tile"
@@ -270,6 +278,10 @@ onUnmounted(() => { clearInterval(askLoop); clearTimeout(askTimer); clearTimeout
 
 const tiles = computed(() => wanted.value
   .filter(t => readyTiles.value.has(`${t.z}/${t.x}/${t.y}`))
+  .map(t => ({ ...t, src: `${TILE_DIR}${t.z}/${t.x}/${t.y}.jpg` })))
+
+// loaded coarser tiles stretched over the ones still coming (mapmath.fallbackTiles)
+const fallback = computed(() => mm.fallbackTiles(wanted.value, readyTiles.value)
   .map(t => ({ ...t, src: `${TILE_DIR}${t.z}/${t.x}/${t.y}.jpg` })))
 
 function onTileLoad() { tileLoads.value++ }

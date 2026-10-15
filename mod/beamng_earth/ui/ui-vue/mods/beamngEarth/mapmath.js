@@ -48,7 +48,7 @@ export function visibleTiles(lat, lon, z, w, h) {
   for (let ty = y0; ty <= y1; ty++) {
     for (let tx = x0; tx <= x1; tx++) {
       out.push({
-        z: tz, x: ((tx % n) + n) % n, y: ty,
+        z: tz, x: ((tx % n) + n) % n, y: ty, ux: tx,
         left: (tx * TILE - left) * scale, top: (ty * TILE - top) * scale, size,
         key: `${tz}/${tx}/${ty}`,
       })
@@ -111,4 +111,28 @@ export function searchPlaces(list, query, limit = 8) {
 
 export function fmtLatLon(lat, lon) {
   return `${Math.abs(lat).toFixed(5)}°${lat >= 0 ? "N" : "S"}, ${Math.abs(lon).toFixed(5)}°${lon >= 0 ? "E" : "W"}`
+}
+
+// Stand-ins for tiles not loaded yet (the user, 2026-10-14: "map tiles disappear as you zoom in and out ... scale the
+// resolution we already have loaded and replace it once the up to date resolution gets loaded"): for each tile of
+// `tiles` (visibleTiles) not in ready (a Set of "z/x/y"), the nearest loaded ancestor up to `levels` zooms coarser,
+// placed and scaled to cover it. Each ancestor once; coarsest first (drawn under the finer ones).
+export function fallbackTiles(tiles, ready, levels = 6) {
+  const out = new Map()
+  for (const t of tiles) {
+    if (ready.has(`${t.z}/${t.x}/${t.y}`)) continue
+    for (let d = 1; d <= levels && t.z - d >= 0; d++) {
+      const pz = t.z - d, f = 1 << d, n = 1 << pz
+      const ax = Math.floor(t.ux / f), ay = Math.floor(t.y / f)
+      const axw = ((ax % n) + n) % n
+      if (!ready.has(`${pz}/${axw}/${ay}`)) continue
+      const key = `f${pz}/${ax}/${ay}`
+      if (!out.has(key)) {
+        out.set(key, { z: pz, x: axw, y: ay, key, size: t.size * f,
+          left: t.left - (t.ux - ax * f) * t.size, top: t.top - (t.y - ay * f) * t.size })
+      }
+      break
+    }
+  }
+  return [...out.values()].sort((a, b) => a.z - b.z)
 }
