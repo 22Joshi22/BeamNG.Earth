@@ -114,6 +114,7 @@ BANDS = 4
 
 SHED_CLASSES = {"shed", "garage", "garages", "carport", "roof", "hut", "cabin", "barn", "farm_auxiliary",
                 "greenhouse", "service", "storage_tank", "toilets", "kiosk", "parking"}
+TOWER_SHOP_FLOORS = 6       # a building this tall in a dense core: a shop / lobby ground floor whatever its class
 SHOP_CLASSES = {"retail", "commercial", "supermarket", "kiosk", "office", "hotel", "civic", "restaurant"}
 HOUSE_CLASSES = {"house", "detached", "semidetached_house", "bungalow", "residential", "farm", "static_caravan",
                  "cabin", "dormitory"}
@@ -347,6 +348,11 @@ def plan(ring, attrs, neighbours=0, lat=None, lon=None, look=None, town=False, d
             roof = "flat"
     if roof != "flat" and (box_fill < 0.8 or hw < 2.0 or hw > (18.0 if barn else 14.0)):
         roof = "flat"                               # pitched roofs only on near-rectangular footprints
+    # a city tower's ground floor is shops or a lobby (Midtown, 2026-10-14: most towers have no class, and their
+    # curtain wall came down to the pavement)
+    tall = (nf or (h or 0) / FLOOR_M) >= TOWER_SHOP_FLOORS
+    if dense and tall and cls not in HOUSE_CLASSES and not (shed or barn or garage or terminal):
+        shop = True
     if h is None:
         h = nf * floor_h + (GROUND_FLOOR_SHOP_M - floor_h if shop and nf > 1 else 0.0) + (0.6 if roof == "flat" else 0.2)
         if west_town and roof == "flat" and nf == 1 and area >= 80 and not (shed or barn):

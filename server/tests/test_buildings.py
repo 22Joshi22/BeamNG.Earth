@@ -115,6 +115,17 @@ class PlanTest(unittest.TestCase):
         self.assertEqual((a.floors, a.roof, a.facade, a.band), (b.floors, b.roof, b.facade, b.band))
 
 
+class TowerShopTest(unittest.TestCase):
+    def test_city_towers_have_a_shop_ground_floor(self):
+        # Midtown, 2026-10-14: classless towers had their curtain wall down to the pavement
+        t = bld.plan(rect(0, 0, 40, 30), {"class": "", "height": 120.0}, 2, 40.758, -73.985, dense=True)
+        self.assertTrue(t.shop)
+        low = bld.plan(rect(0, 0, 40, 30), {"class": "", "height": 9.0}, 2, 40.758, -73.985, dense=True)
+        self.assertFalse(low.shop, "a low building keeps its own rules")
+        suburb = bld.plan(rect(0, 0, 40, 30), {"class": "", "height": 120.0}, 0, 40.758, -73.985)
+        self.assertFalse(suburb.shop, "outside a dense core")
+
+
 class ParkingDeckTest(unittest.TestCase):
     def deck(self, w, d, gmax=0.0):
         spec = bld.plan(rect(0, 0, w, d), {"class": "parking", "num_floors": 3, "height": 9.0}, 0, 39.28, -76.59)
