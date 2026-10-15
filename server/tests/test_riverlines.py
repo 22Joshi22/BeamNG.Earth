@@ -102,3 +102,28 @@ class PlanTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RoadClearanceTest(unittest.TestCase):
+    """Rivers keep off the roads beside them (Lauterbrunnen valley, 2026-10-15: the AI drove into a river
+    drawn over the valley road)."""
+
+    def test_distance_to_road_edges(self):
+        rc = riverlines.RoadClearance([(0.0, 0.0, 100.0, 0.0, 4.0)])        # a road along x, 8 m wide
+        d = rc(np.array([[50.0, 10.0], [50.0, 3.0], [500.0, 0.0]]))
+        self.assertAlmostEqual(d[0], 6.0)
+        self.assertEqual(d[1], 0.0)
+        self.assertTrue(np.isinf(d[2]), "no road within the search radius")
+
+    def test_width_capped_beside_a_road(self):
+        """A river along y = 0 with a road along y = 10: its width stops short of the road; without the road
+        it keeps its width by class."""
+        frame = geodesy.EnuFrame(46.6, 7.9, 0.0)
+        pts = np.stack([np.arange(0.0, 200.0, 20.0), np.zeros(10)], -1)
+        water = lambda la, lo: np.zeros(np.shape(la))              # noqa: E731
+        dem = lambda la, lo: np.full(np.shape(la), 600.0)          # noqa: E731
+        free = riverlines._nodes(frame, ("w",), "river", pts, water, dem, None)
+        rc = riverlines.RoadClearance([(-50.0, 10.0, 250.0, 10.0, 3.0)])
+        kept = riverlines._nodes(frame, ("w",), "river", pts, water, dem, None, road_clear=rc)
+        self.assertGreater(free["width"].min(), 14.0)
+        self.assertLessEqual(kept["width"].max(), 2 * (7.0 - riverlines.ROAD_MARGIN_M) + 1e-6)

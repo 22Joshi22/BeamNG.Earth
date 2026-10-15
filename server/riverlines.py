@@ -46,6 +46,74 @@ DEPTH_M = (1.0, 8.0)        # the River's depth (its volume below the surface): 
 FLOW_MS = {"river": 2.0, "stream": 1.2, "canal": 0.5}          # flowMagnitudePhysics (m/s), downstream
                                                                 # (stock rivers: 2-4, waterfalls 5-8)
 DEM_ZOOM = 15
+# The water keeps off the roads beside it (2026-10-15, Lauterbrunnen valley and Interlaken: a River as wide as the
+# river's outline (or WIDTH_M) lay over the valley road beside the stream and the AI drove into it): a node's
+# half-width is at most its distance to the nearest road's edge (on-ground pieces: a bridge passes over), less
+# ROAD_MARGIN_M, but never under RIVER_MIN_HALF_M.
+ROAD_HALF_M = {"motorway": 7.0, "trunk": 6.0, "primary": 5.5, "secondary": 5.0, "tertiary": 4.5,
+               "residential": 4.0, "unclassified": 3.5, "service": 3.0, "living_street": 3.0}
+ROAD_MARGIN_M = 1.0
+RIVER_MIN_HALF_M = 1.5
+CLEAR_GRID_M = 64.0
+
+
+class RoadClearance:
+    """Distance from points to the nearest road edge (anchor frame), from road segments (x0, y0, x1, y1, half)
+    bucketed on a CLEAR_GRID_M grid."""
+
+    def __init__(self, segs):
+        self.segs = np.asarray(segs, np.float64).reshape(-1, 5)
+        self.grid = {}
+        g = CLEAR_GRID_M
+        for k, (x0, y0, x1, y1, hw) in enumerate(self.segs):
+            for gx in range(int(math.floor((min(x0, x1) - hw) / g)), int(math.floor((max(x0, x1) + hw) / g)) + 1):
+                for gy in range(int(math.floor((min(y0, y1) - hw) / g)), int(math.floor((max(y0, y1) + hw) / g)) + 1):
+                    self.grid.setdefault((gx, gy), []).append(k)
+
+    @classmethod
+    def from_features(cls, frame, feats_list):
+        import roads as roadsmod
+        segs = []
+        for f in feats_list:
+            if f is None or len(f) == 0 or f.attrs.get("class") is None:
+                continue
+            classes = f.attrs["class"]
+            for i in range(len(f)):
+                hw = ROAD_HALF_M.get(str(classes[i]))
+                if hw is None:
+                    continue
+                for part in roadsmod.ground_parts(f, i):
+                    ll = np.asarray(part, np.float64)
+                    if len(ll) < 2:
+                        continue
+                    e, n, _ = frame.geodetic_to_enu(ll[:, 1], ll[:, 0], np.zeros(len(ll)))
+                    e, n = np.asarray(e), np.asarray(n)
+                    for a in range(len(ll) - 1):
+                        segs.append((e[a], n[a], e[a + 1], n[a + 1], hw))
+        return cls(segs)
+
+    def __call__(self, pts, search_m=60.0):
+        """The distance (m) from each point (n, 2) to the nearest road edge within search_m (else inf)."""
+        pts = np.asarray(pts, np.float64).reshape(-1, 2)
+        out = np.full(len(pts), np.inf)
+        g = CLEAR_GRID_M
+        r = int(math.ceil(search_m / g))
+        for k, (px, py) in enumerate(pts):
+            gx, gy = int(math.floor(px / g)), int(math.floor(py / g))
+            cand = set()
+            for dx in range(-r, r + 1):
+                for dy in range(-r, r + 1):
+                    cand.update(self.grid.get((gx + dx, gy + dy), ()))
+            if not cand:
+                continue
+            s_ = self.segs[sorted(cand)]
+            ax, ay, bx, by, hw = s_.T
+            vx, vy = bx - ax, by - ay
+            L2 = np.maximum(vx * vx + vy * vy, 1e-9)
+            t = np.clip(((px - ax) * vx + (py - ay) * vy) / L2, 0.0, 1.0)
+            d = np.hypot(ax + t * vx - px, ay + t * vy - py) - hw
+            out[k] = max(0.0, float(d.min()))
+        return out
 
 
 @dataclass(frozen=True)
@@ -124,12 +192,13 @@ def _running_median(v, n):
     return np.median(np.stack([p[i:i + len(v)] for i in range(n)]), axis=0)
 
 
-def plan(frame, x, y, cell_water, water_at, dem_at, outline_at=None, radius=None, level_at=None):
+def plan(frame, x, y, cell_water, water_at, dem_at, outline_at=None, radius=None, level_at=None, road_clear=None):
     """The River pieces around (x, y) in `frame`. cell_water(key) -> the water Features of a map-data cell
     or None (not at hand); water_at(lat, lon) -> depth > 0 where seacarve's tiles already are water;
     dem_at(lat, lon) -> the DEM; outline_at(lat, lon) -> True inside a river outline (None: widths by
     class); level_at(lat, lon) -> the carved river level there (seacarve: the same the bed is cut to;
-    NaN where none: the DEM rule)."""
+    NaN where none: the DEM rule); road_clear(points) -> the distance to the nearest road edge (RoadClearance;
+    None: widths as measured)."""
     r = RADIUS_M if radius is None else radius
     la0, lo0, _ = frame.enu_to_geodetic(x - r, y - r, 0.0)
     la1, lo1, _ = frame.enu_to_geodetic(x + r, y + r, 0.0)
@@ -161,7 +230,7 @@ def plan(frame, x, y, cell_water, water_at, dem_at, outline_at=None, radius=None
         if np.hypot(xy[:, 0] - x, xy[:, 1] - y).min() > r + PIECE_M:
             continue
         pts, _ = _resample(xy, SPACING_M[kind])
-        rivers.append(_nodes(frame, ids, kind, pts, water_at, dem_at, outline_at, level_at))
+        rivers.append(_nodes(frame, ids, kind, pts, water_at, dem_at, outline_at, level_at, road_clear))
     _confluences(rivers)
     out = []
     for rv in rivers:
@@ -192,7 +261,7 @@ def _confluences(rivers):
             rv["into"] |= (d < hw[None, :]).any(axis=1)
 
 
-def _nodes(frame, ids, kind, pts, water_at, dem_at, outline_at, level_at=None):
+def _nodes(frame, ids, kind, pts, water_at, dem_at, outline_at, level_at=None, road_clear=None):
     """A chain's nodes: centre, surface z, width, depth, and where it is in tiled water already ("wet")."""
     la, lo, _ = frame.enu_to_geodetic(pts[:, 0], pts[:, 1], np.zeros(len(pts)))
     la, lo = np.asarray(la), np.asarray(lo)
@@ -214,6 +283,9 @@ def _nodes(frame, ids, kind, pts, water_at, dem_at, outline_at, level_at=None):
     # the surface in the anchor frame (the curve included)
     _, _, z = frame.geodetic_to_enu(la, lo, level)
     width = width * WIDTH_PAD + WIDTH_PAD_M         # over the carved bed's edges (holes, 2026-10-13)
+    if road_clear is not None:                      # never over the road beside the river
+        clear = np.asarray(road_clear(centre), np.float64)
+        width = np.minimum(width, 2.0 * np.maximum(clear - ROAD_MARGIN_M, RIVER_MIN_HALF_M))
     return {"ids": ids, "kind": kind, "pts": pts, "centre": centre, "z": np.asarray(z, np.float64),
             "width": width, "depth": depth, "wet": wet, "into": np.zeros(len(pts), bool)}
 

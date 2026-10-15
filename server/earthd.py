@@ -2400,6 +2400,26 @@ class Connection:
                     d, lv, _ = sea.water(la, lo, wait=False)
                     return np.where(np.isfinite(lv) & ~sea.outline_at(la, lo), d, 0.0)
 
+                def road_clear():   # the roads of the cells at hand around: the rivers keep off them
+                    md = sea.md
+                    r = riverlinesmod.RADIUS_M + riverlinesmod.PIECE_M
+                    la0, lo0, _ = frame.enu_to_geodetic(x - r, y - r, 0.0)
+                    la1, lo1, _ = frame.enu_to_geodetic(x + r, y + r, 0.0)
+                    try:
+                        keys = tuple(key for key in mapcells.cells_for_bbox(float(la0), float(lo0), float(la1),
+                                                                             float(lo1), max_cells=256)
+                                     if os.path.exists(md.path(mapdatamod._key(key), "roads")))
+                        memo = getattr(self, "_river_clear", None)   # (anchor, cells) -> clearance: built once
+                        if memo is not None and memo[0] == (aid, keys):
+                            return memo[1]
+                        feats = [md.cell(key, layers=("roads",)).layers.get("roads") for key in keys]
+                        rc = riverlinesmod.RoadClearance.from_features(frame, feats)
+                        self._river_clear = ((aid, keys), rc)
+                        return rc
+                    except Exception as e:      # no clearance: the widths as measured
+                        log.debug("river road clearance: %s", e)
+                        return None
+
                 def plan():
                     # with the cells at hand (the others are built in the background and used by the
                     # next plan, SEA_CHECK_S later): water appears at once at a new place
@@ -2411,7 +2431,7 @@ class Connection:
                         return np.where(sea.outline_at(la, lo), lv, np.nan)
                     rivers = riverlinesmod.plan(frame, x, y, cell_water, tiled,
                                                 lambda la, lo: dem.sample(la, lo, riverlinesmod.DEM_ZOOM),
-                                                sea.outline_at, level_at=carved)
+                                                sea.outline_at, level_at=carved, road_clear=road_clear())
                     return tiles, rivers
                 tiles, rivers = await self.loop.run_in_executor(self.s.ground_pool, plan)
                 msg = ([t.to_msg() for t in tiles], [r.to_msg() for r in rivers])
