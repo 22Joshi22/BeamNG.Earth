@@ -49,12 +49,16 @@ STUCCO = "bne_bld_stucco"   # plain stucco walls (windows laid over them from th
 ROOF_METAL = "bne_bld_roof_metal"   # standing-seam metal (barns, sheds, farm buildings)
 PANEL = "bne_bld_panel"     # precast concrete panels (big-box stores, strip malls)
 METALWALL = "bne_bld_metalwall"     # corrugated metal walls (warehouses, factories)
+STONE = "bne_bld_stone"     # dressed stone (old villages and towns of southern and central Europe: Gordes came out as
+                            # grey plaster, 2026-10-15)
+STONE_FLOORS = 4            # stone walls on buildings this low at most
 BIG_BOX_M2 = 1200.0         # m2: a low commercial building this big is a big box (blank walls, one storefront)
 CHURCH_CLASSES = ("church", "chapel", "cathedral")
 BARN_CLASSES = {"barn", "farm_auxiliary", "stable", "cowshed"}
 # The mesh's materials (vertColor: each building's colours are its vertices'); the names above are the
 # looks plan() picks, each one of these with a colour (LOOKS).
-MATERIALS = (FACADE, SHOP, OFFICE, ROOF_FLAT, ROOF_SLATE, ROOF_SHINGLE, SIDING, STUCCO, ROOF_METAL, PANEL, METALWALL)
+MATERIALS = (FACADE, SHOP, OFFICE, ROOF_FLAT, ROOF_SLATE, ROOF_SHINGLE, SIDING, STUCCO, ROOF_METAL, PANEL, METALWALL,
+             STONE)
 LOOKS = {
     "bne_bld_fac_white": (FACADE, (1.0, 1.0, 1.0)), "bne_bld_fac_cream": (FACADE, (1.0, 0.93, 0.80)),
     "bne_bld_fac_sand": (FACADE, (0.92, 0.82, 0.68)), "bne_bld_fac_grey": (FACADE, (0.80, 0.82, 0.84)),
@@ -84,6 +88,8 @@ WALL_TINTS = {               # houses with plain walls and laid-over windows: th
     PANEL: ((0.96, 0.94, 0.89), (0.86, 0.86, 0.86), (0.92, 0.85, 0.74), (0.78, 0.80, 0.82), (0.88, 0.78, 0.68),
             (0.62, 0.62, 0.60), (0.56, 0.54, 0.50)),    # the last two: weathered concrete (parking decks)
     METALWALL: ((0.88, 0.89, 0.90), (0.72, 0.74, 0.77), (0.84, 0.80, 0.72), (0.66, 0.72, 0.78)),
+    # limestone, honey, ochre and grey stone (the texture is a light ashlar: tinted down)
+    STONE: ((1.0, 0.93, 0.80), (0.98, 0.86, 0.66), (0.95, 0.80, 0.60), (0.86, 0.85, 0.82), (0.92, 0.88, 0.80)),
     # curtain walls (the user, 2026-10-14: "the skyscrapers all use the same texture and look the same colour"):
     # silver, blue, green, bronze, charcoal and steel-blue glass, the common tints of real towers
     OFFICE: ((1.0, 1.0, 1.0), (0.74, 0.84, 0.98), (0.76, 0.92, 0.86), (0.98, 0.84, 0.66), (0.56, 0.58, 0.62),
@@ -273,16 +279,17 @@ class Style:
     plaster window sheet), wall_tints: the tint indices the plain walls take (None: all but barn red);
     paint: plaster houses painted (PAINT_TINTS); porch; flat: detached houses with flat roofs; hipped: of the
     pitched; roofs: (roof material, (tint indices)) to pick from; pitch: the roof pitch in degrees (None: PITCH);
-    wood: siding walls are stained wood (WOOD_TINTS, barns too); barn_red: the share of barns painted barn red
+    stone: the share of low older buildings (houses and attached ones, up to STONE_FLOORS, no shops) with dressed stone
+    walls; wood: siding walls are stained wood (WOOD_TINTS, barns too); barn_red: the share of barns painted barn red
     (the US's and Scandinavia's; elsewhere their siding colours: a Lauterbrunnen garage row came out a 150 m red
     wall, 2026-10-15); attached: low attached buildings (terraces, old town
     blocks) with a pitched roof (the US: flat; Amsterdam's canal houses, Europe's old towns: gables).
     Coarse boxes by region until a facade-material map; the US ones keep their earlier behaviour."""
 
     def __init__(self, name, brick, walls, porch, flat, hipped, roofs, pitch=None, paint=0.3, wall_tints=None,
-                 wood=False, attached=0.0, barn_red=0.0):
+                 wood=False, attached=0.0, barn_red=0.0, stone=0.0):
         self.name, self.brick, self.walls, self.porch, self.flat = name, brick, walls, porch, flat
-        self.barn_red = barn_red
+        self.barn_red, self.stone = barn_red, stone
         self.hipped, self.roofs, self.pitch, self.paint, self.wall_tints = hipped, roofs, pitch, paint, wall_tints
         self.wood, self.attached = wood, attached
 
@@ -297,16 +304,16 @@ STYLES = {
     "us_west": Style("us_west", 0.15, ((STUCCO, 0.65), (SIDING, 0.25)), 0.25, 0.0, 0.4, _US_ROOFS, barn_red=0.5),
     # Alpine villages: white plaster ground floors, dark wooden chalets, low wide gables of dark or brown roofs
     "alpine": Style("alpine", 0.05, ((SIDING, 0.45),), 0.0, 0.03, 0.15, (_DARK, (ROOF_SLATE, (9, 5))), pitch=24.0,
-                    paint=0.05, wood=True, attached=0.85),
+                    paint=0.05, wood=True, attached=0.85, stone=0.15),
     # north-west / central Europe: brick (Low Countries, northern Germany, Britain) or plaster, steep tiled or
     # slate roofs
     "europe_north": Style("europe_north", 0.5, (), 0.02, 0.05, 0.3, (_CLAY, _DARK, (ROOF_SLATE, (5,))), pitch=42.0,
-                          paint=0.15, attached=0.75),
+                          paint=0.15, attached=0.75, stone=0.12),
     # Scandinavia and Finland: painted wooden houses (siding), little brick, dark or tiled roofs, falu-red barns
     "nordic": Style("nordic", 0.12, ((SIDING, 0.65),), 0.0, 0.08, 0.2, (_DARK, _CLAY), pitch=35.0, paint=0.2,
                     attached=0.3, barn_red=0.7),
     "mediterranean": Style("mediterranean", 0.08, ((STUCCO, 0.85),), 0.0, 0.35, 0.5, (_CLAY,), pitch=22.0,
-                           paint=0.1, wall_tints=(0, 1, 2, 3, 4, 5), attached=0.5),
+                           paint=0.1, wall_tints=(0, 1, 2, 3, 4, 5), attached=0.8, stone=0.4),
     "latin_america": Style("latin_america", 0.25, ((STUCCO, 0.9),), 0.02, 0.7, 0.3, (_CLAY, (ROOF_METAL, (0, 1))),
                            pitch=22.0, paint=0.0, wall_tints=(0, 1, 2, 3, 5, 6, 7, 8, 9, 10)),
     "east_asia": Style("east_asia", 0.08, ((SIDING, 0.5), (STUCCO, 0.3)), 0.0, 0.35, 0.5,
@@ -552,6 +559,13 @@ def plan(ring, attrs, neighbours=0, lat=None, lon=None, look=None, town=False, d
                 n = min(n, US_WALL_TINTS.get(kind, n))
                 wall = f"{kind}|{int(_hash01(seed, 'wc') * n)}"
             facade = wall
+    # dressed stone: a regional share of low older buildings, attached ones too (their plaster sheet otherwise)
+    if wall is None and style.stone and nf <= STONE_FLOORS and band is not BAND_BRICK \
+            and not (shop or industrial or terminal or garage or shed or barn or church) \
+            and cls not in ("apartments", "office", "commercial", "hotel", "retail") \
+            and _hash01(seed, "stone") < style.stone:
+        wall = f"{STONE}|{int(_hash01(seed, 'stc') * len(WALL_TINTS[STONE]))}"
+        facade = wall
     if terminal:
         facade, band, plain = OFFICE, BAND_OFFICE, False
     elif garage:
