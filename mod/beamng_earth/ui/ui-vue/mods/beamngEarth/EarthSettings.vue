@@ -4,6 +4,7 @@
     <!-- Master Header: connection / session status -->
     <div class="options-header">
       <div class="header-title">BeamNG.Earth</div>
+      <button class="header-welcome" @click="showWelcome" title="What BeamNG.Earth is, the keys, the credits">Welcome page</button>
       <div class="header-status" :class="{ 'is-connected': status.connection === 'connected' }">
         {{ connectionText }}
       </div>
@@ -377,6 +378,10 @@ function luaValue(val) {
   return JSON.stringify(String(val))
 }
 
+function showWelcome() {
+  engineLua("if beamngEarth_settings and beamngEarth_settings.showWelcome then beamngEarth_settings.showWelcome() end")
+}
+
 function engineLua(script, cb) {
   if (!window.bngApi || !window.bngApi.engineLua) return
   window.bngApi.engineLua(script, cb)
@@ -513,6 +518,18 @@ onUnmounted(() => {
   .header-title {
     font-size: 1.3rem;
     font-weight: 600;
+  }
+
+  .header-welcome {
+    margin-left: auto;
+    margin-right: 1em;
+    padding: 0.25em 0.8em;
+    font-size: 0.9rem;
+    color: #fff;
+    background: rgba(255, 255, 255, 0.08);
+    border: 1px solid rgba(255, 255, 255, 0.25);
+    border-radius: 4px;
+    cursor: pointer;
   }
 
   .header-status {

@@ -8,8 +8,20 @@ import { lua } from "@/bridge"
 // inside the pause menu. The route follows ui/ui-vue/mods/README.md "Standalone routes"; any failure
 // there is logged and leaves the settings button alone.
 const MAP_SOURCE = "beamngEarth.routes"
-function mapRoutes(EarthMap) {
+function mapRoutes(EarthMap, EarthWelcome) {
   return [
+  {
+    // the one-time welcome (settings.lua shows it once per WELCOME_VERSION in our level)
+    path: "/beamng-earth-welcome",
+    name: "beamngEarthWelcome",
+    component: EarthWelcome,
+    meta: {
+      luaRoute: {
+        title: "Welcome to BeamNG.Earth",
+        backTarget: "play",
+      },
+    },
+  },
   {
     path: "/beamng-earth-map",
     name: "beamngEarthMap",
@@ -32,7 +44,7 @@ async function registerMapRoute() {
   try {
     if (!window.bngRoutes || !lua.extensions.ui_router_routeManager) return
     // imported here, not at the top: a map that fails to compile must not cost the settings button
-    const routes = mapRoutes((await import("./EarthMap.vue")).default)
+    const routes = mapRoutes((await import("./EarthMap.vue")).default, (await import("./EarthWelcome.vue")).default)
     window.bngRoutes.add([{ path: MAP_SOURCE, routes }])
     const result = await lua.extensions.ui_router_routeManager.registerModRoutes(MAP_SOURCE, toLuaRoutes(routes))
     if (!result?.success) {

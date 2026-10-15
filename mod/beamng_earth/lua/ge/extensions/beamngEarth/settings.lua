@@ -60,10 +60,15 @@ M.SCHEMA = {
     label = 'Download cache size' },
   devOutlineKm = { kind = 'number', default = 3, min = 0.5, max = 20, label = 'Dev outlines radius (km)' },
   devMapKm = { kind = 'number', default = 10, min = 1, max = 80, label = 'Dev mini-map radius (km)' },
+  -- not on the page (not in ORDER): the welcome version last shown (EarthWelcome.vue)
+  welcomeSeen = { kind = 'number', default = 0, min = 0, max = 1000, label = 'Welcome page seen (version)' },
 }
 M.ORDER = { 'rebaseDistance', 'viewDistanceMode', 'viewDistanceKm', 'hazeStrength', 'skyMode', 'clouds',
   'weatherMode', 'realGravity', 'groundCover', 'groundCoverDensity', 'roads', 'hudVisible', 'creditsVisible',
   'creditsCorner', 'creditsSize', 'cacheCapGb', 'devOutlineKm', 'devMapKm' }
+
+-- Stored but not on the settings page
+M.HIDDEN = { welcomeSeen = true }
 
 -- Old values that still load (and set) as their replacement, without a warning: 'auto' weather
 -- (real unless BWM_Weather was changing the weather) is Real now, which switches itself to Manual
@@ -556,10 +561,39 @@ function M.onExtensionLoaded()
   M.applyAll()
 end
 
+-- The one-time welcome (the user, 2026-10-15: "add a 1 time popup with info about this project"): shown a moment after
+-- our level starts, once per WELCOME_VERSION (raise it when the page has news worth showing again).
+M.WELCOME_VERSION = 1
+M.WELCOME_ROUTE = 'beamngEarthWelcome' -- index.js registers the route under this name
+M.WELCOME_DELAY_S = 2
+local welcomeAt = nil
+
+function M.showWelcome()
+  local gh = rawget(_G, 'guihooks')
+  if gh then gh.trigger('ChangeState', { state = M.WELCOME_ROUTE }) end
+end
+
+-- EarthWelcome.vue's buttons: seen.
+function M.uiWelcomeDone()
+  if (values.welcomeSeen or 0) < M.WELCOME_VERSION then M.set('welcomeSeen', M.WELCOME_VERSION) end
+  return { ok = true }
+end
+
+function M.onUpdate()
+  if welcomeAt and os.clock() >= welcomeAt then
+    welcomeAt = nil
+    M.showWelcome()
+  end
+end
+
 -- other extensions (sky, dev) may load after this one: apply again once the level runs
 function M.onClientPostStartMission()
   appliedView = nil
   M.applyAll()
+  local level = rawget(_G, 'getCurrentLevelIdentifier') and getCurrentLevelIdentifier()
+  if level == M.LEVEL_ID and (values.welcomeSeen or 0) < M.WELCOME_VERSION then
+    welcomeAt = os.clock() + M.WELCOME_DELAY_S
+  end
 end
 
 return M

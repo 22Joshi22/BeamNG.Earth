@@ -42,8 +42,11 @@ T.check(d.rebaseDistance == rebase.DEFAULT_DISTANCE and d.skyMode == 'real' and 
   'defaults (15 km rebase, real sky, clouds on, the real horizon (2026-10-11), 100 km fixed, HUD hidden with the page)')
 for _, k in ipairs(settings.ORDER) do T.check(settings.SCHEMA[k] ~= nil, 'ORDER key in SCHEMA: ' .. k) end
 local n = 0
-for _ in pairs(settings.SCHEMA) do n = n + 1 end
-T.check(n == #settings.ORDER, 'every SCHEMA key is in ORDER')
+for k in pairs(settings.SCHEMA) do if not settings.HIDDEN[k] then n = n + 1 end end
+T.check(n == #settings.ORDER, 'every SCHEMA key is in ORDER (or HIDDEN)')
+-- the one-time welcome: due in our level until seen, then not again
+T.check(settings.get('welcomeSeen') == 0, 'welcome not seen yet')
+T.check(settings.uiWelcomeDone().ok and settings.get('welcomeSeen') == settings.WELCOME_VERSION, 'seen: stored')
 
 ------------------------------------------------------------------------------------------
 -- validation
