@@ -7,6 +7,7 @@
   mcp.py list                         list tools
 """
 import json
+import time
 import sys
 import urllib.request
 
@@ -41,6 +42,7 @@ def quiet_ui():
         call("run_lua", {"code": "local ok, s = pcall(require, 'beamngEarth/settings') "
                                  "if ok and s then s.welcomeSuppressed = true end return 'ok'"})
         call("set_ui_state", {"route": "play"})
+        time.sleep(0.6)         # (the page fades out over a few frames)
     except Exception:
         pass
 
