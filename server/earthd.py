@@ -105,6 +105,7 @@ import seacarve as seacarvemod  # noqa: E402
 import seatiles as seatilesmod  # noqa: E402
 import vegetation as vegetationmod
 import buildings as buildingsmod  # noqa: E402
+import rockface as rockfacemod  # noqa: E402
 import riverlines as riverlinesmod  # noqa: E402
 import groundahead as groundaheadmod  # noqa: E402
 import heightmap  # noqa: E402
@@ -1124,6 +1125,15 @@ class Server:
                     rgb = buildingsmod.fill_photo(rgb, mask, size, BASE_PX)
             except Exception as e:      # the photo stays as it is
                 log.info("base photo %s: building mask: %s", (anchor.id, cx, cy), e)
+        try:            # its cliffs as rock, like the far tiles' (rockface.py), from a 16 m grid of the ground
+            n = 65
+            xs = x0 + np.arange(n) * (size / (n - 1))
+            ys = y0 + np.arange(n) * (size / (n - 1))
+            zoom = anchor.zooms[0]
+            _, U = heightmap.surface(anchor.frame, lambda la, lo: self.dem.sample(la, lo, zoom), xs, ys)
+            rgb = rockfacemod.rock(rgb, anchor.frame, x0, y0, size, U, x0, y0, size / (n - 1))
+        except Exception as e:      # the photo stays as it is
+            log.debug("base photo %s: rock faces: %s", (anchor.id, cx, cy), e)
         # a lazy source (NAIP) not fetched yet for all of it: rendered again once it is (base_refresh)
         # ... and the analyses (de-shadow, colour match) it was rendered without (never waited for)
         key = (anchor.id, cx, cy)
@@ -1377,6 +1387,7 @@ class Server:
                 px = self.tex_size(lvl)
                 rgb, used = self.imagery.render(anchor.frame, *imagerymod.gutter_square(x0, y0, tile.size, px), px,
                                                 pending=pending)
+                rgb = self.rock_faces(anchor, tile, px, rgb, built.grid)
                 texture = self.texture_name(anchor.id, tile.key, self.tex_rev.get((anchor.id, tile.key), 0))
                 tex_bytes = imagerymod.write_dds(os.path.join(self.out_dir, texture), rgb)
                 material = sat_material(anchor.id, tile.key)
@@ -1405,6 +1416,20 @@ class Server:
             info.cm_pending = frozenset(pending or ())
         return info
 
+    def rock_faces(self, anchor, tile, px, rgb, grid):
+        """The far tile's photo with its steep ground drawn as rock (rockface.py: cliffs were the photo's top
+        stretched down the wall); as it was if that fails."""
+        if grid is None:
+            return rgb
+        try:
+            x0, y0, _, _ = tile.bbox
+            g = np.asarray(grid)
+            return rockfacemod.rock(rgb, anchor.frame, *imagerymod.gutter_square(x0, y0, tile.size, px), g,
+                                    x0, y0, tile.size / (g.shape[1] - 1))
+        except Exception as e:          # the photo as it is
+            log.debug("rock faces of %s: %s", tile.key, e)
+            return rgb
+
     def retexture(self, anchor, tile, prev):
         """Worker thread: render a stale tile's texture again (its colour-match regions are ready now)
         under the next revision's file name; the shape and its material name stay. Network trouble:
@@ -1419,6 +1444,7 @@ class Server:
         except imagerymod.ImageryError as e:
             log.debug("tile %s of anchor %d: texture not rendered again (%s)", tile.key, anchor.id, e)
             return prev
+        rgb = self.rock_faces(anchor, tile, px, rgb, prev.grid)
         texture = self.texture_name(anchor.id, tile.key, prev.rev + 1)
         tex_bytes = imagerymod.write_dds(os.path.join(self.out_dir, texture), rgb)
         sources = prev.credits
