@@ -230,9 +230,10 @@ PLAZA_CLASSES = {"pedestrian", "plaza"}
 
 def paint_lots(idx, lat, lon, feats_list):
     """idx with the squares and pedestrian areas (land_use polygons of subtype "pedestrian") of feats_list
-    drawn in as paving, then the parking lots (polygons of class "parking") as asphalt (Lancaster County's
+    drawn in as plain paving (the asphalt layer), then the parking lots (polygons of class "parking") as asphalt (Lancaster County's
     photos: the grass layer's ground cover grew on lots). Pure."""
-    idx = _paint(idx, lat, lon, feats_list, _plazas, COBBLE)
+    # (grey paving: the cobble layer's setts drew big squares and promenades pink, Harbor Point 2026-10-15)
+    idx = _paint(idx, lat, lon, feats_list, _plazas, ASPHALT)
     return _paint(idx, lat, lon, feats_list, _parking, ASPHALT)
 
 

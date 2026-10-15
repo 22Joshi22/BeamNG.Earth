@@ -330,7 +330,7 @@ class LotTest(unittest.TestCase):
                 return [[np.array([(a, c), (b, c), (b, d), (a, d), (a, c)])]]
         idx = np.full((50, 50), sf.DIRT, np.uint8)
         out = sf.paint_lots(idx, lat, lon, [Land()])
-        self.assertEqual(out[12, 12], sf.COBBLE)
+        self.assertEqual(out[12, 12], sf.ASPHALT)
         self.assertEqual(out[12, 37], sf.DIRT)
 
 
