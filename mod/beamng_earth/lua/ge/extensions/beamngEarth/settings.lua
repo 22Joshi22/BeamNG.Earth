@@ -509,6 +509,7 @@ function M.uiMapParse(text)
 end
 
 function M.mapOpened(on) mapOpen = on and true or false end
+function M.isMapOpen() return mapOpen end
 
 -- The key binding (actions/beamngEarth.json; M and the pause menu Map via redirectBigMap): open the map, or close it back to driving.
 function M.toggleMap()

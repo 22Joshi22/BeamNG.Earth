@@ -176,6 +176,15 @@ T.check(frame(true), 'big map closed: shown')
 freeroam_bigMapMode = { bigMapActive = function() error('broken') end }
 T.check(frame(true), 'a failing big-map query does not hide it (or throw)')
 freeroam_bigMapMode = nil
+local mapOpen = true
+beamngEarth_settings = { isMapOpen = function() return mapOpen end }
+T.check(not frame(true) and #draws == 0, 'our world map open (it has its own credits line): hidden')
+mapOpen = false
+T.check(frame(true), 'our world map closed: shown')
+beamngEarth_settings = nil
+credits.setUiState('beamngEarthMap')
+T.check(not frame(true), 'the world map UI state: hidden')
+credits.setUiState('play')
 credits.clear()
 T.check(not frame(true, nil) and #draws == 0, 'no credits and no fallback: nothing')
 T.check(not frame(true, '') and #draws == 0, 'an empty fallback: nothing')
