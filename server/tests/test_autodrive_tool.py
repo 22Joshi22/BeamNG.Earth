@@ -49,5 +49,15 @@ class ChecksTest(unittest.TestCase):
         self.assertEqual([e["kind"] for e in ev], ["off_route", "off_route"])
 
 
+class HitchTest(unittest.TestCase):
+    def test_causes(self):
+        self.assertEqual(ad.hitch_cause({"ms": 80, "mod": {"roads": 60, "far": 3}, "engine": {"render": 10}}), "mod.roads")
+        self.assertEqual(ad.hitch_cause({"ms": 80, "mod": {"roads": 5}, "engine": {"render": 60, "ui": 2}}),
+                         "engine.render")
+        rows = [{"hitches": [{"ms": 80, "mod": {"roads": 60}}, {"ms": 120, "mod": {"roads": 90}}]},
+                {"hitches": {}}, {"hitches": [{"ms": 70, "engine": {"gfx": 50}}]}]
+        self.assertEqual(ad._causes(rows), {"mod.roads": [2, 120], "engine.gfx": [1, 70]})
+
+
 if __name__ == "__main__":
     unittest.main()

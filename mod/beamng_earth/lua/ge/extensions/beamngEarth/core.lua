@@ -1012,14 +1012,58 @@ local function drawUi(dt)
   banner.draw(st.inOurLevel or st.active, credits.hiddenByUi())
 end
 
+-- Hitch attribution (the user, 2026-10-14: "there's definitely some performance issues sometimes"): each frame
+-- times the mod's own parts; a frame over HITCH_MS keeps them and the engine's per-subsystem breakdown, so a
+-- recorded drive (tools/autodrive_perf.py) says whether we or the engine (rendering, collision, streaming) took it.
+M.HITCH_MS = 50
+M.HITCH_KEEP = 64
+local hitchClock = stopwatch.clock()
+local marks, prevMarks = {}, {}
+local hitches = {}
+local function mark(name, t0)
+  local t = hitchClock()
+  marks[name] = (marks[name] or 0) + (t - t0)
+  return t
+end
+local function noteHitch(frameMs)
+  local h = { ms = math.floor(frameMs + 0.5), at = math.floor(st.clock * 10 + 0.5) / 10, mod = {} }
+  for k, v in pairs(prevMarks) do if v >= 1 then h.mod[k] = math.floor(v * 10 + 0.5) / 10 end end
+  if Engine and Engine.Debug and Engine.Debug.getLastPerformanceMetrics then
+    local m = {}
+    if pcall(Engine.Debug.getLastPerformanceMetrics, m) then
+      local arr = {}
+      for k, v in pairs(m) do
+        if type(v) == 'number' and not k:find('^phys') and not k:find('^virt') then arr[#arr + 1] = { k, v } end
+      end
+      table.sort(arr, function(a, b) return a[2] > b[2] end)
+      h.engine = {}
+      for i = 1, math.min(6, #arr) do h.engine[arr[i][1]] = math.floor(arr[i][2] * 10 + 0.5) / 10 end
+    end
+  end
+  hitches[#hitches + 1] = h
+  if #hitches > M.HITCH_KEEP then table.remove(hitches, 1) end
+end
+-- The hitches since the last call: [{ms, at (s), mod = {part = ms}, engine = {subsystem = ms}}].
+function M.hitches()
+  local out = hitches
+  hitches = {}
+  return out
+end
+
 local function onUpdate(dtReal, dtSim)
   dtReal = dtReal or 0
+  local frameMs0 = frameTimer and frameTimer:stopAndReset() or dtReal * 1000
+  if frameMs0 > M.HITCH_MS and st.inOurLevel then pcall(noteHitch, frameMs0) end
+  prevMarks, marks = marks, prevMarks
+  for k in pairs(marks) do marks[k] = nil end
+  local t = hitchClock()
   postfx.update(st.inOurLevel)
   local stg = rawget(_G, 'beamngEarth_settings')
   if stg and stg.redirectBigMap then stg.redirectBigMap(st.inOurLevel) end
   if st.inOurLevel then gps.update(st.anchor, st.player) end
   seasonlook.update(st.inOurLevel, st.anchor and st.anchor.lat)
-  local frameMs = frameTimer and frameTimer:stopAndReset() or dtReal * 1000
+  t = mark('ui', t)
+  local frameMs = frameMs0
   local cf = st.commitFrames
   if cf then                    -- the commit frame and the two after it (wall ms between updates)
     cf.f[#cf.f + 1] = frameMs
@@ -1046,6 +1090,7 @@ local function onUpdate(dtReal, dtSim)
     local ok, err = pcall(onMessage, msg)
     if not ok then log('E', 'beamngEarth', 'message ' .. tostring(msg.type) .. ' failed: ' .. tostring(err)) end
   end
+  t = mark('net', t)
   if not scenetree.MissionGroup then return end -- no level loaded
   tickMotionBlur()
 
@@ -1066,11 +1111,16 @@ local function onUpdate(dtReal, dtSim)
 
   updatePlayer(dtReal)
   if st.active then
+    t = mark('player', t)
     updateWorld(dtReal)
+    t = mark('world', t)
     farfield.update(gov, (gov.w1 or dtReal * 1000) / 1000, st.cam, st.player)
+    t = mark('far', t)
     roads.update(gov, st.anchorId)
+    t = mark('roads', t)
     sea.update(st.anchorId, st.player)
     trees.update(st.anchorId, st.player)
+    t = mark('sea+trees', t)
     local pb = nil
     if st.block then
       pb = st.parkBox or {}
@@ -1078,11 +1128,15 @@ local function onUpdate(dtReal, dtSim)
       pb[1], pb[2], pb[3], pb[4] = lattice.groundBox(st.block.cx, st.block.cy)
     end
     parking.update(st.anchorId, st.player, pb)
+    t = mark('parking', t)
     navgraph.update(st.anchorId, pb)
+    t = mark('navgraph', t)
     updateSky(dtReal)
     updateGuard()
+    t = mark('sky', t)
   end
   drawUi(dtReal)
+  mark('draw', t)
 end
 
 -- After physics, before rendering (main.lua:819-824): measure when a rebase's vehicle move became

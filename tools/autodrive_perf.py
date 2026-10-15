@@ -57,7 +57,8 @@ return jsonEncode({ t = os.clock(), x = pos.x, y = pos.y, z = pos.z, v = math.sq
   perf = { frames = p.frames, avgMs = p.avgMs, p50 = p.p50, p95 = p.p95, p99 = p.p99, maxMs = p.maxMs,
            over33 = p.over33, over50 = p.over50, over100 = p.over100 },
   gps = { remaining = g.remaining, off = g.off, arrows = g.arrows, autodrive = g.autodrive, planning = g.planning },
-  pending = s.pending, anchor = s.anchorId })
+  pending = s.pending, anchor = s.anchorId,
+  hitches = beamngEarth_core.hitches and beamngEarth_core.hitches() or {} })
 '''
 
 
@@ -169,6 +170,19 @@ class Checks:
         return ev
 
 
+def hitch_cause(h):
+    """The part a hitch frame went to: ours (mod.<part>) when it took 40 % of the frame, else the engine's largest."""
+    mod = h.get("mod") or {}
+    if mod:
+        k, v = max(mod.items(), key=lambda kv: kv[1])
+        if v >= 0.4 * h["ms"]:
+            return "mod." + k
+    eng = h.get("engine") or {}
+    if eng:
+        return "engine." + max(eng.items(), key=lambda kv: kv[1])[0]
+    return "unknown"
+
+
 def summarize(rows):
     """The drive's statistics from the polls (frames weighted by their count)."""
     frames = sum(r["perf"].get("frames") or 0 for r in rows)
@@ -193,7 +207,20 @@ def summarize(rows):
         "off_route_max_m": round(max((r["gps"].get("off") or 0) for r in rows), 1),
         "arrows_fallback_polls": sum(1 for r in rows if not str(r["gps"].get("arrows") or "").startswith(("r", "final"))),
         "remaining_m": rows[-1]["gps"].get("remaining"),
+        "hitch_causes": _causes(rows),
     }
+
+
+def _causes(rows):
+    """{cause: [count, worst ms]} of the hitch frames (core.lua HITCH_MS), most frequent first."""
+    out = {}
+    for r in rows:
+        hs = r.get("hitches") or []
+        for h in (hs.values() if isinstance(hs, dict) else hs):
+            c = hitch_cause(h)
+            n, w = out.get(c, (0, 0))
+            out[c] = (n + 1, max(w, h["ms"]))
+    return {k: list(v) for k, v in sorted(out.items(), key=lambda kv: -kv[1][0])}
 
 
 def main():
