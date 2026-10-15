@@ -800,7 +800,10 @@ Next, from the photo comparisons (docs/research/streetview/fp*, base_*):
     map layers (roads, borders, country names).
   - A slim status bar at the top (BeamMP-like) instead of the Lua status window: loading, performance, street /
     city / country.
-  - Italy coast 40.190, 16.689: a pale rectangle in the sea (water tile mismatch?).
+  - Italy coast 40.190, 16.689: a pale rectangle in the sea. FIXED 2026-10-15: the far levels' sea floor sat 1.5 m
+    down, mid-way on the water's colour ramp, so the WaterBlock tiles' flat surfaces showed as squares; now 6 m.
+    Left: a milder band ~8 km out where the water tiles end and the far tiles' sea photo begins.
+  - Sahara rocks: CHECKED 2026-10-15: desert rocks only, ~700 within 300 m, the near ones solid (40/40 rays hit).
 
 ### Done overnight 2026-10-15 (details in the commits)
 - 100 mph stutter found and fixed: Forest changes cost ~0.5 us per item of each SHAPE touched in the level (trees.lua
