@@ -341,6 +341,66 @@ local function driveArrowsPath(gm, nodes)
   autoPath, autoSerial, stillSince = ids, graphSerial(), nil
 end
 
+-- Pure: the index k of the path edge (ids[k] -> ids[k+1]) nearest (px, py) in nodes (positions), or nil.
+function M.pathIndexAt(ids, nodes, px, py)
+  local best, bd = nil, math.huge
+  for k = 1, #ids - 1 do
+    local a, b = nodes[ids[k]], nodes[ids[k + 1]]
+    a, b = a and a.pos, b and b.pos
+    if a and b then
+      local dx, dy = b.x - a.x, b.y - a.y
+      local L2 = dx * dx + dy * dy
+      local t = L2 > 0 and math.max(0, math.min(1, ((px - a.x) * dx + (py - a.y) * dy) / L2)) or 0
+      local qx, qy = a.x + t * dx - px, a.y + t * dy - py
+      local d = qx * qx + qy * qy
+      if d < bd then best, bd = k, d end
+    end
+  end
+  return best
+end
+
+-- Pure: ids[k ..] as far as each step is an edge in every one of the graphs (lists of nodes tables).
+function M.validFrom(ids, k, graphs)
+  local out = { ids[k] }
+  for i = k, #ids - 1 do
+    for _, nodes in ipairs(graphs) do
+      local n = nodes[ids[i]]
+      if not (n and n.links and n.links[ids[i + 1]] and nodes[ids[i + 1]]) then return out end
+    end
+    out[#out + 1] = ids[i + 1]
+  end
+  return out
+end
+
+-- The road graph is about to be applied anew (navgraph.lua, before map.reset): what the AI's path needs to stay valid.
+-- The stock AI keeps its path's node ids across the map change and crashed on a step that was no longer an edge
+-- ('edgeData' nil in ai.lua planAhead: the vehicle's Lua disabled, the car stopped for good; I-70 2026-10-15).
+function M.beforeGraph(oldNodes)
+  if not auto or paused or not autoPath or not oldNodes then return nil end
+  local veh = playerVeh()
+  if not veh then return nil end
+  local p = veh:getPosition()
+  local k = M.pathIndexAt(autoPath, oldNodes, p.x, p.y)
+  if not k then return nil end
+  return { ids = M.validFrom(autoPath, k, { oldNodes }) }
+end
+
+-- ... and applied (newNodes: the game's map now): the AI gets the part of its path valid in both graphs at once,
+-- before the new map reaches the vehicle; with less than two nodes left it drives the lanes on its own until the next
+-- check gives it the route again.
+function M.afterGraph(keep, newNodes)
+  local veh = playerVeh()
+  if not keep or not veh or not newNodes then return end
+  local ids = M.validFrom(keep.ids, 1, { newNodes })
+  if #ids >= 2 then
+    veh:queueLuaCommand(M.aiCommand(ids))
+  else
+    veh:queueLuaCommand('ai.setMode("traffic")')
+  end
+  autoPath, routedTo = ids, nil        -- the full route again at the next check
+  M.graphKeeps = (M.graphKeeps or 0) + 1
+end
+
 local arrowsSerial = nil
 -- target: a vec3, or a list of them (waypoints along the route, then the target)
 local function setArrows(key, target, tail, nodes)

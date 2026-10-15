@@ -223,6 +223,9 @@ local function apply(b)
   if trig and not M.UI_MAP then
     guihooks.trigger = function(name, ...) if name ~= 'NavigationMapChanged' then return trig(name, ...) end end
   end
+  local okG, gps = pcall(require, 'beamngEarth/gps')
+  local mOld = map.getMap and map.getMap()
+  local keep = okG and gps.beforeGraph and gps.beforeGraph(mOld and mOld.nodes) or nil
   local t0 = os.clock()
   ours = true
   local ok, err = pcall(map.reset, nodes)
@@ -242,6 +245,7 @@ local function apply(b)
   else
     persistent = m.nodes
   end
+  if keep then pcall(gps.afterGraph, keep, m.nodes) end    -- before the vehicles' new map
   be:queueAllObjectLua('mapmgr.requestMap()')
   pendingSignals = ts and nodes or nil     -- next frame: a second, smaller hitch instead of one big one
   stats.applies, stats.lastMs, stats.nodes, stats.edges = stats.applies + 1, (os.clock() - t0) * 1000, nn, ne

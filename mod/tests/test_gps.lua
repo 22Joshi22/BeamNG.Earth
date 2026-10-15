@@ -46,4 +46,18 @@ jn = G.joinStart({ 'j', 's' }, 'w', 'j', g2)
 T.check(#jn == 3 and jn[1] == 'w', 'the edge\'s start put in front')
 jn = G.joinStart({ 'w', 'j', 's' }, 'w', 'j', g2)
 T.check(#jn == 3, 'already starting there: unchanged')
+
+-- the AI's path across a road-graph change: from the edge under the car, as far as every step is an edge in both graphs
+do
+  local function n(x, links) return { pos = { x = x, y = 0 }, links = links } end
+  local old = { a = n(0, { b = 1 }), b = n(100, { a = 1, c = 1 }), c = n(200, { b = 1, d = 1 }), d = n(300, { c = 1 }) }
+  local new = { a = n(0, { b = 1 }), b = n(100, { a = 1, c = 1 }), c = n(200, { b = 1 }), d = n(300, {}) }
+  local ids = { 'a', 'b', 'c', 'd' }
+  T.check(G.pathIndexAt(ids, old, 150, 3) == 2, 'the car on the second edge')
+  local v = G.validFrom(ids, 2, { old, new })
+  T.check(#v == 2 and v[1] == 'b' and v[2] == 'c', 'cut where the new graph has no edge')
+  v = G.validFrom(ids, 1, { old })
+  T.check(#v == 4, 'all valid in the old graph')
+  T.check(#G.validFrom({ 'a', 'x' }, 1, { old }) == 1, 'an unknown node: cut')
+end
 T.done('test_gps')
