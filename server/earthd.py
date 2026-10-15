@@ -1235,6 +1235,11 @@ class Server:
     def tile_name(self, aid, key):
         return f"far_{aid}_{key}.{self.far_format}"
 
+    def attribution_rest(self):
+        """The credit line's sources other than the imagery (weather, elevation)."""
+        parts = [weathermod.CREDIT] if self.weather is not None else []
+        return "; ".join(parts + [ELEVATION_CREDIT])
+
     def attribution(self):
         """The credit line the mod shows: imagery (if on) and elevation sources."""
         parts = [self.imagery.attribution()] if self.imagery is not None else []
@@ -1830,11 +1835,18 @@ class Connection:
                         log.debug("map tile %d/%d/%d: %s", z, x, y, e)
                         r = None
                     if r is not None:
-                        os.makedirs(os.path.dirname(path), exist_ok=True)
-                        with open(path + ".tmp", "wb") as f:
-                            f.write(r[0])
-                        os.replace(path + ".tmp", path)
-                        ok = True
+                        # a temporary name of this thread's own: two requests for the same tile at once (the UI
+                        # asks again while one is being built) renamed each other's file away, and the error
+                        # dropped the whole batch's answer (blank map squares, Paris 2026-10-15)
+                        tmp = f"{path}.{threading.get_ident()}.tmp"
+                        try:
+                            os.makedirs(os.path.dirname(path), exist_ok=True)
+                            with open(tmp, "wb") as f:
+                                f.write(r[0])
+                            os.replace(tmp, path)
+                        except OSError as e:
+                            log.debug("map tile %d/%d/%d: %s", z, x, y, e)
+                        ok = os.path.exists(path)
                 out.append([z, x, y, ok])
             return out
         out = await asyncio.get_running_loop().run_in_executor(self.s.ui_pool, build)
@@ -1985,6 +1997,9 @@ class Connection:
             m = {"type": "hello", "protocol": PROTOCOL, "format": lay.format, "serverVersion": SERVER_VERSION,
                  "sessionId": self.s.sid, "farFormat": self.s.far_format, "material": farfield.MATERIAL,
                  "nearVisual": self.s.near_visual, "attribution": self.s.attribution()}
+            if self.s.imagery is not None:      # the world map credits the sources its view shows
+                m["imageryCredits"] = self.s.imagery.credits_by_area()
+                m["otherCredits"] = self.s.attribution_rest()
             if lay.format >= 4:         # M1: the tiles' cell count (crossover.defaultErr, the exact level)
                 m["cells"] = lay.cells
             if lay.block != heightmap.SIZE:     # M4: the terrain block size (the mod's lattice / follow table)

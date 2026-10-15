@@ -340,6 +340,21 @@ class Imagery:
             return ATTRIBUTION
         return "Imagery: " + "; ".join(s.attribution for s in list(self.chain) + extra)
 
+    def credits_by_area(self):
+        """[[attribution, w, s, e, n] or [attribution]] per source in use (a box: the source covers only that
+        area), for the world map to credit what its view shows (2026-10-15: the map listed 31 regional services
+        over Paris)."""
+        names = [s.name for s in self.chain]
+        extra = [SOURCES[n] for n in getattr(self.colormatch, "refs", ()) if n not in names]
+        out = []
+        for src in list(self.chain) + extra:
+            if src.bounds:
+                s_, w_, n_, e_ = src.bounds
+                out.append([src.attribution, w_, s_, e_, n_])
+            else:
+                out.append([src.attribution])
+        return out
+
     def _count(self, what):
         with self._lock:
             self.stats[what] = self.stats.get(what, 0) + 1

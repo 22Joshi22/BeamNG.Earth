@@ -132,7 +132,10 @@ SERVER_TO_MOD = {
               "deshadow": F(str, OPT),          # --deshadow lambert|full only (the settings page shows it)
               "colormatch": F(str, OPT),        # --colormatch s2 only (likewise)
               "season": F(str, OPT),           # --season auto / fall (seasonlook.lua tints the leaves)
-              "mapPort": F(int, OPT)},          # the world map's tile endpoint on 127.0.0.1 (maptiles.py)
+              "mapPort": F(int, OPT),           # the world map's tile endpoint on 127.0.0.1 (maptiles.py)
+              # the world map's credits for its view: [[credit, w, s, e, n] or [credit]] per imagery source, and
+              # the rest (weather, elevation); with imagery on only
+              "imageryCredits": F(list, OPT), "otherCredits": F(str, OPT)},
     "status": {"text": F(str),
                "backlog": F(int),           # v1.4 M0: desired - shown far tiles of the current anchor
                "radius": F(NUM, OPT)},      # v1.4 M1h: the far-field radius (m), --horizon only

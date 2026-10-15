@@ -136,3 +136,92 @@ export function fallbackTiles(tiles, ready, levels = 6) {
   }
   return [...out.values()].sort((a, b) => a.z - b.z)
 }
+
+// ---- overlay layers (maplayers.js: Natural Earth borders and names) -------------------------------------------
+// lines: flat [lon, lat, lon, lat, ...] arrays. Their lat/lon boxes [w, s, e, n], once.
+export function lineBoxes(lines) {
+  return lines.map(l => {
+    let w = 180, s = 90, e = -180, n = -90
+    for (let i = 0; i < l.length; i += 2) {
+      if (l[i] < w) w = l[i]
+      if (l[i] > e) e = l[i]
+      if (l[i + 1] < s) s = l[i + 1]
+      if (l[i + 1] > n) n = l[i + 1]
+    }
+    return [w, s, e, n]
+  })
+}
+
+// The view's lat/lon box [w, s, e, n] (w > e when it spans the antimeridian), with a margin of px.
+export function viewBox(clat, clon, z, w, h, margin = 20) {
+  const tl = fromScreen(-margin, -margin, clat, clon, z, w, h)
+  const br = fromScreen(w + margin, h + margin, clat, clon, z, w, h)
+  const span = (w + 2 * margin) / (TILE * Math.pow(2, z)) * 360
+  if (span >= 360) return [-180, br.lat, 180, tl.lat]
+  return [tl.lon, br.lat, br.lon, tl.lat]
+}
+
+function boxMeets(b, v) {
+  if (b[3] < v[1] || b[1] > v[3]) return false
+  if (v[0] <= v[2]) return b[2] >= v[0] && b[0] <= v[2]
+  return b[2] >= v[0] || b[0] <= v[2]                     // the view spans the antimeridian
+}
+
+// The lines meeting the view, as SVG polyline point strings in screen px (at most max of them).
+export function visibleLines(lines, boxes, clat, clon, z, w, h, max = 3000) {
+  const v = viewBox(clat, clon, z, w, h)
+  const out = []
+  for (let i = 0; i < lines.length && out.length < max; i++) {
+    if (!boxMeets(boxes[i], v)) continue
+    const l = lines[i]
+    const pts = []
+    for (let j = 0; j < l.length; j += 2) {
+      const p = toScreen(l[j + 1], l[j], clat, clon, z, w, h)
+      pts.push(p.x.toFixed(1) + "," + p.y.toFixed(1))
+    }
+    out.push(pts.join(" "))
+  }
+  return out
+}
+
+// Labels for the view: points [name, lon, lat, minZoom] in priority order, shown from their minZoom (and below
+// maxZoom), none overlapping another (a box of ~charW px per letter, lineH px high), at most max.
+export function visibleLabels(points, clat, clon, z, w, h, opts = {}) {
+  const { maxZoom = 99, max = 120, charW = 7, lineH = 16 } = opts
+  const out = []
+  if (z >= maxZoom) return out
+  const v = viewBox(clat, clon, z, w, h, 0)
+  const taken = []
+  for (const p of points) {
+    if (out.length >= max) break
+    if (z < p[3]) continue
+    if (!boxMeets([p[1], p[2], p[1], p[2]], v)) continue
+    const s = toScreen(p[2], p[1], clat, clon, z, w, h)
+    const bw = p[0].length * charW + 8
+    const box = [s.x - bw / 2, s.y - lineH, s.x + bw / 2, s.y + 4]
+    if (taken.some(t => box[0] < t[2] && box[2] > t[0] && box[1] < t[3] && box[3] > t[1])) continue
+    taken.push(box)
+    out.push({ name: p[0], x: s.x, y: s.y, rank: p[4] })
+  }
+  return out
+}
+
+// The zoom a populated place's name shows from (Natural Earth scalerank 0 .. 8; capitals a little earlier).
+export function placeMinZoom(scalerank, capital) {
+  return 2.5 + scalerank * 0.9 - (capital ? 1 : 0)
+}
+
+// The map's credit line for a view box [w, s, e, n] (viewBox): the imagery sources whose area meets it (entries
+// [credit, w, s, e, n]) or that cover everywhere ([credit]), then the other credits.
+export function creditsFor(imagery, other, box) {
+  const used = []
+  for (const c of imagery || []) {
+    const name = c[0]
+    if (!name || used.includes(name)) continue
+    if (c.length >= 5 && !boxMeets([c[1], c[2], c[3], c[4]], box)) continue
+    used.push(name)
+  }
+  const parts = used.length ? ["Map imagery: " + used.join("; ")] : []
+  if (other) parts.push(other)
+  return parts.join("; ")
+}

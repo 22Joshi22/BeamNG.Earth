@@ -28,6 +28,10 @@
         @error="onTileError($event, t)"
       />
       <svg class="map-grid" :width="w" :height="h">
+        <template v-if="layersOn">
+          <polyline v-for="(p, i) in stateLines" :key="'s' + i" class="layer-state" :points="p" />
+          <polyline v-for="(p, i) in borderLines" :key="'b' + i" class="layer-border" :points="p" />
+        </template>
         <polyline v-if="routeDone" class="route-done" :points="routeDone" />
         <polyline v-if="routeAhead" class="route-line-casing" :points="routeAhead" />
         <polyline v-if="routeAhead" class="route-line" :points="routeAhead" />
@@ -35,6 +39,13 @@
           <line :x1="g.x1" :y1="g.y1" :x2="g.x2" :y2="g.y2" :class="g.cls" />
           <text v-if="g.label" :x="g.lx" :y="g.ly" class="grid-label">{{ g.label }}</text>
         </g>
+        <template v-if="layersOn">
+          <text v-for="l in countryLabels" :key="'c' + l.name" :x="l.x" :y="l.y" class="layer-country">{{ l.name }}</text>
+          <g v-for="l in placeLabels" :key="'p' + l.name + l.x.toFixed(0)">
+            <circle :cx="l.x" :cy="l.y" :r="l.rank ? 3 : 2" class="layer-dot" />
+            <text :x="l.x + 5" :y="l.y - 3" class="layer-place" :class="{ capital: l.rank }">{{ l.name }}</text>
+          </g>
+        </template>
       </svg>
       <!-- saved places -->
       <div
@@ -93,6 +104,7 @@
       <button class="map-btn" @click="zoomBy(1)" title="Zoom in">+</button>
       <button class="map-btn" @click="zoomBy(-1)" title="Zoom out">-</button>
       <button class="map-btn" :class="{ on: follow }" @click="centreOnMe" title="Centre on the car and follow it">Me</button>
+      <button class="map-btn" :class="{ on: layersOn }" @click="toggleLayers" title="Borders and place names (Natural Earth)">Layers</button>
       <button v-if="!embedded" class="map-btn close" @click="close" title="Close (Esc / M)">Close</button>
     </div>
 
@@ -212,6 +224,7 @@
 <script setup>
 import { ref, computed, watch, onMounted, onUnmounted, nextTick } from "vue"
 import * as mm from "./mapmath.js"
+import layerData from "./maplayers.js"
 
 const props = defineProps({ embedded: { type: Boolean, default: false } })
 const embedded = props.embedded
@@ -300,6 +313,12 @@ const notice = computed(() => {
 })
 
 const attributionText = computed(() => {
+  const cba = state.value.creditsByArea
+  if (cba && state.value.mapPort) {         // only the sources the view shows (the server's areas)
+    const v = view.value
+    const list = toArray(cba.imagery).map(c => (Array.isArray(c) ? c : toArray(c)))
+    return mm.creditsFor(list, cba.other || "", mm.viewBox(v.lat, v.lon, v.z, w.value, h.value, 0))
+  }
   const a = state.value.attribution || ""
   return state.value.mapPort ? (a.startsWith("Imagery") ? "Map " + a.charAt(0).toLowerCase() + a.slice(1) : a) : ""
 })
@@ -320,6 +339,36 @@ const playerScreen = computed(() => {
   return p ? screen(p.lat, p.lon) : null
 })
 const targetScreen = computed(() => (target.value ? screen(target.value.lat, target.value.lon) : { x: 0, y: 0 }))
+
+// ---- layers: country / state borders and place names (maplayers.js, Natural Earth) ------------------------------
+let layersStored = true
+try { layersStored = localStorage.getItem("beamngEarthMapLayers") !== "0" } catch (e) { /* storage blocked: on */ }
+const layersOn = ref(layersStored)
+function toggleLayers() {
+  layersOn.value = !layersOn.value
+  try { localStorage.setItem("beamngEarthMapLayers", layersOn.value ? "1" : "0") } catch (e) { /* not kept */ }
+}
+const borderBoxes = mm.lineBoxes(layerData.borders)
+const stateBoxes = mm.lineBoxes(layerData.states)
+const countryPoints = layerData.countries.map(c => [c[0], c[1], c[2], Math.max(1.5, c[3] - 0.5)])
+  .sort((a, b) => a[3] - b[3])
+const placePoints = layerData.places.map(p => [p[0], p[1], p[2], mm.placeMinZoom(p[3], p[4]), p[4]])
+const borderLines = computed(() => {
+  const v = view.value
+  return layersOn.value && v.z <= 13 ? mm.visibleLines(layerData.borders, borderBoxes, v.lat, v.lon, v.z, w.value, h.value) : []
+})
+const stateLines = computed(() => {
+  const v = view.value
+  return layersOn.value && v.z >= 4 && v.z <= 13 ? mm.visibleLines(layerData.states, stateBoxes, v.lat, v.lon, v.z, w.value, h.value) : []
+})
+const countryLabels = computed(() => {
+  const v = view.value
+  return layersOn.value ? mm.visibleLabels(countryPoints, v.lat, v.lon, v.z, w.value, h.value, { maxZoom: 6.5, charW: 8 }) : []
+})
+const placeLabels = computed(() => {
+  const v = view.value
+  return layersOn.value && v.z < 15 ? mm.visibleLabels(placePoints, v.lat, v.lon, v.z, w.value, h.value, { max: 80 }) : []
+})
 
 // the lat/lon grid: a step that gives lines ~120-300 px apart
 const grid = computed(() => {
@@ -808,6 +857,14 @@ const fmtLatLon = mm.fmtLatLon
 .map-grid line { stroke: rgba(255, 255, 255, 0.18); stroke-width: 1; }
 .map-grid line.meridian { stroke: rgba(255, 210, 120, 0.45); }
 .grid-label { fill: rgba(255, 255, 255, 0.65); font-size: 11px; }
+/* layers (Natural Earth): borders with a dark casing so they read over any photo; names with a halo */
+.map-grid .layer-border { fill: none; stroke: rgba(255, 236, 170, 0.85); stroke-width: 1.6; stroke-dasharray: 6 3; }
+.map-grid .layer-state { fill: none; stroke: rgba(255, 255, 255, 0.45); stroke-width: 1; stroke-dasharray: 3 3; }
+.map-grid .layer-country { fill: #fff3d0; font-size: 15px; font-weight: 600; letter-spacing: 0.08em; text-anchor: middle;
+  text-transform: uppercase; paint-order: stroke; stroke: rgba(0, 0, 0, 0.7); stroke-width: 3px; }
+.map-grid .layer-place { fill: #fff; font-size: 12px; paint-order: stroke; stroke: rgba(0, 0, 0, 0.75); stroke-width: 3px; }
+.map-grid .layer-place.capital { font-weight: 700; font-size: 13px; }
+.map-grid .layer-dot { fill: #fff; stroke: rgba(0, 0, 0, 0.8); stroke-width: 1; }
 
 .marker { position: absolute; width: 0; height: 0; }
 .marker.place { cursor: pointer; z-index: 2; }

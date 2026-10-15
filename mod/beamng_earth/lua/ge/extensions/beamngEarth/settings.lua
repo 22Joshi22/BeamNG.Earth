@@ -471,6 +471,7 @@ function M.uiMapState()
     player = (pl and pl.lat) and { lat = pl.lat, lon = pl.lon, heading = playerHeading(), speed = pl.speed } or nil,
     places = ps.places, recent = ps.recent, cannotGo = ps.cannotGo,
     attribution = core and core.attribution and core.attribution() or '',
+    creditsByArea = core and core.creditsByArea and core.creditsByArea() or nil,
     gps = require('beamngEarth/gps').status(),
   }
 end

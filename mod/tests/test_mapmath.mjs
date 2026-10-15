@@ -17,3 +17,31 @@ for (const t of tiles) {
 const one = new Set([...ready, `${z}/${tiles[0].x}/${tiles[0].y}`])
 assert.ok(mm.fallbackTiles([tiles[0]], one).length === 0)
 console.log("mapmath fallback ok:", fb.length, "stand-ins for", tiles.length, "tiles")
+
+// overlay layers
+{
+  const lines = [[-10, 50, 10, 50], [100, 10, 110, 12]]
+  const boxes = mm.lineBoxes(lines)
+  assert.deepStrictEqual(boxes[0], [-10, 50, 10, 50])
+  const vis = mm.visibleLines(lines, boxes, 50, 0, 5, 800, 600)
+  assert.strictEqual(vis.length, 1, "only the line in view")
+  assert.ok(/^[-\d.]+,[-\d.]+ [-\d.]+,[-\d.]+$/.test(vis[0]))
+  const pts = [["Big", 0, 50, 2], ["Small", 0.4, 50, 9], ["Near", 0.02, 50.0, 2]]
+  const lab = mm.visibleLabels(pts, 50, 0, 5, 800, 600)
+  assert.deepStrictEqual(lab.map(l => l.name), ["Big"], "small ones wait for their zoom, overlapping ones are left out")
+  assert.deepStrictEqual(mm.visibleLabels(pts, 50, 0, 10, 800, 600).map(l => l.name), ["Big", "Small"])
+  assert.strictEqual(mm.visibleLabels(pts, 50, 0, 5, 800, 600, { maxZoom: 4 }).length, 0)
+  const vb = mm.viewBox(0, 179.9, 6, 800, 600)
+  assert.ok(vb[0] > vb[2], "a view over the antimeridian")
+  console.log("mapmath layers ok")
+}
+
+// the map's credits by area
+{
+  const imagery = [["Swiss", 5.9, 45.8, 10.5, 47.8], ["Maryland", -79.5, 37.9, -75.0, 39.7], ["EOX"]]
+  const paris = mm.viewBox(48.85, 2.35, 10, 800, 600, 0)
+  assert.strictEqual(mm.creditsFor(imagery, "Elevation: X", paris), "Map imagery: EOX; Elevation: X")
+  const bern = mm.viewBox(46.95, 7.45, 10, 800, 600, 0)
+  assert.strictEqual(mm.creditsFor(imagery, "", bern), "Map imagery: Swiss; EOX")
+  console.log("mapmath credits ok")
+}

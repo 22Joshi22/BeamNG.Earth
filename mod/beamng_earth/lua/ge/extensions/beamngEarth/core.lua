@@ -97,6 +97,7 @@ local gov = governor.new() -- outlives levels (keeps its target and cost estimat
 local warned = {}          -- one-time warnings
 local nearVisual = 'terrain' -- from the server's hello; outlives levels like the connection
 local serverAttribution = nil -- hello.attribution (protocol 4): the credits for the sources it uses
+local serverCreditsByArea, serverOtherCredits = nil, nil  -- hello.imageryCredits / otherCredits (the map)
 local blockSize = 1024        -- the session's terrain block size (hello.blockSize); outlives levels
 local guardFailed = false     -- the edge guard threw once: off for the rest of the game (logged)
 local bannerInfo = { port = net.PORT } -- banner.update's inputs, filled every frame (no allocation)
@@ -600,6 +601,9 @@ local function onMessage(msg)
     -- M1h: horizon mode (a server without hello.horizon: the level's sky and 100 km view distance)
     M.setHorizon(msg.horizon == true)
     serverAttribution = (type(msg.attribution) == 'string' and msg.attribution ~= '') and msg.attribution or nil
+    -- per imagery source: its credit and its area (the world map credits what its view shows)
+    serverCreditsByArea = type(msg.imageryCredits) == 'table' and msg.imageryCredits or nil
+    serverOtherCredits = type(msg.otherCredits) == 'string' and msg.otherCredits or nil
     if st.anchor then
       -- A (re)started server knows nothing of our anchor: re-register the SAME geodetic origin under
       -- a new anchorId. The transform is then the identity, so nothing in the world moves (a shift
@@ -1413,6 +1417,11 @@ end
 
 -- The credits line in use (the settings page shows it).
 function M.attribution() return attributionText(farfield.stats()) end
+-- The map's credits by area: { imagery = [[credit, w, s, e, n] or [credit]], other = credit } or nil.
+function M.creditsByArea()
+  if not serverCreditsByArea then return nil end
+  return { imagery = serverCreditsByArea, other = serverOtherCredits or '' }
+end
 
 -- The on-screen data credits in use: the server's (near + far), else the attribution line.
 function M.credits() return credits.text(creditsFallback) end
