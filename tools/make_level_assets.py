@@ -29,7 +29,7 @@ pretty(os.path.join(L, "info.json"), {
     "roads": "None (v1)",
     "authors": "BeamNG.Earth",
     "defaultSpawnPointName": "spawn_default",
-    "supportsTraffic": False,
+    "supportsTraffic": True,      # the stock traffic / parked-car choice at the level start (2026-10-14)
     "supportsTimeOfDay": True,
 })
 

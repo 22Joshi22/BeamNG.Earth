@@ -639,7 +639,11 @@ class Imagery:
             if (tx1 - tx0 + 1) * (ty1 - ty0 + 1) > MAX_MOSAIC:
                 return
             if not range_in_bounds(src, z, tx0, tx1, ty0, ty1):
-                continue                    # outside the source's area: never asked
+                # outside the source's area: never asked, and the prefetch ends here as it did when this
+                # source's coverage probe was fetched first (2026-10-15: carrying on to the base sources made
+                # the integration drive's far field 1729 coverage holes; tonight's game measurements all ran
+                # with this behaviour; render fetches what is missing on demand)
+                return
             host = netfetch.host_of(src.url)
             if not self.fetcher.available(host):
                 continue                    # circuit open: render fails over to the next source, warm that
@@ -683,9 +687,14 @@ class Imagery:
         lat, lon, _ = frame.enu_to_geodetic(pts[:, 0], pts[:, 1], np.zeros(len(pts)))
         if np.abs(lat).max() > MAX_LAT:
             return
-        want = []
+        want, seen = [], set()
+        pad = radius / 111000.0 * 2         # deg: a generous margin for the bounds test below
         for la, lo in zip(np.atleast_1d(lat), np.atleast_1d(lon)):
             for src in lazy:                # per place, the lazy sources in chain order (_warm_done)
+                if src.bounds:              # a regional source elsewhere: none of its tiles (17 of them since
+                    bs, bw, bn, be = src.bounds     # the regional chain: their per-tile loop cost the far field)
+                    if la < bs - pad or la > bn + pad or lo < bw - pad or lo > be + pad:
+                        continue
                 z = min(zoom_for(float(lat[0]), texel_m), src.max_zoom)
                 if z < src.min_zoom:
                     continue
@@ -695,7 +704,8 @@ class Imagery:
                 for ty in range(int((fy[0] - r_px) // TILE), int((fy[0] + r_px) // TILE) + 1):
                     for tx in range(int((fx[0] - r_px) // TILE), int((fx[0] + r_px) // TILE) + 1):
                         key = (src, z, (tx >> k) << k, (ty >> k) << k)   # one child per parent
-                        if key not in want and in_bounds(*key):
+                        if key not in seen and in_bounds(*key):
+                            seen.add(key)
                             want.append(key)
         with self._warm_cv:
             self._warm_want = want
@@ -758,6 +768,8 @@ class Imagery:
         if z < lazy[0].min_zoom:
             return True
         fx, fy = mercator_px(lat.ravel(), lon.ravel(), z)
+        lazy = [s_ for s_ in lazy if not s_.bounds or not (lat.max() < s_.bounds[0] or lat.min() > s_.bounds[2]
+                                                           or lon.max() < s_.bounds[1] or lon.min() > s_.bounds[3])]
         for ty in range(int(math.floor(fy.min() - 1)) // TILE, int(math.floor(fy.max() + 1)) // TILE + 1):
             for tx in range(int(math.floor(fx.min() - 1)) // TILE, int(math.floor(fx.max() + 1)) // TILE + 1):
                 for src in lazy:            # the first with data decides; a missing one passes to the next
@@ -916,6 +928,10 @@ class Imagery:
             z = min(zw, src.max_zoom)
             if z < src.min_zoom or (skip_lazy and src.lazy):
                 continue
+            if src.bounds:                  # a regional source elsewhere: not even its mosaic's keys
+                bs, bw, bn, be = src.bounds
+                if lat.max() < bs or lat.min() > bn or lon.max() < bw or lon.min() > be:
+                    continue
             while True:
                 fx, fy = mercator_px(lat, lon, z)
                 w = TILE * 2 ** z
