@@ -408,6 +408,7 @@ class Game:
         return text
 
     def screenshot(self, jpg=True):
+        getattr(self.mcp, "quiet_ui", lambda: None)()     # our welcome page out of the picture (fresh games)
         return self._transport(lambda: self.mcp.call("screenshot", {"jpg": bool(jpg)}),
                                "screenshot").splitlines()[-1].strip()
 

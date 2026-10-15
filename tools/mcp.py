@@ -34,6 +34,17 @@ def call(tool, args=None):
     return text
 
 
+def quiet_ui():
+    """For automated runs: our welcome page not shown this game session (it stays unseen for the player), and
+    closed if it is open (the UI back to play). Best effort."""
+    try:
+        call("run_lua", {"code": "local ok, s = pcall(require, 'beamngEarth/settings') "
+                                 "if ok and s then s.welcomeSuppressed = true end return 'ok'"})
+        call("set_ui_state", {"route": "play"})
+    except Exception:
+        pass
+
+
 def main(argv):
     if not argv or argv[0] in ("-h", "--help"):
         print(__doc__)

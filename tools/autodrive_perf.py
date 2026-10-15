@@ -137,6 +137,7 @@ def obs_stop(started, out_path):
 def shot(out_dir, name):
     """A screenshot of the game into out_dir/name (best effort)."""
     try:
+        mcp.quiet_ui()
         p = mcp.call("screenshot", {"jpg": True}).strip()
         for _ in range(20):
             time.sleep(0.25)
@@ -250,6 +251,7 @@ def main():
     ap.add_argument("--keep-going", action="store_true", help="drive on after a crash or a stop")
     a = ap.parse_args()
     os.makedirs(a.out, exist_ok=True)
+    mcp.quiet_ui()          # (the recording too: our welcome page closed and kept away this session)
     if a.start:
         lua("return tostring(beamngEarth_core.teleport(%r, %r, 'autodrive_perf start', {record = false}))" % a.start)
         time.sleep(a.settle)

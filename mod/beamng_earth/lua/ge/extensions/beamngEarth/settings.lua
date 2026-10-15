@@ -585,10 +585,14 @@ function M.uiWelcomeDone()
   return { ok = true }
 end
 
+-- Automation (tools/benchmark.py, autodrive_perf.py: mcp.quiet_ui) keeps the page away for this game session only; the
+-- player still gets it on their next start.
+M.welcomeSuppressed = false
+
 function M.onUpdate()
   if welcomeAt and os.clock() >= welcomeAt then
     welcomeAt = nil
-    M.showWelcome()
+    if not M.welcomeSuppressed then M.showWelcome() end
   end
 end
 
