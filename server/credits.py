@@ -61,6 +61,7 @@ IMAGERY = {
     "eox2016": "EOxCloudless https://cloudless.eox.at by EOX IT Services GmbH "
                "(Contains modified Copernicus Sentinel data 2016 & 2017)",
 }
+IMAGERY.update({n: v[1] for n, v in __import__("imagery_regional").REGIONAL.items()})   # their own wording
 ELEVATION = {
     demmod.MAPTERHORN["name"]: "Mapterhorn (see mapterhorn.com/attribution)",
     demmod.AWS["name"]: "AWS Terrain Tiles / Mapzen",

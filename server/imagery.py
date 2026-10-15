@@ -138,7 +138,16 @@ SOURCES["md6in"] = Source(
              "?bbox={bbox}&bboxSR=3857&imageSR=3857&size={size},{size}&format=jpg&f=image",
     17, "State of Maryland, MD iMAP / DoIT six-inch imagery", min_zoom=17, export=2, lazy=True,
     bounds=(37.88, -79.49, 39.73, -75.04), nodata="white", leaf_off=True)
-DEFAULT_CHAIN = ("md6in", "naipusda", "naip", "usgs", "eox2023", "eox2016")
+BASE_CHAIN = ("md6in", "naipusda", "naip", "usgs", "eox2023", "eox2016")     # the chain before the regional sources
+# Regional aerial imagery (imagery_regional.py: state and national orthophoto services, each within its box)
+import imagery_regional  # noqa: E402
+for _n, (_url, _attr, _bounds, _kind, _leaf) in imagery_regional.REGIONAL.items():
+    if _kind == "xyz":          # a fast tile cache: also on the nearer far rings (z13+); blank z12 parents skipped
+        SOURCES[_n] = Source(_n, _url, 17, _attr, probe_zooms=(12,), min_zoom=13, bounds=_bounds, leaf_off=_leaf)
+    else:                       # a WMS / ArcGIS export: one 1024 px image per z15 parent, ahead of the player
+        SOURCES[_n] = Source(_n, _url, 17, _attr, min_zoom=17, export=2, lazy=True, bounds=_bounds, nodata="white",
+                             leaf_off=_leaf)
+DEFAULT_CHAIN = ("md6in", *imagery_regional.REGIONAL, "naipusda", "naip", "usgs", "eox2023", "eox2016")
 # The line the mod shows (V1_3_SPEC §C), for the default chain: every source's own credit, EOX's in
 # its June 2026 wording (docs/research/2026-10-10-rate-limits.md: "EOxCloudless https://cloudless.eox.at
 # by EOX IT Services GmbH (Contains modified Copernicus Sentinel data 2023)", 2016: "... 2016 & 2017").
@@ -357,7 +366,7 @@ class Imagery:
             return data
         if src.export:
             return self._download_export(src, z, x, y)
-        url = src.url.format(z=z, x=x, y=y)
+        url = src.url.format(z=z, x=x, y=y, ty=(1 << z) - 1 - y)     # {ty}: a TMS cache's flipped row
         if self.fetcher.miss_alive(miss, url):
             return None
         kind = getattr(self._local, "kind", "demand")

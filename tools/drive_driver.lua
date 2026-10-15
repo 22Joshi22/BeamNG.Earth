@@ -465,6 +465,7 @@ function D.pollTable()
     if ok then out.mod = st else out.modError = tostring(st) end
   end
   if pm and pm.snapshot then out.perf = pm.snapshot() end
+  if core and core.hitches then out.hitches = core.hitches() end   -- what each frame over 50 ms went to (core.lua)
   return out
 end
 
