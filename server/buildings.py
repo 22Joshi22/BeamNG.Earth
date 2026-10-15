@@ -272,13 +272,16 @@ class Style:
     plaster window sheet), wall_tints: the tint indices the plain walls take (None: all but barn red);
     paint: plaster houses painted (PAINT_TINTS); porch; flat: detached houses with flat roofs; hipped: of the
     pitched; roofs: (roof material, (tint indices)) to pick from; pitch: the roof pitch in degrees (None: PITCH);
-    wood: siding walls are stained wood (WOOD_TINTS); attached: low attached buildings (terraces, old town
+    wood: siding walls are stained wood (WOOD_TINTS, barns too); barn_red: the share of barns painted barn red
+    (the US's and Scandinavia's; elsewhere their siding colours: a Lauterbrunnen garage row came out a 150 m red
+    wall, 2026-10-15); attached: low attached buildings (terraces, old town
     blocks) with a pitched roof (the US: flat; Amsterdam's canal houses, Europe's old towns: gables).
     Coarse boxes by region until a facade-material map; the US ones keep their earlier behaviour."""
 
     def __init__(self, name, brick, walls, porch, flat, hipped, roofs, pitch=None, paint=0.3, wall_tints=None,
-                 wood=False, attached=0.0):
+                 wood=False, attached=0.0, barn_red=0.0):
         self.name, self.brick, self.walls, self.porch, self.flat = name, brick, walls, porch, flat
+        self.barn_red = barn_red
         self.hipped, self.roofs, self.pitch, self.paint, self.wall_tints = hipped, roofs, pitch, paint, wall_tints
         self.wood, self.attached = wood, attached
 
@@ -287,10 +290,10 @@ _US_ROOFS = ((ROOF_SLATE, (0, 1, 2, 3)), (ROOF_SHINGLE, (0, 1, 2, 3)))
 _CLAY = (ROOF_SLATE, (4, 5, 6))
 _DARK = (ROOF_SLATE, (7, 8, 9))
 STYLES = {
-    "us_east": Style("us_east", 0.75, ((SIDING, 0.75),), 0.55, 0.0, 0.4, _US_ROOFS),
-    "us_south": Style("us_south", 0.35, ((SIDING, 0.75),), 0.55, 0.0, 0.4, _US_ROOFS),
-    "us_plains": Style("us_plains", 0.15, ((SIDING, 0.75),), 0.55, 0.0, 0.4, _US_ROOFS),
-    "us_west": Style("us_west", 0.15, ((STUCCO, 0.65), (SIDING, 0.25)), 0.25, 0.0, 0.4, _US_ROOFS),
+    "us_east": Style("us_east", 0.75, ((SIDING, 0.75),), 0.55, 0.0, 0.4, _US_ROOFS, barn_red=0.5),
+    "us_south": Style("us_south", 0.35, ((SIDING, 0.75),), 0.55, 0.0, 0.4, _US_ROOFS, barn_red=0.5),
+    "us_plains": Style("us_plains", 0.15, ((SIDING, 0.75),), 0.55, 0.0, 0.4, _US_ROOFS, barn_red=0.5),
+    "us_west": Style("us_west", 0.15, ((STUCCO, 0.65), (SIDING, 0.25)), 0.25, 0.0, 0.4, _US_ROOFS, barn_red=0.5),
     # Alpine villages: white plaster ground floors, dark wooden chalets, low wide gables of dark or brown roofs
     "alpine": Style("alpine", 0.05, ((SIDING, 0.45),), 0.0, 0.03, 0.15, (_DARK, (ROOF_SLATE, (9, 5))), pitch=24.0,
                     paint=0.05, wood=True, attached=0.85),
@@ -298,6 +301,9 @@ STYLES = {
     # slate roofs
     "europe_north": Style("europe_north", 0.5, (), 0.02, 0.05, 0.3, (_CLAY, _DARK, (ROOF_SLATE, (5,))), pitch=42.0,
                           paint=0.15, attached=0.75),
+    # Scandinavia and Finland: painted wooden houses (siding), little brick, dark or tiled roofs, falu-red barns
+    "nordic": Style("nordic", 0.12, ((SIDING, 0.65),), 0.0, 0.08, 0.2, (_DARK, _CLAY), pitch=35.0, paint=0.2,
+                    attached=0.3, barn_red=0.7),
     "mediterranean": Style("mediterranean", 0.08, ((STUCCO, 0.85),), 0.0, 0.35, 0.5, (_CLAY,), pitch=22.0,
                            paint=0.1, wall_tints=(0, 1, 2, 3, 4, 5), attached=0.5),
     "latin_america": Style("latin_america", 0.25, ((STUCCO, 0.9),), 0.02, 0.7, 0.3, (_CLAY, (ROOF_METAL, (0, 1))),
@@ -311,7 +317,7 @@ STYLES = {
     "warm": Style("warm", 0.15, ((STUCCO, 0.85),), 0.0, 0.75, 0.4, (_CLAY, (ROOF_METAL, (0, 1, 3))), pitch=20.0,
                   paint=0.0, wall_tints=(0, 1, 2, 3, 4, 5, 6, 8)),
     "cool": Style("cool", 0.3, ((SIDING, 0.4),), 0.05, 0.1, 0.3, (_DARK, (ROOF_METAL, (0, 1, 2, 3))), pitch=30.0,
-                  paint=0.3),
+                  paint=0.3, barn_red=0.5),
 }
 
 
@@ -329,6 +335,8 @@ def region_style(lat, lon):
         return STYLES["latin_america"]
     if 45.4 <= lat <= 48.0 and 5.8 <= lon <= 16.5:              # the Alps
         return STYLES["alpine"]
+    if 56.0 <= lat <= 72.0 and 4.5 <= lon <= 32.0:              # Norway, Sweden, Finland (brick Copenhagen, Malmo: not)
+        return STYLES["nordic"]
     if 46.0 <= lat <= 72.0 and -11.0 <= lon <= 32.0:
         return STYLES["europe_north"]
     if 30.0 <= lat < 46.0 and -10.0 <= lon <= 40.0:             # southern Europe, North Africa's coast, Levant
@@ -402,7 +410,8 @@ def plan(ring, attrs, neighbours=0, lat=None, lon=None, look=None, town=False, d
         floor_h = 4.5
     if church and area < 2500:
         floor_h = 7.5
-    barn = cls in BARN_CLASSES or (shed and area >= 150)
+    # (a big shed is a barn; a row of garages, a carport or a canopy is not)
+    barn = cls in BARN_CLASSES or (shed and area >= 150 and cls not in ("garage", "garages", "carport", "roof"))
     if barn:
         floor_h = 5.5 if area >= 150 else 3.5          # one tall storey; the gable above it
     if h is None and nf is None:
@@ -553,11 +562,14 @@ def plan(ring, attrs, neighbours=0, lat=None, lon=None, look=None, town=False, d
     else:       # the region's pitched roofs (the US: slate or shingle by the seed, their first four tints)
         mat, tints = style.roofs[min(int(seed * len(style.roofs)), len(style.roofs) - 1)]
         roof_mat = f"{mat}|{tints[int(_hash01(seed, 'roof') * len(tints))]}"
-    if barn or shed:                    # plain walls tinted: barns half barn red, sheds the siding colours
+    if barn or shed:                    # plain walls tinted: barns the region's barn red or wood, sheds the siding colours
         tints = WALL_TINTS[SIDING]
-        k = (len(tints) - 1 - int(_hash01(seed, "red") * 2)) if barn and _hash01(seed, "barn") < 0.5 else \
-            int(_hash01(seed, "sc") * (len(tints) - 2))
-        facade = f"{SIDING}|{k}"
+        if barn and _hash01(seed, "barn") < style.barn_red:
+            facade = f"{SIDING}|{len(tints) - 1 - int(_hash01(seed, 'red') * 2)}"
+        elif style.wood:
+            facade = f"{SIDING}|w{int(_hash01(seed, 'wc') * len(WOOD_TINTS))}"
+        else:
+            facade = f"{SIDING}|{int(_hash01(seed, 'sc') * (len(tints) - 2))}"
     # a front porch (the photos of Lancaster, Ocean City, Frederick, Moab: most houses have one): pitched-roof
     # houses, a regional share; doors() puts it on the front door's wall
     porch = (house and roof != "flat" and not barn and not shed and area < 300
