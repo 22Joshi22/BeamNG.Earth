@@ -29,6 +29,7 @@ local files = {}
 readFile = function(p) return files[p] end
 jsonDecode = function(s) return assert(load('return ' .. s))() end
 local trees = require('beamngEarth/trees')
+trees.EVERY_N = 1               -- (every update works here; the batching is tested below)
 local function count() local n = 0; for _ in pairs(items) do n = n + 1 end; return n end
 
 -- the variant: a height inside its range, scaled to it
@@ -152,4 +153,14 @@ trees.update(4, { x = 50, y = 256 + trees.GROUP_MAX_M.shrub + 100 })
 T.check(count() == 1, 'beyond the bushes: the tree only')
 trees.clear()
 
+-- batching: work every EVERY_N-th update with N times the items
+trees.clear()
+trees.EVERY_N = 3
+files['/t/e'] = '{ groups = {}, items = { {0, 1, 10, 5, 0, 1, 12, 0.0} } }'
+trees.onTile({ anchorId = 9, key = '0_0', path = '/t/e', n = 1 }, 9)
+local seen = {}
+for i = 1, 3 do trees.update(9, { x = 50, y = 50 }); seen[i] = count() end
+T.check(seen[1] == 0 and seen[2] == 0 and seen[3] == 1, 'the third update makes the item')
+trees.EVERY_N = 1
+trees.clear()
 T.done('test_trees')

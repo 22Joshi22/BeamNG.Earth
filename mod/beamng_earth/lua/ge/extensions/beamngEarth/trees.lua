@@ -362,10 +362,16 @@ end
 
 -- Every frame: tiles of other anchors and dropped ones emptied, the others filled / thinned to their
 -- distance's rank, M.PER_FRAME items at most.
+-- Tree work every EVERY_N-th frame, N times the items: a frame with any Forest change costs the engine's tick a few
+-- ms whatever the count (2026-10-15, 100 mph forest drive: tick 3.5 -> 1.65 ms a frame on average, 50 -> 54 fps)
+M.EVERY_N = 3
+local frameN = 0
 function M.update(anchorId, player)
   if not next(tiles) then return end
   if not setup() then return end
-  local budget = M.PER_FRAME
+  frameN = frameN + 1
+  if frameN % M.EVERY_N ~= 0 then return end
+  local budget = M.PER_FRAME * M.EVERY_N
   M.lastShapeItems = touchedItems        -- the previous frame's (diagnostics)
   touched, touchedItems = {}, 0
   for key, t in pairs(tiles) do
