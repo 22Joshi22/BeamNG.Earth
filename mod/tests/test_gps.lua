@@ -109,4 +109,18 @@ do -- a new path waits for the car's copy of the graph
 end
 T.check(G.compass(0, 1) == 0 and G.compass(1, 0) == 90 and G.compass(-1, 0) == 270 and G.compass(0, 0) == nil,
   'the car heading as a compass bearing')
+do -- the route request carries the car's heading (a nil global here once broke every request)
+  local got
+  local savedCore, savedGet = rawget(_G, 'beamngEarth_core'), rawget(_G, 'getPlayerVehicle')
+  beamngEarth_core = { requestRoute = function(id, la0, lo0, la1, lo1, b) got = { b = b }; return true end }
+  getPlayerVehicle = function() return { getDirectionVector = function() return { x = 1, y = 0, z = 0 } end } end
+  G.clear()
+  G.setDestination(39.3, -76.6, 'route test')
+  local anchor = { geodeticToEnu = function() return 0, 0, 0 end }
+  local ok, err = pcall(G.update, anchor, { x = 0, y = 0, lat = 39.28, lon = -76.59 })
+  T.check(ok, 'update with a destination runs: ' .. tostring(err))
+  T.check(got and got.b == 90, 'the route request has the heading east: ' .. tostring(got and got.b))
+  G.clear()
+  beamngEarth_core, getPlayerVehicle = savedCore, savedGet
+end
 T.done('test_gps')

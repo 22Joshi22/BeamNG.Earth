@@ -141,6 +141,11 @@ function M.compass(dx, dy)
   return math.floor((math.deg(math.atan2(dx, dy)) + 360) % 360 + 0.5) % 360
 end
 
+local function playerVeh()
+  local get = rawget(_G, 'getPlayerVehicle')
+  return get and get(0) or nil
+end
+
 local function requestRoute(player)
   local c = core()
   if not c or not c.requestRoute or not dest or not player or not player.lat then return end
@@ -279,11 +284,6 @@ local function appendTail(gm, e, s0, z0)
     rp.path[#rp.path + 1] = { pos = vec3(x, y, z) }
   end
   rp:calcDistance()
-end
-
-local function playerVeh()
-  local get = rawget(_G, 'getPlayerVehicle')
-  return get and get(0) or nil
 end
 
 -- Pure: the graph node ids of a planner path ({wp = id | nil}...): its graph stretch, ids in order, repeats dropped.
