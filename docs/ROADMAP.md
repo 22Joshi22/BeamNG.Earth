@@ -802,6 +802,27 @@ Next, from the photo comparisons (docs/research/streetview/fp*, base_*):
     city / country.
   - Italy coast 40.190, 16.689: a pale rectangle in the sea (water tile mismatch?).
 
+### Done overnight 2026-10-15 (details in the commits)
+- 100 mph stutter found and fixed: Forest changes cost ~0.5 us per item of each SHAPE touched in the level (trees.lua
+  shape budget, 4 path variants, bushes near only, solid trees within 300 m): forest drive 6.9 -> 50 fps.
+- Autodrive no longer stops for good after a road-graph update (the stock AI crashed on a stale path edge).
+- Regional imagery: sources are no longer probed outside their own area (hundreds of 404s at other states).
+- The release zip's server starts (matplotlib was imported but never installed: numpy point-in-polygon).
+- Buildings by region (Alps, northern Europe, Mediterranean, Latin America, East Asia, Oceania; US unchanged);
+  attached old-town houses gabled outside the US.
+- Ground under the surface model outside lidar areas (Copernicus is a DSM: city blocks 10-25 m up, Rio's beach
+  wall, Mexico City's pit); AWS no longer used for the deep zooms there.
+- Trees by region beyond North America (no firs in Punjab), desert bushes on arid land worldwide.
+- Status bar, map zoom fallback, collision rebuild 40 -> 6 ms, welcome page (earlier in the night).
+
+### Found on the world tour (2026-10-15), not done yet
+- **Cliffs** are smeared vertically (the aerial photo stretched over walls: Lauterbrunnen, Geiranger): far tiles need
+  a side-projected rock texture on steep faces.
+- **Benchmark ground views** can stand inside a building (Amsterdam): snap the view like tools/streetview.py does.
+- **Forests in the DSM** (larger than a city block) still stand ~10-20 m up where the data is Copernicus; the canopy
+  height model could correct them.
+- **Downtowns with towers** keep their DSM bumps (a cut deeper than a building could be is treated as a hill).
+
 ## Bugs to look at (reported, not fixed yet)
 - **Roundabouts** (user report 2026-10-14, Harbor Point, 39.2801, -76.5890): the ring is cobbles with a D-shaped
   sidewalk island, odd sidewalk pieces at the entries and road patches that do not meet; needs proper roundabout
