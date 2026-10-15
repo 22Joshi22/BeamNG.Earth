@@ -154,19 +154,48 @@ end
 -- Parked cars the block left behind go to a spot near the player (gameplay_parking.forceTeleport), and so do
 -- cars off their spot: one the scatter after a teleport missed keeps its old frame's position, which is any
 -- place in the new one (Fells Point 2026-10-14: two stood in a one-lane street and traffic queued behind them).
+-- With no free spot within START_M (open country, a desert: none in the map data) the stock fallback is a traffic
+-- teleport to any road of the graph, in view, and the guard moved it again half a second later: 16 cars flickered
+-- about in the distance, ~30 moves a second (the user's session 2026-10-15, Arizona). Those cars wait hidden instead
+-- and come back once spots are near (M.freeNear).
+local hidden = {}       -- parked car id -> true while it waits hidden for a spot
+function M.freeNear(player, rad)
+  local n = 0
+  local r2 = (rad or M.START_M) ^ 2
+  for _, ps in pairs(objs) do
+    local p = ps.pos
+    if p and not ps.vehicle and (p.x - player.x) ^ 2 + (p.y - player.y) ^ 2 < r2 then n = n + 1 end
+  end
+  return n
+end
+
 local function guard(player)
   local gp = gameplay_parking
   if not box or not gp or not gp.getState() then return end
   local data = (not scatterPending and sites and gp.getParkedCarsData) and gp.getParkedCarsData() or nil
+  local free = M.freeNear(player)
   for _, id in ipairs(gp.getParkedCarsList() or {}) do
     local o = getObjectByID(id)
-    if o and o:getActive() then
+    if o and hidden[id] then
+      if free > 0 then                     -- spots near again: back, onto one of them
+        hidden[id] = nil
+        o:setActive(1)
+        pcall(gp.forceTeleport, id, vec3(player.x, player.y, player.z), 0, M.START_M)
+        free = free - 1
+      end
+    elseif o and o:getActive() then
       local p = o:getPosition()
       local falling = o:getVelocity().z < M.FALL_MS               -- off the ground (a stale spot): rescue it
       local d = data and data[id]
       local off = d and M.offSpot(p, d.parkingSpotId and sites.parkingSpots.objects[d.parkingSpotId], player)
       if falling or off or not M.inside(box, p.x, p.y, M.GUARD_M) then
-        pcall(gp.forceTeleport, id, vec3(player.x, player.y, player.z), 0, M.START_M)
+        if free > 0 then
+          pcall(gp.forceTeleport, id, vec3(player.x, player.y, player.z), 0, M.START_M)
+          free = free - 1
+        else
+          hidden[id] = true
+          o:setActive(0)
+        end
       end
     end
   end
@@ -230,6 +259,7 @@ end
 -- The level ended: the stock system forgets our sites with it.
 function M.reset()
   spots, objs, anchorId, dirty, lastBuild, sites = {}, {}, nil, false, -math.huge, nil
+  hidden = {}
   box, lastGuard, heldActive = nil, -math.huge, nil
   started, scatterPending = false, false
 end
