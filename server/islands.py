@@ -219,6 +219,10 @@ def _island_ring(poly, roads_hw, z):
     if not _inside(poly, c) or any(_seg_dist(pts, c) <= hw for pts, hw in roads_hw):
         return None
     rmax = float(np.max(np.hypot(*(poly - c).T)))
+    import fast
+    ring = fast.island_ring_rays(poly, roads_hw, c, RAYS, RAY_STEP_M, rmax)
+    if ring is not None:
+        return _ring_finish(ring, z)
     out = []
     for a in np.linspace(0.0, 2 * math.pi, RAYS, endpoint=False):
         u = np.array([math.cos(a), math.sin(a)])
@@ -229,7 +233,10 @@ def _island_ring(poly, roads_hw, z):
                 break
             r += RAY_STEP_M
         out.append(c + u * r)
-    ring = np.array(out)
+    return _ring_finish(np.array(out), z)
+
+
+def _ring_finish(ring, z):
     # a light smoothing (the rays' steps), the curb keeps its shape
     ring = (np.roll(ring, 1, 0) + 2 * ring + np.roll(ring, -1, 0)) / 4.0
     if abs(_area(ring)) < MIN_INSET_AREA_M2:
