@@ -64,14 +64,22 @@ LOOKS = {
 }
 ROOF_TINTS = {               # per roof material: the colours a building's roof takes (hashed)
     ROOF_FLAT: ((0.85, 0.85, 0.85), (0.62, 0.62, 0.64), (0.95, 0.93, 0.88), (0.45, 0.45, 0.46), (0.75, 0.70, 0.64)),
-    ROOF_SLATE: ((1.0, 1.0, 1.0), (0.80, 0.66, 0.56), (0.76, 0.80, 0.90), (0.62, 0.62, 0.62)),
-    ROOF_SHINGLE: ((0.75, 0.72, 0.70), (0.55, 0.50, 0.48), (0.70, 0.56, 0.48), (0.62, 0.66, 0.72)),
+    # 4..: clay tiles (terracotta, red-brown, faded orange) and dark grey / anthracite / brown-black (regional)
+    ROOF_SLATE: ((1.0, 1.0, 1.0), (0.80, 0.66, 0.56), (0.76, 0.80, 0.90), (0.62, 0.62, 0.62),
+                 (0.95, 0.52, 0.36), (0.78, 0.40, 0.30), (1.0, 0.66, 0.46), (0.42, 0.43, 0.46), (0.30, 0.31, 0.33),
+                 (0.48, 0.38, 0.32)),
+    ROOF_SHINGLE: ((0.75, 0.72, 0.70), (0.55, 0.50, 0.48), (0.70, 0.56, 0.48), (0.62, 0.66, 0.72),
+                   (0.95, 0.52, 0.36), (0.78, 0.40, 0.30), (0.42, 0.43, 0.46), (0.36, 0.42, 0.52)),
     ROOF_METAL: ((0.85, 0.86, 0.88), (0.55, 0.57, 0.60), (0.45, 0.58, 0.48), (0.62, 0.30, 0.26), (0.40, 0.42, 0.48)),
 }
 WALL_TINTS = {               # houses with plain walls and laid-over windows: their colours (hashed)
     SIDING: ((0.96, 0.95, 0.92), (0.90, 0.86, 0.76), (0.78, 0.84, 0.90), (0.95, 0.92, 0.74), (0.78, 0.84, 0.74),
              (0.82, 0.78, 0.72), (0.70, 0.72, 0.75), (0.62, 0.20, 0.17), (0.66, 0.24, 0.20)),   # the last: barn red
-    STUCCO: ((1.0, 0.97, 0.90), (0.96, 0.88, 0.74), (0.93, 0.80, 0.68), (0.98, 0.95, 0.88), (0.88, 0.84, 0.78)),
+    STUCCO: ((1.0, 0.97, 0.90), (0.96, 0.88, 0.74), (0.93, 0.80, 0.68), (0.98, 0.95, 0.88), (0.88, 0.84, 0.78),
+             # 5..: bright paints (Latin America, the Mediterranean, the tropics): ochre, terracotta, sky blue,
+             # mint, pink, yellow
+             (1.0, 0.78, 0.45), (0.92, 0.58, 0.44), (0.66, 0.82, 0.95), (0.70, 0.90, 0.78), (0.98, 0.72, 0.76),
+             (1.0, 0.92, 0.52)),
     PANEL: ((0.96, 0.94, 0.89), (0.86, 0.86, 0.86), (0.92, 0.85, 0.74), (0.78, 0.80, 0.82), (0.88, 0.78, 0.68),
             (0.62, 0.62, 0.60), (0.56, 0.54, 0.50)),    # the last two: weathered concrete (parking decks)
     METALWALL: ((0.88, 0.89, 0.90), (0.72, 0.74, 0.77), (0.84, 0.80, 0.72), (0.66, 0.72, 0.78)),
@@ -83,6 +91,10 @@ WALL_TINTS = {               # houses with plain walls and laid-over windows: th
 for _m, _cs in list(ROOF_TINTS.items()) + list(WALL_TINTS.items()):
     for _k, _c in enumerate(_cs):
         LOOKS[f"{_m}|{_k}"] = (_m, _c)
+# stained wood boards (Alpine chalets; kept apart from the siding tints' indices): larch brown, dark brown, grey-brown
+WOOD_TINTS = ((0.62, 0.44, 0.30), (0.46, 0.33, 0.24), (0.58, 0.52, 0.46))
+for _k, _c in enumerate(WOOD_TINTS):
+    LOOKS[f"{SIDING}|w{_k}"] = (SIDING, _c)
 # Shop signs (Bishop's and Moab's main streets: a painted sign band over every shopfront, each shop its own
 # colour): boxes over the ground floor of a shop's street wall, a colour per shop width (hashed).
 SIGN_TINTS = ((0.62, 0.16, 0.14), (0.16, 0.22, 0.42), (0.18, 0.36, 0.24), (0.95, 0.90, 0.75), (0.42, 0.30, 0.22),
@@ -93,6 +105,7 @@ SIGN_H = 0.9                # m, the band's height (its top 0.15 m under the gro
 SIGN_OUT = 0.18             # m out from the wall
 SIGN_SHOP_M = (6.0, 11.0)   # one shop's width (hashed in this range)
 BARN_REDS = 2               # the last siding tints are barn red (barns only)
+US_WALL_TINTS = {STUCCO: 5}  # the first tints of these kinds are the US's (later ones: regional paints)
 JITTER = 0.06               # a building's colour varies this much (one factor, hashed)
 
 
@@ -245,23 +258,100 @@ def oriented_box(p):
 class Spec:
     """What is built for one footprint (decided by plan())."""
     __slots__ = ("ring", "floors", "floor_h", "height", "roof", "roof_mat", "facade", "band", "shop", "plain", "min_h", "wall", "door", "windows", "front", "steeple", "stoop",
-                 "sign", "porch", "cls", "seed", "deck")
+                 "sign", "porch", "cls", "seed", "deck", "pitch")
 
     def __init__(self, **kw):
         for k in self.__slots__:
             setattr(self, k, kw.get(k))
 
 
+class Style:
+    """A region's building habits (2026-10-15, the user: "the other parts of the world need more love": Swiss
+    villages came out as clapboard houses with porches). Shares are of buildings whose data does not say:
+    brick: of facades; walls: (kind, share) for detached houses' plain walls (SIDING, STUCCO; the rest the
+    plaster window sheet), wall_tints: the tint indices the plain walls take (None: all but barn red);
+    paint: plaster houses painted (PAINT_TINTS); porch; flat: detached houses with flat roofs; hipped: of the
+    pitched; roofs: (roof material, (tint indices)) to pick from; pitch: the roof pitch in degrees (None: PITCH);
+    wood: siding walls are stained wood (WOOD_TINTS).
+    Coarse boxes by region until a facade-material map; the US ones keep their earlier behaviour."""
+
+    def __init__(self, name, brick, walls, porch, flat, hipped, roofs, pitch=None, paint=0.3, wall_tints=None,
+                 wood=False):
+        self.name, self.brick, self.walls, self.porch, self.flat = name, brick, walls, porch, flat
+        self.hipped, self.roofs, self.pitch, self.paint, self.wall_tints = hipped, roofs, pitch, paint, wall_tints
+        self.wood = wood
+
+
+_US_ROOFS = ((ROOF_SLATE, (0, 1, 2, 3)), (ROOF_SHINGLE, (0, 1, 2, 3)))
+_CLAY = (ROOF_SLATE, (4, 5, 6))
+_DARK = (ROOF_SLATE, (7, 8, 9))
+STYLES = {
+    "us_east": Style("us_east", 0.75, ((SIDING, 0.75),), 0.55, 0.0, 0.4, _US_ROOFS),
+    "us_south": Style("us_south", 0.35, ((SIDING, 0.75),), 0.55, 0.0, 0.4, _US_ROOFS),
+    "us_plains": Style("us_plains", 0.15, ((SIDING, 0.75),), 0.55, 0.0, 0.4, _US_ROOFS),
+    "us_west": Style("us_west", 0.15, ((STUCCO, 0.65), (SIDING, 0.25)), 0.25, 0.0, 0.4, _US_ROOFS),
+    # Alpine villages: white plaster ground floors, dark wooden chalets, low wide gables of dark or brown roofs
+    "alpine": Style("alpine", 0.05, ((SIDING, 0.45),), 0.0, 0.03, 0.15, (_DARK, (ROOF_SLATE, (9, 5))), pitch=24.0,
+                    paint=0.05, wood=True),
+    # north-west / central Europe: brick (Low Countries, northern Germany, Britain) or plaster, steep tiled or
+    # slate roofs
+    "europe_north": Style("europe_north", 0.5, (), 0.02, 0.05, 0.3, (_CLAY, _DARK, (ROOF_SLATE, (5,))), pitch=42.0,
+                          paint=0.15),
+    "mediterranean": Style("mediterranean", 0.08, ((STUCCO, 0.85),), 0.0, 0.35, 0.5, (_CLAY,), pitch=22.0,
+                           paint=0.1, wall_tints=(0, 1, 2, 3, 4, 5)),
+    "latin_america": Style("latin_america", 0.25, ((STUCCO, 0.9),), 0.02, 0.7, 0.3, (_CLAY, (ROOF_METAL, (0, 1))),
+                           pitch=22.0, paint=0.0, wall_tints=(0, 1, 2, 3, 5, 6, 7, 8, 9, 10)),
+    "east_asia": Style("east_asia", 0.08, ((SIDING, 0.5), (STUCCO, 0.3)), 0.0, 0.35, 0.5,
+                       (_DARK, (ROOF_SHINGLE, (6, 7)), (ROOF_METAL, (1, 4))), pitch=25.0, paint=0.0,
+                       wall_tints=(0, 1, 6, 5)),
+    "oceania": Style("oceania", 0.55, ((STUCCO, 0.5), (SIDING, 0.3)), 0.25, 0.05, 0.7, (_CLAY, (ROOF_METAL, (0, 1, 4))),
+                     pitch=24.0, paint=0.1),
+    # elsewhere (South Asia, Africa, the Middle East, ...): concrete and plaster, mostly flat roofs
+    "warm": Style("warm", 0.15, ((STUCCO, 0.85),), 0.0, 0.75, 0.4, (_CLAY, (ROOF_METAL, (0, 1, 3))), pitch=20.0,
+                  paint=0.0, wall_tints=(0, 1, 2, 3, 4, 5, 6, 8)),
+    "cool": Style("cool", 0.3, ((SIDING, 0.4),), 0.05, 0.1, 0.3, (_DARK, (ROOF_METAL, (0, 1, 2, 3))), pitch=30.0,
+                  paint=0.3),
+}
+
+
+def region_style(lat, lon):
+    """The Style of the region around (lat, lon) (None: the US East's)."""
+    if lat is None or lon is None:
+        return STYLES["us_east"]
+    if 24.0 <= lat <= 72.0 and -170.0 <= lon <= -52.0:          # North America (and Canada)
+        if lon < -100.0:
+            return STYLES["us_west"]
+        if lon <= -95.0:
+            return STYLES["us_plains"]
+        return STYLES["us_east"] if lat > 36.0 else STYLES["us_south"]
+    if -56.0 <= lat < 24.0 and -120.0 <= lon <= -30.0:          # Mexico, the Caribbean, Central and South America
+        return STYLES["latin_america"]
+    if 45.4 <= lat <= 48.0 and 5.8 <= lon <= 16.5:              # the Alps
+        return STYLES["alpine"]
+    if 46.0 <= lat <= 72.0 and -11.0 <= lon <= 32.0:
+        return STYLES["europe_north"]
+    if 30.0 <= lat < 46.0 and -10.0 <= lon <= 40.0:             # southern Europe, North Africa's coast, Levant
+        return STYLES["mediterranean"]
+    if 20.0 <= lat <= 46.0 and 100.0 <= lon <= 146.0:           # China, Korea, Japan, Taiwan
+        return STYLES["east_asia"]
+    if -50.0 <= lat <= -10.0 and 110.0 <= lon <= 180.0:         # Australia, New Zealand
+        return STYLES["oceania"]
+    if abs(lat) >= 50.0:
+        return STYLES["cool"]
+    return STYLES["warm"]
+
+
 def brick_share(lat, lon):
     """The share of brick facades in a region (old East Coast / Midwest towns are mostly brick; the South and
-    the West plaster, siding and stucco). A coarse stand-in until a facade-material map."""
+    the West plaster, siding and stucco; region_style elsewhere). A coarse stand-in until a facade-material map."""
     if lat is None:
         return 0.4
-    if lon > -95.0 and lat > 36.0:
-        return 0.75
-    if lon > -95.0:
-        return 0.35
-    return 0.15
+    return region_style(lat, lon).brick
+
+
+def roof_pitch(spec):
+    """The roof pitch (degrees) of a Spec: its region's, else PITCH."""
+    return spec.pitch or PITCH.get(spec.roof, PITCH["gabled"])
 
 
 def plan(ring, attrs, neighbours=0, lat=None, lon=None, look=None, town=False, dense=False, west_town=False):
@@ -272,6 +362,7 @@ def plan(ring, attrs, neighbours=0, lat=None, lon=None, look=None, town=False, d
     area = _area2(ring) / 2
     c = ring.mean(0)
     seed = _hash01(round(float(c[0]) * 2), round(float(c[1]) * 2), round(area)) if look is None else look
+    style = region_style(lat, lon)
     _, _, hl, hw = oriented_box(ring)
     box_fill = area / max(4 * hl * hw, 1e-6)
     cls = (attrs.get("class") or "").lower()
@@ -351,7 +442,10 @@ def plan(ring, attrs, neighbours=0, lat=None, lon=None, look=None, town=False, d
         elif shed and area < 80:
             roof = "gabled" if seed > 0.4 else "flat"
         elif detached_house:
-            roof = "gabled" if seed < 0.6 else "hipped"
+            if style.flat and _hash01(seed, "flat roof") < style.flat:
+                roof = "flat"
+            else:
+                roof = "gabled" if seed < 1.0 - style.hipped else "hipped"
         else:
             roof = "flat"
     if roof != "flat" and (box_fill < 0.8 or hw < 2.0 or hw > (18.0 if barn else 14.0)):
@@ -369,7 +463,7 @@ def plan(ring, attrs, neighbours=0, lat=None, lon=None, look=None, town=False, d
         if attrs.get("roof_height") and np.isfinite(attrs["roof_height"]) and roof != "flat":
             h = max(2.5, h - float(attrs["roof_height"]))
         elif roof != "flat":
-            h = max(2.5, h - hw * math.tan(math.radians(PITCH[roof])))
+            h = max(2.5, h - hw * math.tan(math.radians(style.pitch or PITCH[roof])))
         if nf is None:
             nf = max(1, int(round(h / floor_h)))
     nf = max(1, min(nf, 120))
@@ -407,7 +501,7 @@ def plan(ring, attrs, neighbours=0, lat=None, lon=None, look=None, town=False, d
                 facade = BRICK_TINTS[int(seed * 7919) % len(BRICK_TINTS)]
             else:
                 facade = FACADE_TINTS[int(seed * 7919) % len(FACADE_TINTS)]
-                if (row or cls in HOUSE_CLASSES) and _hash01(seed, "paint") < 0.3:
+                if (row or cls in HOUSE_CLASSES) and _hash01(seed, "paint") < style.paint:
                     facade = PAINT_TINTS[int(_hash01(seed, "pc") * len(PAINT_TINTS))]
                 if row or cls in HOUSE_CLASSES or roof != "flat":
                     band = BAND_SASH if seed < 0.7 else BAND_PANEL
@@ -420,11 +514,23 @@ def plan(ring, attrs, neighbours=0, lat=None, lon=None, look=None, town=False, d
     if house and band is not BAND_BRICK and nf <= 3:
         # detached houses: siding in the East and South, stucco in the West; windows laid over the wall
         u = _hash01(seed, "wall")
-        west = lon is not None and lon < -100.0
-        kind = (STUCCO if u < 0.65 else SIDING if u < 0.9 else None) if west else (SIDING if u < 0.75 else None)
+        kind, acc = None, 0.0
+        for k, share in style.walls:            # (the US East: siding 75 %; the West: stucco 65 %, siding 25 %)
+            acc += share
+            if u < acc:
+                kind = k
+                break
         if kind is not None:
-            n = len(WALL_TINTS[kind]) - (BARN_REDS if kind == SIDING else 0)     # houses: not barn red
-            wall = f"{kind}|{int(_hash01(seed, 'wc') * n)}"
+            tints = style.wall_tints
+            if style.wood and kind == SIDING:   # chalets: stained wood
+                wall = f"{SIDING}|w{int(_hash01(seed, 'wc') * len(WOOD_TINTS))}"
+            elif tints is not None:
+                tints = [t for t in tints if t < len(WALL_TINTS[kind]) - (BARN_REDS if kind == SIDING else 0)] or [0]
+                wall = f"{kind}|{tints[int(_hash01(seed, 'wc') * len(tints))]}"
+            else:
+                n = len(WALL_TINTS[kind]) - (BARN_REDS if kind == SIDING else 0)     # houses: not barn red
+                n = min(n, US_WALL_TINTS.get(kind, n))
+                wall = f"{kind}|{int(_hash01(seed, 'wc') * n)}"
             facade = wall
     if terminal:
         facade, band, plain = OFFICE, BAND_OFFICE, False
@@ -436,10 +542,12 @@ def plan(ring, attrs, neighbours=0, lat=None, lon=None, look=None, town=False, d
         kind = METALWALL if industrial else PANEL
         wall = f"{kind}|{int(_hash01(seed, 'wc') * len(WALL_TINTS[kind]))}"
         facade, windows = wall, False
-    roof_mat = ROOF_FLAT if roof == "flat" else (ROOF_SLATE if seed < 0.5 else ROOF_SHINGLE)
-    if (barn or shed) and roof != "flat":
-        roof_mat = ROOF_METAL
-    roof_mat = f"{roof_mat}|{int(_hash01(seed, 'roof') * len(ROOF_TINTS[roof_mat]))}"
+    if roof == "flat" or barn or shed:
+        roof_mat = ROOF_FLAT if roof == "flat" else ROOF_METAL
+        roof_mat = f"{roof_mat}|{int(_hash01(seed, 'roof') * len(ROOF_TINTS[roof_mat]))}"
+    else:       # the region's pitched roofs (the US: slate or shingle by the seed, their first four tints)
+        mat, tints = style.roofs[min(int(seed * len(style.roofs)), len(style.roofs) - 1)]
+        roof_mat = f"{mat}|{tints[int(_hash01(seed, 'roof') * len(tints))]}"
     if barn or shed:                    # plain walls tinted: barns half barn red, sheds the siding colours
         tints = WALL_TINTS[SIDING]
         k = (len(tints) - 1 - int(_hash01(seed, "red") * 2)) if barn and _hash01(seed, "barn") < 0.5 else \
@@ -447,16 +555,15 @@ def plan(ring, attrs, neighbours=0, lat=None, lon=None, look=None, town=False, d
         facade = f"{SIDING}|{k}"
     # a front porch (the photos of Lancaster, Ocean City, Frederick, Moab: most houses have one): pitched-roof
     # houses, a regional share; doors() puts it on the front door's wall
-    west = lon is not None and lon < -102.0
     porch = (house and roof != "flat" and not barn and not shed and area < 300
-             and _hash01(seed, "porch") < (PORCH_SHARE_WEST if west else PORCH_SHARE))
+             and _hash01(seed, "porch") < style.porch)
     if porch:   # pitched roofs draw the walls on the oriented box: an L-shaped house's door wall can be inside it
         _, _, hl, hw = oriented_box(ring)
         porch = area >= 0.9 * 4 * hl * hw
     return Spec(ring=ring, floors=nf, floor_h=floor_h, height=h, roof=roof, roof_mat=roof_mat, facade=facade,
                 band=band, shop=shop and not shed and nf >= 1, plain=plain, seed=seed, min_h=0.0, wall=wall,
                 windows=windows, steeple=church and roof == "gabled" and area < 2500, porch=porch, cls=cls,
-                deck=garage and roof == "flat")
+                deck=garage and roof == "flat", pitch=style.pitch)
 
 
 class Mesh:
@@ -706,8 +813,6 @@ def _signs(m, spec, ring, z_top, mat_idx):
         t, k = t1, k + 1
 
 
-PORCH_SHARE = 0.55          # pitched-roof houses with a front porch (East, Midwest, South) ...
-PORCH_SHARE_WEST = 0.25     # ... and in the West
 PORCH_DEPTH_M = 2.2
 PORCH_H_M = 2.7             # the porch roof's underside above the floor
 PORCH_DECK_M = 0.35         # the deck's top above the ground
@@ -760,7 +865,7 @@ def _steeple(m, spec, z_eave, mat_idx):
         u = -u
     side = float(np.clip(1.1 * hw, 3.0, 6.0)) / 2
     p = c + u * (hl - side)
-    rise = (hw + EAVE_M) * math.tan(math.radians(PITCH["gabled"]))
+    rise = (hw + EAVE_M) * math.tan(math.radians(spec.pitch or PITCH["gabled"]))
     top = z_eave + rise + 6.0
     _box(m, p, u, side, side, z_eave - 1.0, top, mat_idx[spec.facade])
     v = np.array([-u[1], u[0]])
@@ -804,8 +909,8 @@ def _roof(m, spec, ring, z_eave, mat_idx):
     c, u, hl, hw = oriented_box(ring)
     v = np.array([-u[1], u[0]])
     hl2, hw2 = hl + EAVE_M, hw + EAVE_M
-    rise = hw2 * math.tan(math.radians(PITCH[spec.roof]))
-    ze = z_eave - EAVE_M * math.tan(math.radians(PITCH[spec.roof]))
+    rise = hw2 * math.tan(math.radians(roof_pitch(spec)))
+    ze = z_eave - EAVE_M * math.tan(math.radians(roof_pitch(spec)))
     zr = ze + rise
 
     def at(s, t, z):

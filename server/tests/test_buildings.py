@@ -29,6 +29,64 @@ class PolygonTest(unittest.TestCase):
         self.assertAlmostEqual(area, bld._area2(L) / 2)
 
 
+class RegionStyleTest(unittest.TestCase):
+    """Building habits by region (2026-10-15: Swiss villages had come out as American clapboard houses)."""
+
+    def houses(self, lat, lon, n=400):
+        rng = np.random.default_rng(5)
+        out = []
+        for i in range(n):
+            w, l = rng.uniform(7, 11), rng.uniform(9, 14)
+            ring = np.array([[0, 0], [w, 0], [w, l], [0, l]], float) + rng.uniform(-900, 900, 2)
+            out.append(bld.plan(ring, {"class": "house"}, lat=lat, lon=lon))
+        return out
+
+    def test_regions(self):
+        self.assertEqual(bld.region_style(39.29, -76.61).name, "us_east")
+        self.assertEqual(bld.region_style(37.36, -118.39).name, "us_west")
+        self.assertEqual(bld.region_style(46.59, 7.91).name, "alpine")
+        self.assertEqual(bld.region_style(52.37, 4.90).name, "europe_north")
+        self.assertEqual(bld.region_style(40.42, -3.70).name, "mediterranean")
+        self.assertEqual(bld.region_style(19.43, -99.13).name, "latin_america")
+        self.assertEqual(bld.region_style(35.66, 139.70).name, "east_asia")
+        self.assertEqual(bld.region_style(-33.87, 151.21).name, "oceania")
+        self.assertEqual(bld.region_style(30.9, 75.8).name, "warm")
+        self.assertEqual(bld.brick_share(39.29, -76.61), 0.75)      # the US as before
+        self.assertEqual(bld.brick_share(30.0, -90.0), 0.35)
+        self.assertEqual(bld.brick_share(40.0, -110.0), 0.15)
+
+    def test_alpine_houses(self):
+        hs = self.houses(46.59, 7.91)
+        self.assertFalse(any(h.porch for h in hs), "no porches in the Alps")
+        self.assertTrue(any(str(h.wall).startswith(f"{bld.SIDING}|w") for h in hs), "wooden chalets")
+        self.assertFalse(any(h.wall and str(h.wall).startswith(bld.SIDING) and "|w" not in str(h.wall) for h in hs))
+        pitched = [h for h in hs if h.roof != "flat"]
+        self.assertGreater(len(pitched), 0.8 * len(hs))
+        self.assertTrue(all(h.pitch == 24.0 for h in hs))
+        for h in pitched:
+            mat, k = h.roof_mat.split("|")
+            self.assertIn(int(k), (5, 7, 8, 9))     # dark or brown roofs
+
+    def test_mediterranean_and_latin_houses(self):
+        med = self.houses(40.42, -3.70)
+        for h in med:
+            if h.roof != "flat":
+                self.assertIn(int(h.roof_mat.split("|")[1]), (4, 5, 6), "clay tile roofs")
+        self.assertTrue(any(h.roof == "flat" for h in med))
+        lat = self.houses(19.43, -99.13)
+        self.assertGreater(sum(h.roof == "flat" for h in lat), 0.5 * len(lat))
+        self.assertTrue(any(h.wall and h.wall.startswith(bld.STUCCO) and int(h.wall.split("|")[1]) >= 5 for h in lat),
+                        "painted walls")
+
+    def test_us_houses_keep_their_tints(self):
+        for h in self.houses(39.29, -76.61):
+            if h.roof != "flat":
+                self.assertLess(int(h.roof_mat.split("|")[1]), 4)
+            if h.wall and h.wall.startswith(bld.STUCCO):
+                self.assertLess(int(h.wall.split("|")[1]), 5)
+            self.assertIsNone(h.pitch)
+
+
 class PlanTest(unittest.TestCase):
     def test_given_height_kept(self):
         s = bld.plan(rect(0, 0, 20, 20), {"class": "", "height": 18.0})
