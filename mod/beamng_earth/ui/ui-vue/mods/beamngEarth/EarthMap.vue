@@ -30,7 +30,7 @@
       </svg>
       <!-- saved places -->
       <div
-        v-for="p in placeMarkers"
+        v-for="p in (showPins ? placeMarkers : [])"
         :key="'p' + p.id"
         class="marker place"
         :style="{ left: p.sx + 'px', top: p.sy + 'px' }"
@@ -127,9 +127,15 @@
 
     <!-- Places (moved here from the settings page, 2026-10-14): save, go, rename, delete; recent places -->
     <div class="places-panel" :class="{ open: panelOpen }" @mousedown.stop @wheel.stop @dblclick.stop>
-      <button class="map-btn panel-toggle" @click="panelOpen = !panelOpen" :title="panelOpen ? 'Hide places' : 'Show places'">
-        {{ panelOpen ? "Places ›" : "‹ Places" }}
-      </button>
+      <div class="panel-row panel-top">
+        <button class="map-btn" :class="{ off: !showPins }" @click="togglePins"
+                :title="showPins ? 'Hide the saved places on the map' : 'Show the saved places on the map'">
+          {{ showPins ? "Pins shown" : "Pins hidden" }}
+        </button>
+        <button class="map-btn panel-toggle" @click="panelOpen = !panelOpen" :title="panelOpen ? 'Hide places' : 'Show places'">
+          {{ panelOpen ? "Places ›" : "‹ Places" }}
+        </button>
+      </div>
       <div v-if="panelOpen" class="panel-body">
         <div v-if="state.cannotGo" class="panel-msg warn">Go is off: {{ state.cannotGo }}</div>
         <div v-if="placesMsg" class="panel-msg" :class="{ warn: placesMsgError }">{{ placesMsg }}</div>
@@ -420,6 +426,13 @@ function centreOnMe() {
 
 // ---- Places panel (settings.lua uiPlace* -> places.lua; every call answers with both lists) ---------
 const panelOpen = ref(true)
+// the saved places' pins on the map can be hidden (the user, 2026-10-14); remembered in this browser only
+const PINS_KEY = "beamngEarth.map.showPins"
+const showPins = ref((() => { try { return localStorage.getItem(PINS_KEY) !== "0" } catch (e) { return true } })())
+function togglePins() {
+  showPins.value = !showPins.value
+  try { localStorage.setItem(PINS_KEY, showPins.value ? "1" : "0") } catch (e) {}
+}
 const newName = ref(""), coordText = ref(""), renameText = ref("")
 const renamingId = ref(null), confirmDeleteId = ref(null)
 const placesMsg = ref(""), placesMsgError = ref(false)
@@ -837,7 +850,8 @@ const fmtLatLon = mm.fmtLatLon
   position: absolute; right: 10px; top: 56px; z-index: 6; display: flex; flex-direction: column; align-items: flex-end;
   max-height: calc(100% - 100px);
 }
-.panel-toggle { margin-bottom: 6px; }
+.panel-top { margin-bottom: 6px; justify-content: flex-end; }
+.map-btn.off { opacity: 0.7; }
 .panel-body {
   width: 340px; overflow-y: auto; padding: 10px 12px; background: rgba(15, 18, 22, 0.88);
   border: 1px solid rgba(255, 255, 255, 0.15); border-radius: 6px; user-select: text; cursor: default;
