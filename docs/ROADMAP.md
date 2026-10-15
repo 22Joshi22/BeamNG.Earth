@@ -818,6 +818,17 @@ Next, from the photo comparisons (docs/research/streetview/fp*, base_*):
 - Trees by region beyond North America (no firs in Punjab), desert bushes on arid land worldwide.
 - Status bar, map zoom fallback, collision rebuild 40 -> 6 ms, welcome page (earlier in the night).
 
+### Done 2026-10-15 (day)
+- Autodrive ran straight off bends into poles and rivers: the car's AI Lua crashed on a path step missing from its copy
+  of the road graph. Edges are looked up on both nodes (the game keeps each edge on one only), new paths wait for
+  the car's copy (onVehicleMapmgrUpdate) and are cut to steps of the current graph. Lauterbrunnen 3.3 mi, no crash.
+- Terrain block hops 256-384 m instead of 128-256 m (fewer ~50 ms move frames): Munich drive 8.1 -> 5.6 hitches/min.
+  Each move's cost is the engine's first draw of the new block (~17 ms; not shadows, layers, base texture or grass)
+  plus postApply (~12-22 ms) and a ~25 ms static collision rebuild a few frames later.
+- Grass no longer grows through sidewalks; barns red only in the US and the new Nordic style (alpine: wood).
+- No 'Old forest file format' warnings (an empty level forest file).
+- Note: BeamNG's Steam launch options were found empty (2026-10-15 13:00): the gcpatch preload is not active.
+
 ### Found on the world tour (2026-10-15), not done yet
 - **Cliffs** are smeared vertically (the aerial photo stretched over walls: Lauterbrunnen, Geiranger): far tiles need
   a side-projected rock texture on steep faces.
