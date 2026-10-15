@@ -114,6 +114,9 @@ BANDS = 4
 
 SHED_CLASSES = {"shed", "garage", "garages", "carport", "roof", "hut", "cabin", "barn", "farm_auxiliary",
                 "greenhouse", "service", "storage_tank", "toilets", "kiosk", "parking"}
+GLASS_FLOORS = (20, 40)     # towers from 20 floors: glass, but for OLD_TOWER_GLASS of the old ones below 40 ...
+OLD_TOWER_GLASS = 0.65      # ... (Midtown's pre-war skyscrapers are stone)
+MIDRISE_GLASS_OFFICE = 0.45 # offices / hotels of 7+ floors: this share glass (modern), the rest masonry
 TOWER_SHOP_FLOORS = 6       # a building this tall in a dense core: a shop / lobby ground floor whatever its class
 SHOP_CLASSES = {"retail", "commercial", "supermarket", "kiosk", "office", "hotel", "civic", "restaurant"}
 HOUSE_CLASSES = {"house", "detached", "semidetached_house", "bungalow", "residential", "farm", "static_caravan",
@@ -369,8 +372,20 @@ def plan(ring, attrs, neighbours=0, lat=None, lon=None, look=None, town=False, d
     if shed or barn:
         facade, band, plain = SIDING, None, True
     else:
-        tall = nf >= 7
-        if tall or (industrial and not shed):
+        # glass curtain walls on towers; the mid-rises of old city cores (and a share of the older towers) are
+        # masonry with punched windows (Midtown's street photos, 2026-10-14: the theatre district's 5-15 storey
+        # brick and stone buildings had all come out as glass towers)
+        u_glass = _hash01(seed, "glass")
+        modern = cls in ("office", "commercial", "hotel") and u_glass < MIDRISE_GLASS_OFFICE
+        tall = nf >= GLASS_FLOORS[1] or (nf >= GLASS_FLOORS[0] and (modern or u_glass < OLD_TOWER_GLASS)) \
+            or (nf >= 7 and modern)
+        if nf >= 7 and not tall and not industrial:
+            if _hash01(seed, "brick") < brick_share(lat, lon) * 1.2:
+                facade, band = BRICK_TINTS[int(seed * 7919) % len(BRICK_TINTS)], BAND_BRICK
+            else:
+                facade = FACADE_TINTS[int(seed * 7919) % len(FACADE_TINTS)]
+                band = BAND_TALL if seed < 0.6 else BAND_SASH
+        elif tall or (industrial and not shed):
             facade = OFFICE if tall else FACADE_TINTS[3]
             band = (BAND_OFFICE if seed < 0.5 else BAND_OFFICE2) if tall else BAND_PANEL
         else:

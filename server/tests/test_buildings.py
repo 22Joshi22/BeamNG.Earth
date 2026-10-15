@@ -126,6 +126,22 @@ class TowerShopTest(unittest.TestCase):
         self.assertFalse(suburb.shop, "outside a dense core")
 
 
+class MidriseTest(unittest.TestCase):
+    def test_midrises_are_mostly_masonry_towers_glass(self):
+        # Midtown's theatre district: 5-15 storey brick and stone, not glass (street photos 2026-10-14)
+        mid = [bld.plan(rect(x * 40, 0, 25, 30), {"class": "", "height": 40.0}, 2, 40.76, -73.99, dense=True)
+               for x in range(40)]
+        glass = sum(1 for sp in mid if sp.facade == bld.OFFICE)
+        self.assertEqual(glass, 0, "unclassed 12-storey buildings: masonry")
+        towers = [bld.plan(rect(x * 40, 0, 40, 40), {"class": "", "height": 200.0}, 2, 40.76, -73.99, dense=True)
+                  for x in range(20)]
+        self.assertTrue(all(sp.facade == bld.OFFICE for sp in towers), "60 floors: glass")
+        old = [bld.plan(rect(x * 40, 0, 40, 40), {"class": "", "height": 90.0}, 2, 40.76, -73.99, dense=True)
+               for x in range(60)]
+        share = sum(1 for sp in old if sp.facade == bld.OFFICE) / len(old)
+        self.assertTrue(0.45 < share < 0.85, f"27 floors: mostly glass, some stone ({share:.2f})")
+
+
 class ParkingDeckTest(unittest.TestCase):
     def deck(self, w, d, gmax=0.0):
         spec = bld.plan(rect(0, 0, w, d), {"class": "parking", "num_floors": 3, "height": 9.0}, 0, 39.28, -76.59)
