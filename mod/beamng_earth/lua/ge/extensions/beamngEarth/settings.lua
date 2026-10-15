@@ -477,6 +477,11 @@ function M.uiMapGps(lat, lon, name)
   return { ok = gps.setDestination(lat, lon, name) }
 end
 
+-- The map's GPS "Autodrive": the player's car drives itself along the route (gps.lua) / stops doing so.
+function M.uiGpsAutodrive(on)
+  return { ok = true, autodrive = require('beamngEarth/gps').setAutodrive(on) }
+end
+
 -- The GPS's planned route for the map's line: { version, points = {{lat, lon}...}, dist, dur } or nil.
 function M.uiGpsRoute()
   return require('beamngEarth/gps').route()

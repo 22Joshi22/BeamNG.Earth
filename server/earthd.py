@@ -525,6 +525,9 @@ class Server:
         # request queued behind a prefetch and an earlier request (3.5 s at 90 m/s, 2026-10-12)
         self.hm_pool = ThreadPoolExecutor(HM_THREADS, thread_name_prefix="heightmap")
         self.ground_pool = ThreadPoolExecutor(1, thread_name_prefix="ground-ahead")   # groundahead.py
+        # the world map's requests (GPS route, address search, map tiles): their own threads, so a teleport's tile
+        # builds on the default pool do not hold them back (a route took 30 s after one, 2026-10-14)
+        self.ui_pool = ThreadPoolExecutor(2, thread_name_prefix="map-ui")
         self.tile_pool = ThreadPoolExecutor(tile_workers, thread_name_prefix="far")
         # Road plans (grading) of the map cells ahead of the player, made before a block needs them: a
         # cell's first plans (and street widths) take 2-10 s, more than a block move allows at speed
@@ -1808,7 +1811,7 @@ class Connection:
                         ok = True
                 out.append([z, x, y, ok])
             return out
-        out = await asyncio.to_thread(build)
+        out = await asyncio.get_running_loop().run_in_executor(self.s.ui_pool, build)
         self.send({"type": "map_tiles_ready", "tiles": out})
 
     async def route(self, msg):
@@ -1816,8 +1819,9 @@ class Connection:
         "error"?}."""
         out = {"type": "route_result", "id": msg.get("id"), "points": [], "dist": 0.0, "dur": 0.0}
         try:
-            r = await asyncio.to_thread(routingmod.plan, float(msg["lat0"]), float(msg["lon0"]), float(msg["lat1"]),
-                                        float(msg["lon1"]), self.s.net)
+            r = await asyncio.get_running_loop().run_in_executor(
+                self.s.ui_pool, routingmod.plan, float(msg["lat0"]), float(msg["lon0"]), float(msg["lat1"]),
+                float(msg["lon1"]), self.s.net)
             out.update(r)
         except Exception as e:          # offline, no route, rate limited: the mod falls back to steering
             out["error"] = f"{type(e).__name__}: {e}"[:200]
@@ -1832,7 +1836,8 @@ class Connection:
         lat, lon = msg.get("lat"), msg.get("lon")
         out = {"type": "geocode_result", "id": msg.get("id"), "results": []}
         try:
-            out["results"] = await asyncio.to_thread(geocodemod.search, q, lat, lon, self.s.net)
+            out["results"] = await asyncio.get_running_loop().run_in_executor(self.s.ui_pool, geocodemod.search, q, lat,
+                                                                              lon, self.s.net)
         except Exception as e:          # offline, rate limited, a bad answer: the map says so
             out["error"] = f"{type(e).__name__}: {e}"[:200]
         log.debug("geocode %r: %d results%s", q, len(out["results"]), (" (" + out["error"] + ")") if "error" in out else "")

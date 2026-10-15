@@ -12,6 +12,10 @@ local M = {}
 
 M.EDGE_M = 60           -- graph nodes this far inside the block's ground box only
 M.MIN_GAP_S = 1.0
+-- The block moved this far from where the graph was last clipped: clipped again to the new block (the server's graph
+-- reaches WINDOW_M = 1100 m, the block ~450 m; without it the graph ran out ahead of a car driving on before the next
+-- graph came, every 400 m: the GPS arrows ended and the autodrive stopped, the user's Cannonball run 2026-10-14)
+M.RECLIP_M = 150
 M.UI_MAP = false        -- send our graph to the UI (the big map) on every apply
 M.RULES_FILE = '/temp/beamngEarth/roadRules.json'
 M.rules = { rightHandDrive = false, turnOnRed = true }    -- US; `rightHandDrive = true` means driving on the left
@@ -407,6 +411,14 @@ function M.onTeleport()
 end
 
 -- Every frame: a new graph, a moved block or a foreign reset applies the graph again; the traffic guard.
+-- Pure: how far the centre of ground box b {x0, y0, x1, y1} is from that of box a (0 when either is missing).
+function M.boxMoved(a, b)
+  if not a or not b or not a[4] or not b[4] then return 0 end
+  local dx = (b[1] + b[3]) / 2 - (a[1] + a[3]) / 2
+  local dy = (b[2] + b[4]) / 2 - (a[2] + a[4]) / 2
+  return math.sqrt(dx * dx + dy * dy)
+end
+
 function M.update(aid, b)
   if not M.enabled or not graph then return end
   local t0 = os.clock()
@@ -425,8 +437,8 @@ function M.update(aid, b)
     applySignals(nodes)
     return
   end
-  -- a block move alone does not re-apply (each apply is a ~40 ms frame): the next graph (every 400 m) is clipped
-  -- to the block of its time, and the guard keeps the cars on the ground in between
+  -- a small block move alone does not re-apply (each apply is a ~40 ms frame); one of RECLIP_M does
+  if not (dirty or foreign) and applied and M.boxMoved(applied.box, b) >= M.RECLIP_M then dirty = true end
   if not (dirty or foreign) then return end
   local t = os.clock()
   if t - lastApply < M.MIN_GAP_S and not foreign then return end
@@ -455,6 +467,9 @@ end
 function M.onReloaded()
   if not ours and graph then foreign = true end
 end
+
+-- How many times a graph went into the game's map (gps.lua: the map's node table stays the same table across them).
+function M.applies() return stats.applies end
 
 function M.status()
   return { graph = graph and graph.serial or nil, applies = stats.applies, lastMs = stats.lastMs,

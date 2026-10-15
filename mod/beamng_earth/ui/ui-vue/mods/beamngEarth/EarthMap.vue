@@ -109,6 +109,10 @@
       <span v-if="state.gps.routeError && !routePts.length" class="gps-warn" :title="state.gps.routeError">no road route: heading straight there</span>
       <button class="map-btn small" @click="showOnMap(state.gps)">Show</button>
       <button class="map-btn small" :disabled="!!state.cannotGo" @click="askTeleport(state.gps.lat, state.gps.lon, state.gps.name)">Teleport</button>
+      <button class="map-btn small" :class="{ primary: state.gps.autodrive }" @click="setAutodrive(!state.gps.autodrive)"
+              :title="state.gps.autodrive ? 'Stop driving by itself' : 'The car drives itself along the route (in its lane, at the speed limit)'">
+        {{ state.gps.autodrive ? "Autodrive on" : "Autodrive" }}
+      </button>
       <button class="map-btn small" @click="clearGps">Clear</button>
     </div>
 
@@ -540,6 +544,14 @@ function setGps(lat, lon, name) {
       routePts.value = []
       routeVersion = 0
     }
+  })
+}
+// the car drives itself along the route; turned on, the map closes so the drive can be watched
+function setAutodrive(on) {
+  engineLua(`beamngEarth_settings and beamngEarth_settings.uiGpsAutodrive(${on ? "true" : "false"}) or nil`, r => {
+    if (!r || !r.ok) return
+    state.value = { ...state.value, gps: state.value.gps && { ...state.value.gps, autodrive: r.autodrive } }
+    if (r.autodrive && !embedded) close()
   })
 }
 function clearGps() {

@@ -21,4 +21,17 @@ local segs = G.edgeSegments(gnodes)
 T.check(#segs == 1, 'one edge, once')
 local ed, ez = G.nearestEdge(segs, 100, 10)
 T.check(math.abs(ed - 10) < 1e-9 and ez == 2, 'a point beside the middle of an edge: on the graph')
+local e = { x = { 0, 100, 100 }, y = { 0, 0, 100 }, cum = { 0, 100, 200 } }
+local sl = G.routeSlice(e, 50, 160, 25)
+T.check(#sl == 6 and sl[1][1] == 50 and sl[3][1] == 100 and sl[3][2] == 0 and sl[6][1] == 100 and sl[6][2] == 60,
+  'the route sliced every 25 m round its corner, both ends included')
+sl = G.routeSlice(e, 150, 5000, 25)
+T.check(sl[#sl][2] == 100 and #sl == 3, 'a slice past the end stops at the destination')
+local ids = G.pathNodes({ { pos = 1 }, { wp = 'a' }, { wp = 'a' }, { wp = 'b' }, { pos = 2, fixed = true }, { pos = 3 } })
+T.check(#ids == 2 and ids[1] == 'a' and ids[2] == 'b', 'the AI path: the graph nodes of the planner path, in order, once')
+local cmd = G.aiCommand({ 'a', 'b"c' })
+T.check(cmd:find('driveUsingPath', 1, true) and cmd:find('"a","b\\"c"', 1, true) and cmd:find('driveInLane = "on"', 1, true),
+  'the AI command lists the nodes quoted, in lane')
+T.check(loadstring(cmd) ~= nil and loadstring(G.aiCommand(nil)) ~= nil, 'both AI commands are valid Lua')
+T.check(G.aiCommand(nil) == 'ai.setMode("disabled")', 'autodrive off: the AI disabled')
 T.done('test_gps')
