@@ -31,6 +31,7 @@ MOD_NAME = "beamng_earth"
 VENV = os.path.join(ROOT, ".venv")
 REQUIREMENTS = os.path.join(ROOT, "server", "requirements.txt")
 CONFIG = os.path.join(ROOT, ".beamng_earth.json")
+REQ_STAMP = os.path.join(VENV, ".requirements.sha256")
 STEAM_APP_ID = "284160"
 MIN_PY = (3, 10)
 IS_WIN = os.name == "nt"
@@ -230,6 +231,13 @@ def setup_venv(dry_run):
     if r.returncode != 0:
         fail("the packages were installed but do not import:\n" + r.stderr)
     say("Python packages: ready (" + r.stdout.strip() + ")")
+    with open(REQ_STAMP, "w", encoding="utf-8") as f:     # start.py updates the packages when the list changes
+        f.write(requirements_hash())
+
+
+def requirements_hash():
+    with open(REQUIREMENTS, "rb") as f:
+        return hashlib.sha256(f.read()).hexdigest()
 
 
 def save_config(user_dir, dry_run):

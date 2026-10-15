@@ -2,7 +2,8 @@
 """Start the BeamNG.Earth world server with the recommended options (Windows and Linux).
 
     python start.py                 start the server (leave the window open while you play)
-    python start.py --update-mod    copy the mod into the game again first (after an update)
+    python start.py --keep-mod      leave the game's copy of the mod as it is (by default a copy that differs
+                                    from this folder's, an older version, is replaced: one zip, one version)
     python start.py -- --verbose    anything after -- goes to server/earthd.py as is
 
 It uses the Python in .venv (made by install.py) and the BeamNG.drive user folder install.py found.
@@ -44,7 +45,8 @@ def has_flag(help_text, flag):
 
 def main():
     ap = argparse.ArgumentParser(description="Start the BeamNG.Earth world server with the recommended options.")
-    ap.add_argument("--update-mod", action="store_true", help="copy the mod into the game again before starting")
+    ap.add_argument("--update-mod", action="store_true", help="(the default now) copy the mod into the game when it differs")
+    ap.add_argument("--keep-mod", action="store_true", help="leave the game's copy of the mod as it is")
     ap.add_argument("--user-dir", help="BeamNG.drive user folder (default: the one install.py found)")
     ap.add_argument("--yes", "-y", action="store_true", help="with --update-mod: replace the installed mod without asking")
     ap.add_argument("extra", nargs=argparse.REMAINDER, help="after --: more options for server/earthd.py")
@@ -58,12 +60,22 @@ def main():
     if not user_dir:
         install.fail("no BeamNG.drive user folder known. Run the installer first: python install.py")
 
-    if args.update_mod:
-        install.install_mod(user_dir, args.yes, dry_run=False)
+    # a new version unzipped over (or next to) the old one: the game gets this folder's mod, the server this
+    # folder's packages, without running the installer again (2026-10-15: easy setup)
+    if not args.keep_mod:
+        install.install_mod(user_dir, True, dry_run=False)
 
     py = install.venv_python()
     if not os.path.isfile(py):
         install.fail("the server's Python environment (.venv) is missing. Run the installer first: python install.py")
+    try:
+        with open(install.REQ_STAMP, encoding="utf-8") as f:
+            stamped = f.read().strip()
+    except OSError:
+        stamped = None
+    if stamped != install.requirements_hash():
+        install.say("Python packages: checking the server's packages ...")
+        install.setup_venv(dry_run=False)
 
     help_text = server_flags(py)
     cmd = [py, EARTHD, "--user-dir", user_dir]

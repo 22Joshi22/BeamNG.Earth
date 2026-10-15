@@ -83,7 +83,8 @@ same without the edit step.
 - **The level is not in the list**: the mod is not in the folder the game uses. Run the installer
   again and pick the right folder (in the game, Options > Other shows the user folder), or run
   `python install.py --user-dir "<that folder>"`.
-- **After an update**: unzip the new version, run the installer again (or `python start.py --update-mod`).
+- **After an update**: unzip the new version and start its `run_server.bat` / `./run_server.sh`: it copies the new
+  mod into the game and updates the server's packages by itself (`--keep-mod` leaves the game's copy alone).
 
 ## Credits
 The map comes from free and open data sources (USGS, Sentinel-2 by EOX, Mapterhorn, OpenStreetMap
