@@ -24,7 +24,8 @@ in a few minutes. No programming needed.
 3. **Play.**
    - Start the world server: `run_server.bat` (Windows) or `./run_server.sh` (Linux). Keep its
      window open while you play; close it when you are done.
-   - Start BeamNG.drive, go to **Freeroam** and pick the **BeamNG.Earth** level.
+   - Start BeamNG.drive, go to **Freeroam** and pick the **BeamNG.Earth** level. The first time, a short
+     welcome page explains the basics (it is in the settings page too: Pause menu > Mods > BeamNG.Earth).
 
 ## Going places
 - Press **M** (the game's map key) or open **Map** in the pause menu for the **world map**:
@@ -35,7 +36,9 @@ in a few minutes. No programming needed.
 - **Left-click** the map (or a saved place, or a search result) to plan a GPS route there: the whole
   road route is planned online (OSRM on OpenStreetMap; your start and destination are sent to it)
   and drawn on the map with the distance and driving time left; the game's own route arrows follow
-  it on the road. Leave the route and it is planned again. **Clear** stops it, **Teleport** jumps there.
+  it on the road. Leave the route and it is planned again. **Clear** stops it, **Teleport** jumps there,
+  **Autodrive** lets the car drive the route by itself (in its lane, at the speed limit, minding traffic;
+  press it again to drive yourself).
 - **Right-click** the map for **Teleport here**, **Set GPS destination** or **Save this place**.
 - The map's **Places** panel (on the right; "Places ›" hides it) lets you save where you are, type
   (or paste from Google Maps) a "latitude, longitude" and press **Go**, go to, rename or delete your
