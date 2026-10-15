@@ -1047,6 +1047,40 @@ def build(specs_and_ground, lite=False):
     return P, UV, T, M, MATERIALS, C
 
 
+def collision_mesh(specs_and_ground):
+    """The tile's buildings for physics only: one quad per wall and a flat lid at the eaves (pitched roofs on their
+    oriented box), parking decks as drawn; (positions, uvs, tris, tri materials, MATERIALS, colours) or None.
+    The drawn mesh (windows a quad per bay and floor, cornices, signs) cost the game's collision rebuild ~30 ms of
+    a 40 ms rebuild in Fells Point (2026-10-15), every few seconds while driving; this one is ~1/20 of its triangles."""
+    m = Mesh()
+    tok = (MATERIALS.index(PANEL), (128, 128, 128, 255))
+    zero = (0.0, 0.0)
+    for spec, gmin, gmax in specs_and_ground:
+        if deck_plan(spec, gmin, gmax) is not None:
+            _parking_deck(m, spec, gmin, gmax, _Looks(spec.seed))
+            continue
+        ring = np.asarray(spec.ring, np.float64)
+        if spec.roof != "flat":
+            c, u, hl, hw = oriented_box(ring)
+            v = np.array([-u[1], u[0]])
+            ring = np.array([c - u * hl - v * hw, c + u * hl - v * hw, c + u * hl + v * hw, c - u * hl + v * hw])
+        if _area2(ring) < 0:
+            ring = ring[::-1]
+        mh = spec.min_h or 0.0
+        z0 = gmin - FOUNDATION_M if mh <= 0.5 else gmax + mh
+        z1 = gmax + mh + spec.height
+        for i in range(len(ring)):
+            a, b = ring[i], ring[(i + 1) % len(ring)]
+            m.quad((a[0], a[1], z0), (b[0], b[1], z0), (b[0], b[1], z1), (a[0], a[1], z1), zero, zero, zero, zero, tok)
+        m.poly([(p[0], p[1], z1) for p in ring], [zero] * len(ring), tok)
+        if mh > 0.5:                # over a street: its underside
+            m.poly([(p[0], p[1], z0) for p in ring[::-1]], [zero] * len(ring), tok)
+    if m.n == 0:
+        return None
+    P, UV, T, M, C = m.arrays()
+    return P, UV, T, M, MATERIALS, C
+
+
 # ------------------------------------------------------------------------------------------- a tile
 
 def _shared_walls(rings, tol=0.6):
@@ -1276,11 +1310,12 @@ def collider_boxes(items, x0, y0):
     return out
 
 
-def write(path, mesh):
-    """The tile's .cdae (cdae.encode with one primitive per material)."""
+def write(path, mesh, collision_only=False):
+    """The tile's .cdae (cdae.encode with one primitive per material; collision_only: a never-drawn collision detail)."""
     import cdae
     P, UV, T, M, mats, C = mesh
-    return cdae.write(path, P, T, uvs=UV, material=list(mats), tri_materials=M, object_name="buildings", colors=C)
+    return cdae.write(path, P, T, uvs=UV, material=list(mats), tri_materials=M, object_name="buildings", colors=C,
+                      collision_only=collision_only)
 
 
 STOOP_SHARE = 0.8           # row houses with a front stoop (Baltimore's white marble steps)
@@ -1532,7 +1567,7 @@ def road_tile(frame, tx, ty, md, ground, lines=None, props=None, items=None):
     meshes = build_parts(items)
     if not meshes:
         return None
-    return meshes, collider_boxes(items, x0, y0)
+    return meshes, collider_boxes(items, x0, y0), collision_mesh(items)
 
 
 def far_tile(frame, tx, ty, md, ground, out_dir, vfs_dir, aid):

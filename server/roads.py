@@ -1665,6 +1665,11 @@ def write_tile(out_dir, vfs_dir, aid, tx, ty, chunks, walks=None, road_mesh=None
             buildings.write(os.path.join(out_dir, shape), mesh)
             data[what] = {"shape": f"{vfs_dir}/{shape}", "pos": [x0, y0, 0.0]}
             boxes[what] = bld[1]
+        if len(bld) > 2 and bld[2] is not None:     # the lean physics-only mesh (the drawn ones then only render)
+            shape = f"bldcol_{aid}_{tx}_{ty}.cdae"
+            buildings.write(os.path.join(out_dir, shape), bld[2], collision_only=True)
+            data["bldcol"] = {"shape": f"{vfs_dir}/{shape}", "pos": [x0, y0, 0.0]}
+            boxes["bldcol"] = bld[1]
     if boxes:
         data["colliders"] = boxes
     if wires:                       # utility pole wires (furniture.wire_mesh), render-only

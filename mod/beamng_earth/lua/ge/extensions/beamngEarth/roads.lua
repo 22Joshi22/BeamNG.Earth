@@ -39,10 +39,21 @@ M.enabled = true
 -- while driving, most of the hitches of a 34 mph drive: new colliders now wait up to 6 s (still 11 s of margin
 -- at 130 mph), and colliders deleted far behind the car (their stale collision harms nobody) up to 30 s.
 M.RELOAD_EVERY_S = 6
+-- Collision only near the car (2026-10-15: the rebuild cost scales with every colliding triangle loaded, ~40 ms in
+-- Fells Point with all 36 tiles' buildings and sidewalks): a tile's colliders (sidewalks, decks, the buildings'
+-- lean collision mesh "bldcol") are made once its centre is within COLLIDE_LEAD_S of driving (COLLIDE_M min / max)
+-- and dropped again UNCOLLIDE_M beyond that. The drawn building meshes only render when the tile has a bldcol.
+M.TILE_M = 256
+M.COLLIDE_M = { 320, 900 }
+M.COLLIDE_LEAD_S = 14
+M.UNCOLLIDE_M = 350
+M.COLLIDE_CHECK_S = 0.25
 M.RELOAD_DELETES_S = 30
 M.DELETE_NEAR_M = 200       -- a collider deleted this close to the player counts as new (no ghost walls)
 
 local newColliders = {}    -- { id, walkQ entry } of the colliders made since the last reloadCollision
+local parked = {}          -- walkQ entries of colliders whose tile is not near enough yet
+local sinceCollideCheck = stopwatch.new()
 local held = {}            -- walkQ entries of colliding meshes held while the player is in their boxes
 local noteNewColliders, playerIn, releaseHeld
 local tiles = {}            -- key "a:tx_ty" -> { anchor, objs = { DecalRoad ids }, queued = n, walk = TSStatic id,
@@ -120,8 +131,11 @@ local function dropTile(key)
   if t.walk then deleteQ[#deleteQ + 1] = t.walk end
   if t.road then deleteQ[#deleteQ + 1] = t.road end
   if t.deck then deleteQ[#deleteQ + 1] = t.deck end
-  for _, w in ipairs({ 'bld', 'bld2', 'bld3', 'bld4' }) do if t[w] then deleteQ[#deleteQ + 1] = t[w] end end
+  for _, w in ipairs({ 'bld', 'bld2', 'bld3', 'bld4', 'bldcol' }) do if t[w] then deleteQ[#deleteQ + 1] = t[w] end end
   if t.wire then deleteQ[#deleteQ + 1] = t.wire end
+  local keep = {}
+  for _, q in ipairs(parked) do if q.key ~= key then keep[#keep + 1] = q end end
+  parked = keep
   if t.props then require('beamngEarth/trees').dropKey((key:gsub(':', ':p', 1))) end
   if t.park then require('beamngEarth/parking').dropKey(key) end
   tiles[key] = nil
@@ -157,16 +171,57 @@ function M.fieldsFor(chunk)
   }
 end
 
+-- The collision radius around the player (m): COLLIDE_LEAD_S of driving at its speed, within COLLIDE_M.
+function M.collideRadius(speed)
+  return math.max(M.COLLIDE_M[1], math.min(M.COLLIDE_M[2], (speed or 0) * M.COLLIDE_LEAD_S))
+end
+
+local lastRadius = M.COLLIDE_M[1]
+-- Is tile t's centre within the collision radius of the player? (no car or no centre: yes)
+function M.collideNear(t, extra)
+  if not t or not t.cx then return true end
+  return M.nearPlayer(vec3(t.cx, t.cy, 0), lastRadius + (extra or 0) + M.TILE_M * 0.71)
+end
+
+-- Every COLLIDE_CHECK_S: parked colliders whose tile came near queued; far tiles' colliders dropped.
+local function updateCollideRange()
+  if sinceCollideCheck() < M.COLLIDE_CHECK_S * 1000 then return end
+  sinceCollideCheck = stopwatch.new()
+  local veh = getPlayerVehicle and getPlayerVehicle(0)
+  local v = veh and veh.getVelocity and veh:getVelocity()
+  lastRadius = M.collideRadius(v and v:length() or 0)
+  if #parked > 0 then
+    local keep = {}
+    for _, q in ipairs(parked) do
+      local t = tiles[q.key]
+      if t then
+        if M.collideNear(t) then walkQ[#walkQ + 1] = q else keep[#keep + 1] = q end
+      end
+    end
+    parked = keep
+  end
+  for key, t in pairs(tiles) do
+    if t.cq and not M.collideNear(t, M.UNCOLLIDE_M) then
+      for what, q in pairs(t.cq) do
+        if t[what] then deleteQ[#deleteQ + 1] = t[what]; t[what] = nil end
+        parked[#parked + 1] = q
+      end
+      t.cq = nil
+    end
+  end
+end
+
 local function isCollider(o)
   local c = o.class or (o.getClassName and o:getClassName())
   if c == 'MeshRoad' then return true end
   return c == 'TSStatic' and o:getField('collisionType', 0) ~= 'None'
 end
 
+-- collide: true ('Visible Mesh'), a collision type name, or false / nil (render only)
 local function createWalk(walk, collide)
   local o = createObject('TSStatic')
   o:setField('shapeName', 0, walk.shape)
-  o:setField('collisionType', 0, collide and 'Visible Mesh' or 'None')
+  o:setField('collisionType', 0, type(collide) == 'string' and collide or (collide and 'Visible Mesh' or 'None'))
   o:setField('decalType', 0, 'None')
   o.canSave = false
   o:setPosition(vec3(walk.pos[1], walk.pos[2], walk.pos[3]))
@@ -219,11 +274,17 @@ function M.onTile(msg, currentAnchor)
   if type(data.wire) == 'table' and data.wire.shape and type(data.wire.pos) == 'table' then    -- pole wires
     walkQ[#walkQ + 1] = { key = key, walk = data.wire, what = 'wire' }
   end
-  -- sidewalks, bridge decks, buildings (split in parts under the engine's 16-bit index limit): colliding meshes
-  for _, what in ipairs({ 'walk', 'deck', 'bld', 'bld2', 'bld3', 'bld4' }) do
+  -- sidewalks, bridge decks, buildings (split in parts under the engine's 16-bit index limit), the buildings'
+  -- lean collision mesh: colliders only near the car (M.COLLIDE_M); with a bldcol the drawn buildings only render
+  local tx, ty = tostring(msg.key):match('^(%-?%d+)_(%-?%d+)$')
+  tiles[key].cx = tx and (tonumber(tx) + 0.5) * M.TILE_M or nil
+  tiles[key].cy = ty and (tonumber(ty) + 0.5) * M.TILE_M or nil
+  local lean = type(data.bldcol) == 'table' and data.bldcol.shape ~= nil
+  for _, what in ipairs({ 'walk', 'deck', 'bld', 'bld2', 'bld3', 'bld4', 'bldcol' }) do
     local w = data[what]
     if type(w) == 'table' and w.shape and type(w.pos) == 'table' then
-      walkQ[#walkQ + 1] = { key = key, walk = w, what = what }
+      local q = { key = key, walk = w, what = what, renderOnly = lean and what:sub(1, 3) == 'bld' and what ~= 'bldcol' }
+      if q.renderOnly or M.collideNear(tiles[key]) then walkQ[#walkQ + 1] = q else parked[#parked + 1] = q end
     end
   end
   return true
@@ -316,6 +377,7 @@ function M.update(gov, currentAnchor)
     end
   end
   releaseHeld()
+  updateCollideRange()
   while #walkQ > 0 and gov:try('roadWalk') do
     local q = table.remove(walkQ, 1)
     local t = tiles[q.key]
@@ -326,9 +388,11 @@ function M.update(gov, currentAnchor)
     if t then
       local t0 = now()
       loadMaterials()
-      local isRoad = q.what == 'road' or q.what == 'wire'   -- render-only meshes
-      local ok, id = pcall(createWalk, q.walk, not isRoad)
+      local isRoad = q.what == 'road' or q.what == 'wire' or q.renderOnly   -- render-only meshes
+      -- the buildings' lean mesh is a collision detail (server cdae collision_only): never drawn
+      local ok, id = pcall(createWalk, q.walk, q.what == 'bldcol' and 'Collision Mesh' or not isRoad)
       if ok then
+        if not isRoad then t.cq = t.cq or {}; t.cq[q.what] = q end
         if isRoad then t[q.what] = id else t[q.what] = id; collisionDirty = true; newColliders[#newColliders + 1] = { id, q } end
       else lastError = tostring(id) end
       gov:charge('roadWalk', now() - t0)
@@ -409,6 +473,10 @@ noteNewColliders = function()
 end
 M._noteNewColliders = noteNewColliders
 
+-- Something else made colliding objects near the player (trees.lua's Forest items): rebuild collision at the
+-- next throttled slot.
+function M.requestCollision() collisionDirty = true end
+
 function M.hasWork() return #createQ > 0 or #deleteQ > 0 or #walkQ > 0 or #farQ > 0 or collisionDirty end
 
 -- Somebody else just ran be:reloadCollision() (the terrain commit): the sidewalks made so far collide.
@@ -432,7 +500,7 @@ function M.clear()
     end
   end
   deleteQ = {}
-  walkQ = {}
+  walkQ, parked = {}, {}
   if collisionDirty then be:reloadCollision(); collisionDirty = false end
 end
 

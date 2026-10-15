@@ -17,6 +17,9 @@ M.GROUP_MAX_M = { door = 120, hydrant = 200, bin = 200, bench = 200, polelamp = 
   fence = 150, wallsign_logistics = 800, wallsign_rentabox = 800, wallsign_lemon = 800, wallsign_turboburger = 500,
   speed30 = 300, speed40 = 300, speed50 = 300, speed60 = 300, speed70 = 300 }
 M.FOREST_NAME = 'bngEarthForest'
+-- Items made this close to the player ask for a collision rebuild (roads.lua, throttled): a Forest item collides only
+-- after be:reloadCollision, and where no road tile arrives (the Sahara's rocks, 2026-10-14) none came at all
+M.COLLIDE_M = 400
 
 local ECA = '/levels/east_coast_usa/art/shapes/'
 local WCA = '/levels/west_coast_usa/art/shapes/'
@@ -298,6 +301,13 @@ function M.update(anchorId, player)
     order[#order + 1] = { key, math.sqrt(dx * dx + dy * dy) }
   end
   table.sort(order, function(a, b) return a[2] < b[2] end)
+  local nearMade = false
+  local function finish()
+    if nearMade then
+      local ok, roads = pcall(require, 'beamngEarth/roads')
+      if ok and roads.requestCollision then roads.requestCollision() end
+    end
+  end
   for _, o in ipairs(order) do
     local t = tiles[o[1]]
     local want = threshold(o[2])
@@ -312,11 +322,12 @@ function M.update(anchorId, player)
         -- an item something else stands in for (navgraph.lua's switchable signal heads)
         if g and M.suppress and M.suppress(g, row[2], row[3]) then r = 2 end
         if r < want and not t.made[i] then
-          if budget <= 0 then t.pending = true; return end
+          if budget <= 0 then t.pending = true; finish(); return end
           t.made[i] = makeItem(fd, row, t.groups)
+          if o[2] <= M.COLLIDE_M then nearMade = true end
           budget = budget - 1
         elseif r >= want and t.made[i] then
-          if budget <= 0 then t.pending = true; return end
+          if budget <= 0 then t.pending = true; finish(); return end
           removeItem(fd, t.made[i])
           t.made[i] = nil
           budget = budget - 1
@@ -326,6 +337,7 @@ function M.update(anchorId, player)
       t.band = band
     end
   end
+  finish()
 end
 
 -- Disconnect, a new server session, mod unload: every item removed.
