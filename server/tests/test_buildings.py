@@ -131,15 +131,17 @@ class MidriseTest(unittest.TestCase):
         # Midtown's theatre district: 5-15 storey brick and stone, not glass (street photos 2026-10-14)
         mid = [bld.plan(rect(x * 40, 0, 25, 30), {"class": "", "height": 40.0}, 2, 40.76, -73.99, dense=True)
                for x in range(40)]
-        glass = sum(1 for sp in mid if sp.facade == bld.OFFICE)
+        glass = sum(1 for sp in mid if sp.facade.startswith(bld.OFFICE))
         self.assertEqual(glass, 0, "unclassed 12-storey buildings: masonry")
         towers = [bld.plan(rect(x * 40, 0, 40, 40), {"class": "", "height": 200.0}, 2, 40.76, -73.99, dense=True)
                   for x in range(20)]
-        self.assertTrue(all(sp.facade == bld.OFFICE for sp in towers), "60 floors: glass")
+        self.assertTrue(all(sp.facade.startswith(bld.OFFICE) for sp in towers), "60 floors: glass")
         old = [bld.plan(rect(x * 40, 0, 40, 40), {"class": "", "height": 90.0}, 2, 40.76, -73.99, dense=True)
                for x in range(60)]
-        share = sum(1 for sp in old if sp.facade == bld.OFFICE) / len(old)
+        share = sum(1 for sp in old if sp.facade.startswith(bld.OFFICE)) / len(old)
         self.assertTrue(0.45 < share < 0.85, f"27 floors: mostly glass, some stone ({share:.2f})")
+        tints = {sp.facade for sp in towers}
+        self.assertGreaterEqual(len(tints), 4, "towers in several glass colours")
 
 
 class ParkingDeckTest(unittest.TestCase):
@@ -174,6 +176,14 @@ class ParkingDeckTest(unittest.TestCase):
         self.assertFalse(self.covered(self.tops(P, T, zs[1]), xs, ys), "the well open on deck 1")
         self.assertTrue(self.covered(self.tops(P, T, zs[1]), 30.0, 30.0), "deck 1 beyond the well")
         self.assertEqual(bld.collider_boxes([(spec, 0.0, 0.0)], 0, 0), [], "driven into: no keep-out box")
+
+    def test_deck_undersides_face_down(self):
+        _, (P, UV, T, M, mats, C) = self.deck(60, 40)
+        tri = P[T]
+        n = np.cross(tri[:, 1] - tri[:, 0], tri[:, 2] - tri[:, 0])
+        flat_low = (np.abs(tri[:, :, 2] - (3.03 - bld.DECK_SLAB_M)) < 0.01).all(1)
+        self.assertGreater(int(flat_low.sum()), 1, "deck 1 has an underside")
+        self.assertTrue(np.all(n[flat_low][:, 2] < 0), "facing down")
 
     def test_ramps_are_drivable(self):
         _, (P, UV, T, M, mats, C) = self.deck(60, 40)

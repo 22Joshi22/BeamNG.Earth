@@ -75,6 +75,10 @@ WALL_TINTS = {               # houses with plain walls and laid-over windows: th
     PANEL: ((0.96, 0.94, 0.89), (0.86, 0.86, 0.86), (0.92, 0.85, 0.74), (0.78, 0.80, 0.82), (0.88, 0.78, 0.68),
             (0.62, 0.62, 0.60), (0.56, 0.54, 0.50)),    # the last two: weathered concrete (parking decks)
     METALWALL: ((0.88, 0.89, 0.90), (0.72, 0.74, 0.77), (0.84, 0.80, 0.72), (0.66, 0.72, 0.78)),
+    # curtain walls (the user, 2026-10-14: "the skyscrapers all use the same texture and look the same colour"):
+    # silver, blue, green, bronze, charcoal and steel-blue glass, the common tints of real towers
+    OFFICE: ((1.0, 1.0, 1.0), (0.74, 0.84, 0.98), (0.76, 0.92, 0.86), (0.98, 0.84, 0.66), (0.56, 0.58, 0.62),
+             (0.66, 0.74, 0.86), (0.88, 0.90, 0.92)),
 }
 for _m, _cs in list(ROOF_TINTS.items()) + list(WALL_TINTS.items()):
     for _k, _c in enumerate(_cs):
@@ -377,17 +381,22 @@ def plan(ring, attrs, neighbours=0, lat=None, lon=None, look=None, town=False, d
         # masonry with punched windows (Midtown's street photos, 2026-10-14: the theatre district's 5-15 storey
         # brick and stone buildings had all come out as glass towers)
         u_glass = _hash01(seed, "glass")
+        # a building drawn as its parts: the style of the whole building on every part (NYC 2026-10-14: a brick
+        # part on a glass tower, each part decided by its own height)
+        bh = attrs.get("building_height")
+        snf = max(nf, int(bh / FLOOR_M)) if bh is not None and np.isfinite(bh) else nf
         modern = cls in ("office", "commercial", "hotel") and u_glass < MIDRISE_GLASS_OFFICE
-        tall = nf >= GLASS_FLOORS[1] or (nf >= GLASS_FLOORS[0] and (modern or u_glass < OLD_TOWER_GLASS)) \
-            or (nf >= 7 and modern)
-        if nf >= 7 and not tall and not industrial:
+        tall = snf >= GLASS_FLOORS[1] or (snf >= GLASS_FLOORS[0] and (modern or u_glass < OLD_TOWER_GLASS)) \
+            or (snf >= 7 and modern)
+        if snf >= 7 and not tall and not industrial:
             if _hash01(seed, "brick") < brick_share(lat, lon) * 1.2:
                 facade, band = BRICK_TINTS[int(seed * 7919) % len(BRICK_TINTS)], BAND_BRICK
             else:
                 facade = FACADE_TINTS[int(seed * 7919) % len(FACADE_TINTS)]
                 band = BAND_TALL if seed < 0.6 else BAND_SASH
         elif tall or (industrial and not shed):
-            facade = OFFICE if tall else FACADE_TINTS[3]
+            facade = f"{OFFICE}|{int(_hash01(seed, 'glass tint') * len(WALL_TINTS[OFFICE]))}" if tall \
+                else FACADE_TINTS[3]
             band = (BAND_OFFICE if seed < 0.5 else BAND_OFFICE2) if tall else BAND_PANEL
         else:
             u_brick = _hash01(seed, "brick")
@@ -478,8 +487,16 @@ class Mesh:
         self.n += 3
 
     def poly(self, pts3, uv, mat):
-        """A flat counter-clockwise (seen from above) polygon."""
-        tris = triangulate(np.asarray(pts3)[:, :2])
+        """A flat polygon facing up when counter-clockwise seen from above, down when clockwise (its underside:
+        the ear clipping wants counter-clockwise rings and gave a clockwise one no triangles at all, so the
+        parking decks' and floating parts' undersides were missing, the user's report 2026-10-14)."""
+        xy = np.asarray(pts3)[:, :2]
+        if _area2(xy) < 0:
+            k = len(xy)
+            tris = np.array([(k - 1 - c, k - 1 - b, k - 1 - a) for a, b, c in triangulate(xy[::-1])],
+                            np.int64).reshape(-1, 3)
+        else:
+            tris = triangulate(xy)
         i = self.n
         self.P += [tuple(p) for p in pts3]
         self.UV += [tuple(u) for u in uv]
@@ -1187,13 +1204,15 @@ def tile_buildings(frame, x0, y0, x1, y1, layers, elev, water=None, part_layers=
                 bh = at.get("height")
                 fill = float(bh) if bh is not None and np.isfinite(bh) and bh > 0 else \
                     min(h[0] + h[1] for _, h in bparts if h is not None)
+                top = max([fill] + [h[0] + h[1] for _, h in bparts if h is not None])
                 for pring, hh in bparts:
                     ph, pmh = hh if hh is not None else (fill, 0.0)
                     r = clean_ring(pring - np.array([x0, y0]))
                     if r is None or _area2(r) / 2 < 4.0:
                         continue
                     rings.append(r)
-                    attrs.append({"class": at["class"], "height": ph, "num_floors": None, "roof_shape": "flat"})
+                    attrs.append({"class": at["class"], "height": ph, "num_floors": None, "roof_shape": "flat",
+                                  "building_height": top})
                     looks.append(look)
                     mins.append(pmh)
                 if key is not None:
