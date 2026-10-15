@@ -98,6 +98,21 @@ def obs_start():
     return None
 
 
+SHARE_MB = 29.0         # the small copy for sending (a chat upload limit of 30 MB)
+
+
+def share_copy(video):
+    """A 720p 30 fps copy of video beside it (drive_small.mp4) under SHARE_MB, or None."""
+    out = os.path.join(os.path.dirname(video), "drive_small.mp4")
+    for crf in (30, 34, 38):
+        subprocess.run(["nice", "ffmpeg", "-v", "error", "-y", "-i", video, "-vf", "scale=1280:-2,fps=30", "-c:v",
+                        "libx264", "-preset", "veryfast", "-crf", str(crf), "-pix_fmt", "yuv420p", "-movflags",
+                        "+faststart", out], check=True)
+        if os.path.getsize(out) <= SHARE_MB * 1024 * 1024:
+            return out
+    return None
+
+
 def obs_stop(started, out_path):
     """Stop the OBS we launched (SIGTERM: it ends the recording and quits) and write its file without audio."""
     before, pids = started
@@ -274,6 +289,7 @@ def main():
     summary["events"] = checks.events
     if video:
         summary["video"] = video
+        summary["video_small"] = share_copy(video)
     with open(os.path.join(a.out, "summary.json"), "w") as f:
         json.dump(summary, f, indent=1)
     print(json.dumps(summary, indent=1))
