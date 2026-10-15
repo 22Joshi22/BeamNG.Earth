@@ -106,6 +106,7 @@ local horizonOn = false       -- hello.horizon (M1h); outlives levels like the c
 local farRadius = nil         -- status.radius: the server's far-field radius (m), horizon mode only
 local cacheInfo = nil         -- the server's last 'cache' message (download cache usage); outlives levels
 local updateInfo = nil       -- a newer version on GitHub: { current, latest, url } (server updates.py)
+local updateToast = false    -- its one-time message is due (shown once the world is on screen: not behind the loading screen)
 local cacheClears = 0         -- answers to a clear so far (the settings page waits for the next one)
 
 local function resetState()
@@ -726,12 +727,8 @@ local function onMessage(msg)
   elseif t == 'update' then
     -- a newer version on GitHub (server updates.py): said once a session in game, and on the settings page
     if type(msg.latest) == 'string' then
-      local first = not updateInfo
+      if not updateInfo then updateToast = true end    -- said once, when the player is in the world (drawUi)
       updateInfo = { current = tostring(msg.current or ''), latest = msg.latest, url = tostring(msg.url or '') }
-      if first and ui_message then
-        pcall(ui_message, string.format('BeamNG.Earth %s is available (you have %s): %s', updateInfo.latest,
-          updateInfo.current, updateInfo.url), 15, 'beamngEarthUpdate')
-      end
     end
   elseif t == 'cache' then
     -- the download cache (server cache.py): its usage for the settings page; clearedBytes answers a clear
@@ -1045,6 +1042,12 @@ local function drawUi(dt)
     statusbar.draw(st.inOurLevel and st.active, credits.hiddenByUi(), st.status)
   end
   hudapps.update(st.clock or 0, hudTexts)
+  if updateToast and updateInfo and st.inOurLevel and st.active and not credits.hiddenByUi()
+      and (st.clock or 0) > (st.loadingUntil or 0) and ui_message then
+    updateToast = false
+    pcall(ui_message, string.format('BeamNG.Earth %s is available (you have %s): %s', updateInfo.latest,
+      updateInfo.current, updateInfo.url), 15, 'beamngEarthUpdate')
+  end
 end
 
 -- Hitch attribution (the user, 2026-10-14: "there's definitely some performance issues sometimes"): each frame
