@@ -31,6 +31,7 @@ M.TAIL_STEP_M = 25
 -- path, in its lane, minding traffic, at the legal speed; given again with every new arrows' path, when the graph was
 -- applied again (its nodes are new tables) and when the car has stood still for AUTO_STALL_S.
 M.AUTO_STALL_S = 6
+M.GRAPH_WAIT_S = 4      -- the longest a new path waits for the car's copy of the graph (then given anyway)
 M.AUTO_AGGRESSION = 0.3
 -- Safety: the AI brakes to a stop while the world server is away (no new ground or roads: an autodrive left on through
 -- server restarts drove off the loaded world and wrecked the car, 2026-10-14) and goes on when it is back; a car
@@ -53,6 +54,8 @@ local autoPath = nil    -- the node ids last given to the AI
 local autoSerial = nil  -- the graph (navgraph applies) they were taken from
 local stillSince = nil
 local paused = false    -- the AI holds the car (world server away)
+local vehGraph = {}     -- vehicle id -> the game's map buildSerial when its mapmgr last took the graph
+local pathWait = nil    -- os.clock() since a path waits for the car to have the graph it was planned on
 local targetS = nil     -- the route distance of the arrows' target
 
 -- Pure: the id and position {x, y, z} of the node in `nodes` (map.getMap().nodes: id -> { pos = {x, y, z} })
@@ -289,24 +292,39 @@ function M.aiCommand(ids, aggression)
     .. 'avoidCars = "on", aggression = ' .. string.format('%.2f', aggression or M.AUTO_AGGRESSION) .. '})'
 end
 
+-- Pure: the edge data between nodes a and b, or nil. The game keeps each edge on one of its nodes only once a
+-- graph is loaded (map.lua convertToSingleSided): a path's step read as no edge half the time, and every rebuild
+-- of the graph cut the AI's path to a node behind the car (Lauterbrunnen 2026-10-15).
+function M.edge(nodes, a, b)
+  local na, nb = nodes[a], nodes[b]
+  if not (na and nb) then return nil end
+  return (na.links and na.links[b]) or (nb.links and nb.links[a]) or nil
+end
+
+-- Pure: may the edge between a and b be driven from a to b (a one-way edge runs from its inNode)?
+local function drivable(e, a)
+  return not (type(e) == 'table' and e.oneWay and e.inNode ~= nil and e.inNode ~= a)
+end
+
 -- Pure: the graph edge (from id, to id) the car at (px, py) heading (hx, hy) drives on: within 8 m, running its way.
 function M.edgeUnder(nodes, px, py, hx, hy)
   local best, bd = nil, 8.0
+  local function try(from, to, e)
+    local a, b = nodes[from] and nodes[from].pos, nodes[to] and nodes[to].pos
+    if not (a and b) or not drivable(e, from) then return end
+    local dx, dy = b.x - a.x, b.y - a.y
+    local L = math.sqrt(dx * dx + dy * dy)
+    if L > 0.1 and (dx * hx + dy * hy) / L > 0.5 then
+      local t = math.max(0, math.min(1, ((px - a.x) * dx + (py - a.y) * dy) / (L * L)))
+      local qx, qy = a.x + t * dx - px, a.y + t * dy - py
+      local d = math.sqrt(qx * qx + qy * qy)
+      if d < bd then best, bd = { from, to }, d end
+    end
+  end
   for id, n in pairs(nodes or {}) do
-    local a = n.pos
-    for other, _ in pairs(n.links or {}) do
-      local o = nodes[other]
-      local b = o and o.pos
-      if a and b then
-        local dx, dy = b.x - a.x, b.y - a.y
-        local L = math.sqrt(dx * dx + dy * dy)
-        if L > 0.1 and (dx * hx + dy * hy) / L > 0.5 then
-          local t = math.max(0, math.min(1, ((px - a.x) * dx + (py - a.y) * dy) / (L * L)))
-          local qx, qy = a.x + t * dx - px, a.y + t * dy - py
-          local d = math.sqrt(qx * qx + qy * qy)
-          if d < bd then best, bd = { id, other }, d end
-        end
-      end
+    for other, e in pairs(n.links or {}) do
+      try(id, other, e)
+      try(other, id, e)
     end
   end
   if best then return best[1], best[2] end
@@ -321,23 +339,71 @@ function M.joinStart(ids, a, b, nodes)
   if ids[1] == b then
     out[1] = a
   elseif ids[1] ~= a then
-    local nb = nodes and nodes[b]
-    if not (nb and nb.links and nb.links[ids[1]]) then return ids end
+    if not (nodes and M.edge(nodes, b, ids[1])) then return ids end
     out[1], out[2] = a, b
   end
   for _, id in ipairs(ids) do out[#out + 1] = id end
   return out
 end
 
+-- (debug) the AI's new paths: M.TRACE = true logs each with the car's position and its first nodes'
+function M.trace(kind, ids, nodes, p)
+  if not M.TRACE then return end
+  local parts = {}
+  for i = 1, math.min(5, #ids) do
+    local n = nodes and nodes[ids[i]]
+    parts[i] = n and string.format('%s(%.0f,%.0f)', tostring(ids[i]), n.pos.x, n.pos.y) or tostring(ids[i]) .. '(?)'
+  end
+  log('I', 'beamngEarth', string.format('gps %s at (%.0f,%.0f) t=%.1f: %d nodes %s', kind, p.x, p.y, os.clock(), #ids,
+    table.concat(parts, ' ')))
+end
+
+-- The vehicles' copies of the graph: the game sends a new graph to each vehicle a frame or more after it goes in
+-- (map.request), and the stock AI given a path on the new graph before then indexed a step missing from its copy
+-- ('edgeData' nil in graphpath.lua getEdgePositions): the vehicle's Lua stopped and the car ran straight off the
+-- road into a pole (Lauterbrunnen 2026-10-15, twice).
+function M.onVehicleMapmgrUpdate(id)
+  local m = rawget(_G, 'map')
+  local gm = m and m.getMap and m.getMap()
+  if id then vehGraph[id] = gm and gm.buildSerial end
+end
+
+function M.vehicleHasGraph(veh)
+  local m = rawget(_G, 'map')
+  local gm = m and m.getMap and m.getMap()
+  local serial = gm and gm.buildSerial
+  if serial == nil or not (veh and veh.getId) then return true end
+  return vehGraph[veh:getId()] == serial
+end
+
 local function driveArrowsPath(gm, nodes)
   local veh = playerVeh()
   if not veh or not gm.routePlanner then return end
+  if not M.vehicleHasGraph(veh) then
+    local now = os.clock()
+    if not pathWait then
+      pathWait = now
+      veh:queueLuaCommand('mapmgr.requestMap()')     -- (answered only when its copy is out of date)
+    end
+    if now - pathWait < M.GRAPH_WAIT_S then return end
+    M.graphWaitsTimedOut = (M.graphWaitsTimedOut or 0) + 1
+  end
+  pathWait = nil
   local ids = M.pathNodes(gm.routePlanner.path)
+  -- the planner's path can be older than the graph (planned before the last apply): a step that is no edge now
+  -- disabled the AI's Lua (ai.lua getEdgeLaneConfig, Lauterbrunnen 2026-10-15). The valid part is driven and the
+  -- route planned again at the next check
+  local valid = M.validFrom(ids, 1, { nodes })
+  if #valid < #ids then
+    ids, routedTo = valid, nil
+    M.pathCuts = (M.pathCuts or 0) + 1
+  end
   local p, d = veh:getPosition(), veh:getDirectionVector()
   local hl = math.sqrt(d.x * d.x + d.y * d.y)
   if hl > 0.1 then ids = M.joinStart(ids, M.edgeUnder(nodes, p.x, p.y, d.x / hl, d.y / hl), nodes) end
   if #ids < 2 then return end
   veh:queueLuaCommand(M.aiCommand(ids))
+  M.trace('path', ids, nodes, p)
   autoPath, autoSerial, stillSince = ids, graphSerial(), nil
 end
 
@@ -364,8 +430,7 @@ function M.validFrom(ids, k, graphs)
   local out = { ids[k] }
   for i = k, #ids - 1 do
     for _, nodes in ipairs(graphs) do
-      local n = nodes[ids[i]]
-      if not (n and n.links and n.links[ids[i + 1]] and nodes[ids[i + 1]]) then return out end
+      if not M.edge(nodes, ids[i], ids[i + 1]) then return out end
     end
     out[#out + 1] = ids[i + 1]
   end
@@ -382,7 +447,7 @@ function M.beforeGraph(oldNodes)
   local p = veh:getPosition()
   local k = M.pathIndexAt(autoPath, oldNodes, p.x, p.y)
   if not k then return nil end
-  return { ids = M.validFrom(autoPath, k, { oldNodes }) }
+  return { ids = M.validFrom(autoPath, k, { oldNodes }), full = #autoPath - k + 1 }
 end
 
 -- ... and applied (newNodes: the game's map now): the AI gets the part of its path valid in both graphs at once,
@@ -392,6 +457,18 @@ function M.afterGraph(keep, newNodes)
   local veh = playerVeh()
   if not keep or not veh or not newNodes then return end
   local ids = M.validFrom(keep.ids, 1, { newNodes })
+  -- the AI's whole path ahead is still a path of the new graph: left alone (each new path resets the AI: the
+  -- gearbox's "arcade" note, and right after one it swerved onto a sidewalk into a pole, Lauterbrunnen 2026-10-15)
+  if #ids == keep.full and #ids == #keep.ids then
+    M.graphUntouched = (M.graphUntouched or 0) + 1
+    autoSerial = graphSerial() + 1    -- (navgraph counts this apply right after: autoKeep must not re-path for it)
+    return
+  end
+  -- broken: the AI keeps the part valid in both graphs (its copy is still the old one); the full route on the new
+  -- graph follows once the car has it (driveArrowsPath waits). A path planned on the new graph here crashed the
+  -- AI's Lua (a step missing from the vehicle's copy, 2026-10-15)
+  local p = veh:getPosition()
+  M.trace('keep', ids, newNodes, p)
   if #ids >= 2 then
     veh:queueLuaCommand(M.aiCommand(ids))
   else
@@ -421,7 +498,7 @@ function M.setAutodrive(on)
   on = on and true or false
   if on == auto then return auto end
   auto = on
-  autoPath, autoSerial, stillSince, paused = nil, nil, nil, false
+  autoPath, autoSerial, stillSince, paused, pathWait = nil, nil, nil, false, nil
   if on then
     routedTo = nil                       -- the arrows (and the AI's path) set again at the next check
     lastCheck = -math.huge
@@ -462,6 +539,7 @@ local function autoKeep(nodes, now)
   local v = veh.getVelocity and veh:getVelocity()
   local speed = v and math.sqrt(v.x * v.x + v.y * v.y) or 0
   if speed < 1 then stillSince = stillSince or now else stillSince = nil end
+  if pathWait and M.vehicleHasGraph(veh) then routedTo = nil end     -- the path that waited: given now
   if (autoPath and autoSerial ~= graphSerial()) or (stillSince and now - stillSince > M.AUTO_STALL_S) then
     routedTo = nil
   end

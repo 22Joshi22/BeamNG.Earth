@@ -60,4 +60,51 @@ do
   T.check(#v == 4, 'all valid in the old graph')
   T.check(#G.validFrom({ 'a', 'x' }, 1, { old }) == 1, 'an unknown node: cut')
 end
+
+-- a graph update that keeps the AI's path ahead valid leaves the AI alone
+do
+  local sent = {}
+  local veh = { getPosition = function() return { x = 150, y = 0 } end,
+                queueLuaCommand = function(_, c) sent[#sent + 1] = c end }
+  local keep = { ids = { 'b', 'c' }, full = 2 }
+  local function n(x, links) return { pos = { x = x, y = 0 }, links = links } end
+  local same = { b = n(100, { c = 1 }), c = n(200, { b = 1 }) }
+  local saved = getPlayerVehicle
+  getPlayerVehicle = function() return veh end
+  G.afterGraph(keep, same)
+  T.check(#sent == 0, 'still valid: no new path for the AI')
+  G.afterGraph(keep, { b = n(100, {}), c = n(200, {}) })
+  T.check(#sent == 1, 'a broken step: the AI gets the part that is left')
+  getPlayerVehicle = saved
+end
+do -- the game's loaded graph keeps each edge on one node only (map.lua convertToSingleSided)
+  local P = function(x, y) return { x = x, y = y, z = 0 } end
+  local one = {
+    a = { pos = P(0, 0), links = { b = { oneWay = false } } },
+    b = { pos = P(50, 0), links = {} },
+    c = { pos = P(100, 0), links = { b = { oneWay = false } } },
+    d = { pos = P(150, 0), links = { c = { oneWay = true, inNode = 'd' } } },
+  }
+  T.check(#G.validFrom({ 'a', 'b', 'c', 'd' }, 1, { one }) == 4, 'a step stored on either node is an edge')
+  local f, t = G.edgeUnder(one, 70, 1, 1, 0)
+  T.check(f == 'b' and t == 'c', 'the edge under the car, stored on its far node: ' .. tostring(f) .. tostring(t))
+  f, t = G.edgeUnder(one, 70, 1, -1, 0)
+  T.check(f == 'c' and t == 'b', 'driven the other way: ' .. tostring(f) .. tostring(t))
+  T.check(G.edgeUnder(one, 120, 1, 1, 0) == nil, 'a one-way edge against its way: none')
+  f, t = G.edgeUnder(one, 120, 1, -1, 0)
+  T.check(f == 'd' and t == 'c', 'a one-way edge its way: ' .. tostring(f) .. tostring(t))
+  local j = G.joinStart({ 'c', 'd' }, 'a', 'b', one)
+  T.check(#j == 4 and j[1] == 'a' and j[2] == 'b', 'joined across an edge stored on the far node')
+end
+do -- a new path waits for the car's copy of the graph
+  local savedMap, gm = map, { buildSerial = 3 }
+  map = { getMap = function() return gm end }
+  local veh = { getId = function() return 77 end }
+  T.check(not G.vehicleHasGraph(veh), 'a vehicle that has not taken the graph: wait')
+  G.onVehicleMapmgrUpdate(77)
+  T.check(G.vehicleHasGraph(veh), 'taken: go')
+  gm.buildSerial = 4
+  T.check(not G.vehicleHasGraph(veh), 'a newer graph: wait again')
+  map = savedMap
+end
 T.done('test_gps')

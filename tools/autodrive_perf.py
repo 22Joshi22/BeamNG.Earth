@@ -240,6 +240,47 @@ def _causes(rows):
     return {k: list(v) for k, v in sorted(out.items(), key=lambda kv: -kv[1][0])}
 
 
+# The car on the nearest road-graph node (a teleport lands it where the point is, a sidewalk or a field: the AI
+# then drove along a sidewalk into a pole, 2026-10-15), facing the linked node that points most toward the goal.
+SNAP_LUA = r"""
+local tlat, tlon = %r, %r
+local m = map.getMap()
+local veh = getPlayerVehicle(0)
+if not (m and m.nodes and veh) then return 'snap: no graph' end
+local p = veh:getPosition()
+local best, bd = nil, math.huge
+for id, n in pairs(m.nodes) do
+  if n.pos and next(n.links or {}) then
+    local d = (n.pos.x - p.x) ^ 2 + (n.pos.y - p.y) ^ 2
+    if d < bd then best, bd = id, d end
+  end
+end
+if not best then return 'snap: no node' end
+local st = beamngEarth_core and beamngEarth_core._state and beamngEarth_core._state()
+local a = st and st.anchor
+local n = m.nodes[best]
+local gx, gy = 0, 0
+if a and a.geodeticToEnu then gx, gy = a:geodeticToEnu(tlat, tlon, 0) end
+local dir, bs = nil, -math.huge
+for other in pairs(n.links) do
+  local o = m.nodes[other]
+  if o and o.pos then
+    local dx, dy = o.pos.x - n.pos.x, o.pos.y - n.pos.y
+    local L = math.sqrt(dx * dx + dy * dy)
+    local tx, ty = gx - n.pos.x, gy - n.pos.y
+    local T = math.sqrt(tx * tx + ty * ty)
+    local sc = (L > 0 and T > 0) and (dx * tx + dy * ty) / (L * T) or 0
+    if sc > bs then bs, dir = sc, vec3(dx / L, dy / L, 0) end
+  end
+end
+dir = dir or vec3(0, 1, 0)
+local rot = quatFromDir(dir, vec3(0, 0, 1))
+local z = be:getSurfaceHeightBelow(n.pos + vec3(0, 0, 3))
+veh:setPositionRotation(n.pos.x, n.pos.y, ((z and z > -1e6) and z or n.pos.z) + 0.5, rot.x, rot.y, rot.z, rot.w)
+return string.format('snap: node %%s %%.1f m away', tostring(best), math.sqrt(bd))
+"""
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--from", dest="start", type=latlon, help="lat,lon to teleport to first")
@@ -258,6 +299,9 @@ def main():
     if a.start:
         lua("return tostring(beamngEarth_core.teleport(%r, %r, 'autodrive_perf start', {record = false}))" % a.start)
         time.sleep(a.settle)
+    if a.start:                     # on the road: the nearest graph node, facing along its edge toward the goal
+        print(lua(SNAP_LUA % a.to), flush=True)
+        time.sleep(3)
     lua("beamngEarth_settings.uiMapGps(%r, %r, 'autodrive_perf') return 'ok'" % a.to)
     lua("return tostring(beamngEarth_settings.uiGpsAutodrive(true).autodrive)")
     obs = obs_start() if a.obs else None
