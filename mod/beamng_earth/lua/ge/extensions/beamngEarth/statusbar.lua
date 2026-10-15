@@ -8,6 +8,7 @@
 -- world fills in. Drawn like credits.lua (a background draw-list rectangle and one text, measured only when the text
 -- or the viewport changed); hidden in the pause menu and on the map (core passes credits.hiddenByUi()).
 local M = {}
+M.JUMP_M = 2000      -- a move this far between requests is a teleport: the old place is cleared
 
 M.enabled = true
 M.TOP = 6                  -- px from the top of the viewport
@@ -62,14 +63,26 @@ function M.frame(frameMs)
 end
 
 -- Every frame: the 'where' request due now, or nil. now: s; player {x, y, lat, lon}; online: place names allowed.
+-- Pure: metres between two lat/lon points (equirectangular: plenty for "has the car moved 50 m").
+function M.dist(lat1, lon1, lat2, lon2)
+  local k = 111320
+  local dx = (lon2 - lon1) * k * math.cos(math.rad((lat1 + lat2) / 2))
+  return math.sqrt(dx * dx + ((lat2 - lat1) * k) ^ 2)
+end
+
 function M.request(now, player, online)
   if not M.enabled or not player or not player.lat then return nil end
-  local moved = last and math.sqrt((player.x - last.x) ^ 2 + (player.y - last.y) ^ 2) or math.huge
+  -- moved: in lat / lon, not the anchor frame's x, y (a teleport lands at x, y ~ 0 again: the bar kept the old
+  -- place's street, "John Muir Trail" in Provence, 2026-10-15; a rebase shifts x, y too)
+  local moved = last and M.dist(last.lat, last.lon, player.lat, player.lon) or math.huge
   if last and (now - last.t < M.WHERE_MIN_S or moved < M.WHERE_STREET_M) then return nil end
   local placeDue = online and (not last or not last.pt or now - last.pt >= M.WHERE_PLACE_S
-    or math.sqrt((player.x - last.px) ^ 2 + (player.y - last.py) ^ 2) >= M.WHERE_PLACE_M)
-  last = { x = player.x, y = player.y, t = now, px = last and last.px, py = last and last.py, pt = last and last.pt }
-  if placeDue then last.px, last.py, last.pt = player.x, player.y, now end
+    or M.dist(last.plat, last.plon, player.lat, player.lon) >= M.WHERE_PLACE_M)
+  last = { lat = player.lat, lon = player.lon, t = now, plat = last and last.plat, plon = last and last.plon,
+    pt = last and last.pt }
+  if placeDue then last.plat, last.plon, last.pt = player.lat, player.lon, now end
+  -- a jump (a teleport): the old street and place go at once
+  if moved ~= math.huge and moved > M.JUMP_M then loc = { street = '', place = '', region = '', country = '' } end
   nextId = nextId + 1
   M.requests = M.requests + 1
   return { type = 'where', id = nextId, lat = player.lat, lon = player.lon, online = placeDue and true or false }
