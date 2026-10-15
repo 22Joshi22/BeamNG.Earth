@@ -341,7 +341,7 @@
   "findings": [
    {
     "claim": "simTimeAuthority.lua is not the cause: it only handles user-set slow motion and pause.",
-    "evidence": "/home/tecnagamer/.local/share/Steam/steamapps/common/BeamNG.drive/lua/ge/simTimeAuthority.lua. bulletTimeSlots, setTargetSpeed clamps to [0.001, 1], and the timescale changes only through set/selectPreset/pause/pauseSmooth via be:setSimulationTimeScale. Nothing in it reacts to frame time.",
+    "evidence": "~/.local/share/Steam/steamapps/common/BeamNG.drive/lua/ge/simTimeAuthority.lua. bulletTimeSlots, setTargetSpeed clamps to [0.001, 1], and the timescale changes only through set/selectPreset/pause/pauseSmooth via be:setSimulationTimeScale. Nothing in it reacts to frame time.",
     "verified": true,
     "relevance": "Rules out a Lua-side timescale change; the mechanism is in C++."
    },
@@ -383,7 +383,7 @@
    },
    {
     "claim": "Our streaming produces exactly the trigger pattern: a terrain commit immediately followed by a run of about 25 ms COLLADA-import frames.",
-    "evidence": "/home/tecnagamer/.local/share/BeamNG/BeamNG.drive/current/beamng.log:\n- '9182.02513 terrain block now at (-768, -2048), 60.6 ms', then imports at 9182.04765, .07381, .10055 and onward, about 25 ms apart.\n- Same at 9270.27099 (62.8 ms), followed by 15+ imports at about 25 ms spacing through 9270.64455.\n- Collision reloads in the current session are only 2\u20137 ms (the 165\u2013185 ms reloads were early probe sessions).\n- No 'MainLoop frame time ... exceeds stall threshold' lines in any beamng*.log.",
+    "evidence": "~/.local/share/BeamNG/BeamNG.drive/current/beamng.log:\n- '9182.02513 terrain block now at (-768, -2048), 60.6 ms', then imports at 9182.04765, .07381, .10055 and onward, about 25 ms apart.\n- Same at 9270.27099 (62.8 ms), followed by 15+ imports at about 25 ms spacing through 9270.64455.\n- Collision reloads in the current session are only 2\u20137 ms (the 165\u2013185 ms reloads were early probe sessions).\n- No 'MainLoop frame time ... exceeds stall threshold' lines in any beamng*.log.",
     "verified": true,
     "relevance": "The 60 ms commit by itself would be filtered out as a hitch. Back-to-back imports right after it turn it into a run, which passes the median and drives the EMA warp."
    },

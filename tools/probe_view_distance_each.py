@@ -1,9 +1,9 @@
 import json, os, sys, time
-sys.path.insert(0, '/home/tecnagamer/Documents/BeamNG.Earth/tools')
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import probe_view_distance as P
 import numpy as np
 from PIL import Image
-OUT = '/home/tecnagamer/Documents/BeamNG.Earth/docs/research/view_distance/' + os.environ.get('TAG', 'each')
+OUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'docs', 'research', 'view_distance', os.environ.get('TAG', 'each')) + '/'
 os.makedirs(OUT, exist_ok=True)
 shape = "/temp/beamngEarth_probe/marker.cdae"
 FOG = float(os.environ.get("FOG", "-1"))

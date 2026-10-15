@@ -128,4 +128,4 @@ Local copies of the downloaded code are in `/tmp/claude-1000/-home-tecnagamer-Do
 - `t3d/`
 - `bngpy/`
 
-The local stale claim is at line 73 of `/home/tecnagamer/Documents/BeamNG.Earth/docs/ARCHITECTURE.md`.
+The local stale claim is at line 73 of `./docs/ARCHITECTURE.md`.

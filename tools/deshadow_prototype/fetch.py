@@ -2,7 +2,7 @@
 Uses server/imagery.py and server/dem.py unmodified (their caches, their generic UA)."""
 import math, os, sys, time
 import numpy as np
-sys.path.insert(0, "/home/tecnagamer/Documents/BeamNG.Earth/server")
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "server"))
 import imagery as im
 import dem as demmod
 
