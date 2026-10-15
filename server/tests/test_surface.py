@@ -310,5 +310,29 @@ class LotTest(unittest.TestCase):
         self.assertEqual(int((out == sf.ASPHALT).sum()), int((sf.paint_lots(idx, lat, lon, [Lots()]) == sf.ASPHALT).sum()))
 
 
+    def test_square_painted_paving(self):
+        """A land-use square (subtype pedestrian) is paving (the Zocalo read as dirt); a park is not."""
+        lat0, lon0 = 19.43, -99.13
+        lat = lat0 + np.arange(50)[:, None] * 2e-5 + np.zeros((1, 50))
+        lon = lon0 + np.arange(50)[None, :] * 2.1e-5 + np.zeros((50, 1))
+
+        class Land:
+            kind = np.array([3, 3], np.uint8)
+            attrs = {"class": np.array(["plaza", "park"], object), "subtype": np.array(["pedestrian", "park"], object)}
+
+            def __len__(self):
+                return 2
+
+            def parts(self, i):
+                k = 0 if i == 0 else 25
+                a, b = lon0 + (5 + k) * 2.1e-5, lon0 + (20 + k) * 2.1e-5
+                c, d = lat0 + 5 * 2e-5, lat0 + 20 * 2e-5
+                return [[np.array([(a, c), (b, c), (b, d), (a, d), (a, c)])]]
+        idx = np.full((50, 50), sf.DIRT, np.uint8)
+        out = sf.paint_lots(idx, lat, lon, [Land()])
+        self.assertEqual(out[12, 12], sf.COBBLE)
+        self.assertEqual(out[12, 37], sf.DIRT)
+
+
 if __name__ == "__main__":
     unittest.main()

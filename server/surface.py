@@ -223,11 +223,32 @@ def paint_roads(idx, lat, lon, feats_list, square, urban_fn=None, widths=None):
 
 AISLE_STALLS_M = 5.5        # a parking aisle's stall rows (parking.LOT_SPOT_D_M), painted with it
 PARKING_CLASSES = {"parking"}     # Overture infrastructure (transit) polygons drawn as asphalt: no grass on a lot
+# Squares and pedestrian areas (Overture land_use subtype "pedestrian": Mexico City's Zocalo read as bare dirt,
+# 2026-10-15): paving, under the parking lots and the roads drawn over them
+PLAZA_CLASSES = {"pedestrian", "plaza"}
 
 
 def paint_lots(idx, lat, lon, feats_list):
-    """idx with the parking lots (infrastructure polygons of class "parking") of feats_list drawn in as
-    asphalt (Lancaster County's photos: the grass layer's ground cover grew on lots). Pure."""
+    """idx with the squares and pedestrian areas (land_use polygons of subtype "pedestrian") of feats_list
+    drawn in as paving, then the parking lots (polygons of class "parking") as asphalt (Lancaster County's
+    photos: the grass layer's ground cover grew on lots). Pure."""
+    idx = _paint(idx, lat, lon, feats_list, _plazas, COBBLE)
+    return _paint(idx, lat, lon, feats_list, _parking, ASPHALT)
+
+
+def _parking(feats):
+    cls = feats.attrs.get("class")
+    return None if cls is None else np.isin(cls.astype(str), list(PARKING_CLASSES))
+
+
+def _plazas(feats):
+    cls, sub = feats.attrs.get("class"), feats.attrs.get("subtype")
+    if cls is None or sub is None:
+        return None
+    return (sub.astype(str) == "pedestrian") & np.isin(cls.astype(str), list(PLAZA_CLASSES))
+
+
+def _paint(idx, lat, lon, feats_list, select, material):
     h, w = idx.shape
     to_px = grid_affine(lat, lon)
     im = Image.new("L", (w, h), 0)
@@ -236,10 +257,10 @@ def paint_lots(idx, lat, lon, feats_list):
     for feats in feats_list:
         if feats is None or len(feats) == 0:
             continue
-        cls = feats.attrs.get("class")
-        if cls is None:
+        sel = select(feats)
+        if sel is None:
             continue
-        for i in np.flatnonzero(np.isin(cls.astype(str), list(PARKING_CLASSES)) & (feats.kind == 3)):
+        for i in np.flatnonzero(sel & (feats.kind == 3)):
             for part in feats.parts(i):
                 if not part:
                     continue
@@ -252,7 +273,7 @@ def paint_lots(idx, lat, lon, feats_list):
     if n == 0:
         return idx
     out = idx.copy()
-    out[np.asarray(im) > 0] = ASPHALT
+    out[np.asarray(im) > 0] = material
     return out
 
 
@@ -423,19 +444,20 @@ class Surface:
         return out, complete
 
     def lots(self, lat, lon):
-        """The "infrastructure" Features of the cells around the points that are cached (parking lots);
-        never waits (missing cells are fetched in the background)."""
+        """The "infrastructure" and "land_use" Features of the cells around the points that are cached
+        (parking lots, squares: paint_lots); never waits (missing cells are fetched in the background)."""
         lat = np.asarray(lat, np.float64)
         lon = np.asarray(lon, np.float64)
         out = []
         for key in mapcells.cells_for_bbox(float(lat.min()), float(lon.min()), float(lat.max()), float(lon.max())):
-            if self.md._load(self.md.path(key, "infrastructure")) is None:
-                self._queue(key, ("infrastructure",))
-                continue
-            try:
-                out.append(self.md.cell(key, layers=("infrastructure",), kind="background").layers.get("infrastructure"))
-            except Exception as e:      # an unreadable cache file: like a missing one
-                log.debug("surface: lots of %s: %s: %s", key, type(e).__name__, e)
+            for layer in ("infrastructure", "land_use"):
+                if self.md._load(self.md.path(key, layer)) is None:
+                    self._queue(key, (layer,))
+                    continue
+                try:
+                    out.append(self.md.cell(key, layers=(layer,), kind="background").layers.get(layer))
+                except Exception as e:      # an unreadable cache file: like a missing one
+                    log.debug("surface: %s of %s: %s: %s", layer, key, type(e).__name__, e)
         return out
 
     def urban(self, lat, lon):
