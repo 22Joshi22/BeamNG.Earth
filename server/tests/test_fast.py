@@ -69,6 +69,48 @@ class FastTest(unittest.TestCase):
             if abs(got[1]) > 0.5 and abs(want[1]) > 0.5:     # (the caller uses only a clear side, > 0.5)
                 self.assertEqual(np.sign(got[1]), np.sign(want[1]), (trial, got, want))
 
+    def test_deck_crossings_matches_python(self):
+        import roads
+        rng = np.random.default_rng(5)
+        for trial in range(50):
+            lines = [np.cumsum(rng.normal(0, 30, (rng.integers(1, 9), 2)), 0) + rng.normal(0, 60, 2)
+                     for _ in range(rng.integers(0, 7))]
+            got = roads._deck_crossings(lines)
+            want = roads._deck_crossings_py(lines)
+            self.assertEqual([g[:2] for g in got], [w[:2] for w in want], trial)
+            for g, w in zip(got, want):
+                self.assertAlmostEqual(g[2], w[2], places=9)
+                self.assertAlmostEqual(g[3], w[3], places=9)
+
+    def test_point_inside_matches_python(self):
+        rng = np.random.default_rng(9)
+        for _ in range(100):
+            k = rng.integers(3, 12)
+            ring = rng.normal(0, 20, (k, 2))
+            ring[rng.integers(0, k)][1] = ring[0][1]           # a level edge (the 1e-12 divisor)
+            for p in rng.normal(0, 25, (20, 2)):
+                saved = fast._ef
+                fast._ef = None
+                try:
+                    want = islands._inside(ring, p)
+                finally:
+                    fast._ef = saved
+                self.assertEqual(islands._inside(ring, p), want)
+
+    def test_geodetic_to_enu_matches_numpy(self):
+        import geodesy
+        rng = np.random.default_rng(2)
+        for lat0, lon0 in ((39.28, -76.6), (36.17, -115.145), (-33.9, 151.2), (64.1, -21.9)):
+            f = geodesy.EnuFrame(lat0, lon0)
+            lat = lat0 + rng.normal(0, 0.05, 50)
+            lon = lon0 + rng.normal(0, 0.05, 50)
+            h = rng.uniform(-50, 3000, 50)
+            for hh in (h, 0.0, 12.5):
+                got = f.geodetic_to_enu(lat, lon, hh)
+                want = f.ecef_to_enu(*geodesy.geodetic_to_ecef(lat, lon, hh))
+                for g, w in zip(got, want):
+                    self.assertTrue(np.allclose(g, w, rtol=0, atol=1e-6))
+
     def test_points_and_distances(self):
         sq = np.array([[0, 0], [10, 0], [10, 10], [0, 10]], float)
         pts = np.array([[5, 5], [15, 5], [-1, -1], [9.9, 0.1]], float)

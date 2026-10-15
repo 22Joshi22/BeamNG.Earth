@@ -207,6 +207,127 @@ fn dual_side(a: PyReadonlyArray2<f64>, b: PyReadonlyArray2<f64>, gap_min: f64, g
     (ok_n as f64 / n as f64, side_sum / ok_n as f64)
 }
 
+/// roads._deck_crossings: (i, j, arc on i, arc on j) where polylines i < j cross away from their end points.
+/// pts (n, 2) all lines one after another, starts (L + 1,) where each begins (the last: n).
+#[pyfunction]
+fn deck_crossings(pts: PyReadonlyArray2<f64>, starts: PyReadonlyArray1<i64>) -> Vec<(usize, usize, f64, f64)> {
+    let p = pts.as_array();
+    let st = starts.as_array();
+    let nl = st.len().saturating_sub(1);
+    let rng: Vec<(usize, usize)> = (0..nl).map(|i| (st[i] as usize, st[i + 1] as usize)).collect();
+    let mut boxes = Vec::with_capacity(nl);
+    let mut arcs: Vec<Vec<f64>> = Vec::with_capacity(nl);
+    for &(a, b) in &rng {
+        let (mut lo, mut hi) = ([f64::INFINITY; 2], [f64::NEG_INFINITY; 2]);
+        let mut arc = Vec::with_capacity(b - a);
+        let mut acc = 0.0;
+        for k in a..b {
+            for c in 0..2 {
+                lo[c] = lo[c].min(p[[k, c]]);
+                hi[c] = hi[c].max(p[[k, c]]);
+            }
+            if k > a {
+                acc += (p[[k, 0]] - p[[k - 1, 0]]).hypot(p[[k, 1]] - p[[k - 1, 1]]);
+            }
+            arc.push(acc);
+        }
+        boxes.push((lo, hi));
+        arcs.push(arc);
+    }
+    let mut out = Vec::new();
+    for i in 0..nl {
+        let (ai, bi) = rng[i];
+        if bi - ai < 2 {
+            continue;
+        }
+        for j in (i + 1)..nl {
+            let (aj, bj) = rng[j];
+            if bj - aj < 2 {
+                continue;
+            }
+            let ((alo, ahi), (blo, bhi)) = (boxes[i], boxes[j]);
+            if ahi[0] < blo[0] || bhi[0] < alo[0] || ahi[1] < blo[1] || bhi[1] < alo[1] {
+                continue;
+            }
+            let (si_end, sj_end) = (arcs[i][bi - ai - 1], arcs[j][bj - aj - 1]);
+            for q in 0..(bj - aj - 1) {
+                let (ax, ay) = (p[[aj + q, 0]], p[[aj + q, 1]]);
+                let (d0, d1) = (p[[aj + q + 1, 0]] - ax, p[[aj + q + 1, 1]] - ay);
+                for k in 0..(bi - ai - 1) {
+                    let (px, py) = (p[[ai + k, 0]], p[[ai + k, 1]]);
+                    let (r0, r1) = (p[[ai + k + 1, 0]] - px, p[[ai + k + 1, 1]] - py);
+                    let den = r0 * d1 - r1 * d0;
+                    if den.abs() <= 1e-12 {
+                        continue;
+                    }
+                    let (ap0, ap1) = (ax - px, ay - py);
+                    let t = (ap0 * d1 - ap1 * d0) / den;
+                    let u = (ap0 * r1 - ap1 * r0) / den;
+                    if t > 1e-6 && t < 1.0 - 1e-6 && u > 1e-6 && u < 1.0 - 1e-6 {
+                        let si = arcs[i][k] + t * (arcs[i][k + 1] - arcs[i][k]);
+                        let sj = arcs[j][q] + u * (arcs[j][q + 1] - arcs[j][q]);
+                        if si.min(si_end - si).min(sj).min(sj_end - sj) > 1.0 {
+                            out.push((i, j, si, sj));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
+/// One point in a polygon (n, >=2), even-odd, as islands._inside / buildings._inside.
+#[pyfunction]
+fn point_inside(poly: PyReadonlyArray2<f64>, x: f64, y: f64) -> bool {
+    let p = poly.as_array();
+    let n = p.nrows();
+    if n == 0 {
+        return false;
+    }
+    let mut c = false;
+    let mut j = n - 1;
+    for i in 0..n {
+        let (xi, yi, xj, yj) = (p[[i, 0]], p[[i, 1]], p[[j, 0]], p[[j, 1]]);
+        if (yi > y) != (yj > y) {
+            let dy = if yj - yi == 0.0 { 1e-12 } else { yj - yi };
+            if x < (xj - xi) * (y - yi) / dy + xi {
+                c = !c;
+            }
+        }
+        j = i;
+    }
+    c
+}
+
+/// geodesy.EnuFrame.geodetic_to_enu for 1-D lat, lon, h (degrees, metres): WGS84 to ECEF, then into the frame
+/// (origin (3,) ECEF, rot (3, 3) rows E, N, U). -> (e, n, u).
+#[pyfunction]
+fn geodetic_to_enu<'py>(py: Python<'py>, lat: PyReadonlyArray1<'py, f64>, lon: PyReadonlyArray1<'py, f64>,
+                        h: PyReadonlyArray1<'py, f64>, origin: PyReadonlyArray1<'py, f64>,
+                        rot: PyReadonlyArray2<'py, f64>)
+                        -> (Bound<'py, PyArray1<f64>>, Bound<'py, PyArray1<f64>>, Bound<'py, PyArray1<f64>>) {
+    const A: f64 = 6378137.0;
+    const F: f64 = 1.0 / 298.257223563;
+    const E2: f64 = F * (2.0 - F);
+    let (la, lo, hh, o, r) = (lat.as_array(), lon.as_array(), h.as_array(), origin.as_array(), rot.as_array());
+    let n = la.len();
+    let (mut e, mut nn, mut u) = (Vec::with_capacity(n), Vec::with_capacity(n), Vec::with_capacity(n));
+    for i in 0..n {
+        let (phi, lam, hv) = (la[i].to_radians(), lo[i].to_radians(), hh[i]);
+        let (sl, cl) = (phi.sin(), phi.cos());
+        let nr = A / (1.0 - E2 * sl * sl).sqrt();
+        let rr = (nr + hv) * cl;
+        let x = rr * lam.cos() - o[0];
+        let y = rr * lam.sin() - o[1];
+        let z = (nr * (1.0 - E2) + hv) * sl - o[2];
+        e.push(r[[0, 0]] * x + r[[0, 1]] * y + r[[0, 2]] * z);
+        nn.push(r[[1, 0]] * x + r[[1, 1]] * y + r[[1, 2]] * z);
+        u.push(r[[2, 0]] * x + r[[2, 1]] * y + r[[2, 2]] * z);
+    }
+    (e.into_pyarray(py), nn.into_pyarray(py), u.into_pyarray(py))
+}
+
 #[pymodule]
 fn earthfast(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(island_ring_rays, m)?)?;
@@ -214,6 +335,9 @@ fn earthfast(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(polyline_dist, m)?)?;
     m.add_function(wrap_pyfunction!(clear_of, m)?)?;
     m.add_function(wrap_pyfunction!(dual_side, m)?)?;
-    m.add("VERSION", 3)?;
+    m.add_function(wrap_pyfunction!(deck_crossings, m)?)?;
+    m.add_function(wrap_pyfunction!(point_inside, m)?)?;
+    m.add_function(wrap_pyfunction!(geodetic_to_enu, m)?)?;
+    m.add("VERSION", 5)?;
     Ok(())
 }

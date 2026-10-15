@@ -5,6 +5,11 @@ rest) and broadcast like numpy ufuncs.
 """
 import numpy as np
 
+try:
+    import earthfast as _ef     # Rust kernels (server/fast.py): the point-list conversion below
+except ImportError:
+    _ef = None
+
 A = 6378137.0                    # semi-major axis
 F = 1 / 298.257223563            # flattening
 B = A * (1 - F)                  # semi-minor axis
@@ -84,6 +89,14 @@ class EnuFrame:
         return ecef_to_geodetic(*self.enu_to_ecef(e, n, u))
 
     def geodetic_to_enu(self, lat, lon, h=0.0):
+        if _ef is not None and type(lat) is np.ndarray and lat.ndim == 1 and np.shape(lon) == lat.shape:
+            # the Rust kernel for point lists (a road tile made ~60k small calls, ~35 us each in numpy)
+            f64 = np.float64
+            hh = np.asarray(h, f64)
+            hh = np.full(lat.shape, float(hh)) if hh.ndim == 0 else hh
+            if hh.shape == lat.shape:
+                return _ef.geodetic_to_enu(lat.astype(f64, copy=False), np.asarray(lon, f64), hh, self.origin,
+                                           self.rot)
         return self.ecef_to_enu(*geodetic_to_ecef(lat, lon, h))
 
     def surface_enu(self, e, n, elev_fn):

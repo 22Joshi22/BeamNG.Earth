@@ -13,6 +13,8 @@ import math
 
 import numpy as np
 
+import fast
+
 JOIN_M = 1.5            # road ends this close are one graph node
 MAX_EDGES = 5           # roads in a loop
 MAX_LOOP_M = 400.0      # loop length
@@ -30,6 +32,8 @@ def _area(xy):
 
 def _inside(xy, p):
     x, y = p
+    if fast._ef is not None and xy.dtype == np.float64 and xy.ndim == 2:
+        return fast._ef.point_inside(xy, float(x), float(y))
     xs, ys = xy[:, 0], xy[:, 1]
     xj, yj = np.roll(xs, 1), np.roll(ys, 1)
     cross = ((ys > y) != (yj > y)) & (x < (xj - xs) * (y - ys) / np.where(yj - ys == 0, 1e-12, yj - ys) + xs)

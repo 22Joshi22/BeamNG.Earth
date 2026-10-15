@@ -1147,6 +1147,15 @@ def _crossings(lines, ground_lines):
 
 def _deck_crossings(lines):
     """(i, j, arc on i, arc on j) where deck parts i < j cross (not at their end points). Pure."""
+    import fast
+    if fast.AVAILABLE and lines:
+        pts = [np.asarray(ln, np.float64)[:, :2] for ln in lines]
+        starts = np.r_[0, np.cumsum([len(p) for p in pts])].astype(np.int64)
+        return fast._ef.deck_crossings(np.ascontiguousarray(np.vstack(pts)), starts)
+    return _deck_crossings_py(lines)
+
+
+def _deck_crossings_py(lines):
     out = []
     boxes = [(ln.min(axis=0), ln.max(axis=0)) for ln in lines]
     arcs = [np.r_[0.0, np.cumsum(np.hypot(*np.diff(ln, axis=0).T))] for ln in lines]

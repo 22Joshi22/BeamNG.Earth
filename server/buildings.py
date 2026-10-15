@@ -18,6 +18,8 @@ import math
 
 import numpy as np
 
+import fast
+
 FLOOR_M = 3.0               # m per storey (residential)
 GROUND_FLOOR_SHOP_M = 4.2   # m, a shop's ground floor
 FOUNDATION_M = 0.6          # m the walls reach under the lowest ground of the footprint
@@ -812,6 +814,8 @@ def _cornice(m, spec, ring, z_eave, mat_idx):
 def _inside(ring, p):
     """Point p inside the ring (even-odd)."""
     x, y = p
+    if fast._ef is not None and ring.dtype == np.float64 and ring.ndim == 2:
+        return fast._ef.point_inside(ring, float(x), float(y))
     xs, ys = ring[:, 0], ring[:, 1]
     xj, yj = np.roll(xs, 1), np.roll(ys, 1)
     cross = ((ys > y) != (yj > y)) & (x < (xj - xs) * (y - ys) / np.where(yj - ys == 0, 1e-12, yj - ys) + xs)

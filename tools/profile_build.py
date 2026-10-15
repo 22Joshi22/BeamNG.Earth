@@ -25,6 +25,7 @@ def main():
     ap.add_argument("--cache-dir", default=os.path.expanduser("~/.cache/beamng-earth"))
     ap.add_argument("--out", default=None, help="write the full stats here too")
     ap.add_argument("--top", type=int, default=35)
+    ap.add_argument("--dump", default=None, help="save the raw profile here (pstats, e.g. for print_callers)")
     a = ap.parse_args()
     lat, lon = (float(v) for v in a.at.split(","))
 
@@ -75,6 +76,8 @@ def main():
     st.sort_stats("tottime").print_stats(a.top)
     print("\nby cumulative time:")
     st.sort_stats("cumulative").print_stats(a.top)
+    if a.dump:
+        prof.dump_stats(a.dump)
     if a.out:
         with open(a.out, "w") as f:
             pstats.Stats(prof, stream=f).sort_stats("tottime").print_stats(200)
