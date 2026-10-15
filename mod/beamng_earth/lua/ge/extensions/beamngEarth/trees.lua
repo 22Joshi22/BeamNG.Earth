@@ -29,8 +29,9 @@ M.FOREST_NAME = 'bngEarthForest'      -- a prefix: small Forests from a pool ('b
 -- be:reloadCollision, and where no road tile arrives (the Sahara's rocks, 2026-10-14) none came at all.
 -- 2026-10-15 probes: with ~150k trees all colliding, a frame changing 10 items cost the engine's tick ~124 ms, ~68 ms
 -- when the changed items' type did not collide: much of a Forest change's cost grew with the colliding items.
-M.SOLID_M = 300
-M.SOLID_HYST_M = 100
+M.SOLID_M = 200       -- (was 300 + 100: up to ~20k solid trees in a forest, and every terrain block move rebuilt all their
+                      -- collision, a ~30 ms physics frame; 200 + 50 is still 5 s ahead at 100 mph, 2026-10-15)
+M.SOLID_HYST_M = 50
 M.NO_COLLIDE = { shrub = true, desert_shrub = true, door = true, wallsign_logistics = true, wallsign_rentabox = true,
   wallsign_lemon = true, wallsign_turboburger = true }
 -- The 100 mph stutter (2026-10-15 probes): a frame that adds or removes Forest items costs the engine's tick ~0.5 us
