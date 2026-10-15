@@ -25,7 +25,7 @@ import time
 from collections import OrderedDict
 
 import numpy as np
-from matplotlib.path import Path
+from polygon import Path
 
 import mapcells
 

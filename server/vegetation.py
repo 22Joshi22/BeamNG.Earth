@@ -25,7 +25,7 @@ from collections import OrderedDict
 from dataclasses import dataclass
 
 import numpy as np
-from matplotlib.path import Path
+from polygon import Path
 
 import mapcells
 

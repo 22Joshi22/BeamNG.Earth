@@ -12,7 +12,7 @@ spots: either way in, no "street" tracking). Cars park along the curb facing the
 import math
 
 import numpy as np
-from matplotlib.path import Path
+from polygon import Path
 
 import furniture
 
