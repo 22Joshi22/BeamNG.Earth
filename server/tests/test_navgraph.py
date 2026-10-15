@@ -109,7 +109,9 @@ class SignalsTest(unittest.TestCase):
 class RulesTest(unittest.TestCase):
     def test_driving_side_and_signals_by_country(self):
         self.assertEqual(navgraph.road_rules("US"), {"rightHandDrive": False, "turnOnRed": True, "redYellow": False,
-                                                     "country": "US"})
+                                                     "country": "US", "mph": True})
+        self.assertFalse(navgraph.road_rules("CH")["mph"])
+        self.assertTrue(navgraph.road_rules("GB")["mph"])
         self.assertTrue(navgraph.road_rules("gb")["rightHandDrive"], "the game's name: true = driving on the left")
         self.assertTrue(navgraph.road_rules("GB")["redYellow"])
         self.assertFalse(navgraph.road_rules("DE")["rightHandDrive"])

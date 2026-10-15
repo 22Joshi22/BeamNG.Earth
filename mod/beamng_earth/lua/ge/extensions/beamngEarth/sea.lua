@@ -70,9 +70,11 @@ end
 
 local TEXTURES = {      -- field, East Coast's file, the core fallback
   { 'rippleTex', '/levels/east_coast_usa/art/water/ripple3.dds', '/core/art/water/ripple_nm.normal.dds' },
-  { 'depthGradientTex', '/levels/east_coast_usa/art/water/depthcolor_ramp.dds',
-    '/core/art/water/depthcolor_ramp_b.color.png' },
-  { 'foamTex', '/core/art/water/foam.dds', '/core/art/water/foam_b.color.png' },
+  -- (2026-10-15: the ramp is a .png in East Coast USA, and neither fallback existed: ~1000 "texture missing" log
+  -- errors per session that filled the log's 15000 lines before the end of a drive)
+  { 'depthGradientTex', '/levels/east_coast_usa/art/water/depthcolor_ramp.png',
+    '/core/art/water/river_depthcolor_ramp_b.png' },
+  { 'foamTex', '/levels/east_coast_usa/art/water/foam.dds', '/core/art/water/foam_b.color.dds' },
 }
 
 local want = nil         -- { anchorId, tiles = { key -> tile }, rivers = { key -> river } } from the server
@@ -117,7 +119,11 @@ local function createRiver(key, r)
   local nodes = {}
   for _, n in ipairs(r.nodes) do nodes[#nodes + 1] = { n[1], n[2], n[3], n[4], n[5], 0, 0, 1 } end
   local def = { name = M.RIVER_PREFIX .. key, class = 'River', position = { nodes[1][1], nodes[1][2], nodes[1][3] },
-    nodes = nodes, flowMagnitudePhysics = r.flow }
+    nodes = nodes, flowMagnitudePhysics = r.flow, cubemap = 'BNG_Sky_01_cubemap',
+    __parent = scenetree.MissionGroup and 'MissionGroup' or nil }
+  -- the textures in the definition: registered without them, every River logged three "texture missing" and a
+  -- "no parent" error (thousands a session, the log's 15000 lines were full before a drive ended; 2026-10-15)
+  for _, x in ipairs(TEXTURES) do def[x[1]] = exists(x[2]) and x[2] or x[3] end
   local ok = pcall(Sim.deserializeObjectFromText, jsonEncode(def), true, true)
   local o = ok and scenetree.findObject(M.RIVER_PREFIX .. key)
   if not o then

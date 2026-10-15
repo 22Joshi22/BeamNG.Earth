@@ -1395,7 +1395,7 @@ def drains(run, side, caps, walk_w=None):
 
 
 def build_tile(frame, tx, ty, cells, elev, urban_fn=None, walks=None, bridges=None, widths=None, props=None,
-               lines=None, wires=None, town=None, park=None, left_hand=False, structures=()):
+               lines=None, wires=None, town=None, park=None, left_hand=False, structures=(), mph=True):
     """The chunks of one tile. cells: the mapgeom.Features of the "roads" layer of every cell touching
     the tile; elev(lat, lon) -> metres (the DEM); urban_fn: as road_specs. Features in several cells are
     taken once (by id). The carriageways, then each road's sidewalks / gutters / markings (extras), cut
@@ -1557,7 +1557,7 @@ def build_tile(frame, tx, ty, cells, elev, urban_fn=None, walks=None, bridges=No
         import navgraph
         speeds = {fid: navgraph.road_mph(f, i, sp) for fid, (f, i, sp) in seen.items()}
         props.extend(furniture.place(roads, walks, (x0, y0, x1, y1), wires=wires, town=bool(town), left_hand=left_hand,
-                                     speeds={k: v for k, v in speeds.items() if v is not None}))
+                                     speeds={k: v for k, v in speeds.items() if v is not None}, mph=mph))
     if park is not None and walks is not None:      # curbside parking spots (parking.py)
         import parking
         dirs = {}

@@ -34,6 +34,21 @@ if BNGE_GREC and BNGE_GREC.proxy then pcall(function() BNGE_GREC.proxy:submitEve
 BNGE_GREC = { n = 0, last = -1, t = {}, dir = %(dir)s, every = %(every)f, scale = %(scale)f, on = true }
 local P = BNGE_GREC
 FS:directoryCreate(P.dir)
+-- our jobs are not the screenshot module's: its callbacks logged "unknown job id" three times a frame (thousands
+-- of log lines, the log's 15000 were full before a drive ended); those of our ids are dropped while recording
+P.ids = {}
+if screenshot and not BNGE_GREC_ORIG then
+  BNGE_GREC_ORIG = { screenshot.screenshotTaken, screenshot.screenshotProgress, screenshot.screenshotSaved }
+  local names = { 'screenshotTaken', 'screenshotProgress', 'screenshotSaved' }
+  for k, name in ipairs(names) do
+    local orig = BNGE_GREC_ORIG[k]
+    screenshot[name] = function(id, ...)
+      local R = BNGE_GREC
+      if R and R.ids[id] then return end
+      return orig(id, ...)
+    end
+  end
+end
 local sink = {}
 function sink:onPreRender()
   if not P.on then return end
@@ -42,9 +57,10 @@ function sink:onPreRender()
   P.last = t
   P.n = P.n + 1
   P.t[P.n] = t
-  createScreenshot2({ filename = string.format('%%s/f_%%06d', P.dir, P.n), writeJPG = true, superSampling = 1,
+  local id = createScreenshot2({ filename = string.format('%%s/f_%%06d', P.dir, P.n), writeJPG = true, superSampling = 1,
     tiles = 1, overlap = 0, rescaleFactor = P.scale, bufferType = 'color', objectTypeWhitelistMask = 0,
     objectTypeBlacklistMask = 0, shadowCasterObjectTypeWhitelistMask = 0, shadowCasterObjectTypeBlacklistMask = 0 })
+  if id then P.ids[id] = true end
 end
 P.proxy = newExtensionProxy(nil, 'bngeGameRec')
 P.proxy:submitEventSinks({ sink }, {})

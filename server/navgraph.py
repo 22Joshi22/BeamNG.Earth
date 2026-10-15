@@ -319,6 +319,8 @@ LEFT_HAND = {"GB", "IE", "IM", "JE", "GG", "MT", "CY", "IN", "PK", "BD", "LK", "
              "JM", "BS", "BB", "TT", "GY", "SR", "AG", "DM", "GD", "KN", "LC", "VC", "VG", "VI", "AI", "KY", "TC",
              "BM", "MS", "PN"}
 TURN_ON_RED = {"US", "CA"}
+# speed limits posted in mph (the rest: km/h); the US territories, the UK and its crown dependencies, Liberia, Myanmar
+MPH_COUNTRIES = {"US", "PR", "VI", "GU", "AS", "MP", "UM", "GB", "IM", "JE", "GG", "LR", "MM"}
 RED_YELLOW = {"GB", "IE", "DE", "AT", "CH", "LI", "NL", "BE", "LU", "DK", "NO", "SE", "FI", "IS", "PL", "CZ", "SK",
               "HU", "SI", "HR", "BA", "RS", "ME", "MK", "AL", "RO", "BG", "LT", "LV", "EE", "UA", "BY", "RU", "IL"}
 
@@ -328,7 +330,7 @@ def road_rules(country):
     (US rules for an unknown one)."""
     c = (country or "US").upper()
     return {"rightHandDrive": c in LEFT_HAND, "turnOnRed": c in TURN_ON_RED, "redYellow": c in RED_YELLOW,
-            "country": c}
+            "country": c, "mph": c in MPH_COUNTRIES}
 
 
 def country_near(db, lat, lon):

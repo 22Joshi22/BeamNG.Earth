@@ -830,6 +830,14 @@ class Server:
             anchor._left_hand = lh
         return lh
 
+    def mph(self, anchor):
+        """Whether speed limits are posted in mph at the anchor (its country, navgraph.road_rules)."""
+        v = getattr(anchor, "_mph", None)
+        if v is None:
+            v = navgraphmod.road_rules(navgraphmod.country_near(self.airports_db, anchor.lat, anchor.lon))["mph"]
+            anchor._mph = v
+        return v
+
     def build_navgraph(self, aid, x, y, serial):
         """navgraph.py: the AI road graph around (x, y) of anchor aid, written to the session folder (the
         anchor's earlier graphs deleted): (vfs path, nodes, edges) or None. Worker threads."""
@@ -893,7 +901,7 @@ class Server:
             return self.road_pool.submit(
                 blockworker.roads_tile, aid, anchor.lat, anchor.lon, anchor.zooms[0], tx, ty, self.out_dir,
                 self.vfs_dir, self.sidewalks, DETAIL_ROAD_LIFT if self.near_visual == "detail" else 0.0,
-                self.buildings, self.left_hand(anchor)).result()
+                self.buildings, self.left_hand(anchor), self.mph(anchor)).result()
         cells = [self.mapdata.cell(k, layers=("roads",), kind="demand").layers.get("roads")
                  for k in roadsmod.cells_of_tile(anchor.frame, tx, ty)]
         zoom = anchor.zooms[0]
@@ -921,7 +929,7 @@ class Server:
             town = buildingsmod.coverage(items) < buildingsmod.POLES_COVERAGE
         chunks = roadsmod.build_tile(anchor.frame, tx, ty, cells, elev, urban, walks=walks, bridges=anchor.bridges,
                                      widths=self.road_widths, props=props, lines=lines, wires=wires, town=town, park=park,
-                                     left_hand=self.left_hand(anchor),
+                                     left_hand=self.left_hand(anchor), mph=self.mph(anchor),
                                      structures=buildingsmod.centres(items, tx, ty) if items else ())
         if self.airports is not None:   # runway markings, drawn by the road mesh like the lane lines
             chunks += self.airports.tile_chunks(anchor.frame, tx, ty, elev, roadsmod.tile_bbox)

@@ -140,5 +140,13 @@ class SpeedSignTest(unittest.TestCase):
                                                (-500, -50, 700, 150)), [])
 
 
+    def test_km_h_signs_where_limits_are_in_km_h(self):
+        """Switzerland: an 80 km/h road gets the round 80 sign, a 50 km/h one none (no model), never mph signs."""
+        r = road("t", "tertiary", True, x0=0.0, x1=400.0)
+        rows = furniture.speed_signs([r], {"t": 80 / 1.609344}, (-50, -50, 450, 150), mph_signs=False)
+        self.assertEqual(sorted(x[0] for x in rows), ["speedk80", "speedk80"])
+        self.assertEqual(furniture.speed_signs([r], {"t": 50 / 1.609344}, (-50, -50, 450, 150), mph_signs=False), [])
+
+
 if __name__ == "__main__":
     unittest.main()
