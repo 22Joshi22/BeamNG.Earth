@@ -8,7 +8,14 @@ traffic, physics and the GPS all run as in play, and the same route gives the sa
   python3 tools/autodrive_perf.py --from 39.2834,-76.5934 --to 39.2634,-76.5797 --minutes 5 --out /tmp/ad --obs
 
 --from teleports there first and waits for the world around it. --obs records the screen with OBS Studio (the
-Flatpak, its saved scene) and writes <out>/drive.mp4 without its audio track (the microphone is in it).
+Flatpak, its saved scene) and writes <out>/drive.mp4 without its audio track (the microphone is in it); only when
+OBS is not already open (the user's own OBS is never touched: a second instance only shows "already running", and
+stopping "obs" by name once closed theirs).
+
+Checks (the user, 2026-10-14: "add a check to see if the car crashes or stops"): a crash (the car's damage jumps by
+CRASH_DAMAGE between polls), a stop (slower than STALL_MS for STOP_S while the destination is still ahead) and
+leaving the route by OFF_ROUTE_M are events: events.jsonl, a screenshot each (event_<n>.jpg), listed in the
+summary. A crash or a stop ends the run (--keep-going drives on).
 Writes <out>/samples.jsonl (one poll per line) and <out>/summary.json; prints the summary. The game's MCP server
 must be on (Options > Advanced) and the companion server running.
 """
@@ -27,6 +34,10 @@ import mcp  # noqa: E402
 
 POLL_S = 1.0
 STALL_MS = 0.5          # slower than this (m/s) counts as standing
+STOP_S = 45.0           # standing this long, not arrived: a stop (longer than a red light)
+CRASH_DAMAGE = 1500.0   # the damage rising this much between two polls: a crash (a curb scrape is a few hundred)
+OFF_ROUTE_M = 25.0
+ARRIVED_M = 60.0
 OBS_APP = "com.obsproject.Studio"
 OBS_VIDEOS = os.path.expanduser("~/Videos")
 
@@ -40,7 +51,9 @@ local v = getPlayerVehicle(0)
 local pos, vel = v:getPosition(), v:getVelocity()
 local s = loadstring('return ' .. beamngEarth_core.status())() or {}
 local pl = s.player or {}
-return jsonEncode({ t = os.clock(), x = pos.x, y = pos.y, v = math.sqrt(vel.x ^ 2 + vel.y ^ 2), lat = pl.lat, lon = pl.lon,
+local ob = map and map.objects and map.objects[v:getId()]
+return jsonEncode({ t = os.clock(), x = pos.x, y = pos.y, z = pos.z, v = math.sqrt(vel.x ^ 2 + vel.y ^ 2), lat = pl.lat,
+  lon = pl.lon, damage = ob and ob.damage or 0,
   perf = { frames = p.frames, avgMs = p.avgMs, p50 = p.p50, p95 = p.p95, p99 = p.p99, maxMs = p.maxMs,
            over33 = p.over33, over50 = p.over50, over100 = p.over100 },
   gps = { remaining = g.remaining, off = g.off, arrows = g.arrows, autodrive = g.autodrive, planning = g.planning },
@@ -61,18 +74,39 @@ def latlon(text):
     return a, b
 
 
+def obs_pids():
+    r = subprocess.run(["pgrep", "-x", "obs"], capture_output=True, text=True)
+    return {int(x) for x in r.stdout.split()}
+
+
 def obs_start():
+    """Launch OBS recording; (files before, our OBS pids) or None when OBS is open already or did not record."""
+    if obs_pids():
+        print("OBS is already open: not recording (close it to let the drive be recorded)", file=sys.stderr)
+        return None
     before = set(glob.glob(os.path.join(OBS_VIDEOS, "*")))
     subprocess.Popen(["flatpak", "run", OBS_APP, "--startrecording", "--minimize-to-tray", "--disable-shutdown-check"],
                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    return before
+    for _ in range(20):
+        time.sleep(1)
+        if set(glob.glob(os.path.join(OBS_VIDEOS, "*"))) - before:
+            return before, obs_pids()
+    print("OBS did not start recording", file=sys.stderr)
+    for pid in obs_pids():
+        os.kill(pid, 9)
+    return None
 
 
-def obs_stop(before, out_path):
-    """Stop OBS (SIGTERM: it ends the recording and quits cleanly) and write its file to out_path without audio."""
-    subprocess.run(["pkill", "-TERM", "-x", "obs"])
+def obs_stop(started, out_path):
+    """Stop the OBS we launched (SIGTERM: it ends the recording and quits) and write its file without audio."""
+    before, pids = started
+    for pid in pids:
+        try:
+            os.kill(pid, 15)
+        except ProcessLookupError:
+            pass
     for _ in range(30):
-        if subprocess.run(["pgrep", "-x", "obs"], capture_output=True).returncode != 0:
+        if not (obs_pids() & pids):
             break
         time.sleep(1)
     new = sorted(set(glob.glob(os.path.join(OBS_VIDEOS, "*"))) - before, key=os.path.getmtime)
@@ -81,6 +115,58 @@ def obs_stop(before, out_path):
     subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", new[-1], "-map", "0:v", "-c", "copy", out_path], check=True)
     os.remove(new[-1])
     return out_path
+
+
+def shot(out_dir, name):
+    """A screenshot of the game into out_dir/name (best effort)."""
+    try:
+        p = mcp.call("screenshot", {"jpg": True}).strip()
+        for _ in range(20):
+            time.sleep(0.25)
+            if os.path.exists(p) and os.path.getsize(p) > 0:
+                break
+        time.sleep(0.5)
+        os.replace(p, os.path.join(out_dir, name))
+        return name
+    except (Exception, SystemExit) as e:
+        return f"no screenshot: {e}"
+
+
+class Checks:
+    """The run's events from the polls (pure but for the screenshot callback): crash, stop, off route."""
+
+    def __init__(self, on_event):
+        self.on_event = on_event
+        self.prev = None
+        self.still_since = None
+        self.off = False
+        self.events = []
+
+    def feed(self, r):
+        g = r["gps"]
+        rem = g.get("remaining")
+        ahead = rem is None or rem > ARRIVED_M
+        ev = None
+        if self.prev is not None and (r.get("damage") or 0) - (self.prev.get("damage") or 0) > CRASH_DAMAGE:
+            ev = {"kind": "crash", "damage": round(r["damage"]), "mph_before": round(self.prev["v"] * 2.23694, 1)}
+        if r["v"] < STALL_MS and ahead and not g.get("planning"):
+            self.still_since = self.still_since if self.still_since is not None else r["t"]
+            if ev is None and r["t"] - self.still_since >= STOP_S:
+                ev = {"kind": "stop", "seconds": round(r["t"] - self.still_since)}
+                self.still_since = float("inf")     # once per stop
+        else:
+            self.still_since = None
+        off = (g.get("off") or 0) > OFF_ROUTE_M
+        if ev is None and off and not self.off:
+            ev = {"kind": "off_route", "m": round(g.get("off"), 1)}
+        self.off = off
+        self.prev = r
+        if ev is not None:
+            ev.update({"t": round(r["t"], 1), "x": round(r["x"], 1), "y": round(r["y"], 1), "lat": r.get("lat"),
+                       "lon": r.get("lon"), "arrows": g.get("arrows")})
+            ev["screenshot"] = self.on_event(len(self.events), ev)
+            self.events.append(ev)
+        return ev
 
 
 def summarize(rows):
@@ -118,6 +204,7 @@ def main():
     ap.add_argument("--out", required=True)
     ap.add_argument("--settle", type=float, default=45.0, help="seconds to wait after the teleport")
     ap.add_argument("--obs", action="store_true", help="record the screen with OBS (writes drive.mp4, no audio)")
+    ap.add_argument("--keep-going", action="store_true", help="drive on after a crash or a stop")
     a = ap.parse_args()
     os.makedirs(a.out, exist_ok=True)
     if a.start:
@@ -127,6 +214,8 @@ def main():
     lua("return tostring(beamngEarth_settings.uiGpsAutodrive(true).autodrive)")
     obs = obs_start() if a.obs else None
     rows, end = [], time.time() + a.minutes * 60
+    evf = open(os.path.join(a.out, "events.jsonl"), "w")
+    checks = Checks(lambda n, ev: shot(a.out, f"event_{n}_{ev['kind']}.jpg"))
     try:
         with open(os.path.join(a.out, "samples.jsonl"), "w") as f:
             while time.time() < end:
@@ -140,13 +229,22 @@ def main():
                     rows.append(r)
                     f.write(json.dumps(r) + "\n")
                     f.flush()
+                    ev = checks.feed(r) if len(rows) > 2 else None
+                    if ev is not None:
+                        print("event: " + json.dumps(ev), flush=True)
+                        evf.write(json.dumps(ev) + "\n")
+                        evf.flush()
+                        if ev["kind"] in ("crash", "stop") and not a.keep_going:
+                            break
                     if r["gps"].get("autodrive") is False and rows[0]["gps"].get("autodrive"):
                         break                   # arrived (the GPS clears itself) or stopped by hand
                 time.sleep(max(0.0, POLL_S - (time.time() - t0)))
     finally:
         video = obs_stop(obs, os.path.join(a.out, "drive.mp4")) if obs is not None else None
         lua("beamngEarth_settings.uiGpsAutodrive(false) beamngEarth_settings.uiMapGps(nil) return 'ok'")
+    evf.close()
     summary = summarize(rows[1:]) if len(rows) > 2 else {"polls": len(rows)}   # the first poll covers the setup
+    summary["events"] = checks.events
     if video:
         summary["video"] = video
     with open(os.path.join(a.out, "summary.json"), "w") as f:
