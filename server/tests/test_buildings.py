@@ -115,7 +115,57 @@ class PlanTest(unittest.TestCase):
         self.assertEqual((a.floors, a.roof, a.facade, a.band), (b.floors, b.roof, b.facade, b.band))
 
 
-class PartsTest(unittest.TestCase):
+class ParkingDeckTest(unittest.TestCase):
+    def deck(self, w, d, gmax=0.0):
+        spec = bld.plan(rect(0, 0, w, d), {"class": "parking", "num_floors": 3, "height": 9.0}, 0, 39.28, -76.59)
+        return spec, bld.build([(spec, 0.0, gmax)])
+
+    def tops(self, P, T, z, tol=0.05):
+        """Triangles lying flat at height z."""
+        tri = P[T]
+        return tri[(np.abs(tri[:, :, 2] - z) < tol).all(1)]
+
+    def covered(self, tris, x, y):
+        for a, b, c in tris[:, :, :2]:
+            d = [(b[0] - a[0]) * (y - a[1]) - (b[1] - a[1]) * (x - a[0]),
+                 (c[0] - b[0]) * (y - b[1]) - (c[1] - b[1]) * (x - b[0]),
+                 (a[0] - c[0]) * (y - c[1]) - (a[1] - c[1]) * (x - c[0])]
+            if min(d) >= -1e-9 or max(d) <= 1e-9:
+                return True
+        return False
+
+    def test_a_big_garage_is_open_decks_with_a_ramp_well(self):
+        # the user, 2026-10-14: "garage buildings ... are solid"
+        spec, (P, UV, T, M, mats, C) = self.deck(60, 40)
+        self.assertTrue(spec.deck)
+        zs = [0.03 + k * 3.0 for k in range(4)]
+        for z in zs:
+            self.assertGreaterEqual(len(self.tops(P, T, z)), 2, f"a deck at {z} m")
+        # the longest edge is along x (y = 0): the well is cut from it on the upper decks, the ground deck is whole
+        xs, ys = 30.0, bld.DECK_EDGE_M + 1.5 * bld.DECK_LANE_M        # the middle of the second lane
+        self.assertTrue(self.covered(self.tops(P, T, zs[0]), xs, ys), "the ground deck under the ramps")
+        self.assertFalse(self.covered(self.tops(P, T, zs[1]), xs, ys), "the well open on deck 1")
+        self.assertTrue(self.covered(self.tops(P, T, zs[1]), 30.0, 30.0), "deck 1 beyond the well")
+        self.assertEqual(bld.collider_boxes([(spec, 0.0, 0.0)], 0, 0), [], "driven into: no keep-out box")
+
+    def test_ramps_are_drivable(self):
+        _, (P, UV, T, M, mats, C) = self.deck(60, 40)
+        tri = P[T]
+        n = np.cross(tri[:, 1] - tri[:, 0], tri[:, 2] - tri[:, 0])
+        up = n[:, 2] / np.maximum(np.linalg.norm(n, axis=1), 1e-9)
+        sloped = (up > 0.9) & (up < 0.9999)
+        self.assertGreaterEqual(int(sloped.sum()), 6, "three ramps facing up")
+        self.assertTrue(np.all(np.sqrt(1 - up[sloped] ** 2) / up[sloped] <= bld.DECK_SLOPE + 1e-6), "not too steep")
+
+    def test_too_short_or_sloped_keeps_the_box(self):
+        spec, (P, UV, T, M, mats, C) = self.deck(30, 30)
+        self.assertNotEqual(bld.collider_boxes([(spec, 0.0, 0.0)], 0, 0), [], "falls back")
+        self.assertFalse(len(self.tops(P, T, 3.03)), "no decks: the closed box")
+        spec, (P, UV, T, M, mats, C) = self.deck(60, 40, gmax=2.0)
+        self.assertFalse(len(self.tops(P, T, 5.03)), "on a slope: the closed box")
+
+
+class SplitTest(unittest.TestCase):
     def test_split_under_the_index_limit(self):
         items = [(bld.plan(rect(x * 30, 0, 20, 12), {"class": ""}), 0.0, 0.0) for x in range(30)]
         one = bld.build(items)

@@ -236,7 +236,7 @@ def oriented_box(p):
 class Spec:
     """What is built for one footprint (decided by plan())."""
     __slots__ = ("ring", "floors", "floor_h", "height", "roof", "roof_mat", "facade", "band", "shop", "plain", "min_h", "wall", "door", "windows", "front", "steeple", "stoop",
-                 "sign", "porch", "cls", "seed")
+                 "sign", "porch", "cls", "seed", "deck")
 
     def __init__(self, **kw):
         for k in self.__slots__:
@@ -424,7 +424,8 @@ def plan(ring, attrs, neighbours=0, lat=None, lon=None, look=None, town=False, d
         porch = area >= 0.9 * 4 * hl * hw
     return Spec(ring=ring, floors=nf, floor_h=floor_h, height=h, roof=roof, roof_mat=roof_mat, facade=facade,
                 band=band, shop=shop and not shed and nf >= 1, plain=plain, seed=seed, min_h=0.0, wall=wall,
-                windows=windows, steeple=church and roof == "gabled" and area < 2500, porch=porch, cls=cls)
+                windows=windows, steeple=church and roof == "gabled" and area < 2500, porch=porch, cls=cls,
+                deck=garage and roof == "flat")
 
 
 class Mesh:
@@ -827,6 +828,136 @@ def build_parts(specs_and_ground, lite=False, max_verts=MAX_MESH_VERTS):
     return parts
 
 
+# A parking structure you can drive into (the user, 2026-10-14: "garage buildings ... are solid"): open storeys of
+# concrete decks on perimeter columns, a parapet round each upper deck, and a two-lane switchback ramp along the
+# longest wall (one lane up per storey, a U-turn landing at each end). Only where the ramp fits inside the footprint
+# and the ground under it is near level; otherwise the closed box as before. The tile's mesh collides as drawn.
+DECK_LANE_M = 3.6           # a ramp lane
+DECK_EDGE_M = 0.8           # the ramp lanes start this far in from the wall (the columns stand there)
+DECK_LANDING_M = 7.0        # flat deck at each end of the ramps (the U-turn)
+DECK_SLOPE = 0.17           # the steepest ramp
+DECK_SLAB_M = 0.3
+DECK_PARAPET_M = 1.0
+DECK_COLUMN_M = 9.0         # perimeter column spacing
+DECK_LEVEL_M = 0.4          # ground this uneven (max - min) under the footprint: no deck
+DECK_HEADROOM_M = 2.6       # the lowest storey height that still drives
+
+
+def _deck_layout(ring, storey):
+    """The ramp's frame on the longest edge of the counter-clockwise ring: (edge index i, A, along unit u, inward
+    unit n, s0, s1), the ramps between arc lengths s0 and s1; None when they do not fit (too short for DECK_SLOPE,
+    or the well outside the ring)."""
+    i = max(range(len(ring)), key=lambda k: float(np.hypot(*(ring[(k + 1) % len(ring)] - ring[k]))))
+    a, b = ring[i], ring[(i + 1) % len(ring)]
+    L = float(np.hypot(*(b - a)))
+    u = (b - a) / L
+    n = np.array([-u[1], u[0]])                 # the inside is on the left
+    s0, s1 = 0.5 + DECK_LANDING_M, L - 0.5 - DECK_LANDING_M
+    if s1 - s0 < storey / DECK_SLOPE:
+        return None
+    depth = DECK_EDGE_M + 2 * DECK_LANE_M
+    for s in np.linspace(0.5, L - 0.5, 9):
+        for d in (0.3, depth / 2, depth + 0.5, depth + DECK_LANDING_M / 2):
+            if not _inside(ring, a + u * s + n * d):
+                return None
+    return i, a, u, n, s0, s1
+
+
+def _deck_wall(m, p, q, z0, z1, mat, t=0.2):
+    """A thin wall (both faces and a top) from p to q, z0 to z1."""
+    d = q - p
+    L = float(np.hypot(*d))
+    if L > 0.05:
+        _box(m, (p + q) / 2, d / L, L / 2, t / 2, z0, z1, mat)
+
+
+def deck_plan(spec, gmin, gmax):
+    """(counter-clockwise ring, floors, storey height, _deck_layout) of a parking structure drawn as open decks, or
+    None (not a garage, ground too uneven, storeys too low, the ramp does not fit: a closed box)."""
+    if not spec.deck or gmax - gmin > DECK_LEVEL_M or not spec.height or (spec.min_h or 0.0) > 0.5:
+        return None
+    floors = max(1, int(spec.floors or 1))
+    storey = spec.height / floors
+    if storey < DECK_HEADROOM_M:
+        return None
+    ring = np.asarray(spec.ring, np.float64)
+    if _area2(ring) < 0:
+        ring = ring[::-1]
+    lay = _deck_layout(ring, storey)
+    return None if lay is None else (ring, floors, storey, lay)
+
+
+def _parking_deck(m, spec, gmin, gmax, mat_idx):
+    """The open parking structure (see DECK_*); False when it does not apply (the caller draws the box)."""
+    plan_ = deck_plan(spec, gmin, gmax)
+    if plan_ is None:
+        return False
+    ring, floors, storey, (i, A, u, n, s0, s1) = plan_
+    mat = mat_idx[f"{PANEL}|{int(_hash01(spec.seed, 'deck') * len(WALL_TINTS[PANEL]))}"]
+    W, e = DECK_LANE_M, DECK_EDGE_M
+    depth = e + 2 * W
+    zs = [gmax + 0.03 + k * storey for k in range(floors + 1)]
+
+    def at(s, d):
+        return A + u * s + n * d
+
+    def uvp(p):
+        return (float(p[0]) / 4.0, float(p[1]) / 4.0)
+
+    k_ring = len(ring)
+    m.poly([(p[0], p[1], zs[0]) for p in ring], [uvp(p) for p in ring], mat)          # the ground deck, whole
+    # the upper decks: the ring with the ramp well (both lanes, s0..s1) cut in from the longest edge
+    well = [at(s0, 0.0), at(s0, depth), at(s1, depth), at(s1, 0.0)]
+    pts = [A] + well + [ring[(i + 1 + j) % k_ring] for j in range(k_ring - 1)]
+    for k in range(1, floors + 1):
+        z = zs[k]
+        m.poly([(p[0], p[1], z) for p in pts], [uvp(p) for p in pts], mat)
+        m.poly([(p[0], p[1], z - DECK_SLAB_M) for p in pts[::-1]], [uvp(p) for p in pts[::-1]], mat)
+        for j in range(len(pts)):
+            p, q = pts[j], pts[(j + 1) % len(pts)]
+            m.quad((p[0], p[1], z - DECK_SLAB_M), (q[0], q[1], z - DECK_SLAB_M), (q[0], q[1], z), (p[0], p[1], z),
+                   (0, 0), (1, 0), (1, 0.1), (0, 0.1), mat)
+            if not (1 <= j <= 3):               # the parapet, not round the well (below)
+                _deck_wall(m, p, q, z, z + DECK_PARAPET_M, mat)
+        # round the well: its inner side and the end away from the ramps' landing (ramp k - 1 comes up at s1 when
+        # k - 1 is even, and ramp k leaves from that same end); the top deck has no ramp leaving: its lane closed
+        land = s1 if (k - 1) % 2 == 0 else s0
+        far = s0 if land == s1 else s1
+        _deck_wall(m, at(s0, depth), at(s1, depth), z, z + DECK_PARAPET_M, mat)
+        _deck_wall(m, at(far, 0.0), at(far, depth), z, z + DECK_PARAPET_M, mat)
+        if k == floors:
+            d_free = e + (k % 2) * W
+            _deck_wall(m, at(land, d_free), at(land, d_free + W), z, z + DECK_PARAPET_M, mat)
+    # the ramps: ramp k from deck k to deck k + 1 on lane k % 2, even ones climbing from s0 to s1, walled both sides
+    for k in range(floors):
+        d0 = e + (k % 2) * W
+        sa, sb = (s0, s1) if k % 2 == 0 else (s1, s0)
+        za, zb = zs[k], zs[k + 1]
+        top = [(at(sa, d0), za), (at(sb, d0), zb), (at(sb, d0 + W), zb), (at(sa, d0 + W), za)]
+        if sb < sa:                             # counter-clockwise seen from above
+            top = top[::-1]
+        quad = [(p[0], p[1], z) for p, z in top]
+        m.quad(*quad, (0, 0), (1, 0), (1, 1), (0, 1), mat)
+        m.quad(*[(x, y, z - DECK_SLAB_M) for x, y, z in quad[::-1]], (0, 0), (1, 0), (1, 1), (0, 1), mat)
+        for d in (d0, d0 + W):
+            steps = 6
+            for j in range(steps):
+                f0, f1 = j / steps, (j + 1) / steps
+                ca, cb = at(sa + (sb - sa) * f0, d), at(sa + (sb - sa) * f1, d)
+                _deck_wall(m, ca, cb, za + (zb - za) * f0, za + (zb - za) * f1 + DECK_PARAPET_M, mat, 0.15)
+    # the columns: round the outline every DECK_COLUMN_M, from the foundation to the top deck
+    for j in range(k_ring):
+        p, q = ring[j], ring[(j + 1) % k_ring]
+        L = float(np.hypot(*(q - p)))
+        if L < 0.5:
+            continue
+        d = (q - p) / L
+        inward = np.array([-d[1], d[0]])
+        for t in np.arange(0.0, L, DECK_COLUMN_M):
+            _box(m, p + d * t + inward * 0.35, d, 0.25, 0.25, zs[0] - FOUNDATION_M, zs[-1], mat)
+    return True
+
+
 def build(specs_and_ground, lite=False):
     """The tile's mesh from [(Spec, ground z min, ground z max)] with rings in the tile's local frame:
     (positions, uvs, tris, tri material indices, MATERIALS) or None if empty. lite (far tiles): no
@@ -840,6 +971,8 @@ def build(specs_and_ground, lite=False):
             v = np.array([-u[1], u[0]])
             ring = np.array([c - u * hl - v * hw, c + u * hl - v * hw, c + u * hl + v * hw, c - u * hl + v * hw])
         mh = spec.min_h or 0.0
+        if spec.deck and not lite and _parking_deck(m, spec, gmin, gmax, mat_idx):
+            continue
         z0 = gmin - FOUNDATION_M if mh <= 0.5 else gmax + mh
         z_eave = gmax + mh + spec.height
         _walls(m, spec, ring, z0, z_eave, mat_idx, lite)
@@ -1029,6 +1162,8 @@ def collider_boxes(items, x0, y0):
     mesh solid while the player's car is inside one (roads.lua playerIn)."""
     out = []
     for spec, gmin, gmax in items:
+        if deck_plan(spec, gmin, gmax) is not None:     # an open parking deck: driven into on purpose
+            continue
         r = spec.ring
         out.append([round(float(r[:, 0].min() + x0), 2), round(float(r[:, 1].min() + y0), 2),
                     round(gmin - FOUNDATION_M, 2), round(float(r[:, 0].max() + x0), 2),
