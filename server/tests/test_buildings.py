@@ -161,8 +161,8 @@ class ParkingDeckTest(unittest.TestCase):
         spec, (P, UV, T, M, mats, C) = self.deck(30, 30)
         self.assertNotEqual(bld.collider_boxes([(spec, 0.0, 0.0)], 0, 0), [], "falls back")
         self.assertFalse(len(self.tops(P, T, 3.03)), "no decks: the closed box")
-        spec, (P, UV, T, M, mats, C) = self.deck(60, 40, gmax=2.0)
-        self.assertFalse(len(self.tops(P, T, 5.03)), "on a slope: the closed box")
+        spec, (P, UV, T, M, mats, C) = self.deck(60, 40, gmax=4.0)
+        self.assertFalse(len(self.tops(P, T, 7.03)), "on a slope: the closed box")
 
 
 class SplitTest(unittest.TestCase):

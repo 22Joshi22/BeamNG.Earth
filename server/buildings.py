@@ -839,7 +839,8 @@ DECK_SLOPE = 0.17           # the steepest ramp
 DECK_SLAB_M = 0.3
 DECK_PARAPET_M = 1.0
 DECK_COLUMN_M = 9.0         # perimeter column spacing
-DECK_LEVEL_M = 0.4          # ground this uneven (max - min) under the footprint: no deck
+DECK_LEVEL_M = 3.5          # ground this uneven (max - min) under the footprint: no deck (up to it: the ground deck
+                            # level at the highest ground on a plinth, driven into from the uphill side)
 DECK_HEADROOM_M = 2.6       # the lowest storey height that still drives
 
 
@@ -906,6 +907,11 @@ def _parking_deck(m, spec, gmin, gmax, mat_idx):
 
     k_ring = len(ring)
     m.poly([(p[0], p[1], zs[0]) for p in ring], [uvp(p) for p in ring], mat)          # the ground deck, whole
+    if gmax - gmin > 0.05:                      # its plinth down to the lowest ground (a sloping street)
+        for j in range(k_ring):
+            p, q = ring[j], ring[(j + 1) % k_ring]
+            m.quad((p[0], p[1], gmin - FOUNDATION_M), (q[0], q[1], gmin - FOUNDATION_M), (q[0], q[1], zs[0]),
+                   (p[0], p[1], zs[0]), (0, 0), (1, 0), (1, 0.1), (0, 0.1), mat)
     # the upper decks: the ring with the ramp well (both lanes, s0..s1) cut in from the longest edge
     well = [at(s0, 0.0), at(s0, depth), at(s1, depth), at(s1, 0.0)]
     pts = [A] + well + [ring[(i + 1 + j) % k_ring] for j in range(k_ring - 1)]
