@@ -32,7 +32,10 @@ CURB_W = 0.15           # m of curb top band
 CROSS_SLOPE = 0.015     # sidewalk cross slope, rising away from the road
 CURB_REPEAT_M = 9.0     # m of curb per texture width (3 joints of 3 m)
 SLAB_REPEAT_M = 45.0    # m of sidewalk per texture width (4096 px, a 205 px strip ~ 2.25 m)
-MATERIALS = ("curbs", "sidewalk1", "tactile_indicator")   # West Coast USA (art/shapes/roads), loaded by the mod
+MATERIALS = ("curbs", "sidewalk1", "tactile_indicator",  # West Coast USA (art/shapes/roads), loaded by the mod
+             "bne_sidewalk_brick")                       # red brick pavers (buildings.materials.json)
+BRICK = 3
+BRICK_REPEAT_M = 1.2        # m per repeat of the brick paver texture
 
 # curbs sheet (1024 x 512, 8 bands of 64 px; Collada v up, so band 0 is v in [7/8, 1]):
 # rows 0-40 of a band are the light curb top, 40-64 the darker face
@@ -74,6 +77,7 @@ RAMP_RUN = 1.8          # m over which a curb ramp's slab climbs back to the sid
 RAMP_FLARE = 0.6        # m of curb sloping down on each side of a ramp
 RAMP_H = 0.01           # m: the curb at a ramp (flush with the gutter)
 TACTILE_REPEAT_M = 0.6  # m per tactile pad texture repeat
+PAD_W = 0.6             # m of a ramp's slope from the curb that is the tactile pad (US: 2 ft of domes)
 
 
 def profile(h=CURB_H, w=2.5, hr=None):
@@ -83,17 +87,21 @@ def profile(h=CURB_H, w=2.5, hr=None):
     RAMP_RUN)."""
     hr = h if hr is None else hr
     f = hr / h if h > 0 else 0.0
+    zr = h + RAMP_RUN * CROSS_SLOPE
+    zp = hr + (zr - hr) * PAD_W / (RAMP_RUN - CURB_W)       # on the ramp's slope, PAD_W past the curb top
     return np.array([[0.0, -SINK], [BATTER * f, hr - NOSE * f], [NOSE_W * f, hr], [CURB_W, hr],
-                     [RAMP_RUN, h + RAMP_RUN * CROSS_SLOPE], [w, h + w * CROSS_SLOPE], [w, -SINK]])
+                     [CURB_W + PAD_W, zp], [RAMP_RUN, zr], [w, h + w * CROSS_SLOPE], [w, -SINK]])
 
 
 # strips: (from profile point, to point, material index, v at from, v at to); material 1 on the
 # ramp strip is replaced by 2 (tactile) where the curb is lowered
 _SL = (RAMP_RUN - CURB_W) / (2.5 - CURB_W)
+_SP = PAD_W / (2.5 - CURB_W)
 V_SLAB_MID = V_SLAB_IN + _SL * (V_SLAB_OUT - V_SLAB_IN)
+V_SLAB_PAD = V_SLAB_IN + _SP * (V_SLAB_OUT - V_SLAB_IN)
 STRIPS = ((0, 1, 0, V_BAND_LOW, V_LIGHT_LOW), (1, 2, 0, V_LIGHT_LOW, V_BAND_TOP - 0.02),
-          (2, 3, 0, V_BAND_TOP - 0.02, V_BAND_TOP), (3, 4, 1, V_SLAB_IN, V_SLAB_MID),
-          (4, 5, 1, V_SLAB_MID, V_SLAB_OUT), (5, 6, 0, V_LIGHT_LOW, V_BAND_LOW))
+          (2, 3, 0, V_BAND_TOP - 0.02, V_BAND_TOP), (3, 4, 1, V_SLAB_IN, V_SLAB_PAD),
+          (4, 5, 1, V_SLAB_PAD, V_SLAB_MID), (5, 6, 1, V_SLAB_MID, V_SLAB_OUT), (6, 7, 0, V_LIGHT_LOW, V_BAND_LOW))
 CURB_STRIPS = STRIPS[:3]
 
 
@@ -140,12 +148,16 @@ class Builder:
         ring[:, :, 2] = curb[:, None, 2] + prof[:, :, 1]
         return ring - self.origin, prof
 
-    def _strips(self, ring, prof, toward_out, s, strips, tactile=None):
+    def _strips(self, ring, prof, toward_out, s, strips, tactile=None, slab=1):
         k = len(ring)
         for a, b, mat, va, vb in strips:
             rep = CURB_REPEAT_M if mat == 0 else SLAB_REPEAT_M
             P = np.concatenate([ring[:, a], ring[:, b]])
             UV = np.concatenate([np.stack([s / rep, np.full(k, va)], 1), np.stack([s / rep, np.full(k, vb)], 1)])
+            if mat == 1 and slab == BRICK:      # brick pavers: a tileable texture in world metres
+                UV = np.concatenate([np.stack([s / BRICK_REPEAT_M, prof[:, a, 0] / BRICK_REPEAT_M], 1),
+                                     np.stack([s / BRICK_REPEAT_M, prof[:, b, 0] / BRICK_REPEAT_M], 1)])
+                mat = BRICK
             mats = np.full(k - 1, mat)
             if tactile is not None and a == 3:  # the ramp's slope: a tactile pad where lowered
                 mats[tactile] = 2
@@ -165,7 +177,7 @@ class Builder:
             self.T.append(base + _orient(tris - base, P, np.concatenate([want, want])))
             self.M.append(np.r_[mats, mats])
 
-    def add_run(self, curb, toward_out, w, h=CURB_H, caps=(True, True), ramps=()):
+    def add_run(self, curb, toward_out, w, h=CURB_H, caps=(True, True), ramps=(), slab=1):
         """One sidewalk run: curb (k, 3) the curb line (z = the road there), toward_out (k, 2) unit
         vectors from the curb outwards (scaled by the miter), w its width; caps: end caps at the
         (start, end) (not where the run goes on in the next tile or meets a corner piece); ramps:
@@ -185,7 +197,7 @@ class Builder:
         ring, prof = self._sections(curb, toward_out, w, h, hr)
         low = hr < h - 1e-6
         tactile = (low[:-1] | low[1:]) if low.any() else None
-        self._strips(ring, prof, toward_out, s, STRIPS, tactile)
+        self._strips(ring, prof, toward_out, s, STRIPS, tactile, slab)
         for end, sgn, cap in ((0, -1, caps[0]), (k - 1, 1, caps[1])):   # end caps: a fan over the profile
             if not cap:
                 continue

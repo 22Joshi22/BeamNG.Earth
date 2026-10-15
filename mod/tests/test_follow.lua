@@ -83,7 +83,7 @@ local lattice = require('beamngEarth/lattice')
 lattice.configure(512)
 T.check(f.configure(512) == 512, 'configure(512)')
 T.check(f.SIZE == 512 and f.HALF == 512 and f.GRID == 128 and f.PREPARE_DIST == 128 and f.COMMIT_DIST == 192
-  and f.HARD_COMMIT_DIST == 320 and f.EDGE_MARGIN == 250 and f.REACH == 260 and f.LOOKAHEAD_S == 2
+  and f.HARD_COMMIT_DIST == 320 and f.EDGE_MARGIN == 250 and f.REACH == 260 and f.LOOKAHEAD_S == 5
   and f.RECHECK_S == 2 and f.FAST_MODE_V == 150, '512 table active')
 T.check(f.REACH_FAST == 420 and f.LOOKAHEAD_FAST_S == 3 and f.PREP_AHEAD_FAST_S == 0.75, 'fast mode: reach 420, 3 s, test 0.75 s ahead')
 x0, y0 = f.blockOrigin(128, -384)
@@ -101,7 +101,7 @@ end
 -- 40 m/s geometry: prepare past 128 m, commit past 192 m
 T.check(d(128, 0, 40, 0, 0, 0, nil, 0, 0) == nil, '512: at 128 m: no request')
 a, cx, cy = d(129, 0, 40, 0, 0, 0, nil, 0, 0)
-T.check(a == 'prepare' and cx == 256 and cy == 0, '512: past 128 m: prepare snap128(p + 2 s v)')
+T.check(a == 'prepare' and cx == 384 and cy == 0, '512: past 128 m: prepare snap128(p + 5 s v)')
 pend = { cx = 256, cy = 0, ready = true }
 T.check(d(192, 0, 40, 0, 0, 0, pend, 0, 0) == nil, '512: ready at 192 m: hold')
 T.check(d(193, 0, 40, 0, 0, 0, pend, 0, 0) == 'commit', '512: ready past 192 m: commit')
@@ -255,5 +255,13 @@ T.check(f.SIZE == 1024 and f.HALF == 1024 and f.GRID == 256 and f.REACH == 420 a
   and f.RECHECK_S == 0, '1024 table restored')
 tx = f.target(0, 0, 200, 0)
 T.check(tx == 256, '1024: derived REACH restored (clamped lead 256)')
+
+-- the altitude rule (follow.altitudeHold): holds high above the ground ahead, follows again on the way down
+T.check(not f.altitudeHold(false, 1000, 0, nil) and not f.altitudeHold(true, 1000, 0, nil), 'no ground known: never holds')
+T.check(not f.altitudeHold(false, 250, 0, 0) and f.altitudeHold(false, 350, 0, 0), 'holds above HOLD_AGL (300 m)')
+T.check(f.altitudeHold(true, 200, 0, 0) and not f.altitudeHold(true, 140, 0, 0), 'hysteresis: held until RESUME_AGL (150 m)')
+T.check(not f.altitudeHold(true, 500, -50, 0), 'a 50 m/s descent from 500 m resumes (8 s ahead: 100 m)')
+T.check(not f.altitudeHold(false, 400, -20, 0), 'a 20 m/s descent at 400 m does not start holding')
+T.check(f.altitudeHold(false, 1400, 0, 1000), 'heights above the ground ahead, not above z = 0')
 
 T.done('test_follow')

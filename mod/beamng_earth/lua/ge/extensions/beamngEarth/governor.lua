@@ -43,6 +43,12 @@ M.QUIET_BEFORE = 2         -- frames without streaming before a heavy op
 M.QUIET_AFTER = 2          -- frames without streaming after it
 M.CALM_TIMEOUT = 60        -- frames a granted-but-not-calm heavy op waits at most (b == 0 already)
 M.EST_ALPHA = 0.2          -- cost EMA gain
+-- The engine's own deferred work for what streaming made (2026-10-15, 100 mph drives: new tiles' shapes, materials and
+-- textures cost the NEXT frame's engine "Ticking" 50-250 ms, which no unit's measured Lua cost included, so the bucket
+-- kept importing at full rate and every frame ran 100+ ms): each frame's engine tick beyond ENGINE_FREE_MS is a debt on
+-- the bucket (chargeEngine), at most ENGINE_MAX_DEBT_MS, so imports wait until the budget has paid for it.
+M.ENGINE_FREE_MS = 2.0
+M.ENGINE_MAX_DEBT_MS = 50.0
 -- Prior cost estimates (ms) per unit kind: in-game P5/P6 (2026-10-10): a 2k-tri .cdae first load
 -- 3.4 ms (8k-tri 1.5 ms; v1.2 drive EMA 1.93), a 2k-tri .dae 7.5-25 ms; unhide is free; setPosition
 -- ~0.006 ms (p6). v1.3 satellite imagery (lead probe p_sat.lua): a Lua-created per-tile Material
@@ -171,7 +177,7 @@ function Gov:beginFrame(hasWork, wallMs)
   else
     self.b = max(0, self.b - M.RAMP_DOWN_IDLE)
   end
-  self.tokens = min(self.tokens + self.b, 2 * self:maxUnit())
+  self.tokens = min(self.tokens + self.b, 2 * self:maxUnit())     -- (a debt stays: chargeEngine)
   -- no banking while idle or while a heavy op waits: the budget must really go down to zero
   if self.heavyPending or not hasWork then self.tokens = min(self.tokens, self.b) end
 end
@@ -197,6 +203,15 @@ function Gov:charge(kind, ms)
   self.est[kind] = max(0.005, e + M.EST_ALPHA * (ms - e))
   self.stats.units = self.stats.units + 1
   if self.frameSpent > self.stats.maxFrameSpent then self.stats.maxFrameSpent = self.frameSpent end
+end
+
+-- The previous frame's engine tick (ms, Engine.Debug metrics "Ticking"): its excess is a debt on the bucket.
+function Gov:chargeEngine(tickMs)
+  local debt = max(0, (tickMs or 0) - M.ENGINE_FREE_MS)
+  if debt <= 0 then return 0 end
+  self.tokens = max(-M.ENGINE_MAX_DEBT_MS, self.tokens - debt)
+  self.stats.engineDebt = (self.stats.engineDebt or 0) + debt
+  return debt
 end
 
 -- Charge per-frame motion (crossover / cover transforms). It always runs (it is time based and
@@ -247,7 +262,7 @@ function Gov:snapshot()
     heavyPending = self.heavyPending, estCdae = self.est.cdae, estDae = self.est.dae, estCdaeTex = self.est.cdaeTex,
     estCdaeTex128 = self.est.cdaeTex128, estCdaeTex256 = self.est.cdaeTex256, estCdaeTex512 = self.est.cdaeTex512,
     estMaterial = self.est.material, estMatDelete = self.est.matDelete, heavy = self.stats.heavy,
-    units = self.stats.units, maxFrameSpent = self.stats.maxFrameSpent }
+    units = self.stats.units, maxFrameSpent = self.stats.maxFrameSpent, engineDebt = self.stats.engineDebt }
 end
 
 M.Gov = Gov

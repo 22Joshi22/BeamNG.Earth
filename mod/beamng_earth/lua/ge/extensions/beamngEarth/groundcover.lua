@@ -42,6 +42,8 @@ M.DEFS = {
   { source = 'hirochi', src = 'small_grass_close', layer = 'bngEarthGroundGrass', share = 0.25 },
   { source = 'hirochi', src = 'long_grass_distant', layer = 'bngEarthGroundGrass', share = 0.17, fields = LONG_NEAR },
   { source = 'wcusa', src = 'grass_dry_1', layer = 'bngEarthGroundGrass', share = 0.05 },
+  -- mown town yards: a little short grass, nothing long (server/surface.py LAWN)
+  { source = 'hirochi', src = 'small_grass_close', name = 'small_grass_close_lawn', layer = 'bngEarthGroundLawn', share = 0.1 },
   { source = 'wcusa', src = 'shrubs_near', layer = 'bngEarthGroundDusty', share = 0.15 },
   -- sparse grass between the shrubs (user 2026-10-11: a hard line between grassland and shrubland)
   { source = 'hirochi', src = 'small_grass_close', name = 'small_grass_close_scrub', layer = 'bngEarthGroundDusty', share = 0.08 },

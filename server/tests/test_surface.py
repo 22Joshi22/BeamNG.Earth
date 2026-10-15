@@ -24,7 +24,7 @@ class ClassifyTest(unittest.TestCase):
     def test_classes_map_to_materials(self):
         classes = np.array([[0, 10, 20, 30], [40, 50, 60, 70], [80, 90, 95, 100]], np.uint8)
         idx = sf.classify(classes, np.zeros(classes.shape), 2.0)
-        self.assertEqual(idx.tolist(), [[sf.DIRT, sf.GRASS, sf.DUSTY, sf.GRASS], [sf.DIRT, sf.ASPHALT, sf.LOOSE, sf.SNOW],
+        self.assertEqual(idx.tolist(), [[sf.DIRT, sf.GRASS, sf.DUSTY, sf.GRASS], [sf.DIRT, sf.DIRT, sf.LOOSE, sf.SNOW],
                                         [sf.MUD, sf.MUD, sf.MUD, sf.GRASS]])
         self.assertEqual(sf.MATERIALS[sf.DIRT], ("beamngEarthDirt", "DIRT"))
         self.assertEqual(sf.DIRT, len(sf.MATERIALS) - 1, "the default material goes last (ties pick the later layer)")
@@ -40,6 +40,41 @@ class ClassifyTest(unittest.TestCase):
         self.assertTrue((sf.classify(np.full((n, n), 70, np.uint8), u, 2.0) == sf.SNOW).all())
         gentle = np.tile(np.arange(n) * 2.0 * 0.5, (n, 1))     # 27 deg: not rock
         self.assertTrue((sf.classify(grass, gentle, 2.0) == sf.GRASS).all())
+
+    def test_town_yards_are_mostly_lawn_in_the_east_less_in_the_dry_west(self):
+        def share(lat, lon):
+            la, lo = np.meshgrid(np.linspace(lat, lat + 0.02, 200), np.linspace(lon, lon + 0.02, 200))
+            idx = sf.classify(np.full(la.shape, 50, np.uint8), np.zeros(la.shape), 2.0, la, lo)
+            self.assertTrue(np.isin(idx, (sf.LAWN, sf.DIRT)).all())
+            return float((idx == sf.LAWN).mean())
+        east, moab = share(39.28, -76.60), share(38.57, -109.56)
+        self.assertGreater(east, 0.8, "Baltimore")
+        self.assertLess(moab, east - 0.05, "Moab: fewer (the photo decides in detail mode: photo_lawns)")
+        grass = np.full((2, 2), 30, np.uint8)
+        self.assertTrue((sf.classify(grass, np.zeros((2, 2)), 2.0, np.full((2, 2), 39.3), np.full((2, 2), -76.6)) == sf.GRASS).all())
+
+    def test_photo_lawns_only_where_the_photo_is_green(self):
+        import tempfile
+        n = 16
+        idx = np.full((n, n), sf.LAWN, np.uint8)
+        idx[:, :4] = sf.ASPHALT
+        rgb = np.zeros((64, 64, 3), np.uint8)
+        rgb[:] = (190, 188, 180)                    # pale paving ...
+        rgb[:32] = (70, 110, 50)                    # ... the north half a lawn
+        with tempfile.TemporaryDirectory() as d:
+            sf.write_ter(d, "b.ter", np.zeros((n, n), np.uint16), idx)
+            names = sf.write_masks(idx[::-1], d, "b")
+            changed = sf.photo_lawns(d, "b.ter", names, rgb)
+            with open(os.path.join(d, "b.ter"), "rb") as f:
+                lay = np.frombuffer(f.read()[5 + 2 * n * n:5 + 3 * n * n], np.uint8).reshape(n, n)
+            inner = lay[1:-1, 4:-1]                 # (the edge ring is holes)
+            self.assertTrue((inner[: n // 2 - 1] == sf.DIRT).all(), "south half: paved")
+            self.assertTrue((inner[n // 2:] == sf.LAWN).all(), "north half: lawn")
+            self.assertTrue((lay[1:-1, 1:4] == sf.ASPHALT).all())
+            self.assertGreater(changed, 0)
+            lawn_mask = np.array(Image.open(os.path.join(d, names[sf.LAWN])))
+            self.assertEqual(lawn_mask[1, 8], 255)
+            self.assertEqual(lawn_mask[-2, 8], 0)
 
 
 class WarpTest(unittest.TestCase):
@@ -93,7 +128,7 @@ class MaskTest(unittest.TestCase):
 
 
 class FakeMapData:
-    """The parts of mapdata.MapData the Surface uses: path / _load / prefetch, in memory."""
+    """The parts of mapdata.MapData the Surface uses: path / _load / has / prefetch, in memory."""
 
     def __init__(self, fill):
         self.fill = fill            # key -> class value (or None: no coverage)
@@ -105,6 +140,9 @@ class FakeMapData:
 
     def _load(self, path):
         return self.cached.get(path)
+
+    def has(self, key, layer):
+        return self.path(key, layer) in self.cached
 
     def prefetch(self, key, layers):
         self.prefetched.append((key, layers))
@@ -246,6 +284,54 @@ class ServerSurfaceTest(unittest.TestCase):
         with open(earthd.__file__) as f:
             src = f.read()
         self.assertIn('ap.add_argument("--surface", choices=("on", "off"), default="on"', src)
+
+
+class LotTest(unittest.TestCase):
+    def test_parking_lot_painted_asphalt(self):
+        lat0, lon0 = 40.0, -76.0
+        lat = lat0 + np.arange(50)[:, None] * 2e-5 + np.zeros((1, 50))
+        lon = lon0 + np.arange(50)[None, :] * 2.6e-5 + np.zeros((50, 1))
+
+        class Lots:
+            kind = np.array([3, 3], np.uint8)
+            attrs = {"class": np.array(["parking", "fuel"], object)}
+
+            def __len__(self):
+                return 2
+
+            def parts(self, i):
+                a, b = lon0 + 10 * 2.6e-5, lon0 + 20 * 2.6e-5
+                c, d = lat0 + 10 * 2e-5, lat0 + 20 * 2e-5
+                return [[np.array([(a, c), (b, c), (b, d), (a, d), (a, c)])]]
+        idx = np.full((50, 50), sf.GRASS, np.uint8)
+        out = sf.paint_lots(idx, lat, lon, [Lots()])
+        self.assertEqual(out[15, 15], sf.ASPHALT)
+        self.assertEqual(out[40, 40], sf.GRASS)
+        self.assertEqual(int((out == sf.ASPHALT).sum()), int((sf.paint_lots(idx, lat, lon, [Lots()]) == sf.ASPHALT).sum()))
+
+
+    def test_square_painted_paving(self):
+        """A land-use square (subtype pedestrian) is paving (the Zocalo read as dirt); a park is not."""
+        lat0, lon0 = 19.43, -99.13
+        lat = lat0 + np.arange(50)[:, None] * 2e-5 + np.zeros((1, 50))
+        lon = lon0 + np.arange(50)[None, :] * 2.1e-5 + np.zeros((50, 1))
+
+        class Land:
+            kind = np.array([3, 3], np.uint8)
+            attrs = {"class": np.array(["plaza", "park"], object), "subtype": np.array(["pedestrian", "park"], object)}
+
+            def __len__(self):
+                return 2
+
+            def parts(self, i):
+                k = 0 if i == 0 else 25
+                a, b = lon0 + (5 + k) * 2.1e-5, lon0 + (20 + k) * 2.1e-5
+                c, d = lat0 + 5 * 2e-5, lat0 + 20 * 2e-5
+                return [[np.array([(a, c), (b, c), (b, d), (a, d), (a, c)])]]
+        idx = np.full((50, 50), sf.DIRT, np.uint8)
+        out = sf.paint_lots(idx, lat, lon, [Land()])
+        self.assertEqual(out[12, 12], sf.ASPHALT)
+        self.assertEqual(out[12, 37], sf.DIRT)
 
 
 if __name__ == "__main__":

@@ -104,6 +104,14 @@ LAYERS = {
                       float=("height", "min_height", "num_floors", "num_floors_underground", "min_floor",
                              "level", "roof_height", "roof_direction"),
                       bool=("is_underground", "has_parts")),
+    # parts of buildings (towers on podiums, setbacks): each its own height range; buildings.py draws a
+    # building's parts in place of its footprint (has_parts)
+    "building_parts": dict(theme="buildings", type="building_part", clip=False,
+                           cols=f"building_id, {_SRC}, height, min_height, num_floors, min_floor, roof_shape, "
+                                "roof_height, facade_color, roof_color",
+                           text=("building_id", "src_dataset", "src_record", "roof_shape", "facade_color",
+                                 "roof_color"),
+                           float=("height", "min_height", "num_floors", "min_floor", "roof_height")),
     "water": dict(theme="base", type="water", clip=True,
                   cols=f"subtype, class, {_NAME}, {_SRC}, level, is_salt, is_intermittent, {_TAGS}",
                   text=("subtype", "class", "name", "src_dataset", "src_record", "tags"),

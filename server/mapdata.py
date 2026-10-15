@@ -76,9 +76,11 @@ VERSION = 2                     # pipeline version: bump when what a cell's laye
 LAYER_VERSIONS = {"roads": 2}
                                 # (2: clipped polygon pieces `own`ed by their cell, exact cell edges,
                                 # the exact no-area test of clipped rings)
-VECTOR_LAYERS = ("roads", "connectors", "buildings", "water", "land_use", "infrastructure")
+VECTOR_LAYERS = ("roads", "connectors", "buildings", "water", "land_use", "infrastructure", "building_parts")
 RASTER_LAYERS = ("landcover", "canopy")
-LAYERS = VECTOR_LAYERS + RASTER_LAYERS
+OPTIONAL_LAYERS = ("building_parts",)   # built only when asked for by name (buildings.py), not by default
+LAYERS = tuple(x for x in VECTOR_LAYERS if x not in OPTIONAL_LAYERS) + RASTER_LAYERS
+ALL_LAYERS = VECTOR_LAYERS + RASTER_LAYERS
 DEFAULT_CACHE = os.path.expanduser("~/.cache/beamng-earth")
 # A request that the limiter or a policy refused for a non-demand kind (prefetch() returns False)
 DEFERRED = (netfetch.Deferred, netfetch.PolicyDenied, netfetch.BudgetExceeded, netfetch.HostUnavailable,
@@ -235,6 +237,10 @@ class MapData:
                     del self._locks[k]
 
     # --- one layer -------------------------------------------------------------------------------
+    def has(self, key, layer):
+        """True when the layer's file exists (not read: cheap enough for the event loop)."""
+        return os.path.exists(self.path(key, layer))
+
     def _load(self, path):
         """A layer file's arrays, or None when it is missing or unreadable (truncated, a damaged
         deflate stream, another layout): a miss, rebuilt and written again."""
@@ -282,8 +288,8 @@ class MapData:
 
     def layer_arrays(self, key, layer, kind="demand"):
         """(arrays, hit) of one cell's layer: from the cache, or built and cached."""
-        if layer not in LAYERS:
-            raise ValueError(f"unknown map layer {layer!r}; choose from {', '.join(LAYERS)}")
+        if layer not in ALL_LAYERS:
+            raise ValueError(f"unknown map layer {layer!r}; choose from {', '.join(ALL_LAYERS)}")
         key = _key(key)
         path = self.path(key, layer)
         arrays = self._load(path)

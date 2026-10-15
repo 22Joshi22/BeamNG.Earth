@@ -226,6 +226,13 @@ Manhattan cell: 4.8 s cold, peak RSS 381 MB. Next:
 
 ## Water (with v1.5/v1.6; user 2026-10-10: lakes and rivers are blue dirt today; keep depths
 ## roughly real, no underwater detail needed)
+- **Sea: done 2026-10-13** (`--sea on`, default off; docs/ARCHITECTURE.md "Sea water"): the ground
+  carved under Overture's ocean polygons; WaterBlock tiles that follow the Earth's curve near the player
+  (a flat WaterPlane flooded distant shores from altitude). The user tried the first version: "the water
+  is working". Lakes and rivers followed the same night (WaterBlocks at their own levels; rivers follow
+  the DEM's fall). Next: canals and narrow streams (River objects), bathymetry (NOAA CUDEM, GEBCO),
+  fewer tiles (merge neighbours), water colours per kind, default on. Glossy far tiles: little visible
+  gain at Sandy Point (the tiles reach the horizon there), parked.
 - Where: OSM/Overture water polygons + river lines (with width), ESA WorldCover water class as
   fallback. Surface height: the DEM at the shoreline (DEMs usually show the water surface, flat).
 - Depth (bathymetry): GEBCO global grid (~450 m, public) for oceans and big lakes; NOAA coastal
@@ -347,7 +354,18 @@ wall or a filled-in bump depending on the source.
   probe first), click to teleport / set destination.
 
 ## v1.8 "Alive"
-- AI traffic on our navgraph (spawn clipped to the physics block, edge guard).
+- Parked cars: done 2026-10-14 through the stock parking system (user's choice: BeamNG's traffic system and
+  its player settings). server/parking.py curbside spots on the road tiles, mod parking.lua hands them to
+  gameplay_parking as a sites object and starts trafficParkedAmount cars; lot stalls too. 16 cars: ~1 ms.
+- AI traffic on our navgraph: done 2026-10-14 behind `--traffic on` (server navgraph.py, mod navgraph.lua;
+  ARCHITECTURE "Parked cars and traffic"): the stock gameplay_traffic drives our roads, clipped to the block,
+  edge guard, teleports. 7 cars: ~1.6 ms. Working signals and stop signs with switchable heads, bridge decks,
+  tunnels left out, road rules by country (left-hand traffic, turn on red, EU red+yellow) (same day).
+  Next: default on once the user has driven it; a border map for the country (nearest airport now); parked-car
+  density (16 stock cars over thousands of spots look sparse next to the photos' full curbs).
+- Street life (2026-10-14): porches, front-yard fences, speed-limit signs (30-70 mph models only), company
+  wall signs (the game's fictional firms), shop sign bands, parking-aisle stalls. Next: mailboxes (ECA prefab),
+  street-name blades (no stock model), pole-mounted business signs.
 - Traffic lights / stop signs from OSM via `core_trafficSignals` (scriptable at runtime), stock
   light and sign props; street lights.
 
@@ -526,9 +544,12 @@ built-tile cache (2) and pre-download within the cap (4).
    end coordinates), surfaces -> BeamNG ground models, a graded runway / shoulder / strip / blend height field
    under ICAO / FAA limits as a drop-in `elev_fn` for the heightmap and tiles (steep altiports and bush strips
    keep their shape: Courchevel 19 %, Lukla 15 %), FAA / ICAO marking geometry for DecalRoads, a CLI with
-   previews. Next: in-game check at KBWI (grade the live block, a plane mod on 10/28, markings as
-   DecalRoads), then the earthd wiring after v1.4 M6, water masks, OSM / Overture runways where OurAirports
-   has no ends, runway ground models in the v1.5 layers, spawn places at runway ends.
+   previews. Wired 2026-10-13 behind `earthd --airports on` (default off): the runways graded into the
+   block, the far tiles and the road tiles (`airportgrade.py`; KBWI 10/28 in-game 3x smoother than the
+   DEM, within 16 cm of it), the markings drawn as road-tile chunks (low contrast with the stock
+   `line_white`: a brighter runway paint material next). Next: a plane mod on 10/28, the paint material,
+   then default on; water masks, OSM / Overture runways where OurAirports has no ends, runway ground
+   models in the v1.5 layers, spawn places at runway ends.
 5. **Data credits overlay** (user, 2026-10-10; docs/DEVTOOLS.md): small text in a screen corner naming
    the imagery / elevation / weather sources around the player. Built offline (2026-10-10, merged
    to main with netfetch and colour seams): server `credits` message (on change, at most 1/s), mod
@@ -684,7 +705,168 @@ Gameplay
 - **Generated challenges**: point-to-point time trials between real places, a timed Cannonball run
   with checkpoints, delivery jobs between real towns.
 
+## Water: paused 2026-10-13 (user: "still some issues but I want to move on, come back later")
+Built (`--sea on`, still default off): the sea (curved WaterBlock tiles, NOAA bathymetry), lakes and wide
+rivers (tiles fitted to the water, carved beds), narrow rivers and streams (River objects along the
+centrelines, carved channels, ripples flowing downstream, a current). Known issues to come back to:
+- Confluences and river mouths still look confused in places; holes reported in a lake and in places
+  along rivers; a faint darker seam where tiles overlap.
+- Water vanishing close to the camera seen again (River near mesh: SubdivideLength / vertex limits).
+- Stretched river textures at tight bends (the texture follows the centreline).
+- Up to 120 inland tiles near a big river (Harrisburg): measure the frame cost; merge tiles.
+- Canals with locks, intermittent streams, glossy far water, lava (volcanoes), default on.
+
+## User requests 2026-10-13 (after water; in this order unless the user reorders)
+- **Lava (later, user idea):** River / WaterBlock objects with `liquidType` lava (the "Downhill Mayhem"
+  map's lava pools: orange, emissive, density 10000) for volcanoes or other places with lava.
+- **Performance, monitored live:** the user drives by hand in different places while the game and
+  server metrics are watched; there are still hitches while driving.
+  2026-10-14 drive data (4 km at 34 mph, Fells Point north): ~72 frames over 50 ms either way, with or without
+  traffic; full static-collision rebuilds had grown to ~56 ms (1.1 M vertices, mostly building meshes colliding
+  with their visible mesh) and now run every 6 s at most. Next: a low-poly collision mesh for buildings (walls +
+  roof prisms) and the engine profiler on the hitch frames.
+- **Texture patterns** visible in some terrain (repeating tiles): find and fix.
+- **Sidewalks and intersections:** many need work. Take many in-game photos of sidewalks and
+  intersections and compare them with high-resolution aerial or street-level imagery.
+- **Decoration:** trees, rocks and other scatter.
+- **Airport buildings:** terminals, the control tower, hangars (the runways themselves look good).
+- **LOD quality settings** (after the performance work, closer to the final look): at 4K on a large
+  monitor, the terrain from half distance outward looks low quality. 2026-10-14 A/B at Lancaster farms:
+  `--tex 256,256,512,1024` (2-4x far textures, finer imagery) shows no difference in 2560x1440 shots from
+  10 and 200 ft, loads in 205 s instead of 171 s, same frame time. Default kept; the user to try it at 4K.
+  If it doesn't help either, look at haze and mip filtering next.
+
+## "Make the world look alive" (user, 2026-10-13 night; references from stock maps + many street photos)
+Built 2026-10-14 (ARCHITECTURE "Buildings", "Street furniture", "Trees"):
+- Buildings v1 (`--buildings on`): footprints with predicted heights / roofs, stock window sheets, brick
+  by region, cornices, front doors, far render-only tiles to 1600 m.
+- Street lights along sidewalks, utility poles along country roads.
+- Regional tree species (West pines / oaks / palms, junipers and desert scatter), street trees moved
+  out of the road corridor onto the verge, denser crowns, cells built ahead after a teleport.
+Next, from the photo comparisons (docs/research/streetview/fp*, base_*):
+- **Parked cars (needs the user's OK: spawns real vehicles):** the photos are full of them and streets
+  look empty without. Plan: the road tiles list curb parking spots (urban roads that already get a
+  parking lane, one spot per 6.5 m); the mod hands them to the stock `gameplay_parking` as sites data
+  (`setSites({parkingSpots = {...}})`, the West Coast USA format: pos, rot, scl, multi-spots) and
+  `setupVehicles(n)` keeps a pool of n parked cars on the spots near the player (stock vehicle pooling).
+  Open: the cost of n vehicles, and how pooled cars follow our rebase.
+- Traffic signals and stop signs are built from junction shapes (furniture.py); Mapillary map
+  features have real positions of signs in cities (42 street lights in a 170 m square of Fells Point;
+  the API is slow, so a per-cell cache) for later.
+- Building parts (Overture `building_part`): towers' podiums and setbacks; roof clutter (HVAC boxes).
+- Facade variety: painted brick, formstone, siding colours per region; window sheet per era.
+- Wires between utility poles; signs (stop, speed limits) from data where present.
+- The "dark mounds" near Harbor East (President St bridge) are the 4-5 m quays beside the Jones Falls
+  outlet, whose water (DEM 0 m) is drawn as bare ground: a water gap (the inlet is not covered by the
+  sea tiles), for the water work.
+- Road widths: urban trunks / primaries not lined by buildings default to 4 lanes since 2026-10-14
+  (Moab's Main Street); real lane counts would need OSM `lanes` (Overture has none).
+- Curb ramps: the pad is the first 0.6 m of the slope since 2026-10-14, West Coast USA's yellow tactile
+  material (seen yellow from the air at Ocean City).
+- Ocean City's yards and park read as pale sand: its imagery is late-season (dormant grass the colour of
+  pavement, excess green ~2 on both), so photo_lawns keeps 2 % of the lawn candidates. A season-proof
+  lawn test (texture, or imagery from another date) would be needed; left as is.
+- Maryland's six-inch imagery (first in the chain since 2026-10-13) is leaf-off spring: brown dormant grass
+  and bare branches in every Maryland place; the colour match to USGS only reaches olive. Leaf-on chain
+  (`--imagery naipusda,naip,usgs,eox2023,eox2016`): green, a little softer, 87 s vs 81 s at Columbia. Asked
+  the user 2026-10-14 (recommended leaf-on); default unchanged until they answer.
+- Divided town arterials (Overture one-way trunks at 45 mph or less: Coastal Highway) get a sidewalk on the
+  curb side since 2026-10-14; expressway trunks (faster or no limit) none.
+- Building heights stay predicted where Overture has none (Baltimore 98 %): the canopy height model
+  masks buildings (~0 m on roofs, checked 2026-10-14), so it cannot fill them.
+- Near ground looked pale grey in towns: built-up land was the asphalt layer (the dirt layer since
+  2026-10-14, and a share of it the mown-lawn layer: surface.py LAWN_*).
+- Town ground at street level has a whitish-blue sheen at grazing angles (Bishop, Ocean City, 2026-10-14)
+  although the photo is a plain grey: sky reflections. 2026-10-14: base roughness 206 -> 240 and the macro
+  roughness off near the camera ([0, 0.8]), as West Coast USA's terrain materials; check it is gone.
+- Tried 2026-10-14: a denser, taller humid understory (0.5 per 6 m cell, 1-3.5 m): +24 % items, +2.4 ms at
+  Columbia, and the extra bushes land mostly on cleared "tree cover" ground (reads as scrub, not forest).
+  Reverted. The forest look needs crowns that close (sizes / spacing) more than ground scatter.
+- Forest edges along roads (humid country) get a thicket band of bigger bushes (vegetation.py EDGE_*);
+  watch the frame time on wooded roads (about +20k bushes per z14 cell).
+
+## Overnight queue (2026-10-15, the user's priorities: bugs, performance at 100+ mph, a living world beyond
+## Baltimore, easy sharing)
+- Performance at 100+ mph: stable frame rate, no hitches (hitch attribution in core.lua; autodrive_perf at speed).
+- Imagery beyond Maryland: the keyless state / national sources in docs/research (us-state-imagery, imagery-sources-world).
+- Easy setup: a one-time info popup about the project; installer and first run streamlined; gcpatch optional.
+- Reports 2026-10-14 23:37-00:00:
+  - NYC 40.7488, -73.9922: a building's parts get different facades (brick block on a glass tower): decide per building.
+  - Garage deck undersides invisible (40.7494, -73.9928).
+  - Sahara 22.288, -4.642: rocks have no collision; check the rock density / other plants there.
+  - Skyscrapers all one texture and colour: vary them (match real colours where data allows).
+  - Large buildings: LODs / drawn much farther (like the horizon: what you'd see in real life).
+  - World map: tiles vanish while zooming (scale what is loaded until the new zoom arrives); 3D globe toggle;
+    map layers (roads, borders, country names).
+  - A slim status bar at the top (BeamMP-like) instead of the Lua status window: loading, performance, street /
+    city / country.
+  - Italy coast 40.190, 16.689: a pale rectangle in the sea. FIXED 2026-10-15: the far levels' sea floor sat 1.5 m
+    down, mid-way on the water's colour ramp, so the WaterBlock tiles' flat surfaces showed as squares; now 6 m.
+    Left: a milder band ~8 km out where the water tiles end and the far tiles' sea photo begins.
+  - Sahara rocks: CHECKED 2026-10-15: desert rocks only, ~700 within 300 m, the near ones solid (40/40 rays hit).
+
+### Done overnight 2026-10-15 (details in the commits)
+- 100 mph stutter found and fixed: Forest changes cost ~0.5 us per item of each SHAPE touched in the level (trees.lua
+  shape budget, 4 path variants, bushes near only, solid trees within 300 m): forest drive 6.9 -> 50 fps.
+- Autodrive no longer stops for good after a road-graph update (the stock AI crashed on a stale path edge).
+- Regional imagery: sources are no longer probed outside their own area (hundreds of 404s at other states).
+- The release zip's server starts (matplotlib was imported but never installed: numpy point-in-polygon).
+- Buildings by region (Alps, northern Europe, Mediterranean, Latin America, East Asia, Oceania; US unchanged);
+  attached old-town houses gabled outside the US.
+- Ground under the surface model outside lidar areas (Copernicus is a DSM: city blocks 10-25 m up, Rio's beach
+  wall, Mexico City's pit); AWS no longer used for the deep zooms there.
+- Trees by region beyond North America (no firs in Punjab), desert bushes on arid land worldwide.
+- Status bar, map zoom fallback, collision rebuild 40 -> 6 ms, welcome page (earlier in the night).
+
+### Done 2026-10-15 (day)
+- Autodrive ran straight off bends into poles and rivers: the car's AI Lua crashed on a path step missing from its copy
+  of the road graph. Edges are looked up on both nodes (the game keeps each edge on one only), new paths wait for
+  the car's copy (onVehicleMapmgrUpdate) and are cut to steps of the current graph. Lauterbrunnen 3.3 mi, no crash.
+- Terrain block hops 256-384 m instead of 128-256 m (fewer ~50 ms move frames): Munich drive 8.1 -> 5.6 hitches/min.
+  Each move's cost is the engine's first draw of the new block (~17 ms; not shadows, layers, base texture or grass)
+  plus postApply (~12-22 ms) and a ~25 ms static collision rebuild a few frames later.
+- Grass no longer grows through sidewalks; barns red only in the US and the new Nordic style (alpine: wood).
+- No 'Old forest file format' warnings (an empty level forest file).
+- Note: BeamNG's Steam launch options were found empty (2026-10-15 13:00): the gcpatch preload is not active.
+
+### Found on the world tour (2026-10-15), not done yet
+- **Cliffs** are smeared vertically (the aerial photo stretched over walls: Lauterbrunnen, Geiranger): far tiles need
+  a side-projected rock texture on steep faces.
+- **Benchmark ground views** can stand inside a building (Amsterdam): snap the view like tools/streetview.py does.
+- **Forests in the DSM** (larger than a city block) still stand ~10-20 m up where the data is Copernicus; the canopy
+  height model could correct them.
+- **Downtowns with towers** keep their DSM bumps (a cut deeper than a building could be is treated as a hill).
+
+### User request 2026-10-15 (morning, "do this later") - DONE 2026-10-15 15:20
+- Status bar, data credits and connection banner are UI apps (ui/modules/apps/BeamNGEarth*, hudapps.lua; the imgui
+  drawing steps aside while an app is on screen) and the ".Earth" layout (Freeroam's apps + ours, type beamngEarth)
+  is applied when our level starts. Left as imgui: the dev panels and the old compact window.
+- Turn our in-game HUD elements (status bar, data credits, connection banner, other imgui overlays) into BeamNG UI
+  apps, and add a ".Earth" UI layout preset based on the Freeroam preset (the apps placed for our level).
+
 ## Bugs to look at (reported, not fixed yet)
+- **Roundabouts** (user report 2026-10-14, Harbor Point, 39.2801, -76.5890): the ring is cobbles with a D-shaped
+  sidewalk island, odd sidewalk pieces at the entries and road patches that do not meet; needs proper roundabout
+  handling (Overture junction=roundabout rings: one-way ring road, a raised round island, splitter islands).
+- **Roundabout furniture** (2026-10-15, Timisoara 45.7427, 21.2430): a traffic-signal pole and a stop sign stood on
+  the ring road; furniture at junction nodes ignores the ring.
+- **Sidewalks at offset multi-road junctions** (user report 2026-10-14 19:35, Fells Point 39.28188, -76.59114):
+  five roads where Overture's connectors sit ~10 m apart (a diagonal street and a N-S street meeting an E-W one at
+  two nodes) get no curb returns on that side (junctions.py pairs arms at one node), so the sidewalks end in bare
+  points with ground between. Needs junction clustering (connectors within ~15 m treated as one junction) before
+  the corner pairing. Diagnosed 2026-10-14 (junctions.find debug): at the north node both corners are rejected as
+  "short branch" (the 10 m link to the other node is shorter than the 12-13 m tangent), at the south node the 73
+  degree corner's arc lands "on carriageway" of that same link. Setting CONNECTOR_M (merge nodes joined by a short
+  road) alone changes nothing: the corners must be built across the merged junction from its outer branches.
+- **Sidewalk "grabbing the car and pulling it down"** (user report 2026-10-14 19:50, 39.28499, -76.60554): the
+  pickup's wheel sank at a sidewalk end beside a grass verge; suspect the sidewalk slab's end face or a curb-ramp
+  edge in the collision mesh. Needs an in-game look at that spot.
+- **Garages and tunnels are solid** (user, 2026-10-14): parking structures are closed boxes (no way in), and roads
+  in tunnels are left out with the ground (or the building) solid where they go in. Garages: an open-sided
+  ground storey (columns, a slab) where the map has a parking entrance; tunnels: a tube mesh plus terrain holes at
+  the portals.
+- **Mount Whitney summit hut** (user report 2026-10-14): the plain grey box is the real stone summit shelter
+  (Overture building); small huts / shelters above the tree line could use a stone wall look.
 - **Rain particles "spazzing out"** (user, 2026-10-11): some raindrops jump around or streak across the
   view (seen in Fells Point's real rain). Suspects: the Precipitation object's box following the
   camera or the rebase, or the wind gusts (weather.lua) changing its speed every frame.

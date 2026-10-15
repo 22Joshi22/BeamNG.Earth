@@ -65,8 +65,10 @@ LOOK = {
     "gravel": {"m": "m_dirt_road", "tl": 88.0, "p": 21},
     "dirt": {"m": "m_dirt_road", "tl": 88.0, "p": 21},
 }
-Spec = namedtuple("Spec", "width kind urban cls oneway walk", defaults=(False, 2.5))   # road_specs' result per feature
-# (walk: the sidewalk width, measured from the buildings where known: roadwidth.py)
+Spec = namedtuple("Spec", "width kind urban cls oneway walk dir kmh gap", defaults=(False, 2.5, 0, None, None))
+# road_specs' result per feature (walk: the sidewalk width, measured from the buildings where known: roadwidth.py;
+# dir: a one-way road's direction along its geometry, +1 / -1, 0 two-way; kmh: its speed limit, None unknown;
+# gap: m of road per junction along it (its connectors), None unknown)
 # (width = carriageway). One-way driving widths (Overture's divided roads are two one-way segments, each
 # drawn before as a full two-way street: 2026-10-11 orthophoto of Broadway, 14-15 m drawn for 8-9 m)
 ONEWAY_STYLE = {"primary": 6.5, "secondary": 6.5, "tertiary": 4.0, "residential": 3.5, "living_street": 3.5,
@@ -89,6 +91,15 @@ MEASURE_MAX = 3.0               # a measured carriageway at most this times the 
 SIDEWALK_CLASSES = {"residential", "tertiary", "secondary", "primary", "unclassified", "living_street"}
 CENTRE_CLASSES = {"primary", "secondary", "tertiary", "trunk"}
 EDGE_LINE_CLASSES = {"primary", "secondary", "tertiary", "trunk", "motorway"}
+LANE_CLASSES = {"primary", "secondary", "tertiary", "trunk", "motorway"}
+# urban arterials not lined by buildings (roadwidth.py measures those): 4 lanes (Moab's Main Street, US-191,
+# 4 lanes + a turn lane in the photos, was drawn 9 m)
+# Ramps and slip roads (Overture subclass "link", any class): one lane and its shoulders, whatever the class
+# (Columbia's US-29 ramps were drawn 13 m wide, a whole motorway, 2026-10-14 photos): m paved by lanes a way.
+LINK_M = {1: 6.0, 2: 9.0}
+URBAN_ARTERIAL = {"trunk": 13.2}     # primaries in towns are often 2 lanes (Lancaster County's PA-340)
+LANE_M = 3.3            # m per lane when counting the lanes a carriageway holds
+LANE_LINE = {"m": "line_dashed_long", "tl": 12.0, "p": 6, "w": 0.12}     # West Coast USA's 3 m dash, 9 m gap
 CUT_MARGIN = 0.5                # m: a sidewalk / line stops this far outside a crossing road's carriageway
 MIN_PIECE_M = 3.0               # shorter sidewalk / line pieces are dropped
 NEAR_M = 40.0                   # roads this far outside the tile still cut its sidewalks / lines
@@ -107,7 +118,7 @@ def _rule_value(table, i):
     """The value of the rule of feature i covering the largest share of it, or None."""
     if table is None or len(table.feature) == 0:
         return None
-    sel = np.nonzero(table.feature == i)[0]
+    sel = table.rows(i)
     if len(sel) == 0:
         return None
     span = table.end[sel] - table.start[sel]
@@ -124,7 +135,7 @@ def level_ranges(feats, i):
         t = feats.rules.get(name)
         if t is None or len(t.feature) == 0:
             continue
-        for j in np.nonzero(t.feature == i)[0]:
+        for j in t.rows(i):
             v = t.value[j]
             if name == "flags":
                 kind = "tunnel" if "is_tunnel" in str(v) else "bridge" if "is_bridge" in str(v) else None
@@ -200,7 +211,7 @@ def bridge_levels(feats, i):
             continue
         best = 1.0
         if t is not None and len(t.feature):
-            for j in np.nonzero(t.feature == i)[0]:
+            for j in t.rows(i):
                 if t.end[j] > a and t.start[j] < b:
                     try:
                         best = max(best, float(t.value[j]))
@@ -247,6 +258,8 @@ def carriageway(cls, kind, urban, rule_width=None, oneway=False):
         w = ONEWAY_STYLE[cls]
     if kind not in BUILT:
         return w
+    if urban and not oneway and cls in URBAN_ARTERIAL:
+        return URBAN_ARTERIAL[cls]          # four lanes, no parking (a walled street is measured instead)
     if urban and cls in PARKING_CLASSES:
         return w + (1 if oneway else 2) * PARKING_M
     if not urban and cls != "service":
@@ -254,13 +267,118 @@ def carriageway(cls, kind, urban, rule_width=None, oneway=False):
     return w
 
 
-def road_specs(feats, urban_fn=None, widths=None):
+def _dir_kmh(feats, i, ncon):
+    """(one-way direction along the geometry +1 / -1 or 0, speed limit km/h or None, m per junction or None)
+    of feature i; ncon: connectors per feature (None: unknown)."""
+    rules = feats.rules
+    v = _rule_value(rules.get("oneway"), i)
+    d = 0 if v is None else (-1 if float(v) < 0 else 1)
+    k = _rule_value(rules.get("max_speed_kmh"), i)
+    gap = None
+    if ncon is not None and ncon[i] >= 2:
+        a = feats.coord_off[feats.ring_off[feats.part_off[i]]]
+        b = feats.coord_off[feats.ring_off[feats.part_off[i + 1]]]
+        ll = feats.lonlat[a:b]
+        if len(ll) >= 2:
+            m = 111320.0
+            L = float(np.sum(np.hypot(np.diff(ll[:, 0]) * m * math.cos(math.radians(float(ll[0, 1]))),
+                                      np.diff(ll[:, 1]) * m)))
+            gap = L / (ncon[i] - 1)
+    return d, (float(k) if k is not None and float(k) > 0 else None), gap
+
+
+DUAL_CLASSES = {"motorway", "trunk", "primary", "secondary", "tertiary"}
+DUAL_GAP_M = (4.0, 45.0)    # centreline to centreline of a divided road's two carriageways
+DUAL_SHARE = 0.6            # this share of the shorter one runs beside the other ...
+DUAL_ANGLE_DEG = 25.0       # ... parallel within this
+
+
+def _dual_side(a, b):
+    """For polylines a, b (k, 2) in metres: the share of a's points (every ~10 m) with b beside it (DUAL_GAP_M,
+    parallel within DUAL_ANGLE_DEG) and the mean side b is on (+1 left / -1 right of a's direction)."""
+    seg = np.diff(a, axis=0)
+    L = np.hypot(seg[:, 0], seg[:, 1])
+    if len(b) < 2 or L.sum() < 1.0:
+        return 0.0, 0.0
+    s = np.concatenate([[0.0], np.cumsum(L)])
+    t = np.linspace(0.0, s[-1], max(2, int(s[-1] // 10) + 1))
+    q = np.stack([np.interp(t, s, a[:, 0]), np.interp(t, s, a[:, 1])], 1)
+    k = np.clip(np.searchsorted(s, t, side="right") - 1, 0, len(seg) - 1)
+    ta = seg[k] / np.maximum(L[k], 1e-9)[:, None]
+    bs = np.diff(b, axis=0)
+    bL2 = np.maximum((bs * bs).sum(1), 1e-12)
+    f = np.clip(((q[:, None, :] - b[None, :-1, :]) * bs[None]).sum(2) / bL2[None], 0.0, 1.0)
+    near = b[None, :-1, :] + bs[None] * f[..., None]
+    d = np.hypot(*(near - q[:, None, :]).transpose(2, 0, 1))
+    j = np.argmin(d, 1)
+    dist = d[np.arange(len(q)), j]
+    tb = bs[j] / np.sqrt(bL2[j])[:, None]
+    par = np.abs((ta * tb).sum(1)) >= math.cos(math.radians(DUAL_ANGLE_DEG))
+    ok = (dist >= DUAL_GAP_M[0]) & (dist <= DUAL_GAP_M[1]) & par
+    if not ok.any():
+        return 0.0, 0.0
+    v = near[np.arange(len(q)), j] - q
+    side = np.sign(ta[:, 0] * v[:, 1] - ta[:, 1] * v[:, 0])
+    return float(ok.mean()), float(side[ok].mean())
+
+
+def dual_carriageways(feats, specs, left_hand=False):
+    """specs with the two carriageways of a divided road made one-way when the map says neither is (Boston St,
+    Baltimore: two "primary" roads either side of a wide median, each with its own double yellow centre line, the
+    user's report 2026-10-14). Two roads of one name and class running side by side DUAL_GAP_M apart over most of
+    the shorter one; each runs so that the other is on its left (driving on the right) or right. Pure."""
+    groups = {}
+    names = feats.attrs.get("name")
+    if names is None:
+        return specs
+    for i, sp in enumerate(specs):
+        if sp is None or sp.oneway or sp.cls not in DUAL_CLASSES:
+            continue
+        nm = str(names[i] or "").strip()
+        if nm and nm != "None":
+            groups.setdefault((nm, sp.cls), []).append(i)
+    out = list(specs)
+    for idx in groups.values():
+        if len(idx) < 2:
+            continue
+        lines = {}
+        for i in idx:
+            a = feats.coord_off[feats.ring_off[feats.part_off[i]]]
+            b = feats.coord_off[feats.ring_off[feats.part_off[i + 1]]]
+            ll = feats.lonlat[a:b]
+            lines[i] = ll
+        lat0 = float(np.mean(np.concatenate(list(lines.values()))[:, 1]))
+        m = np.array([111320.0 * math.cos(math.radians(lat0)), 110540.0])
+        ref = lines[idx[0]][0]
+        xy = {i: (ll - ref) * m for i, ll in lines.items()}
+        for i in idx:
+            best = None
+            for j in idx:
+                if i == j:
+                    continue
+                share, side = _dual_side(xy[i], xy[j])
+                if share >= DUAL_SHARE and abs(side) > 0.5 and (best is None or share > best[0]):
+                    best = (share, side)
+            if best is None:
+                continue
+            sp = out[i]
+            # driving on the right the other carriageway is on the left
+            d = (1 if best[1] > 0 else -1) * (-1 if left_hand else 1)
+            w = sp.width if _rule_value(feats.rules.get("width"), i) is not None else \
+                carriageway(sp.cls, sp.kind, sp.urban, None, True)
+            out[i] = sp._replace(oneway=True, dir=d, width=w)
+    return out
+
+
+def road_specs(feats, urban_fn=None, widths=None, left_hand=False):
     """Per feature: None (left out) or (width m, surface kind). urban_fn(lat, lon) -> bool array (built-up
     land cover), None = rural everywhere; called once for every candidate's points (its cost is per
     call: 2026-10-11, one call per road made 4.4 of a physics block's 6 s). Pure given urban_fn."""
     out = []
     rules = feats.rules
     ask = []                                    # (index in out, cls, kind, rule_w, coordinate range)
+    cr = rules.get("connectors")
+    ncon = np.bincount(np.asarray(cr.feature), minlength=len(feats)) if cr is not None and len(cr.feature) else None
     for i in range(len(feats)):
         cls = str(feats.attrs["class"][i]) if "class" in feats.attrs else "unknown"
         if str(feats.attrs.get("subtype", ["road"] * len(feats))[i]) != "road" or cls not in STYLE:
@@ -274,22 +392,26 @@ def road_specs(feats, urban_fn=None, widths=None):
         rule_w = float(width) if width is not None and 1.0 <= float(width) <= 40.0 else None
         kind = surface_kind(cls, _rule_value(rules.get("surface"), i))
         ow = _rule_value(rules.get("oneway"), i) is not None
+        if rule_w is None and _rule_value(rules.get("subclass"), i) == "link":
+            rule_w = LINK_M[1] if ow else LINK_M[2]
+        dk = _dir_kmh(feats, i, ncon)
         if urban_fn is not None and rule_w is None and kind in BUILT:
             a = feats.coord_off[feats.ring_off[feats.part_off[i]]]
             b = feats.coord_off[feats.ring_off[feats.part_off[i + 1]]]
             if b > a:
-                ask.append((len(out), cls, kind, a, b, ow))
+                ask.append((len(out), cls, kind, a, b, ow, dk))
                 out.append(None)
                 continue
-        out.append(Spec(carriageway(cls, kind, False, rule_w, ow), kind, False, cls, ow))
+        out.append(Spec(carriageway(cls, kind, False, rule_w, ow), kind, False, cls, ow, 2.5, *dk))
     if ask:
-        ll = np.concatenate([feats.lonlat[a:b] for _, _, _, a, b, _ in ask])
+        ll = np.concatenate([feats.lonlat[a:b] for _, _, _, a, b, _, _ in ask])
         u = np.asarray(urban_fn(ll[:, 1], ll[:, 0]), bool)
         k = 0
-        for j, cls, kind, a, b, ow in ask:
+        for j, cls, kind, a, b, ow, dk in ask:
             urban = float(np.mean(u[k:k + (b - a)])) >= URBAN_SHARE
             k += b - a
-            out[j] = Spec(carriageway(cls, kind, urban, None, ow), kind, urban, cls, ow)
+            out[j] = Spec(carriageway(cls, kind, urban, None, ow), kind, urban, cls, ow, 2.5, *dk)
+    out = dual_carriageways(feats, out, left_hand)
     if widths is not None:                      # measured between the buildings (roadwidth.py)
         for j, sp in enumerate(out):
             if sp is None or sp.kind not in BUILT or sp.cls not in SIDEWALK_CLASSES or sp.cls in MEASURE_SKIP:
@@ -322,6 +444,8 @@ def bridge_specs(feats):
         rule_w = float(width) if width is not None and 1.0 <= float(width) <= 40.0 else None
         kind = surface_kind(cls, _rule_value(rules.get("surface"), i))
         ow = _rule_value(rules.get("oneway"), i) is not None
+        if rule_w is None and _rule_value(rules.get("subclass"), i) == "link":
+            rule_w = LINK_M[1] if ow else LINK_M[2]
         out.append(Spec(carriageway(cls, kind, False, rule_w, ow), kind, False, cls, ow))
     return out
 
@@ -688,8 +812,34 @@ def cut_outside(pts, blockers, spacing=2.0):
     return out
 
 
+ARTERIAL_KMH = 73.0             # a divided urban trunk this slow (45 mph) is a town arterial, not an expressway ...
+ARTERIAL_GAP_M = 150.0          # ... or, with no limit, one with a junction this often (Coastal Highway ~50 m)
+
+
 def has_sidewalks(spec):
-    return spec.kind in BUILT and spec.urban and spec.cls in SIDEWALK_CLASSES
+    # a two-way urban trunk is a town's main street on a state highway (Bishop's US-395, Moab's US-191);
+    # divided trunks are one-way per carriageway: expressways get none, slow ones (Ocean City's Coastal
+    # Highway, 35 mph, 2026-10-14 street photos) one on their outer side (walk_sides)
+    return spec.kind in BUILT and spec.urban and (spec.cls in SIDEWALK_CLASSES
+                                                  or (spec.cls == "trunk" and (not spec.oneway or _arterial(spec))))
+
+
+def _arterial(spec):
+    if not spec.oneway:
+        return False
+    if spec.kmh is not None:
+        return spec.kmh <= ARTERIAL_KMH
+    return spec.gap is not None and spec.gap <= ARTERIAL_GAP_M
+
+
+def walk_sides(spec, left_hand=False):
+    """The sides (+1 left of the geometry, -1 right) of a road with sidewalks that get one: both, or a
+    divided trunk carriageway's outer side only (the curb on the driver's right, left where they drive on
+    the left; the other side is the median)."""
+    if spec.cls == "trunk" and spec.oneway:
+        right = -1 if spec.dir >= 0 else 1
+        return (-right,) if left_hand else (right,)
+    return (1, -1)
 
 
 def sidewalk_stop(spec, fid, other, ofid):
@@ -702,7 +852,7 @@ def sidewalk_stop(spec, fid, other, ofid):
     return other.width / 2
 
 
-def extras(spec, pts, lon):
+def extras(spec, pts, lon, left_hand=False):
     """The sidewalk / gutter / marking polylines of one road: [(look dict with m / tl / p, width, pts)].
     pts: its centreline (k, 3) in the anchor frame; lon: its longitude (centre line colour). Pure."""
     out = []
@@ -710,7 +860,7 @@ def extras(spec, pts, lon):
     if kind not in BUILT:
         return out
     if has_sidewalks(spec):
-        for side in (1, -1):
+        for side in walk_sides(spec, left_hand):
             out.append(({**SIDEWALK, "side": side}, spec.walk,
                         offset_polyline(pts, side * (w / 2 + spec.walk / 2))))
             out.append(({**GUTTER, "side": side}, GUTTER["w"], offset_polyline(pts, side * (w / 2 - GUTTER["w"] / 2))))
@@ -718,10 +868,126 @@ def extras(spec, pts, lon):
         look = {"m": centre_colour(lon), "tl": CENTRE["tl"], "p": CENTRE["p"]}
         for side in (1, -1):
             out.append((look, CENTRE["w"], offset_polyline(pts, side * CENTRE["gap"])))
-    if kind == "paved" and not urban and cls in EDGE_LINE_CLASSES:
+    if kind == "paved" and cls in LANE_CLASSES:
+        # lane lines (white dashes) where the driving width holds two or more lanes a direction
+        parked = urban and cls in PARKING_CLASSES and not (not spec.oneway and cls in URBAN_ARTERIAL)
+        drive = w - ((PARKING_M if spec.oneway else 2 * PARKING_M) if parked else 0.0)
+        lanes = int(drive // LANE_M)
+        if spec.oneway and lanes >= 2:
+            lw = drive / lanes
+            for k in range(1, lanes):
+                out.append((LANE_LINE, LANE_LINE["w"], offset_polyline(pts, -drive / 2 + k * lw)))
+        elif not spec.oneway and lanes >= 4:
+            n = lanes // 2
+            lw = drive / 2 / n
+            for side in (1, -1):
+                for k in range(1, n):
+                    out.append((LANE_LINE, LANE_LINE["w"], offset_polyline(pts, side * k * lw)))
+    if kind == "paved" and (not urban or not has_sidewalks(spec)) and cls in EDGE_LINE_CLASSES:   # no curb: edge lines
         for side in (1, -1):
             out.append((EDGE_LINE, EDGE_LINE["w"], offset_polyline(pts, side * (w / 2 - EDGE_LINE["inset"]))))
     return out
+
+
+JOIN_GAP_M = 14.0       # sidewalk ends this close (and facing each other) are joined: a sharp corner / road merge
+JOIN_TURN_DEG = 70.0    # ... when the run turns by at most this to reach the other end
+
+
+def _end_dir(pts, at_end):
+    """Unit direction a run leaves by at its start (at_end False: pointing out of the run backwards) or end."""
+    if at_end:
+        d = pts[-1, :2] - pts[-2, :2]
+    else:
+        d = pts[0, :2] - pts[1, :2]
+    n = math.hypot(*d)
+    return d / n if n > 1e-9 else d
+
+
+def join_walk_ends(runs, carriageways):
+    """Sidewalk runs whose open ends face each other across a short gap merged into one run (the user,
+    2026-10-14: sidewalks at sharp corners do not join; junctions.py makes no curb return under 35 degrees or with a
+    long tangent, so each street's sidewalk stopped at the other's carriageway with bare ground between). runs: the
+    runs near the tile before clipping ({pts, side, w, fid, j, open, ramp_fids}); two are merged when the straight
+    gap between their ends stays off every carriageway and they are on the same side (one continuous polyline: the
+    mesh mitres it, no seam). Pairs found greedily, nearest first. Returns the new list of runs."""
+    ends = []                                   # (run index, at_end, point, leaving direction)
+    for k, rn in enumerate(runs):
+        p = rn["pts"]
+        if len(p) < 2:
+            continue
+        for at_end in (False, True):
+            if not rn["open"][1 if at_end else 0] or rn["j"][1 if at_end else 0]:
+                continue                        # cut by the near box, or at a curb return: not a loose end
+            ends.append((k, at_end, (p[-1] if at_end else p[0]), _end_dir(p, at_end)))
+    pairs = []
+    cos_t = math.cos(math.radians(JOIN_TURN_DEG))
+    for a in range(len(ends)):
+        for b in range(a + 1, len(ends)):
+            ki, ei, qi, di = ends[a]
+            kj, ej, qj, dj = ends[b]
+            if ki == kj:
+                continue
+            gap = qj[:2] - qi[:2]
+            L = math.hypot(*gap)
+            if L < 0.3 or L > JOIN_GAP_M:
+                continue
+            u = gap / L
+            if float(u @ di) < cos_t or float(-u @ dj) < cos_t:
+                continue                        # each end must leave toward the other
+            pairs.append((L, a, b))
+    runs = [dict(r) for r in runs]
+    alias = list(range(len(runs)))              # a merged run's index (runs consumed by merges point to it)
+    used = set()
+    for L, a, b in sorted(pairs):
+        if a in used or b in used:
+            continue
+        ki, ei, qi, di = ends[a]
+        kj, ej, qj, dj = ends[b]
+        while alias[ki] != ki:
+            ki = alias[ki]
+        while alias[kj] != kj:
+            kj = alias[kj]
+        if ki == kj:
+            continue
+        ri, rj = runs[ki], runs[kj]
+        # the pieces in travel order: ri toward its joined end, then rj away from its joined end
+        pi_ = ri["pts"] if ei else ri["pts"][::-1]
+        pj_ = rj["pts"] if not ej else rj["pts"][::-1]
+        si = ri["side"] if ei else -ri["side"]
+        sj = rj["side"] if not ej else -rj["side"]
+        if si != sj:
+            continue                            # opposite sides of the streets: not one sidewalk
+        gap_pts = np.linspace(pi_[-1], pj_[0], max(2, int(L / 2.0) + 2))[1:-1]
+        hw = 0.25 * (ri["w"] + rj["w"])
+        if any(_seg_dist_min(cl, q[:2]) < h + hw * 0.5 for cl, h in carriageways for q in gap_pts):
+            continue                            # the gap would cross a road
+        used.update((a, b))
+        pts = np.vstack([pi_, gap_pts, pj_]) if len(gap_pts) else np.vstack([pi_, pj_])
+        j0 = ri["j"][0] if ei else ri["j"][1]
+        j1 = rj["j"][1] if not ej else rj["j"][0]
+        o0 = ri["open"][0] if ei else ri["open"][1]
+        o1 = rj["open"][1] if not ej else rj["open"][0]
+        runs[ki] = {"pts": densify(simplify(pts)), "side": si, "w": ri["w"], "fid": ri["fid"], "j": (j0, j1),
+                    "open": (o0, o1), "ramp_keys": sorted(set(ri.get("ramp_keys", [(ri["fid"], ri["side"])])
+                                                               + rj.get("ramp_keys", [(rj["fid"], rj["side"])])))}
+        runs[kj] = None
+        alias[kj] = ki
+    return [r for r in runs if r is not None]
+
+
+def _left_normal(two):
+    d = two[1] - two[0]
+    n = math.hypot(*d)
+    return np.array([-d[1], d[0]]) / n if n > 1e-9 else np.array([0.0, 0.0])
+
+
+def _seg_dist_min(line, p):
+    a, b = line[:-1], line[1:]
+    d = b - a
+    L2 = np.maximum((d * d).sum(1), 1e-12)
+    t = np.clip(((p - a) * d).sum(1) / L2, 0.0, 1.0)
+    q = a + d * t[:, None]
+    return float(np.min(np.hypot(*(q - p).T)))
 
 
 def clip_polyline(pts, x0, y0, x1, y1):
@@ -1128,7 +1394,8 @@ def drains(run, side, caps, walk_w=None):
     return res
 
 
-def build_tile(frame, tx, ty, cells, elev, urban_fn=None, walks=None, bridges=None, widths=None):
+def build_tile(frame, tx, ty, cells, elev, urban_fn=None, walks=None, bridges=None, widths=None, props=None,
+               lines=None, wires=None, town=None, park=None, left_hand=False, structures=(), mph=True):
     """The chunks of one tile. cells: the mapgeom.Features of the "roads" layer of every cell touching
     the tile; elev(lat, lon) -> metres (the DEM); urban_fn: as road_specs. Features in several cells are
     taken once (by id). The carriageways, then each road's sidewalks / gutters / markings (extras), cut
@@ -1144,7 +1411,7 @@ def build_tile(frame, tx, ty, cells, elev, urban_fn=None, walks=None, bridges=No
     for feats in cells:
         if feats is None or len(feats) == 0:
             continue
-        specs = road_specs(feats, urban_fn, widths)
+        specs = road_specs(feats, urban_fn, widths, left_hand)
         bspecs = bridge_specs(feats)
         for i in range(len(feats)):
             if bspecs[i] is not None and str(feats.ids[i]) not in bseen:
@@ -1192,6 +1459,21 @@ def build_tile(frame, tx, ty, cells, elev, urban_fn=None, walks=None, bridges=No
         junctions.find(roads, has_sidewalks, None, PARKING_M,
                        lambda sp: sp.urban and sp.cls in PARKING_CLASSES and sp.kind in BUILT and not sp.oneway
                        and sp.width >= STYLE.get(sp.cls, STYLE["unknown"])[0] + 2 * PARKING_M - 0.1)
+    # small road loops (roundabouts, turnaround loops): no sidewalks facing their inside, a curbed island instead
+    import islands
+    isl = islands.find(roads, structures=structures) if walks is not None else []
+    inner = islands.inner_sides(isl)
+    if walks is not None:
+        for f in isl:
+            if f["ring"] is None:
+                continue
+            ring = np.vstack([f["ring"], f["ring"][:1]])
+            band = offset_polyline(ring, islands.ISLAND_BAND_M / 2)
+            for piece in clip_polyline(band, *exact):
+                run = densify(simplify(piece))
+                if len(run) >= 2:
+                    walks.append({"pts": run, "side": 1, "caps": (False, False), "ramps": [],
+                                  "w": islands.ISLAND_BAND_M, "fid": "island"})
     cornered = set()                            # road pairs whose sidewalks meet at a curb return
     if walks is not None:
         for (fid, side), cl in jcuts.items():
@@ -1201,6 +1483,8 @@ def build_tile(frame, tx, ty, cells, elev, urban_fn=None, walks=None, bridges=No
                         cornered.add((fid, f2))
         for c in corners:                       # each corner / crosswalk made by the tile it is in
             p = c["arc"][len(c["arc"]) // 2]
+            if isl and islands.in_island(isl, p[:2]):
+                continue                        # a curb return inside a loop: its island has its own curb
             if x0 <= p[0] < x1 and y0 <= p[1] < y1:
                 walks.append({"corner": c})
                 if c["fill"] is not None:
@@ -1211,8 +1495,9 @@ def build_tile(frame, tx, ty, cells, elev, urban_fn=None, walks=None, bridges=No
             if x0 <= mid[0] < x1 and y0 <= mid[1] < y1:
                 look = junctions.STOP_LINE if cw.get("stop") else junctions.CROSSWALK
                 chunks.append(_chunk(look, cw["w"], np.array([cw["a"], cw["b"]])))
+    runs_near = []                              # sidewalk runs near the tile, before clipping (walks: below)
     for fid, spec, pts, lon in roads:
-        ex = extras(spec, pts, lon) if fid not in jinternal else []    # inside a junction: none
+        ex = extras(spec, pts, lon, left_hand) if fid not in jinternal else []    # inside a junction: none
         if not ex:
             continue
         blockers = [(p2[:, :2], s2.width / 2 + CUT_MARGIN) for f2, s2, p2, _ in roads if f2 != fid]
@@ -1221,8 +1506,11 @@ def build_tile(frame, tx, ty, cells, elev, urban_fn=None, walks=None, bridges=No
         for look, w, line in ex:
             walk = look["m"] == SIDEWALK["m"]
             side = look.get("side")
+            if (walk or look["m"] == GUTTER["m"]) and (fid, side) in inner:
+                continue                        # facing a traffic island: no sidewalk there
             if walk and walks is not None:
-                for piece in clip_polyline(line, *exact):
+                # whole runs near the tile first (joined across tile borders below), clipped to the tile after
+                for piece in clip_polyline(line, *near):
                     for cpiece, (j0, j1) in junctions.apply_cuts(piece, jcuts.get((fid, side), [])):
                         for run in cut_outside(cpiece, walk_blockers, 0.5):
                             run = densify(simplify(run))
@@ -1230,10 +1518,8 @@ def build_tile(frame, tx, ty, cells, elev, urban_fn=None, walks=None, bridges=No
                                 continue
                             at_j0 = j0 and np.hypot(*(run[0, :2] - cpiece[0, :2])) < 0.6
                             at_j1 = j1 and np.hypot(*(run[-1, :2] - cpiece[-1, :2])) < 0.6
-                            caps = (not _on_box(run[0], exact) and not at_j0, not _on_box(run[-1], exact) and not at_j1)
-                            ramps = junctions.ramp_ranges(run, jramps.get((fid, side), []))
-                            walks.append({"pts": run, "side": side, "caps": caps, "ramps": ramps, "w": w})
-                            chunks.extend(drains(run, side, (caps[0] or at_j0, caps[1] or at_j1), w))
+                            runs_near.append({"pts": run, "side": side, "w": w, "fid": fid, "j": (at_j0, at_j1),
+                                              "open": (not _on_box(run[0], near), not _on_box(run[-1], near))})
                 continue
             if walks is not None and look["m"] == GUTTER["m"]:     # gutters end where their curb turns
                 gcuts = jcuts.get((fid, side), [])
@@ -1247,6 +1533,43 @@ def build_tile(frame, tx, ty, cells, elev, urban_fn=None, walks=None, bridges=No
                     for c in split(densify(simplify(run))):
                         if len(c) >= 2:
                             chunks.append(_chunk(look, w, c))
+    if walks is not None:
+        runs_near = join_walk_ends(runs_near, [(p2[:, :2], s2.width / 2) for _, s2, p2, _ in roads])
+        for rn in runs_near:
+            fid, side, w, run0 = rn["fid"], rn["side"], rn["w"], rn["pts"]
+            for run in clip_polyline(run0, *exact):
+                if len(run) < 2:
+                    continue
+                first = np.hypot(*(run[0, :2] - run0[0, :2])) < 1e-6
+                last = np.hypot(*(run[-1, :2] - run0[-1, :2])) < 1e-6
+                at_j0 = first and rn["j"][0]
+                at_j1 = last and rn["j"][1]
+                caps = (first and not at_j0 and not _on_box(run[0], exact),
+                        last and not at_j1 and not _on_box(run[-1], exact))
+                rl = [r for key in rn.get("ramp_keys", [(fid, side)]) for r in jramps.get(key, [])]
+                ramps = junctions.ramp_ranges(run, rl)
+                walks.append({"pts": run, "side": side, "caps": caps, "ramps": ramps, "w": w, "fid": fid})
+                chunks.extend(drains(run, side, (caps[0] or at_j0, caps[1] or at_j1), w))
+    if lines is not None:                           # the centrelines near the tile (buildings' front doors)
+        lines.extend((pts[:, :2], spec.width / 2, spec.cls, spec.urban) for _, spec, pts, _ in roads)
+    if props is not None and walks is not None:     # street lights and utility poles (furniture.py)
+        import furniture
+        import navgraph
+        speeds = {fid: navgraph.road_mph(f, i, sp, mph) for fid, (f, i, sp) in seen.items()}
+        props.extend(furniture.place(roads, walks, (x0, y0, x1, y1), wires=wires, town=bool(town), left_hand=left_hand,
+                                     speeds={k: v for k, v in speeds.items() if v is not None}, mph=mph))
+    if park is not None and walks is not None:      # curbside parking spots (parking.py)
+        import parking
+        dirs = {}
+        for fid, (f, i, sp) in seen.items():
+            if sp.oneway:
+                v = _rule_value(f.rules.get("oneway"), i)
+                dirs[fid] = (-1 if float(v) < 0 else 1) if v is not None else (sp.dir or 1)
+        park.extend(parking.curb_spots(roads, walks, (x0, y0, x1, y1), left_hand, dirs))
+        aisles = {fid for fid, (f, i, sp) in seen.items()
+                  if sp.kind == "paved" and _rule_value(f.rules.get("subclass"), i) == "parking_aisle"}
+        if aisles:
+            park.extend(parking.aisle_spots(roads, aisles, (x0, y0, x1, y1)))
     return chunks
 
 
@@ -1265,7 +1588,7 @@ class Tracker:
             self.aid, self.sent, self.building = aid, set(), set()
         want = [k for k in tiles_near(x, y, SEND_M) if k not in self.sent and k not in self.building]
         want.sort(key=lambda k: tile_distance(k[0], k[1], x, y))
-        for tx, ty in want[:BUILD_PER_POSE]:
+        for tx, ty in want[:max(0, BUILD_PER_POSE - len(self.building))]:   # in flight at most (vegetation.Tracker)
             self.building.add((tx, ty))
             fut = loop.run_in_executor(None, build, aid, tx, ty)
             fut.add_done_callback(lambda f, k=(tx, ty), a=aid: self._built(conn, a, k, f))
@@ -1290,7 +1613,11 @@ class Tracker:
         conn.send({"type": "roads_tile", "anchorId": aid, "key": f"{key[0]}_{key[1]}", "path": path, "n": n})
 
 
-def write_tile(out_dir, vfs_dir, aid, tx, ty, chunks, walks=None, road_mesh=None, deck_mesh=None):
+BLD_PARTS_MAX = 4               # building meshes per road tile ("bld", "bld2".."bld4": the mod's list)
+
+
+def write_tile(out_dir, vfs_dir, aid, tx, ty, chunks, walks=None, road_mesh=None, deck_mesh=None, bld=None,
+               props=None, wires=None, park=None):
     """Write a tile's chunks (atomically), its sidewalk mesh (walks: build_tile's runs, if any:
     `walks_<a>_<tx>_<ty>.cdae`, announced in the tile as "walk": {shape, pos}) and its road mesh
     (road_mesh: roadmesh.build's result: `road_<a>_<tx>_<ty>.cdae`, "road": {shape, pos}; the mod then
@@ -1321,13 +1648,88 @@ def write_tile(out_dir, vfs_dir, aid, tx, ty, chunks, walks=None, road_mesh=None
                 continue
             ww = wk.get("w", SIDEWALK["w"])
             curb, out = sidewalks.run_geometry(wk["pts"], wk["side"], ww)
-            b.add_run(curb, out, ww, caps=wk["caps"], ramps=wk.get("ramps", ()))
+            b.add_run(curb, out, ww, caps=wk["caps"], ramps=wk.get("ramps", ()),
+                      slab=sidewalks.BRICK if wk.get("brick") else 1)
         if not b.empty():
             shape = f"walks_{aid}_{tx}_{ty}.cdae"
             b.write(os.path.join(out_dir, shape))
             data["walk"] = {"shape": f"{vfs_dir}/{shape}", "pos": [x0, y0, 0.0]}
+    boxes = collider_boxes(walks if data.get("walk") else None, chunks if data.get("deck") else None)
+    if bld is not None:             # buildings.road_tile: the tile's buildings, colliding ("bld")
+        import buildings
+        x0, y0, _, _ = tile_bbox(tx, ty)
+        meshes = bld[0] if isinstance(bld[0], list) else [bld[0]]
+        for k, mesh in enumerate(meshes[:BLD_PARTS_MAX]):   # under the engine's 16-bit index limit each
+            what = "bld" if k == 0 else f"bld{k + 1}"
+            shape = f"bld_{aid}_{tx}_{ty}.cdae" if k == 0 else f"bld_{aid}_{tx}_{ty}_{k + 1}.cdae"
+            buildings.write(os.path.join(out_dir, shape), mesh)
+            data[what] = {"shape": f"{vfs_dir}/{shape}", "pos": [x0, y0, 0.0]}
+            boxes[what] = bld[1]
+        if len(bld) > 2 and bld[2] is not None:     # the lean physics-only mesh (the drawn ones then only render)
+            shape = f"bldcol_{aid}_{tx}_{ty}.cdae"
+            buildings.write(os.path.join(out_dir, shape), bld[2], collision_only=True)
+            data["bldcol"] = {"shape": f"{vfs_dir}/{shape}", "pos": [x0, y0, 0.0]}
+            boxes["bldcol"] = bld[1]
+    if boxes:
+        data["colliders"] = boxes
+    if wires:                       # utility pole wires (furniture.wire_mesh), render-only
+        import cdae
+        import furniture
+        x0, y0, _, _ = tile_bbox(tx, ty)
+        wm = furniture.wire_mesh(wires, (x0, y0, 0.0))
+        if wm is not None:
+            shape = f"wire_{aid}_{tx}_{ty}.cdae"
+            cdae.write(os.path.join(out_dir, shape), wm[0], wm[1], uvs=wm[2], material="bne_wire", object_name="wires")
+            data["wire"] = {"shape": f"{vfs_dir}/{shape}", "pos": [x0, y0, 0.0]}
+    if props:                       # furniture.place's rows: Forest items (trees.lua), groups by index
+        groups = sorted({r[0] for r in props})
+        data["props"] = {"groups": groups, "items": [[groups.index(r[0])] + r[1:] for r in props]}
+    if park:                        # parking.py's spots [x, y, z, heading] for the stock parked cars (parking.lua)
+        data["park"] = park
     tmp = path + ".tmp"
     with open(tmp, "w") as f:
         json.dump(data, f, separators=(",", ":"))
     os.replace(tmp, path)
     return f"{vfs_dir}/{name}", len(chunks)
+
+
+COLLIDER_PIECE_M = 20.0     # collider_boxes: a run / deck cut into boxes this long
+COLLIDER_MARGIN_M = 0.5
+
+
+def collider_boxes(walks, chunks):
+    """{"walk": [...], "deck": [...]}: boxes [x0, y0, z0, x1, y1, z1] (anchor frame, m) around the
+    sidewalk runs / corners and the bridge decks of a tile, in pieces of COLLIDER_PIECE_M. The mod
+    does not make a colliding mesh solid while the player's vehicle is inside one of its boxes (a late
+    curb or deck turning solid around a car; the intermittent NaN drives, 2026-10-13). Pure."""
+    import roadmesh
+    import sidewalks
+    out = {}
+
+    def add(what, pts, half_w, z_lo, z_hi):
+        pts = np.asarray(pts, np.float64)
+        seg = np.r_[0.0, np.cumsum(np.hypot(*np.diff(pts[:, :2], axis=0).T))] if len(pts) > 1 else np.zeros(1)
+        cut = np.floor(seg / COLLIDER_PIECE_M).astype(int)
+        for k in np.unique(cut):
+            idx = np.flatnonzero(cut == k)
+            sel = pts[max(idx[0] - 1, 0):idx[-1] + 1]     # the piece and the point before it
+            m = half_w + COLLIDER_MARGIN_M
+            out.setdefault(what, []).append([round(float(sel[:, 0].min() - m), 1), round(float(sel[:, 1].min() - m), 1),
+                                             round(float(sel[:, 2].min() + z_lo), 1), round(float(sel[:, 0].max() + m), 1),
+                                             round(float(sel[:, 1].max() + m), 1), round(float(sel[:, 2].max() + z_hi), 1)])
+    for wk in walks or ():
+        if "corner" in wk:
+            c = wk["corner"]             # the curb arc and the outer corner points: one box over both
+            pts = np.concatenate([np.asarray(c["arc"], np.float64), np.asarray(c["outer"], np.float64).reshape(-1, 3)])
+            add("walk", pts[np.argsort(np.arctan2(pts[:, 1] - pts[:, 1].mean(), pts[:, 0] - pts[:, 0].mean()))],
+                0.5, -1.0, 1.0)
+            continue
+        ww = wk.get("w", SIDEWALK["w"])
+        curb, outv = sidewalks.run_geometry(wk["pts"], wk["side"], ww)
+        mid = curb.copy()
+        mid[:, :2] = curb[:, :2] + outv * (ww / 2)
+        add("walk", mid, ww / 2 + 0.5, -1.0, 1.0)
+    for c in chunks or ():
+        if c.get("deck") and len(c["n"]) > 1:
+            add("deck", c["n"], float(c["w"]) / 2 + 1.0, -roadmesh.DECK_DEPTH - 1.0, 2.0)
+    return out

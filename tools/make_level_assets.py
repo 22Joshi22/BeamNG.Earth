@@ -29,7 +29,7 @@ pretty(os.path.join(L, "info.json"), {
     "roads": "None (v1)",
     "authors": "BeamNG.Earth",
     "defaultSpawnPointName": "spawn_default",
-    "supportsTraffic": False,
+    "supportsTraffic": True,      # the stock traffic / parked-car choice at the level start (2026-10-14)
     "supportsTimeOfDay": True,
 })
 
@@ -117,7 +117,7 @@ def surface(name, gm, pid, detail, dsize, macro, msize, strength=0.25):
          "detailDistances": [0, 0, 50, 80], "macroDistances": [0, 0, 150, 1500],
          "baseColorDetailStrength": [strength, 0.08], "normalDetailStrength": [1, 0.3], "roughnessDetailStrength": [1, 0.4],
          "aoDetailStrength": [0.8, 0.2], "baseColorMacroStrength": [0.12, 0.08], "normalMacroStrength": [0.5, 0.3],
-         "roughnessMacroStrength": [0.5, 0.5]}
+         "roughnessMacroStrength": [0, 0.8]}
     for key, suf, base in (("baseColor", "_b", "bngEarth_base_b.png"), ("normal", "_nm", "bngEarth_base_nm.png"),
                            ("roughness", "_r", "bngEarth_base_r.png"), ("ao", "_ao", "bngEarth_base_ao.png")):
         m[key + "BaseTex"], m[key + "BaseTexSize"] = B + base, 128
@@ -137,7 +137,9 @@ for i, args in enumerate((
         ("bngEarthGroundRock", "ROCK", "rock/t_dirt_rocky/t_dirt_rocky", 2, "rock/macro_rocky/t_macro_rocky", 32),
         ("bngEarthGroundSnow", "SNOW", "sand/t_sand/t_sand", 2, "sand/t_macro_sand/t_macro_sand", 32, 0.12),
         ("bngEarthGroundMud", "MUD", "mud/mud/t_mud", 1, "soil/macro_clumply/t_macro_clumpy", 32),
-        ("bngEarthGroundCobble", "COBBLESTONE", "asphalt/t_asphalt_02/t_asphalt_02", 1, "asphalt/macro_asphalt/t_macro_asphalt", 16, 0.3))):
+        ("bngEarthGroundCobble", "COBBLESTONE", "asphalt/t_asphalt_02/t_asphalt_02", 1, "asphalt/macro_asphalt/t_macro_asphalt", 16, 0.3),
+        # mown town yards (server/surface.py LAWN): the grass detail, finer grain
+        ("bngEarthGroundLawn", "GRASS", "grass/t_grass_01/t_grass_01", 1, "grass/t_macro_grass/t_macro_grass", 32, 0.2))):
     name, gm, detail, dsize, macro, msize, *st = args
     SURFACES.update(surface(name, gm, f"3b0f6f0e-8f5e-4a51-9a59-0b8e2f6a1c{30 + i}", detail, dsize, macro, msize, *st))
 
@@ -156,7 +158,7 @@ pretty(os.path.join(T, "main.materials.json"), {
         "aoMacroTex": A + "macro_clumply/t_macro_clumpy_ao.png", "aoMacroTexSize": 64,
         "baseColorBaseTex": B + "bngEarth_base_b.png", "baseColorBaseTexSize": 256,
         "baseColorDetailStrength": [0.25, 0], "baseColorDetailTex": A + "dirt_crumbly/t_dirt_crumbly_b.png",
-        "baseColorMacroStrength": [0.3, 0.3], "baseColorMacroTex": A + "macro_clumply/t_macro_clumpy_b.png", "baseColorMacroTexSize": 64,
+        "baseColorMacroStrength": [0.12, 0.08], "baseColorMacroTex": A + "macro_clumply/t_macro_clumpy_b.png", "baseColorMacroTexSize": 64,
         "detailDistances": [0, 0, 30, 60], "macroDistances": [0, 10, 100, 3000],
         "heightBaseTex": B + "bngEarth_base_h.png", "heightBaseTexSize": 256,
         "heightDetailTex": A + "dirt_crumbly/t_dirt_crumbly_h.png",
@@ -166,7 +168,7 @@ pretty(os.path.join(T, "main.materials.json"), {
         "normalMacroStrength": [0.5, 0.2], "normalMacroTex": A + "macro_clumply/t_macro_clumpy_nm.png", "normalMacroTexSize": 64,
         "roughnessBaseTex": B + "bngEarth_base_r.png", "roughnessBaseTexSize": 256,
         "roughnessDetailStrength": [1, 0], "roughnessDetailTex": A + "dirt_crumbly/t_dirt_crumbly_r.png",
-        "roughnessMacroStrength": [0.5, 1], "roughnessMacroTex": A + "macro_clumply/t_macro_clumpy_r.png", "roughnessMacroTexSize": 64,
+        "roughnessMacroStrength": [0, 0.8], "roughnessMacroTex": A + "macro_clumply/t_macro_clumpy_r.png", "roughnessMacroTexSize": 64,
     },
     **SURFACES,
     "beamngEarthTerrainMaterialTextureSet": {
@@ -181,7 +183,7 @@ pretty(os.path.join(T, "main.materials.json"), {
 
 Image.new("RGB", (BASE_TEX, BASE_TEX), (100, 88, 69)).save(os.path.join(T, "bngEarth_base_b.png"), optimize=True)
 Image.new("RGB", (BASE_TEX, BASE_TEX), (127, 127, 255)).save(os.path.join(T, "bngEarth_base_nm.png"), optimize=True)
-Image.new("L", (BASE_TEX, BASE_TEX), 206).save(os.path.join(T, "bngEarth_base_r.png"), optimize=True)
+Image.new("L", (BASE_TEX, BASE_TEX), 240).save(os.path.join(T, "bngEarth_base_r.png"), optimize=True)
 Image.new("L", (BASE_TEX, BASE_TEX), 251).save(os.path.join(T, "bngEarth_base_ao.png"), optimize=True)
 Image.new("L", (BASE_TEX, BASE_TEX), 175).save(os.path.join(T, "bngEarth_base_h.png"), optimize=True)
 Image.new("L", (1024, 1024), 128).save(os.path.join(T, "bngEarth_flat_h_1024.png"), optimize=True)   # detail size

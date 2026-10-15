@@ -61,11 +61,14 @@ roads, water, navigation, traffic, cities).
 - Saved places and recent places.
 
 **Interface and tools**
-- A slim status bar (street, town, country, loading, performance), a connection banner when something is
-  wrong, the data credits on screen, a one-time welcome page about the project.
+- A slim status bar (street, town, country, world loading), a connection banner when something is
+  wrong and the data credits on screen, as BeamNG UI apps in a ".Earth" app layout (based on Freeroam's;
+  move or resize them in the UI apps editor), and a one-time welcome page about the project.
 - Settings in the pause menu, keybinds, in-game reports (notes and performance recordings to share).
 - Easy setup: `install.py` installs everything, `start.py` keeps the mod in sync and starts the server.
 - Offline play from the download cache (with a size cap and "clear cache").
+- Update check: the mod tells you in game (and on its settings page, with a link) when a newer version is on
+  GitHub.
 
 ## How it works
 - A small **companion server** (`server/`, Python) downloads elevation and imagery, builds terrain
@@ -77,9 +80,36 @@ roads, water, navigation, traffic, cities).
 - Design and measurements: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md),
   [docs/V1_4_SPEC.md](docs/V1_4_SPEC.md), research notes in [docs/research/](docs/research/).
 
-## Running it
-Players: follow [docs/QUICKSTART.md](docs/QUICKSTART.md) (download, `install.py`, then
-`run_server.bat` / `run_server.sh` and the BeamNG.Earth level).
+## Install and play
+**You need:** BeamNG.drive (tested with 0.39.x, started at least once), [Python 3.10 or newer](https://www.python.org/downloads/)
+(on Windows tick **"Add python.exe to PATH"** in the installer), about 2 GB of free disk space for the map cache,
+and an internet connection (the map is downloaded while you play).
+
+1. **Download** this project: the green **Code** button above, then **Download ZIP** (or a zip from the
+   [Releases](https://github.com/TecnaGamer/BeamNG.Earth/releases) page when there is one). Unzip it anywhere,
+   for example in your Documents folder.
+2. **Install** (once, and again after every update; it only changes what is new):
+   - **Windows:** double-click `run_server.bat`. The first time it runs the installer for you.
+   - **Linux:** open a terminal in the folder and run `python3 install.py`.
+
+   The installer finds your BeamNG.drive user folder (it asks if there is more than one), copies the mod into it
+   and sets up the world server's Python packages (a few minutes the first time).
+3. **Play:**
+   - Start the **world server**: `run_server.bat` (Windows) or `./run_server.sh` (Linux). Keep its window open
+     while you play.
+   - Start BeamNG.drive, go to **Freeroam** and pick the **BeamNG.Earth** level. A welcome page explains the
+     basics the first time.
+   - Press **M** for the world map: search a place or an address, right-click to teleport, left-click to set a
+     GPS route, and **Autodrive** to let the car drive it.
+
+**Updating:** the mod tells you in game when a newer version is on GitHub. Download it the same way, unzip it
+over the old folder (or next to it) and run step 2 again.
+
+**Uninstalling:** delete the `beamng_earth` folder in `<BeamNG user folder>/current/mods/unpacked/` and this
+folder; the map cache is `.cache/beamng-earth` in your home folder (`~/.cache/beamng-earth` on Linux,
+`C:\Users\<you>\.cache\beamng-earth` on Windows).
+
+More detail (traffic, the status bar, reporting problems, troubleshooting): [docs/QUICKSTART.md](docs/QUICKSTART.md).
 
 ### Developer setup
 `python3 install.py` also works from a checkout (mod copy, `.venv`, then `python3 start.py`); by hand:

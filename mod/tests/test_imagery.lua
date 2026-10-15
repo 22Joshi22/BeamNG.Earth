@@ -6,6 +6,7 @@
 local dir = (arg[0]:match('^(.*)[/\\]') or '.')
 local T = dofile(dir .. '/testlib.lua')
 local S = dofile(dir .. '/stubs.lua')
+require('beamngEarth/farfield').SPARE_MAX = 0 -- deletion timing as before; the spare pool: test_farfield_spares.lua
 local farfield = require('beamngEarth/farfield')
 local governor = require('beamngEarth/governor')
 local satmat = require('beamngEarth/satmat')

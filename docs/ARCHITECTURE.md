@@ -891,7 +891,8 @@ three days of testing: dem 741 MB / 7.5k files, imagery 1.4 GB / 35k, deshadow 7
   (`heightmap.generate(keep=)`), `Surface.classes` reads the WorldCover class under every 2 m sample from
   the map-data cache (z14 cells, `mapdata.MapData` "landcover", no DuckDB needed) and `classify` maps
   it to MATERIALS (§5.4 of docs/research/2026-10-10-world-data-sources.md: built-up asphalt, tree /
-  grass / moss grass, shrub dusty dirt, bare loose dirt, cropland dirt, snow, water / wetland mud) with
+  grass / moss grass, shrub dusty dirt, bare loose dirt, cropland dirt, snow, water / wetland mud; built-up
+  dirt since 2026-10-14: as asphalt it washed whole towns grey, the roads are painted asphalt anyway) with
   ROCK where the slope is above 35° (snow stays snow). One 0/255 mask per material
   (`hm_<a>_<cx>_<cy>_m<i>.png`, rows as the heightmap's) goes next to the heightmap; the terrain message
   names them (`layers`, `materials`) and terrain.lua imports 8 greyscale masks (+4-5 ms per 512²
@@ -982,8 +983,10 @@ three days of testing: dem 741 MB / 7.5k files, imagery 1.4 GB / 35k, deshadow 7
   cut every 2 m and both edges sampled from the physics elevation in one call per tile. The result
   is one render-only TSStatic per tile: about 6k triangles / 360 KB, built in ~0.03 s. The same
   terrain-signal test now costs 8-12 ms, and roads show beyond the physics block too.
-  - The stock decal materials render on a mesh (translucent with zwrite: fixed draw order inside
-    one mesh, no flicker).
+  - The stock decal materials render on a mesh (translucent with zwrite). The draw order inside one
+    mesh is not guaranteed: with many translucent objects in view (2026-10-14, buildings and signals)
+    the markings vanished under the asphalt. `roads.lua` now makes the asphalt and cobble materials
+    opaque when it loads them (`M.OPAQUE`), so the translucent lines always draw over them.
   - On a MeshRoad, `sidewalk_concrete` drew nothing.
 - **Road lift.** The physics ground (block + road heights) is raised `grading.ROAD_LIFT` (4 cm)
   under roads, tapering with the grading weight. The visible ground tiles are not raised. So the road
@@ -1020,6 +1023,17 @@ three days of testing: dem 741 MB / 7.5k files, imagery 1.4 GB / 35k, deshadow 7
   urban check (`road_specs`) are each one batched call. Before, they were one call per road: tiles
   took 6-8 s and physics blocks ~6 s (15-35 s under load, so the car outran its ground). Now tiles
   take ~0.5 s and blocks 1.6-2.4 s.
+
+### Road look updates (2026-10-14, from the street photo comparisons)
+- Divided urban trunks (one-way carriageways) get a sidewalk on the curb side only (`walk_sides`: right of
+  the travel direction, left where traffic keeps left) when they are town arterials: a limit of 45 mph or
+  less, or with no limit a junction every 150 m or less (`Spec.kmh`, `Spec.gap`); expressways none.
+- Two-way urban trunks (town main streets on state highways) get sidewalks, lamps; urban trunks not
+  lined by buildings default to 4 lanes (13.2 m); white dashed lane lines where the driving width holds
+  2+ lanes a direction; white edge lines on urban roads without curbs too.
+- Curb ramps: the tactile pad is the first 0.6 m of the slope (tinted yellow); brick sidewalks on 55 % of
+  the streets of dense brick-region cores; parking lots (Overture infrastructure `parking`) are the
+  asphalt ground layer (no grass); built-up land is the dirt layer.
 
 ### Raised sidewalks, curbs and storm drains (`server/sidewalks.py`; 2026-10-11)
 - Asked by the user ("will that include making the curbs and sidewalks 3d?"). A curb is a sharp
@@ -1300,5 +1314,334 @@ host policy `netfetch.POLICIES["davidmegginson.github.io"]` and `airports` in `c
   v1.5 layer masks (+4-5 ms per 512² commit for 8 layers); groups per map-data cell; M6 tile content keys
   gain the OurAirports snapshot and the runwaygeom version; DecalRoad markings within ~2 km; runway ends
   as spawn places; taxiways / aprons / buildings from Overture / OSM later.
-- Tests: `server/tests/test_airports.py`, `test_runwaygeom.py`, `test_runwaymarks.py` (synthetic files from
+- **Wired (2026-10-13, `--airports on`, default off):** `airportgrade.AirportGrader` (one per process: the main
+  server loads / refreshes the OurAirports copy before the worker processes start, they read it offline) grades the
+  groups touching a box's map-data cells, planned once per process on a fixed z15 DEM sampler; every elevation
+  function takes it before the road grading: the block (`blockworker.build`, the thread path), the far tiles
+  (`GradedRunwayDem`), the road tiles. KBWI 10/28 in-game: centreline 2nd-difference RMS 0.40 cm (DEM 1.28 cm),
+  within 16 cm of the DEM. Not yet: markings (DecalRoads), runway ground models in the layers, spawn places.
+- Tests: `server/tests/test_airports.py`, `test_runwaygeom.py`, `test_runwaymarks.py`, `test_airportgrade.py` (synthetic files from
   `airportfixtures.py`, synthetic DEMs, fake netfetch transport and wall clock; no network).
+
+## Sea water (`server/seacarve.py`, `seatiles.py`, mod `sea.lua`; 2026-10-13, `--sea on`, default off)
+
+User's choices (2026-10-13): sea and bays first, roughly real depths and sinking cars, glossy far tiles
+later. Engine facts: docs/research/2026-10-13-water-probe.md. A WaterBlock's surface is at its
+position; vehicles see water they drive into, but not water that appears around them while parked.
+- **Where:** Overture `base/water` polygons with subtype `ocean` (OSM's coastline: the open sea, bays,
+  tidal rivers such as Baltimore's harbour). Per map-data cell they are rasterised on the z16 Web-Mercator
+  grid (~1.9 m) with a 32 px margin from the neighbouring cells, then the floor depth grows from the
+  shoreline at 0.15 m/m to 6 m (an octagonal erosion distance; no bathymetry yet). Cached in
+  `<cache>/seacarve/v1/<overture release>/<x>/<y>.npz` (depth in 5 cm steps; a cell without sea is a
+  small marker file). A point's depth is the bilinear sample, so the floor is continuous across the shore
+  and the cells and the same in every process.
+- **Ground:** `blockworker.ground` / `Server.ground` shape the DEM before the road grading: runways
+  (`--airports on`), then `SeaCarver.carve` (z = min(z, -depth) where the depth is > 0). The block, the
+  road tiles and the far tiles up to L1 are carved. Coarser far tiles have no map data: their DEM sea
+  (-0.5..0.3 m) is sunk 1.5 m (`sink`), so it never shows through the water tiles.
+- **Water tiles (`seatiles.plan`):** a quadtree on an 8192 m lattice in the anchor frame, planned from the
+  centre of the player's 2048 m square: a square closer than 0.75 x its size is split, down to 2048 m,
+  out to 8192 m. That gives <= 34 tiles over open sea (it was <= 76 with 512 m tiles; a 2048 m tile is
+  0.17 m off the curve at its corners). A tile is kept when one of its 64 x 64 samples is sea: the
+  polygon depth for tiles up to 2048 m, the DEM band for larger ones. Its surface is the sea level at its
+  centre in the anchor frame and its normal the local vertical there (tilt cx / R, cy / R), so it
+  follows the Earth's curve. No land is moved for it. The server plans with the cells at hand
+  (`wait=False`: a cell not built yet uses the DEM band and is built by a background thread), so water
+  appears within ~2 s at a new place (Annapolis) and the polygons take over at the next plan.
+- **Message:** `sea` {anchorId, tiles: [[key, x, y, z, size, nx, ny], ...]}: planned in the ground pool
+  when the player enters another 512 m square or every 15 s, sent when the set changed.
+- **Mod (`sea.lua`):** one WaterBlock per tile (`bngEarthSea_<key>`): position = the surface, scale
+  (size, size, 40) (water to 20 m down), `rotation` the tilt, East Coast USA's ocean look (murkier),
+  `gridElementSize` size / 64. Four made per frame; changed keys only. A car slower than 1 m/s inside a
+  new tile is re-placed where it is (`setPositionRotation`), since a parked car does not notice water
+  that appears around it. Cleared on disconnect, a new anchor and unload.
+- **Physics block:** a vehicle takes one water object at a time, the newest one it is in (2026-10-13:
+  on the edge between two tiles only the nodes over one were in water, 495 / 950; re-creating either
+  block flipped which). So `sea.lua` keeps one more block, `bngEarthSeaPhys`, not drawn
+  (`setRenderEnabled(false)` keeps its physics; `setHidden` would not), 256 m square around the player
+  at the level of the tile under it, and makes it again (so it is the newest) after a batch of new
+  tiles, when the player is within 64 m of its edge, or when the level under it changes by > 5 cm.
+  A car in the water (below the level + 1 m) and slower than 1 m/s is then re-placed where it is.
+  Tile edges at Fells Point: 950 / 950 nodes in water.
+- **Cost (Sandy Point, 2026-10-13):** 83 tiles (512 m minimum): 99 vs 102 fps at eye level, 108 vs 119
+  from 200 m. 39 tiles (2048 m minimum, with lakes): 108 vs 109 at eye level, 110 vs 119 from 200 m
+  (water over most of the screen).
+- **Lakes (2026-10-13):** Overture `lake`, `reservoir`, `pond` and `water` polygons (not fountains,
+  pools, basins, drains or intermittent water) go into the same per-cell raster as the sea, which now
+  holds a depth and a level per pixel (cache `seacarve/v2/<release>/lakes/`). A lake's level is the
+  median DEM (z15) inside it, away from the banks, quantised to 0.1 m (US DEMs flatten lakes, so every
+  cell gets the same value). A lake smaller than ~350 m^2 in the 3 x 3 cells, one whose inside spans
+  more than 1.5 m (p10..p90: a river, bad data) and one at sea level are left out. Floors are carved
+  from the shore at 0.15 m/m to 4 m. The far tiles up to L2 are carved (L2 reaches ~3 km).
+  `seatiles.plan_lakes` gives the water tiles within 2.5 km: 512 m squares holding lake water, split down
+  to 16 m while one holds land more than 1 m lower than the lake (a valley below a dam) or two levels;
+  at most 60, nearest first. Loch Raven: 61 tiles (before the cap), Patterson Park's boat lake: 21.
+- **Rivers (2026-10-13):** Overture `river` / `stream` polygons (not drains or ditches; canals with
+  locks broke into dozens of 16 m tiles, so they wait for River objects). Their level follows the DEM
+  pixel by pixel: the DEM every 4th pixel, the lowest of the 3 x 3 samples around (the flattened
+  surface, not a bank), quantised to 0.1 m. Floors carved to 3 m. Lake and river pixels at sea level
+  (<= 0.3 m: lagoons, tidal rivers such as the Potomac at Georgetown) join the sea. Their tiles come
+  from `plan_lakes`, split until one spans at most 0.3 m of the river's fall. Susquehanna at
+  Harrisburg: 89.8 m down to 89.2 m across the area. Plans: 0.4-1 s warm, so the server plans again
+  only when the player enters another 512 m square, or every 30 s (late map data).
+- **Seams fixed (2026-10-13, the user saw lines on a creek near Harrisburg):** tiles 1.6 m apart within
+  300 m made steps at their edges. River levels are now the lowest of the river's own DEM samples within
+  ~70 m (the channel's surface), and any lake / river pixel whose DEM stands > 1 m above its level is dry
+  (outlines that include banks, islands or a floodplain: no water, no trench). Inland tiles are planes
+  fitted to their water (least squares; split while a sample is > 0.15 m off), tilted to match, and the
+  physics block takes the tilted surface's height at the player. Ground carved > 5 cm under water gets
+  the MUD layer (no grass through the surface).
+- **Every river is River objects, beds carved (2026-10-13, the user: "if the tiles can only be flat we
+  shouldn't use them, even the large river has holes"; "you can carve the streams"):** `lake_at` leaves out
+  river outlines, so tiles are only the sea and lakes. `SeaCarver._carve_lines` draws the stream / river
+  lines of the 5 x 5 cells around into the water raster: a level every 4 px (the lowest DEM within half
+  the width, <= 15 m), the width from the outline (twice the distance to its edge) or by class, the bed
+  cut to level - D (1 - (d / hw)^2) (D = width / 6 in 0.6-3 m) with a 1:1 bank for 4 m beyond (a negative
+  depth: the ground kept below level + distance), the deeper cut winning at confluences; flattened river
+  outlines keep their own carving. Those pixels join the outline mask. The Rivers' nodes take that level
+  + 0.05 m (`level_at`), each node moved midway between the outline's banks with the outline's width
+  (up to 2 km). The Harrisburg creek: one 28-48 m River dropping 91.7 -> 88.5 m in its cut channel.
+- **Sections by shape (2026-10-13, the user: "treat each river branch / lake as an isolated section"):**
+  a River ribbon 1 km wide folded over itself at bends and islands (backfacing triangles: holes in the
+  Susquehanna). So a flattened river with a half width >= 60 m somewhere (`WIDE_RIVER_M`) is area water
+  like a lake: its pixels leave the outline mask and `plan_lakes` tiles it, each tile a least-squares
+  plane (the river's fall; tolerance 0.4 m; the levels smoothed over ~22 m first, a flattened DEM still
+  stepped 0.6 m within 128 m below the Dock Street Dam), 64-512 m, <= 120 within 2 km. Narrow rivers and
+  streams stay Rivers; a narrower one entering a wider one or tiled water ends one node inside it. The
+  water engine can't cross-fade objects, so sections meet by a small overlap: tiles are drawn 1 m larger
+  than their squares (no hairline gaps between tilted neighbours).
+- **River objects along centrelines (`server/riverlines.py`, 2026-10-13):** after the user's look at the
+  "Downhill Mayhem" map (each of its two rivers is one River with 24-130 nodes, 5 m deep, the surface
+  following the valley, `flowMagnitudePhysics` 35 / 100 m/s pushing cars). Overture water lines (river /
+  stream, canal of class canal; no drains, ditches, intermittent) are chained where one way continues
+  another (OSM draws them in flow order), resampled every 10-20 m and cut into pieces on a 1024 m lattice
+  of the anchor frame (stable keys). Surface: the lowest DEM of the node and four points 3 m around, a
+  5-node running median, never rising downstream (running minimum), + 0.25 m; not carved yet (shallow
+  water in the channel). Width across the river's outline (seacarve's outline mask) or 12 / 4 / 8 m by
+  class; depth width / 8 (1-4 m); flow 1.0 / 0.6 / 0.3 m/s downstream. Left out where tiles are water
+  (the sea, lakes, rivers the DEM flattens: those keep their carved tiles). Only rivers the DEM flattens
+  (p90 of their inner samples <= 0.25 m above the surface) are tiles now; rough ones are left to these.
+  Sent as `sea.rivers` [key, kind, flow, [[x, y, z, width, depth], ...]] with the tiles; the mod makes
+  them from a definition (`Sim.deserializeObjectFromText`, which leaves them out of every group: added to
+  MissionGroup) with little foam (shallow water drew as white ribbons). Creek near Harrisburg: 12 pieces,
+  0.7 s to plan warm.
+- **Bathymetry (2026-10-13):** per cell, one export of NOAA NCEI's DEM global mosaic (CUDEM ~3 m along
+  the US coasts; host policy `gis.ngdc.noaa.gov`), 4x coarser than the raster and aligned with it. The
+  sea floor reaches NOAA's depth (1-80 m) from the shore at 0.3 m/m; without it (offline, refused) the
+  generic 0.15 m/m to 6 m floor is used, not written to disk and built again after 2 min. Depths are
+  stored in cm (uint16; cache `seacarve/v4`). Baltimore harbour off Fells Point: 12.9 m.
+- **Drive cost (Fells Point east along the waterfront, 30 m/s, 6 km, 2026-10-13):** 75.7 fps with water,
+  79.3 without; p99 22.4 vs 21.9 ms, worst frame 55 vs 53 ms.
+- Tests: `server/tests/test_seacarve.py`, `mod/tests/test_sea.lua`.
+
+## Trees, bushes and rocks (`server/vegetation.py`, mod `trees.lua`; 2026-10-13, `--trees on`, default off)
+
+The user asked for "trees, rocks and other decoration" (ROADMAP v1.9 "Cities & nature").
+- **Per map-data cell (deterministic, cached in `<cache>/vegetation/v1/<release>/<x>/<y>.npz`):**
+  - Trees are the tops of Meta/WRI's CHMv2 (1.2 m canopy heights, z17 grid): local maxima of the 3 x 3
+    smoothed heights in a disc that grows with the height (r = 1-4 px for bushes to > 15 m trees), then
+    one per crown (the tallest first, removing tops within 0.5 (0.12 h + 1) m; 0.8 looked sparse).
+  - None on buildings (the CHM counts roofs and solar panels), road corridors (half width by class +
+    1.5 m: overhanging canopy would put a trunk in the lane) or water; the neighbours' features too.
+  - Bushes: tops of 1-3 m, and a hashed scatter on a 6 m grid over shrubland (WorldCover 20).
+  - Rocks: the same scatter over bare land (60), thinly over shrubs and grass.
+  - Every choice hashes the item's global pixel: species group (deciduous / conifer by a regional share
+    and height, shrub, rock), yaw, size variation, and a fixed rank for thinning.
+  - Cost: ~3.5 s per cell the first time (Patterson Park 5,074 trees; Loch Raven woods 10,387; an
+    Arizona desert cell 13,000 rocks).
+- **Tiles:** 256 m tiles like the road tiles, sent within 1280 m and dropped beyond 1536 m (`veg_tile` /
+  `veg_drop`), each a JSON of [group, x, y, z, yaw, scale, height, rank] in the anchor frame. z is the
+  block's ground (`Server.ground`: runways, carved water); items in water are left out.
+- **Mod (`trees.lua`):**
+  - One `Forest` (`bngEarthForest`) of East Coast USA's stock shapes: oaks, beeches, aspens, Douglas firs,
+    bushes and rocks, with their measured heights (they have LODs, billboards and collision meshes).
+  - Each item takes the variant nearest its height (within 0.8-1.25, else 0.6-1.6, picked by its rank),
+    scaled to it.
+  - Item types are TSForestItemData made with `worldEditorCppApi.createObject` (plain `createObject`
+    returns nil for datablocks), after loading the shapes' `main.materials.json`.
+  - A tile shows the items whose rank is under its distance's threshold: all within 300 m, half to
+    550 m, a quarter to 900 m, an eighth beyond (2026-10-14: out to 1280 m like the far buildings).
+  - Up to 300 items are made or removed per frame (~19 us each, 2026-10-13 probe: 1024 items in 19 ms).
+- **Regions (`vegetation.regional`, 2026-10-14):** a coarse climate from the position and the land cover
+  turns the generic groups into the stock maps' species: West Coast pines / redwoods and oaks /
+  eucalyptus (west of -114), junipers, desert bushes and rocks in the dry West's open land, palms on warm
+  coasts and in the tropics (60 % of town trees, 20 % elsewhere), tropical trees. Shapes from West Coast
+  USA, Utah, Johnson Valley, Jungle Rock Island and Italy; heights measured in game. A tile lists its
+  groups; the mod loads every shape folder's `main.materials.json`.
+- **Prefetch:** each pose of the active anchor queues the cells within 1200 m (`warm_around`, nearest
+  first), so a teleport's trees are built before its tiles ask for them.
+- Tests: `server/tests/test_vegetation.py`, `mod/tests/test_trees.lua`.
+
+## Buildings (`server/buildings.py`; 2026-10-14, `--buildings on`, default off)
+
+The user: "make the world look alive ... look like a professionally made map".
+- **With the road tiles:** each 256 m road tile also gets `bld_<a>_<tx>_<ty>.cdae`, every building whose
+  footprint centroid is in the tile, one mesh with one primitive per material, shown as a colliding
+  TSStatic by `roads.lua` ("bld", held like the sidewalks while the car is inside a building's box).
+- **Data and prediction:** Overture footprints (outer ring, simplified, counter-clockwise). Overture
+  rarely has heights (Fells Point 2 %, towns 50-80 %) and almost never roofs or facades, so:
+  - storeys from the class and the footprint: sheds 1, row houses (narrow, deep, sharing a wall) 2-4,
+    houses 1-2, apartments 3-5, others 2-4; a given height or floor count wins;
+  - roofs: gabled / hipped for detached houses and small sheds on near-rectangular footprints (the
+    oriented box fills >= 80 %), flat otherwise and always when attached;
+  - facades: the stock window sheets `m_highrise_plaster` / `m_highrise_metal` (asset survey
+    2026-10-13): each 256 px band is one floor style; every floor of a wall is one band with a whole
+    number of bays (12 m per 1024 px); the sash band's two black "open window" bays are skipped (one quad
+    per bay); shops get the shopfront band on the ground floor; 7+ storeys the office curtain wall;
+  - brick by region (`brick_share`: 75 % east of -95 and north of 36, 35 % in the South, 15 % in the
+    West), tinted variants (`buildings.materials.json`, own names pointing at the shared textures);
+  - floors stand on the footprint's highest ground; below it a plain plinth down to 0.6 m under the lowest.
+  - every choice hashes the footprint's position: the same building from any anchor.
+  - colours per building by vertex colour (`cdae.encode(colors=)`, materials with `vertColor`): one
+    material per look (window sheet, shop, office, 3 roofs, siding, stucco), each building its tint and a
+    +-6 % brightness; roofs in 4-5 colours per material.
+  - detached houses (2026-10-14): siding (East / South) or stucco (West) walls, world-scaled, with sash
+    windows cut from the sheet laid 3 cm over them, one per 3.4 m bay and floor; brick far less often
+    than for row houses.
+  - Overture `building_part` (new map layer `building_parts`): a building with parts is drawn as them,
+    each from its bottom to its top (podiums, setbacks, towers), one look; a part without a height
+    takes the building's; raised parts get an underside.
+  - cornices on flat roofs up to 6 storeys, boxes on flat roofs over 250 m2, front doors (Building
+    Architect kit, Forest items) on the wall facing the nearest road.
+  - big boxes (low commercial, 1200 m2+) and warehouses: blank precast-panel / corrugated walls with one
+    storefront band on the wall facing the road; barns gabled with metal roofs, barn red or white;
+    shopfronts on the ground floors along urban main streets; towns (< 16 % footprint cover) mostly
+    1-2 storeys; airport terminals / hangars / parking garages by name (Overture names them, no class).
+  - small towns of the arid West (`district_town`: the footprint share of the 1 km disc around a tile,
+    from per-cell centroid / area arrays, below 0.18; Bishop 0.14, Moab 0.11, Frederick 0.21, Fells Point
+    0.28): 75 % one storey, attached buildings are shops (not row houses), a 1.2 m false front on one-storey
+    shops. A tile's own share cannot tell (a main-street block is as dense as a city's). Near and far
+    building tiles both ask, so they agree.
+  - driveways (asphalt strips in the road mesh) from siding / stucco houses to the road's edge.
+  - churches (class or name): a tall gabled nave and a square tower with a slate spire; brick row houses
+    get white marble stoops (two steps, the door raised to them); in dense cores (> 35 % cover) small
+    buildings are row houses even where Overture's footprints leave gaps.
+- **Far tiles** (`bldfar_tile` / `bldfar_drop`, 256 m squares to 1600 m): the same buildings, lite mesh (no
+  cornices, boxes, per-bay quads), render-only; `roads.lua` hides one while the road tile of its square
+  shows its own colliding buildings, and makes them only once the near meshes are all made (they share
+  the roadWalk budget: Frederick once had 50 near meshes waiting).
+- **Cost:** ~0.5 s per tile to plan, 5-13k triangles (Fells Point).
+- Tests: `server/tests/test_buildings.py`.
+
+Front porches (2026-10-14): pitched-roof houses under 300 m² get one on the front door's wall (55 % in the East,
+25 % west of 102° W, hashed): a white deck 0.35 m high, three posts and a 2.2 m deep roof in the roof's colour;
+the door stands on the deck. Shop signs: a coloured band (9 tints, a few shops without) over each shop's street
+wall, shop by shop (6-11 m); storefronts take the wall facing a street, not a service road.
+
+## Street furniture (`server/furniture.py`; 2026-10-14, with `--buildings on`)
+
+- Towns (road tiles under 30 % footprint cover): wired wooden utility poles every 40 m on one side with
+  a cobra-head lamp on every other pole, instead of metal lamp posts; dense cores keep the posts.
+- Hydrants every 120 m on town streets (alternating sides), benches and bins on major ones.
+- Street trees: half the town streets (hashed per street) get a row of small broadleaves in pits every
+  11 m, 0.9 m from the curb, both sides (the canopy model has few in dense streets).
+
+- Street lights on the sidewalk runs, 0.5 m from the curb, arm over the road (East Coast USA's
+  `eca_lamppost`): residential streets one side every 40 m, tertiary / secondary / primary both sides
+  staggered every 30-36 m (West Coast USA's lamps stand ~17 m from their nearest neighbour, often across
+  the street). Utility poles every 45 m along country roads without sidewalks, 2.4 m off the edge.
+- Stations at fixed distances along each road from its first vertex, phase hashed from the road id:
+  deterministic across tiles and anchors.
+- Sent in the road tile (`"props": {groups, items}`, trees.lua rows) and drawn by `trees.lua` as Forest
+  items (`onRows`, key `p<tx>_<ty>`, dropped with the road tile).
+- Utility pole wires: three sagging wires per span (two crossed ribbons per 5 m segment), the spans that
+  start in the tile, render-only `wire_<a>_<tx>_<ty>.cdae` ("wire" in the road tile).
+- Junctions (road ends meeting, 3+ arms, all urban): boom signals on every arm where 3+ major roads (or
+  2 at a four-way) meet; stop signs on minor arms meeting a major road, the stem of a minor T and half
+  the minor four-ways (hashed); on each approach's right, facing its drivers.
+
+
+## Parked cars and traffic (`server/parking.py`, `navgraph.py`; mod `parking.lua`, `navgraph.lua`; 2026-10-14)
+The user's choice (2026-10-14): BeamNG's own traffic system, which spawns and recycles traffic and parked cars and
+has the player's settings (Options > Gameplay > Traffic). We only feed it what a stock level's files would.
+
+**Parked cars** (with `--buildings on`). `parking.curb_spots` puts parallel-parking spots along the sidewalk runs of
+urban residential / tertiary / secondary / unclassified streets of a road tile: both sides of streets 9 m or wider,
+one side (hashed) of narrower ones, none under 7 m; 6.5 m apart at stations of the road (furniture.py's, so every
+tile and anchor agrees), 9 m clear of a run's ends, facing the traffic on their side (right-hand traffic; one-way
+streets: their direction). `clear_of` drops spots in front of hydrants (4.6 m) and driveway mouths (4.2 m).
+`lot_spots` fills the mapped lots (Overture infrastructure `parking` polygons) with 90-degree stalls (2.6 x 5.5 m,
+7 m aisles) along each lot's long side, off building footprints (garages). The road tile carries them as `"park"`
+rows `[x, y, z, heading(, 1 = lot)]`. The mod's `parking.lua` keeps one sites object (`gameplay/sites/sites.lua`,
+as `city.sites.json` builds), its spot objects kept by position across rebuilds, rebuilt at most every 2 s from the
+spots within 900 m of the player and 80 m inside the terrain block (the only collidable ground), and hands it to
+`gameplay_parking.setSites`. Once 24 spots are near it starts `trafficParkedAmount` cars (`setupVehicles`, which
+needs `core_multiSpawn`: our level loads no traffic extensions). A guard every 0.5 s moves a parked car that is
+within 30 m of the block's edge or falling to a spot near the player. Teleports: the cars go inactive
+(`setActiveAmount(0)`), and once the new place has spots the stock system is told to look again (its cached spot
+list is in the old frame) and the cars are scattered onto them. Cost (Fells Point, 16 cars): ~0.7 ms render,
+0.25 ms physics.
+
+**Traffic** (`--traffic on`, default off). `navgraph.build` turns the drivable roads within 1100 m of the player into
+the stock map's graph: Overture connectors are the nodes (`c<id>`, the same name in every window and anchor and
+shared at junctions), plus simplified shape points and splits of edges over 80 m; edges carry half width, lanes
+per direction (3.3 m lanes), one-way direction and speed limit (mapped, else US class defaults, town arterials
+capped). Driveways, parking aisles, sidewalks and crossings are left out. A new graph every 400 m (`navgraph`
+message, a JSON file). The mod's `navgraph.lua` clips it to the block (60 m in) and applies it with
+`map.reset(customNodes)` (docs/research/2026-10-10-navgraph-traffic-signals.md), handling the custom path's
+pitfalls: the node table object stays the same (gameplay_traffic caches it), the US road rules come from our own
+file through `path.getPathLevelInfo`, every vehicle is told to fetch the graph (`mapmgr.requestMap`), a foreign
+`map.reset()` is undone next frame. ~600 nodes per 512² block at Fells Point, applied in ~9 ms. The first graph
+starts `trafficAmount` cars (`gameplay_traffic.setupTraffic`); a guard respawns cars near the block's edge;
+teleports hold them inactive until the new graph is in, then `forceTeleportAll`. Cost (7 cars): ~1.6 ms a frame.
+The level's `supportsTraffic` stays false, so freeroam's own start-up does not try traffic before our graph exists.
+**Signals and stop signs.** The graph carries the junctions that `furniture.junction_controls` controls (the same
+rule that stands the props, so the AI's controls are where the booms and stop signs are): per incoming approach the
+stop point (2 m before the junction's widest road edge, on the right half of the lane, where `map.findClosestRoad`
+finds that approach), the travel direction, the phase (by axis) and the head's prop transform. The frame after a
+`map.reset`, `navgraph.lua` builds them with `core_trafficSignals`: a two-phase `lightsBasic` sequence per signalled
+junction (green / yellow from the approach speed, `autoSetTimings`), one shared `signStop` controller, and a
+switchable stock boom (`createSignalObject`, the instanced_trafficlight material) per approach in place of the road
+tile's static one (trees.lua's signal group hides while they exist; heads are kept across applies by instance
+name). Vehicles that hold signals read the state mailbox every frame and throw on one never written, so an empty
+update is written first. Fells Point: 51 junctions, 132 approaches, cars stop 2-5 m before the line on red.
+Cost per new graph: ~7 ms (map.reset; the UI's NavigationMapChanged dump is dropped) + ~5 ms (signals) in two
+frames; the first graph of an anchor ~10 + ~22 ms (all heads made).
+**Bridges, widths, countries.** Roads that are bridge all along (left to the bridge builder by `road_specs`) are
+in the graph with their `bridge_specs`, and nodes on a bridge part take its deck height (the anchor's
+`BridgeProfiles`). Edge widths are the road tiles' measured ones (`roadwidth.py`): with class defaults the AI's
+lanes ran over London's kerbs. The road rules come from the nearest airport's country (OurAirports;
+`navgraph.road_rules`): left-hand traffic (the game's `rightHandDrive = true`) in ~70 countries, turn on red in the
+US and Canada, `lightsBasicEU` where red+yellow precedes green; the same per-anchor flag turns the parked cars,
+signal booms, stop signs and stop points to the left side (road tiles in both the main process and the pool).
+
+**Keeping it running** (found in game 2026-10-14):
+- Each vehicle's new signals table keeps the old junctions it lacks (`navgraph.setSignalsLua`): ai.lua remembers the
+  junction a car approaches across map changes and reads its signal unchecked; a graph without it disabled the car.
+- No stop or signal on an approach from another connector under 15 m away (`SHORT_APPROACH_M`): offset streets split
+  one intersection into connectors metres apart, and a car met the next stop line behind it and waited forever.
+- A traffic car still for 45 s, 40 m or more from the player, is respawned (`STUCK_*`; paused time excluded): stock
+  traffic respawns only far, unseen cars. A parked car off its spot (another frame's position after a teleport the
+  scatter missed) is moved to a spot once the player is 60 m away (`parking.offSpot`).
+
+**The player's choice** (the user, 2026-10-14: spawn them if the player has them on, not otherwise). The level
+`supportsTraffic`, so the level-start configurator offers Disabled / Parked only / Normal / Police. The mod takes
+that choice in `onClientPreStartMission` (freeroam's camera-ready spawn can come before our mission start) with
+`navgraph.takeChoice`: freeroam's options are set to disabled (it would spawn before our first road graph is in the
+map), our cars start once it is, and the player's options are given back then (and when the level ends). Level
+start runs twice; a repeat keeps the first choice. The radial menu's traffic entries work at any time. The server
+builds the graph and the parking spots by default (`--traffic on`).
+
+## Seasons (`server/season.py`, mod `seasonlook.lua`; 2026-10-14, `--season auto|fall|off`, `--leaf-on`)
+The user: colour-correct Maryland's leaf-off photos, and use it for seasons (it was fall).
+- `leaf_on` (in `Imagery.render`, for sources with `leaf_off`: md6in): where the summer reference (the rest of
+  the chain: USGS / NAIP, already rendered for `match_colours`) is vegetation (green chromaticity 0.345-0.37),
+  the texture takes its chroma at the reference's ~8 m scale and 80 % of its brightness; roofs, roads, dirt and
+  water keep theirs, the photo's detail stays.
+- `grade` (every texture: the block's photo and every far tile, so they agree): fall turns the canopy (green,
+  darker than value 0.44-0.52 and textured at 2-3 m; brightness only on texels over 2.5 m) yellow / orange / rust
+  in world-anchored noise patches (18 m stands, 6 m trees, 25 m colour regions), the share growing with the
+  amount, and every green moves 35 % of the amount toward yellow. Textures of 512 px or more are graded at half
+  size and applied as a colour ratio (21 ms per 512 px tile). The amount: `season_amounts` (peak ~Oct 27 at 40 N,
+  2.5 days earlier per degree north, +-28 days; 0 under 23 degrees; the southern hemisphere half a year off).
+- The 3D trees (`seasonlook.lua`, hello.season): no stock autumn models, so the stock leaf materials
+  (`baseColorFactor`; the merged billboards' `diffuseColor`) are tinted in our level: oak rust-orange (~12 days
+  late), beech bronze, birch / aspen gold (~10 days early), conifers green; amount^1.6 so trees hold their green.
+  The stock factors come back when the level ends. Engine-made far billboards keep their green (open).
+
+## Post effects in our level (mod `postfx.lua`; 2026-10-14)
+The stock depth of field blurs everything past a few hundred metres; stock maps hide it in haze (3-15 mile view
+distances), ours (60+ miles) showed it as soft distance. In our level the far blur is 0 (re-applied when the
+player's preset resets it); the near blur and the player's settings stay theirs; the stock parameters return when
+the level ends. LOD research: docs/research/2026-10-14-lod-research.md (also: linear-light sharpened mip chains,
+`imagery.mip_arrays`; gentler far-tree rings, the engine billboards far trees itself).

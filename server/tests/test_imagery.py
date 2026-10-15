@@ -70,7 +70,7 @@ class FakeNet(imagery.Imagery):
     """Imagery whose network is a function source_name -> (z, x, y) -> (status, body), behind a
     netfetch.Fetcher (host policies without rate limits unless `policies` is given)."""
 
-    def __init__(self, cache_dir, serve, chain=imagery.DEFAULT_CHAIN, policies=None, clock=None, **kw):
+    def __init__(self, cache_dir, serve, chain=imagery.BASE_CHAIN, policies=None, clock=None, **kw):
         self.requests = []
         self.transport = ServeTransport(serve, self.requests)
         net = netfetch.Fetcher(transport=self.transport, sleep=lambda s: None, policies=policies or FAST,
@@ -444,14 +444,264 @@ class ChainTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             imagery.parse_chain("google")
         self.assertEqual(imagery.Imagery(self.tmp.name).attribution(), imagery.ATTRIBUTION)
+        self.assertIn("CT ECO 2023 orthoimagery (CC0)", imagery.ATTRIBUTION, "the regional sources too")
         self.assertIn("CC BY 4.0", imagery.Imagery(self.tmp.name, ("eox2016",)).attribution())
         # EOX's required wording (June 2026, docs/research/2026-10-10-rate-limits.md)
         eox = "EOxCloudless https://cloudless.eox.at by EOX IT Services GmbH (Contains modified Copernicus Sentinel data "
         self.assertEqual(imagery.SOURCES["eox2023"].attribution, eox + "2023), CC BY-NC-SA 4.0")
         self.assertEqual(imagery.SOURCES["eox2016"].attribution, eox + "2016 & 2017), CC BY 4.0")
-        self.assertEqual(imagery.ATTRIBUTION, "Imagery: USGS The National Map (public domain); " + eox
+        self.assertEqual(imagery.Imagery(self.tmp.name, imagery.BASE_CHAIN).attribution(),
+                         "Imagery: State of Maryland, MD iMAP / DoIT six-inch imagery; "
+                         "USDA NAIP (public domain); "
+                         "USDA NAIP via USGS The National Map (public domain); "
+                         "USGS The National Map (public domain); " + eox
                          + "2023), CC BY-NC-SA 4.0; " + eox + "2016 & 2017), CC BY 4.0")
         self.assertNotIn("Sentinel-2 cloudless", imagery.ATTRIBUTION)
+        for n in imagery.DEFAULT_CHAIN:                     # the overlay's font is ASCII only
+            imagery.SOURCES[n].attribution.encode("ascii")
+
+
+class ExportTransport:
+    """netfetch transport for an export source ("naip": bbox + size in the URL) and XYZ tiles for the rest:
+    serve_export(z, x, y, size) -> (status, body) for the parent tile the bbox is; XYZ as ServeTransport."""
+    BBOX = re.compile(r"bbox=([-\d.]+),([-\d.]+),([-\d.]+),([-\d.]+).*size=(\d+),")
+
+    def __init__(self, serve_export, serve_xyz, requests, by_name=False):
+        self.serve_export, self.serve_xyz, self.requests = serve_export, serve_xyz, requests
+        self.by_name = by_name          # serve_export(z, x, y, size, source name)
+
+    def request(self, url, headers, timeout):
+        m = self.BBOX.search(url)
+        if m:
+            x0, y0, x1, y1, size = (float(v) for v in m.groups())
+            z = round(math.log2(imagery.EARTH_CIRC / (x1 - x0)))
+            tile = imagery.EARTH_CIRC / 2 ** z
+            x, y = round((x0 + imagery.EARTH_CIRC / 2) / tile), round((imagery.EARTH_CIRC / 2 - y1) / tile)
+            name = "naipusda" if "fpac.usda.gov" in url else "md6in" if "mdgeodata" in url else "naip"
+            self.requests.append((name, z, x, y))
+            status, body = (self.serve_export(z, x, y, int(size), name) if self.by_name
+                            else self.serve_export(z, x, y, int(size)))
+            return status, {}, body
+        name = next(n for n, s in imagery.SOURCES.items() if url.startswith(s.url.split("{z}")[0]))
+        z, a, b = (int(v) for v in URL.search(url).groups())
+        self.requests.append((name, z, b, a))
+        status, body = self.serve_xyz(name, z, b, a)
+        return status, {}, body
+
+
+class ExportImageryTest(unittest.TestCase):
+    """The NAIP source: one exportImage per 4 x 4 tiles split on disk, lazy (a render never waits for it:
+    USGS until its tiles are on disk), black areas count as missing, warm() fetches ahead."""
+    LAT, LON = 39.2834, -76.5934        # Fells Point (the USGS probes say "covered" in the fakes)
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.frame = g.EnuFrame(self.LAT, self.LON)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    @staticmethod
+    def child_colour(x, y):
+        return (50 + x % 7 * 20, 60 + y % 5 * 30, 210)
+
+    def make(self, black=False):
+        def serve_export(z, x, y, size):
+            n = size // 256
+            a = np.zeros((size, size, 3), np.uint8)
+            for j in range(n):
+                for i in range(n):
+                    a[j * 256:(j + 1) * 256, i * 256:(i + 1) * 256] = self.child_colour(x * n + i, y * n + j)
+            a[::2, ::2] += 3                # not uniform
+            if black:
+                a[:, : size // 2] = 0       # the west half outside the flights
+            b = io.BytesIO()
+            Image.fromarray(a).save(b, "JPEG", quality=95)
+            return 200, b.getvalue()
+
+        def serve_xyz(name, z, x, y):
+            a = np.zeros((256, 256, 3), np.uint8) + np.array((200, 30, 30), np.uint8)
+            a[::2, ::2] += 6
+            return 200, png(a)
+        self.requests = []
+        net = netfetch.Fetcher(transport=ExportTransport(serve_export, serve_xyz, self.requests),
+                               sleep=lambda s: None, policies=FAST)
+        return imagery.Imagery(self.tmp.name, ("naip", "usgs"), fetcher=net, tone=0.0)
+
+    def wait(self, im):
+        for _ in range(200):
+            with im._lock:
+                busy = bool(im._inflight)
+            if not busy:
+                return
+            time.sleep(0.02)
+
+    def warm(self, im, points, radius=300.0):
+        im.warm(self.frame, points, radius, 1.0)
+        for _ in range(300):
+            with im._warm_cv:
+                left = [k for k in im._warm_want if not im._warm_done(k)]
+            if not left:
+                return left
+            time.sleep(0.02)
+        return left
+
+    def test_lazy_then_split_tiles(self):
+        im = self.make()
+        # 1 m texels: z17 (0.93 m pixels here), NAIP's zoom
+        rgb, used = im.render(self.frame, 0.0, 0.0, 256.0, 256)
+        self.assertEqual(set(used), {"usgs"})               # never waited for, never fetched by a render
+        self.wait(im)
+        self.assertFalse([r for r in self.requests if r[0] == "naip"])
+        self.assertEqual(self.warm(im, [(128.0, 128.0)]), [])
+        naip = [r for r in self.requests if r[0] == "naip"]
+        self.assertTrue(naip)
+        self.assertTrue(all(r[1] == 15 for r in naip))      # parents two levels up
+        rgb, used = im.render(self.frame, 0.0, 0.0, 256.0, 256)
+        self.assertEqual(set(used), {"naip"})
+        self.assertEqual(len([r for r in self.requests if r[0] == "naip"]), len(naip))   # no new fetch
+        # each child is its own part of the parent image
+        key = next(k for k in im._lru if k and k[0].name == "naip")
+        tile = im._lru[key]
+        self.assertLess(np.abs(tile.rgb.reshape(-1, 3).mean(0) - (np.array(self.child_colour(key[2], key[3])) + 0.75)).max(), 3)
+        self.assertEqual(len(os.listdir(os.path.join(self.tmp.name, "naip", "17", str(key[2])))) % 4, 0)   # whole parents
+
+    def test_black_is_missing(self):
+        im = self.make(black=True)
+        self.assertEqual(self.warm(im, [(128.0, 128.0)]), [])
+        _, used = im.render(self.frame, 0.0, 0.0, 256.0, 256)
+        self.wait(im)
+        _, used = im.render(self.frame, 0.0, 0.0, 256.0, 256)
+        self.assertIn("naip", used)
+        self.assertIn("usgs", used)             # the black half: USGS
+        n = len(self.requests)
+        im.render(self.frame, 0.0, 0.0, 256.0, 256)
+        self.wait(im)
+        self.assertEqual(len(self.requests), n)     # the missing children are remembered
+
+    def test_two_naip_services(self):
+        """naipusda first; where it is black (no flights there), naip; the look-ahead asks naip only there,
+        and lazy_ready counts the first source with data."""
+        def serve_export(z, x, y, size, name):
+            a = np.zeros((size, size, 3), np.uint8) + np.array((90, 120, 60) if name == "naip" else (60, 90, 120), np.uint8)
+            a[::2, ::2] += 3
+            if name == "naipusda" and x % 2:        # every other parent: USDA has nothing (black)
+                a[:] = 0
+            b = io.BytesIO()
+            Image.fromarray(a).save(b, "JPEG", quality=95)
+            return 200, b.getvalue()
+
+        def serve_xyz(name, z, x, y):
+            a = np.zeros((256, 256, 3), np.uint8) + np.array((200, 30, 30), np.uint8)
+            a[::2, ::2] += 6
+            return 200, png(a)
+        self.requests = []
+        net = netfetch.Fetcher(transport=ExportTransport(serve_export, serve_xyz, self.requests, by_name=True),
+                               sleep=lambda s: None, policies=FAST)
+        im = imagery.Imagery(self.tmp.name, ("naipusda", "naip", "usgs"), fetcher=net, tone=0.0)
+        self.assertEqual(self.warm(im, [(0.0, 0.0), (1500.0, 0.0)], radius=700.0), [])
+        usda = {r[2:] for r in self.requests if r[0] == "naipusda"}
+        usgs_naip = {r[2:] for r in self.requests if r[0] == "naip"}
+        self.assertTrue(usda and usgs_naip)
+        self.assertTrue(all(x % 2 for x, y in usgs_naip), "USGS NAIP only where USDA was black")
+        self.assertLessEqual(usgs_naip, usda)
+        self.assertTrue(im.lazy_ready(self.frame, -512.0, -512.0, 1024.0, 1024))
+        _, used = im._render(self.frame, -512.0, -512.0, 1024.0, 1024)
+        self.assertIn("naipusda", used)
+        # where a USDA tile meets a USGS-NAIP one, neither has all four bilinear taps: a texel line of USGS
+        self.assertLess(used.get("usgs", 0), 0.001 * 1024 * 1024)
+
+    def test_state_source_bounds_and_white(self):
+        """md6in: only asked inside its bounds; white (outside the state, inside the box) is missing, the
+        next source fills it; big white roofs below the share are kept."""
+        def serve_export(z, x, y, size, name):
+            a = np.zeros((size, size, 3), np.uint8) + np.array((70, 100, 80), np.uint8)
+            a[::2, ::2] += 3
+            if name == "md6in":
+                if x % 2:
+                    a[:] = 253                  # outside the state: white (253 in MD iMAP's JPEGs)
+                else:
+                    a[:size // 8, :size // 8] = 255     # a white roof: 1.6 % of the image
+            b = io.BytesIO()
+            Image.fromarray(a).save(b, "JPEG", quality=95)
+            return 200, b.getvalue()
+
+        def serve_xyz(name, z, x, y):
+            a = np.zeros((256, 256, 3), np.uint8) + np.array((200, 30, 30), np.uint8)
+            a[::2, ::2] += 6
+            return 200, png(a)
+        self.requests = []
+        net = netfetch.Fetcher(transport=ExportTransport(serve_export, serve_xyz, self.requests, by_name=True),
+                               sleep=lambda s: None, policies=FAST)
+        im = imagery.Imagery(self.tmp.name, ("md6in", "naipusda", "usgs"), fetcher=net, tone=0.0)
+        self.assertEqual(self.warm(im, [(0.0, 0.0), (1500.0, 0.0)], radius=700.0), [])
+        md = {r[2:] for r in self.requests if r[0] == "md6in"}
+        usda = {r[2:] for r in self.requests if r[0] == "naipusda"}
+        self.assertTrue(md and usda)
+        self.assertTrue(all(x % 2 for x, y in usda), "USDA only where Maryland's image was white")
+        _, used = im._render(self.frame, -512.0, -512.0, 1024.0, 1024)
+        self.assertIn("md6in", used)
+        self.assertIn("naipusda", used)
+        # far from Maryland: never asked
+        n = len(self.requests)
+        far = g.EnuFrame(LAT0, LON0)        # California
+        im.warm(far, [(0.0, 0.0)], 300.0, 1.0)
+        for _ in range(100):
+            with im._warm_cv:
+                if all(im._warm_done(k) for k in im._warm_want):
+                    break
+            time.sleep(0.02)
+        self.assertFalse([r for r in self.requests[n:] if r[0] == "md6in"])
+
+    def test_regional_source_never_probed_outside_its_area(self):
+        """A regional source's coverage probe is not fetched for a tile outside its bounds (2026-10-15: Vermont,
+        Ohio, NJ ... servers got hundreds of probe requests from a session in Maryland and Switzerland)."""
+        im = imagery.Imagery(self.tmp.name, ("vermont", "usgs"), tone=0.0)      # (nothing may be fetched)
+        src = imagery.SOURCES["vermont"]
+        z = 17
+        x, y = imagery.mercator_px(np.array([39.29]), np.array([-76.61]), z)       # Baltimore
+        key = (src, z, int(x[0]) // imagery.TILE, int(y[0]) // imagery.TILE)
+        with im._lock:
+            self.assertEqual(im._probe_status(key), "outside")
+        self.assertFalse(im._inflight)
+        self.assertFalse(imagery.range_in_bounds(src, z, key[2], key[2] + 3, key[3], key[3] + 3))
+        x, y = imagery.mercator_px(np.array([44.26]), np.array([-72.58]), z)       # Montpelier
+        self.assertTrue(imagery.range_in_bounds(src, z, int(x[0]) // imagery.TILE, int(x[0]) // imagery.TILE,
+                                                int(y[0]) // imagery.TILE, int(y[0]) // imagery.TILE))
+
+    def test_colours_from_the_chain(self):
+        """A rendered NAIP texture keeps its detail but takes the next source's large-scale colour (no seam
+        against far tiles in USGS colours)."""
+        im = self.make()
+        self.assertEqual(self.warm(im, [(128.0, 128.0)]), [])
+        rgb, used = im.render(self.frame, 0.0, 0.0, 256.0, 256)
+        raw, _ = im._render(self.frame, 0.0, 0.0, 256.0, 256)
+        ref, _ = im._render(self.frame, 0.0, 0.0, 256.0, 256, None, skip_lazy=True)
+        self.assertEqual(set(used), {"naip"})
+        far, near = np.abs(raw.mean((0, 1)) - ref.mean((0, 1))), np.abs(rgb.mean((0, 1)) - ref.mean((0, 1)))
+        self.assertGreater(far.max(), 50)
+        self.assertTrue((near < 0.35 * far + 2).all(), (near, far))                # USGS's colour (the gain clip
+        # stops the extreme fake blue short) ...
+        hi = lambda a: np.abs(np.diff(a.astype(float), axis=1)).mean()
+        self.assertGreater(hi(rgb), 0.5 * hi(raw))                                  # ... NAIP's detail
+        same = imagery.match_colours(raw, raw, 10)
+        self.assertTrue((same == raw).all(), "matching an image to itself changes nothing")
+
+    def test_lazy_ready(self):
+        im = self.make()
+        self.assertFalse(im.lazy_ready(self.frame, 0.0, 0.0, 256.0, 256))
+        self.assertTrue(im.lazy_ready(self.frame, 0.0, 0.0, 256.0, 64), "4 m texels: no NAIP zoom")
+        self.assertEqual(self.warm(im, [(128.0, 128.0)]), [])
+        self.assertTrue(im.lazy_ready(self.frame, 0.0, 0.0, 256.0, 256))
+        self.assertFalse(im.lazy_ready(self.frame, 5000.0, 0.0, 256.0, 256), "elsewhere: not fetched")
+
+    def test_warm_fetches_ahead(self):
+        im = self.make()
+        self.assertEqual(self.warm(im, [(0.0, 0.0), (3000.0, 0.0)]), [])
+        parents = {r for r in self.requests if r[0] == "naip"}
+        self.assertGreaterEqual(len(parents), 2)            # both ends of the path
+        _, used = im.render(self.frame, 3000.0, 0.0, 256.0, 256)
+        self.assertEqual(set(used), {"naip"})               # on disk before any render
 
 
 class GutterTest(unittest.TestCase):
@@ -525,6 +775,17 @@ def bc1_decode(data, w, h):
 
 
 class DdsTest(unittest.TestCase):
+    def test_mips_linear_light(self):
+        # a black / white checker averages to the linear mid grey (186 in sRGB), not 128
+        rgb = np.zeros((8, 8, 3), np.uint8)
+        rgb[0::2, 0::2] = rgb[1::2, 1::2] = 255
+        lv = imagery.mip_arrays(rgb)
+        self.assertEqual([a.shape[0] for a in lv], [8, 4, 2, 1])
+        self.assertTrue(180 <= int(lv[1][1, 1, 0]) <= 192, int(lv[1][1, 1, 0]))
+        flat = np.full((16, 16, 3), 90, np.uint8)
+        self.assertTrue(all(int(np.abs(a.astype(int) - 90).max()) <= 1 for a in imagery.mip_arrays(flat)),
+                        "a flat image stays flat (the sharpening adds no ringing)")
+
     def test_dxt1_with_full_mip_chain(self):
         n = 128
         # smooth, imagery-like content (BC1 is lossy; this tests the chain, not the encoder)
@@ -543,19 +804,19 @@ class DdsTest(unittest.TestCase):
             self.assertTrue(caps & imagery.DDSCAPS_MIPMAP and caps & imagery.DDSCAPS_COMPLEX)
             with Image.open(path) as im:                                    # a standard reader accepts it
                 self.assertEqual(im.size, (n, n))
-            # level k is the BC1 encoding of the 2 x 2 box reduction of level k - 1 ...
-            off, lv = imagery.DDS_HEADER, Image.fromarray(rgb, "RGB")
-            for k, sz in enumerate(sizes):
+            # level k is the BC1 encoding of mip_arrays' level k (linear light, sharpened) ...
+            off = imagery.DDS_HEADER
+            for k, (sz, lv) in enumerate(zip(sizes, imagery.mip_arrays(rgb))):
                 b = io.BytesIO()
-                lv.save(b, "DDS", pixel_format="DXT1")
+                Image.fromarray(lv, "RGB").save(b, "DDS", pixel_format="DXT1")
                 self.assertEqual(data[off:off + sz], b.getvalue()[imagery.DDS_HEADER:], k)
                 off += sz
-                lv = lv.reduce(2) if lv.size[0] > 1 else lv
             # ... and decodes to the image (row 0 first, as the source image)
             got = bc1_decode(data[imagery.DDS_HEADER:imagery.DDS_HEADER + sizes[0]], n, n)
             self.assertLess(np.abs(got - rgb).mean(), 4.0)
             last = bc1_decode(data[-8:], 1, 1)[0, 0]
-            np.testing.assert_allclose(last, rgb.reshape(-1, 3).mean(0), atol=6.0)      # one RGB565 step
+            lin_mean = ((rgb.reshape(-1, 3) / 255.0) ** 2.2).mean(0) ** (1 / 2.2) * 255.0
+            np.testing.assert_allclose(last, lin_mean, atol=6.0)        # the linear-light mean, one RGB565 step
 
     def test_sizes(self):
         for px, want in ((512, 128 + sum(max(1, (512 >> k) // 4) ** 2 * 8 for k in range(10))),
@@ -581,7 +842,7 @@ class NetworkImageryTest(unittest.TestCase):
         self.assertGreater(rgb.std(), 5)
 
     def test_outside_us_falls_back_to_eox(self):
-        rgb, used = self.render(46.5, 8.0)              # Swiss Alps
+        rgb, used = self.render(48.0, 70.0)             # Kazakhstan: no regional source either
         self.assertEqual(set(used), {"eox2023"})
         self.assertGreater(rgb.std(), 5)
 

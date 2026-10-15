@@ -96,6 +96,7 @@ MOD_TO_SERVER = {
     "commit_terrain": {"anchorId": F(int), "cx": F(NUM), "cy": F(NUM)},
     "pose": {"anchorId": F(int), "x": F(NUM), "y": F(NUM), "z": F(NUM), "vx": F(NUM), "vy": F(NUM), "lat": F(NUM),
              "lon": F(NUM), "speed": F(NUM), "cam": F(dict, OPT),
+             "follow": F(bool, OPT),        # false: the altitude rule holds the block (no prefetch)
              # previous anchors whose tile objects the mod still has (an empty Lua table may encode as {})
              "held": F((list, dict), OPT),
              # the session folders in use, as in hello: an earlier run's one no longer named is released
@@ -105,13 +106,25 @@ MOD_TO_SERVER = {
     "cache": {"capGb": F(NUM, OPT), "clear": F(bool, OPT)},
     # roads (roads.py; additive): the mod removed its roads (switched off and on again): send them again
     "roads_reset": {},
+    "map_tiles": {"tiles": F(list)},       # the world map's basemap tiles as files (settings.mapTiles)
+    "geocode": {"id": F(int), "q": F(str), "lat": F(NUM, OPT), "lon": F(NUM, OPT)},   # the map's search box
+    "route": {"id": F(int), "lat0": F(NUM), "lon0": F(NUM), "lat1": F(NUM), "lon1": F(NUM),
+              "bearing": F(NUM, OPT)},   # the GPS (routing.py); bearing: the car's heading, the route starts that way
+    "where": {"id": F(int), "lat": F(NUM), "lon": F(NUM), "online": F(bool)},   # the status bar (geocode.py)
 }
 CAM = {"x", "y", "z", "fx", "fy", "fz", "fovDeg"}
 TERRAIN = {"cx": F(NUM), "cy": F(NUM), "heightmap": F(str), "size": F(int), "squareSize": F(NUM),
            "zBase": F(NUM), "maxHeight": F(NUM), "q": F(NUM),
            "layers": F(list, OPT), "materials": F(list, OPT),     # --surface on (surface.py)
-           "base": F(str, OPT), "baseSize": F(NUM, OPT)}           # --near-visual detail: the block's photo
+           "base": F(str, OPT), "baseSize": F(NUM, OPT),           # --near-visual detail: the block's photo
+           "ter": F(str, OPT)}                                     # the block as a .ter (swapped in, no import)
 SERVER_TO_MOD = {
+    "geocode_result": {"id": F(int), "results": F(list), "error": F(str, OPT)},   # geocode.py (Photon)
+    "route_result": {"id": F(int), "points": F(list), "dist": F(NUM), "dur": F(NUM), "error": F(str, OPT)},  # OSRM
+    "update": {"current": F(str), "latest": F(str), "url": F(str)},   # a newer version on GitHub (updates.py)
+    "where_result": {"id": F(int), "street": F(str), "place": F(str, OPT), "region": F(str, OPT),
+                     "country": F(str, OPT)},   # the status bar's location
+    "map_tiles_ready": {"tiles": F(list)},  # [z, x, y, ok] each: written to <user>/temp/beamngEarth/maptiles
     "hello": {"protocol": F(int), "format": F(int), "serverVersion": F(str), "sessionId": F(str),
               "farFormat": F(str), "material": F(str),
               "nearVisual": F(str), "attribution": F(str),          # protocol 4
@@ -119,7 +132,12 @@ SERVER_TO_MOD = {
               "blockSize": F(int, OPT),         # v1.4 M4: terrain block size, only when not 1024 (--block 512)
               "horizon": F(bool, OPT),          # v1.4 M1h: true with --horizon only
               "deshadow": F(str, OPT),          # --deshadow lambert|full only (the settings page shows it)
-              "colormatch": F(str, OPT)},       # --colormatch s2 only (likewise)
+              "colormatch": F(str, OPT),        # --colormatch s2 only (likewise)
+              "season": F(str, OPT),           # --season auto / fall (seasonlook.lua tints the leaves)
+              "mapPort": F(int, OPT),           # the world map's tile endpoint on 127.0.0.1 (maptiles.py)
+              # the world map's credits for its view: [[credit, w, s, e, n] or [credit]] per imagery source, and
+              # the rest (weather, elevation); with imagery on only
+              "imageryCredits": F(list, OPT), "otherCredits": F(str, OPT)},
     "status": {"text": F(str),
                "backlog": F(int),           # v1.4 M0: desired - shown far tiles of the current anchor
                "radius": F(NUM, OPT)},      # v1.4 M1h: the far-field radius (m), --horizon only
@@ -149,11 +167,27 @@ SERVER_TO_MOD = {
                 "pressureHpa": F(NUM), "utcOffsetS": F(int, OPT), "tz": F(str, OPT), "credit": F(str)},
     # real gravity at the player (gravity.py; additive, protocol 4): |g| in m/s^2 at (lat, lon, h m MSL)
     "gravity": {"v": F(int), "g": F(NUM), "lat": F(NUM), "lon": F(NUM), "h": F(NUM), "source": F(str)},
+    # detail mode: a block's base photo rendered again once its NAIP tiles arrived (earthd base_refresh)
+    "block_base": {"anchorId": F(int), "cx": F(NUM), "cy": F(NUM), "base": F(str), "baseSize": F(NUM)},
+    # the highest ground near the player's path (groundahead.py; the mod's altitude rule), z in the anchor's frame
+    "ground_ahead": {"anchorId": F(int), "z": F(NUM)},
+    # the water near the player (--sea on): tiles [key, x, y, z, size, nx, ny] (seatiles.py), rivers
+    # [key, kind, flow m/s, [[x, y, z, width, depth], ...]] (riverlines.py)
+    "sea": {"anchorId": F(int), "tiles": F(list), "rivers": F(list)},
     # data credits for the tiles around the player (credits.py; additive, protocol 4, --credits on)
     "credits": {"v": F(int), "near": F(str), "far": F(str), "ids": F(list), "farIds": F(list)},
     # road tiles near the player (roads.py; additive, with map data only): a JSON file of DecalRoad chunks
     "roads_tile": {"anchorId": F(int), "key": F(str), "path": F(str), "n": F(int)},
     "roads_drop": {"anchorId": F(int), "key": F(str)},
+    # trees, bushes and rocks of a tile (vegetation.py, --trees on): a JSON file of items
+    "veg_tile": {"anchorId": F(int), "key": F(str), "path": F(str), "n": F(int)},
+    "veg_drop": {"anchorId": F(int), "key": F(str)},
+    # far buildings (buildings.far_tile, --buildings on): a JSON file naming a render-only mesh
+    "bldfar_tile": {"anchorId": F(int), "key": F(str), "path": F(str), "n": F(int)},
+    "bldfar_drop": {"anchorId": F(int), "key": F(str)},
+    # the AI road graph around the player (navgraph.py, --traffic on): a JSON file of nodes and edges
+    "navgraph": {"anchorId": F(int), "path": F(str), "cx": F(NUM), "cy": F(NUM), "nodes": F(int), "edges": F(int),
+                 "serial": F(int)},
     # the download cache's usage (cache.py; additive, with a Cache only): after hello and every mod 'cache'
     "cache": {"v": F(int), "usedBytes": F(int), "capBytes": F(int), "files": F(int), "ready": F(bool),
               "managed": F(bool), "clearedBytes": F(int, OPT)},
@@ -161,7 +195,16 @@ SERVER_TO_MOD = {
 WEATHER_NESTED = {"cover": {"total", "low", "mid", "high"}, "wind": {"ms", "fromDeg", "gustMs"},
                   "aloft": {"ms", "fromDeg"}}
 # message types the plain session cannot produce (each has its own session test below)
-EXERCISED_ELSEWHERE = {"far_retex", "roads_tile", "roads_drop"}  # roads: needs map data (roads tests)
+EXERCISED_ELSEWHERE = {"far_retex", "roads_tile", "roads_drop",   # roads: needs map data (roads tests)
+                       "where_result",                               # the status bar: asked by the mod while driving
+                       "block_base",                                 # a lazy imagery source (test_detail)
+                       "sea",                                        # --sea on: needs map data (test_seacarve)
+                       "veg_tile", "veg_drop",                       # --trees on: needs map data
+                       "bldfar_tile", "bldfar_drop",                 # --buildings on: needs map data
+                       "navgraph",                                   # --traffic on: needs map data
+                       "map_tiles_ready",                            # only when the world map asks (map_tiles)
+                       "update",                                     # only when GitHub has a newer version (online)
+                       "geocode_result", "route_result"}             # only when the map / GPS asks                            # only when the world map asks (map_tiles)
 # events the mod's net.lua makes up itself (not on the wire)
 MOD_INTERNAL = {"_connected": set(), "_disconnected": {"error"}}
 
@@ -232,9 +275,10 @@ def server_reads():
 
 
 def lua_function(text, name):
-    """Body of `local function name(` / `function M.name(` up to the next top-level `end`."""
-    m = re.search(rf"^(?:local )?function (?:M\.)?{name}\(.*?^end", text, re.S | re.M)
-    return m.group(0) if m else ""
+    """Body of `local function name(` / `function M.name(` / `name = function(` (a forward-declared
+    local) up to the next top-level `end`; all of them if there are several (a wrapper and its body)."""
+    ms = re.finditer(rf"^(?:(?:local )?function (?:M\.)?{name}\(|{name} = function\().*?^end", text, re.S | re.M)
+    return "\n".join(m.group(0) for m in ms)
 
 
 class AgreementTableTest(unittest.TestCase):
@@ -846,6 +890,22 @@ class ColormatchHelloTest(test_server.ServerHarness):
         self.assertEqual(m["colormatch"], "s2")
         self.assertIn("colormatch", SERVER_TO_MOD["hello"])
         self.assertIn(m["colormatch"], colormatchmod.MODES)
+
+
+class MapPortHelloTest(test_server.ServerHarness):
+    """hello.mapPort: absent without the map tile endpoint (the default hello is unchanged), its port
+    otherwise; the mod keeps it for the world map (core.lua st.mapPort)."""
+
+    def test_hello_map_port(self):
+        self.c.send({"type": "hello", "protocol": 4, "format": self.MOD_FORMAT, "modVersion": "0.4.0"})
+        m, _ = self.c.until(lambda m: m["type"] == "hello", 10)
+        self.assertNotIn("mapPort", m)
+        self.server.map_port = 47999
+        self.c.send({"type": "hello", "protocol": 4, "format": self.MOD_FORMAT, "modVersion": "0.4.0"})
+        m, _ = self.c.until(lambda m: m["type"] == "hello", 10)
+        self.assertEqual(m["mapPort"], 47999)
+        self.assertIn("mapPort", SERVER_TO_MOD["hello"])
+        self.assertIn("msg.mapPort", (LUA / "core.lua").read_text())
 
 
 class RetexMessagesTest(ServerMessagesTest):

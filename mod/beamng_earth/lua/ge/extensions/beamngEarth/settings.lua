@@ -51,6 +51,10 @@ M.SCHEMA = {
   -- roads near the player (roads.lua; the server's --roads on)
   roads = { kind = 'bool', default = true, label = 'Roads' },
   hudVisible = { kind = 'bool', default = false, label = 'Status HUD at level start' },
+  -- the status bar at the top (statusbar.lua): street, town / state / country, loading, fps
+  statusBar = { kind = 'bool', default = true, label = 'Status bar' },
+  -- town / state / country names from Photon (komoot), sent the position rounded to ~1 km
+  placeNamesOnline = { kind = 'bool', default = true, label = 'Place names in the status bar (online)' },
   -- the on-screen data credits (credits.lua): on by default, CC BY licences ask for visible attribution
   creditsVisible = { kind = 'bool', default = true, label = 'Data credits on screen' },
   creditsCorner = { kind = 'enum', default = 'bottom-left', values = credits.CORNERS, label = 'Data credits corner' },
@@ -60,10 +64,16 @@ M.SCHEMA = {
     label = 'Download cache size' },
   devOutlineKm = { kind = 'number', default = 3, min = 0.5, max = 20, label = 'Dev outlines radius (km)' },
   devMapKm = { kind = 'number', default = 10, min = 1, max = 80, label = 'Dev mini-map radius (km)' },
+  -- not on the page (not in ORDER): the welcome version last shown (EarthWelcome.vue)
+  welcomeSeen = { kind = 'number', default = 0, min = 0, max = 1000, label = 'Welcome page seen (version)' },
 }
 M.ORDER = { 'rebaseDistance', 'viewDistanceMode', 'viewDistanceKm', 'hazeStrength', 'skyMode', 'clouds',
-  'weatherMode', 'realGravity', 'groundCover', 'groundCoverDensity', 'roads', 'hudVisible', 'creditsVisible',
+  'weatherMode', 'realGravity', 'groundCover', 'groundCoverDensity', 'roads', 'hudVisible', 'statusBar',
+  'placeNamesOnline', 'creditsVisible',
   'creditsCorner', 'creditsSize', 'cacheCapGb', 'devOutlineKm', 'devMapKm' }
+
+-- Stored but not on the settings page
+M.HIDDEN = { welcomeSeen = true }
 
 -- Old values that still load (and set) as their replacement, without a warning: 'auto' weather
 -- (real unless BWM_Weather was changing the weather) is Real now, which switches itself to Manual
@@ -234,6 +244,7 @@ M.APPLY = {
     if M.pageExists() then ui.visible = v end
   end,
   creditsVisible = function(v) credits.setEnabled(v) end,
+  statusBar = function(v) require('beamngEarth/statusbar').enabled = v and true or false end,
   creditsCorner = function(v) credits.setCorner(v) end,
   creditsSize = function(v) credits.setSize(v) end,
   cacheCapGb = function()
@@ -325,6 +336,7 @@ function M.uiState()
     credits = core and core.credits and core.credits() or nil, -- the on-screen data credits now
     -- the connection banner's state line { id, level, text, guard } (docs/ROADMAP.md "Robustness" 1)
     banner = core and core.banner and core.banner() or nil,
+    update = core and core.updateInfo and core.updateInfo() or nil,  -- a newer version on GitHub
   }
   -- server features (status only): weather, gravity, imagery de-shadowing and colour seams
   local w = ext('beamngEarth_weather')
@@ -404,17 +416,196 @@ function M.uiPlaceGoText(text) return placesCall(places.uiGoText, text) end
 function M.uiPlaceGoRecent(i, lat, lon) return placesCall(places.uiGoRecent, i, lat, lon) end
 
 ------------------------------------------------------------------------------------------
+-- The world map (ui/ui-vue/mods/beamngEarth/EarthMap.vue: a route of its own, and a pause-menu
+-- button; tiles from the server's 127.0.0.1 endpoint, server/maptiles.py, port in hello.mapPort).
+
+M.MAP_ROUTE = 'beamngEarthMap' -- index.js registers the route under this name
+local mapOpen = false
+
+-- The player's heading in degrees clockwise from north (the bubble's +y is north, +x east), or nil.
+local function playerHeading()
+  local gpv = rawget(_G, 'getPlayerVehicle')
+  local veh = gpv and gpv(0)
+  if not veh then return nil end
+  local ok, dir = pcall(function() return veh:getDirectionVector() end)
+  if not ok or not dir then return nil end
+  if math.abs(dir.x) + math.abs(dir.y) < 1e-6 then return nil end
+  return (math.deg(math.atan2(dir.x, dir.y)) + 360) % 360
+end
+
+-- The map's basemap tiles as files (the game's UI browser cancels every http request, even to 127.0.0.1): list
+-- {{z, x, y}, ...} the map shows; returns the keys "z/x/y" whose file is there (/temp/beamngEarth/maptiles/z/x/y.jpg)
+-- and asks the server for the others (map_tiles; each at most every MAP_ASK_S).
+M.MAP_ASK_S = 4
+M.MAP_TILES_DIR = '/temp/beamngEarth/maptiles/'
+local mapAsked = {}
+function M.mapTiles(list)
+  local ready, missing = {}, {}
+  local now = os.clock()
+  for _, t in ipairs(type(list) == 'table' and list or {}) do
+    local z, x, y = tonumber(t[1]), tonumber(t[2]), tonumber(t[3])
+    if z and x and y then
+      local key = string.format('%d/%d/%d', z, x, y)
+      if FS:fileExists(M.MAP_TILES_DIR .. key .. '.jpg') then
+        ready[#ready + 1] = key
+      elseif not mapAsked[key] or now - mapAsked[key] > M.MAP_ASK_S then
+        mapAsked[key] = now
+        missing[#missing + 1] = { z, x, y }
+      end
+    end
+  end
+  local core = ext('beamngEarth_core')
+  if #missing > 0 and core and core.requestMapTiles then core.requestMapTiles(missing) end
+  return ready
+end
+
+-- What the map polls every second: the player, the places, the tile endpoint, the credits.
+function M.uiMapState()
+  local core = ext('beamngEarth_core')
+  local st = core and core._state and core._state() or nil
+  local pl = st and st.player
+  local ok, ps = pcall(places.uiState)
+  if not ok then ps = { places = {}, recent = {} } end
+  return {
+    connected = net.isConnected(), connection = net.state(),
+    mapPort = net.isConnected() and st and st.mapPort or nil,
+    player = (pl and pl.lat) and { lat = pl.lat, lon = pl.lon, heading = playerHeading(), speed = pl.speed } or nil,
+    places = ps.places, recent = ps.recent, cannotGo = ps.cannotGo,
+    attribution = core and core.attribution and core.attribution() or '',
+    creditsByArea = core and core.creditsByArea and core.creditsByArea() or nil,
+    gps = require('beamngEarth/gps').status(),
+  }
+end
+
+-- Teleport from the map (the page asked "Teleport here?" first); recorded in the recent places.
+function M.uiMapTeleport(lat, lon, name)
+  local ok, why = places.goTo(lat, lon, name)
+  return { ok = ok and true or false, error = (not ok) and why or nil }
+end
+
+-- The map's right-click "Set GPS destination" / "Clear GPS" (gps.lua: the game's own route arrows).
+function M.uiMapGps(lat, lon, name)
+  local gps = require('beamngEarth/gps')
+  if lat == nil then gps.clear() return { ok = true } end
+  return { ok = gps.setDestination(lat, lon, name) }
+end
+
+-- The map's GPS "Autodrive": the player's car drives itself along the route (gps.lua) / stops doing so.
+function M.uiGpsAutodrive(on)
+  return { ok = true, autodrive = require('beamngEarth/gps').setAutodrive(on) }
+end
+
+-- The GPS's planned route for the map's line: { version, points = {{lat, lon}...}, dist, dur } or nil.
+function M.uiGpsRoute()
+  return require('beamngEarth/gps').route()
+end
+
+-- The map's search-as-you-type: send (q -> { id } or { error }) and poll (id -> nil while waiting, else
+-- { results = {{name, detail, kind, lat, lon}...}, error }). Biased toward the player.
+local geocodeId = 0
+function M.uiGeocode(q)
+  local core = ext('beamngEarth_core')
+  if not core or not core.requestGeocode then return { error = 'BeamNG.Earth is not loaded' } end
+  local st = core._state and core._state() or nil
+  local pl = st and st.player
+  geocodeId = geocodeId + 1
+  if not core.requestGeocode(geocodeId, tostring(q or ''), pl and pl.lat, pl and pl.lon) then
+    return { error = 'Companion server not connected' }
+  end
+  return { id = geocodeId }
+end
+function M.uiGeocodeResult(id)
+  local core = ext('beamngEarth_core')
+  return core and core.takeGeocode and core.takeGeocode(tonumber(id)) or nil
+end
+
+-- "lat, lon" typed in the map's search box -> { lat, lon } or { error }.
+function M.uiMapParse(text)
+  local lat, lon = places.parseLatLon(text)
+  if not lat then return { error = lon } end
+  return { lat = lat, lon = lon }
+end
+
+function M.mapOpened(on) mapOpen = on and true or false end
+function M.isMapOpen() return mapOpen end
+
+-- The key binding (actions/beamngEarth.json; M and the pause menu Map via redirectBigMap): open the map, or close it back to driving.
+function M.toggleMap()
+  local gh = rawget(_G, 'guihooks')
+  if not gh then return end
+  if mapOpen then
+    gh.trigger('ChangeState', { state = 'play' })
+    mapOpen = false
+  else
+    gh.trigger('ChangeState', { state = M.MAP_ROUTE })
+  end
+end
+
+------------------------------------------------------------------------------------------
 -- extension hooks
+
+-- The game's own map (the user, 2026-10-14: "replace the default map, via the keybind or the pause menu"): the M key
+-- (toggleBigMap) and the pause menu's Map entry (enterBigMap) both go through freeroam_bigMapMode; in our level they
+-- open this map instead (the stock big map is a 3D overhead view of a stock level). Career keeps its own; leaving
+-- the level puts the stock functions back.
+M.replaceBigMap = true
+local bigMapOrig = nil
+function M.redirectBigMap(inOurLevel)
+  local bm = rawget(_G, 'freeroam_bigMapMode')
+  local career = rawget(_G, 'career_career')
+  local want = M.replaceBigMap and inOurLevel and bm ~= nil and not (career and career.isActive and career.isActive())
+  if want and not bigMapOrig then
+    bigMapOrig = { bm = bm, enter = bm.enterBigMap, toggle = bm.toggleBigMap }
+    bm.toggleBigMap = function() M.toggleMap() end
+    bm.enterBigMap = function() if not mapOpen then M.toggleMap() end end
+  elseif not want and bigMapOrig then
+    bigMapOrig.bm.enterBigMap, bigMapOrig.bm.toggleBigMap = bigMapOrig.enter, bigMapOrig.toggle
+    bigMapOrig = nil
+  end
+end
 
 function M.onExtensionLoaded()
   M.load()
   M.applyAll()
 end
 
+-- The one-time welcome (the user, 2026-10-15: "add a 1 time popup with info about this project"): shown a moment after
+-- our level starts, once per WELCOME_VERSION (raise it when the page has news worth showing again).
+M.WELCOME_VERSION = 1
+M.WELCOME_ROUTE = 'beamngEarthWelcome' -- index.js registers the route under this name
+M.WELCOME_DELAY_S = 2
+local welcomeAt = nil
+
+function M.showWelcome()
+  local gh = rawget(_G, 'guihooks')
+  if gh then gh.trigger('ChangeState', { state = M.WELCOME_ROUTE }) end
+end
+
+-- EarthWelcome.vue's buttons: seen.
+function M.uiWelcomeDone()
+  if (values.welcomeSeen or 0) < M.WELCOME_VERSION then M.set('welcomeSeen', M.WELCOME_VERSION) end
+  return { ok = true }
+end
+
+-- Automation (tools/benchmark.py, autodrive_perf.py: mcp.quiet_ui) keeps the page away for this game session only; the
+-- player still gets it on their next start.
+M.welcomeSuppressed = false
+
+function M.onUpdate()
+  if welcomeAt and os.clock() >= welcomeAt then
+    welcomeAt = nil
+    if not M.welcomeSuppressed then M.showWelcome() end
+  end
+end
+
 -- other extensions (sky, dev) may load after this one: apply again once the level runs
 function M.onClientPostStartMission()
   appliedView = nil
   M.applyAll()
+  local level = rawget(_G, 'getCurrentLevelIdentifier') and getCurrentLevelIdentifier()
+  if level == M.LEVEL_ID and (values.welcomeSeen or 0) < M.WELCOME_VERSION then
+    welcomeAt = os.clock() + M.WELCOME_DELAY_S
+  end
 end
 
 return M

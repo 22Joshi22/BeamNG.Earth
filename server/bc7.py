@@ -149,12 +149,9 @@ def decode(data, w, h):
 
 
 def mips(img):
-    """The mip chain of a square power-of-two image, box-filtered, down to 1x1."""
-    out = [np.asarray(img, np.uint8)]
-    while out[-1].shape[0] > 1:
-        a = out[-1].astype(np.uint16)
-        out.append(((a[0::2, 0::2] + a[1::2, 0::2] + a[0::2, 1::2] + a[1::2, 1::2] + 2) // 4).astype(np.uint8))
-    return out
+    """The mip chain of a square power-of-two image down to 1x1 (imagery.mip_arrays: linear light, sharpened)."""
+    import imagery
+    return imagery.mip_arrays(np.asarray(img, np.uint8))
 
 
 def dds(rgb):

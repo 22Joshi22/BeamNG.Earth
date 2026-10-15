@@ -12,7 +12,9 @@ class ProtocolError(Exception):
 
 
 def encode(msg):
-    payload = json.dumps(msg, separators=(",", ":")).encode("utf-8")
+    # real UTF-8, not \u escapes: the game's jsonDecode leaves those as text ("Provence-Alpes-Cu00f4te d'Azur" in the status
+    # bar, 2026-10-15)
+    payload = json.dumps(msg, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
     return HEADER.pack(len(payload)) + payload
 
 

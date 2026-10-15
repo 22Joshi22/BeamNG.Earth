@@ -265,7 +265,7 @@
           },
           {
             "claim": "Moving or creating a block needs be:reloadCollision() for physics. That rebuilds the entire static collision kd-tree, and its cost grows with static mesh triangles: 0.05 s for 1.35M tris (Industrial), about 0.35 s for 8–9M (ECUSA/Utah), 1.54 s and 1.45 GB for 37.6M (johnson_valley).",
-            "evidence": "util/terrainGenerator.lua:98-103 setTerrainOffset: setPosition(vec); be:reloadCollision(). User log /home/tecnagamer/.local/share/BeamNG/BeamNG.drive/current/beamng.log:725, :4724 and beamng.2.log:6105 '*** Loaded Static Collision in 1.538s, Verts: 20453810, Tris: 37638857, Memory: 1449.89MB'. Exe strings 'Physics collision reloading...', 'reloadCollision', 'reloadStaticCollision'.",
+            "evidence": "util/terrainGenerator.lua:98-103 setTerrainOffset: setPosition(vec); be:reloadCollision(). User log ~/.local/share/BeamNG/BeamNG.drive/current/beamng.log:725, :4724 and beamng.2.log:6105 '*** Loaded Static Collision in 1.538s, Verts: 20453810, Tris: 37638857, Memory: 1449.89MB'. Exe strings 'Physics collision reloading...', 'reloadCollision', 'reloadStaticCollision'.",
             "verified": true,
             "importance": "high"
           },
@@ -340,7 +340,7 @@
           {
             "name": "TerrainBlock (constructor)",
             "signature": "local tb = TerrainBlock(); tb:setName(name); tb:registerObject(name); tb:setTerrFileLvlFolder('/levels/'..getCurrentLevelIdentifier()); scenetree.MissionGroup:addObject(tb)",
-            "source": "/home/tecnagamer/.local/share/Steam/steamapps/common/BeamNG.drive/lua/ge/extensions/util/terrainGenerator.lua:177-181; editor/terrainEditor.lua:1234-1240",
+            "source": "~/.local/share/Steam/steamapps/common/BeamNG.drive/lua/ge/extensions/util/terrainGenerator.lua:177-181; editor/terrainEditor.lua:1234-1240",
             "example": "tb:setPosition(vec3(-2048,-2048,zMin))"
           },
           {
@@ -518,8 +518,8 @@
             "importance": "high"
           },
           {
-            "claim": "File IO: io.open is routed through the engine VFS sandbox (lua_fopen_sandboxed). Reads see the game, mods and user folder; writes land in the user folder (/home/tecnagamer/.local/share/BeamNG/BeamNG.drive/current/). os.execute, io.popen, os.rename, os.remove, tmpfile and tmpname are sandboxed, so the mod cannot launch a companion executable. The FS API used by game code covers fileExists, findFiles, directoryExists, directoryCreate(path, recursive), removeFile, stat, copyFile, getFileRealPath, renameFile, directoryRemove, directoryList, getUserPath, fileSize, hashFile, mount and unmount, triggerFilesChanged and updateDirectoryWatchers. The engine extension io.readFileToBuffer(filename, stringBuffer) gives fast reads.",
-            "evidence": "Binary strings: lua_fopen_sandboxed, lua_system_sandboxed ('Lua tried to execute system command: {}'), lua__popen_sandboxed ('Lua tried to open a process'), lua_rename_sandboxed, lua_remove_sandboxed, 'sk_fopen blocked (BeamNG VFS sandbox): %s'. lua/common/utils.lua:892-916 (readFile/writeFile via io.open), 458-482 (jsonWriteFile atomic via FS:renameFile, and jsonReadFile via io.readFileToBuffer). lua/ge/extensions/mcp/tools/fs.lua:10-36 (comment 'io.open is sandboxed to CWD', with directoryCreate before writing). lua/ge/extensions/mcp/tools/system.lua:66-77 (FS:directoryCreate plus FS:getUserPath for screenshots). The FS method frequency list comes from grep across lua/. beamng.log line 'Virtual Filesystem: user path: /home/tecnagamer/.local/share/BeamNG/BeamNG.drive/current/'.",
+            "claim": "File IO: io.open is routed through the engine VFS sandbox (lua_fopen_sandboxed). Reads see the game, mods and user folder; writes land in the user folder (~/.local/share/BeamNG/BeamNG.drive/current/). os.execute, io.popen, os.rename, os.remove, tmpfile and tmpname are sandboxed, so the mod cannot launch a companion executable. The FS API used by game code covers fileExists, findFiles, directoryExists, directoryCreate(path, recursive), removeFile, stat, copyFile, getFileRealPath, renameFile, directoryRemove, directoryList, getUserPath, fileSize, hashFile, mount and unmount, triggerFilesChanged and updateDirectoryWatchers. The engine extension io.readFileToBuffer(filename, stringBuffer) gives fast reads.",
+            "evidence": "Binary strings: lua_fopen_sandboxed, lua_system_sandboxed ('Lua tried to execute system command: {}'), lua__popen_sandboxed ('Lua tried to open a process'), lua_rename_sandboxed, lua_remove_sandboxed, 'sk_fopen blocked (BeamNG VFS sandbox): %s'. lua/common/utils.lua:892-916 (readFile/writeFile via io.open), 458-482 (jsonWriteFile atomic via FS:renameFile, and jsonReadFile via io.readFileToBuffer). lua/ge/extensions/mcp/tools/fs.lua:10-36 (comment 'io.open is sandboxed to CWD', with directoryCreate before writing). lua/ge/extensions/mcp/tools/system.lua:66-77 (FS:directoryCreate plus FS:getUserPath for screenshots). The FS method frequency list comes from grep across lua/. beamng.log line 'Virtual Filesystem: user path: ~/.local/share/BeamNG/BeamNG.drive/current/'.",
             "verified": true,
             "importance": "high"
           },
@@ -658,7 +658,7 @@
         "recommendations": [
           "Architecture: the companion server (Rust or Python) owns all internet access: HTTPS, API keys, quotas and caching on disk. It also owns all heavy processing: 3D Tiles traversal and LOD selection, Draco/glTF decode, ECEF to local-frame conversion, terrain and heightmap generation, and texture transcoding. The game mod is a thin client that reports the camera and vehicle position and heading and receives ready-to-load assets.",
           "Control channel, preferred: the game hosts BNGWebWSServer.getOrCreate('127.0.0.1', <port>, '', 'bngearth', '', false, false) with enableDataStreams(), and the companion connects as a WebSocket client. IO then runs on the native lws thread; Lua drains getPeerEvents() in onUpdate and sends pose and requests with server:sendData or broadcastData. Use small JSON messages (tile ready, unload, origin shift) and copy the watchdog and cleanup logic from mcp/server.lua:118-162.",
-          "Bulk data path: the companion writes finished assets into the BeamNG user folder, for example /home/tecnagamer/.local/share/BeamNG/BeamNG.drive/current/temp/beamngEarth/<tileId>/... and seen in the VFS as /temp/beamngEarth/..., using write-then-rename for atomicity. It then sends only the VFS path, so engine loaders read files directly and no large blobs pass through Lua. Verify at runtime that newly written files load without a VFS refresh, and call FS:triggerFilesChanged if needed.",
+          "Bulk data path: the companion writes finished assets into the BeamNG user folder, for example ~/.local/share/BeamNG/BeamNG.drive/current/temp/beamngEarth/<tileId>/... and seen in the VFS as /temp/beamngEarth/..., using write-then-rename for atomicity. It then sends only the VFS path, so engine loaders read files directly and no large blobs pass through Lua. Verify at runtime that newly written files load without a VFS refresh, and call FS:triggerFilesChanged if needed.",
           "Fallback, or for binary streams such as height samples or collision vertices: a raw luasocket TCP client to 127.0.0.1 with settimeout(0) and a length-prefixed binary protocol. In onUpdate, loop receive(65536) until 'timeout' or until an hptimer budget of about 1-2 ms is spent; accumulate in a string.buffer and read arrays with ffi.cast('const float*', s). Do not copy tcpServer.lua's single receive(4096) per frame.",
           "Do not use blocking socket.http in the frame loop (only acceptable for one-off startup handshakes with a small TIMEOUT). Do not use the CEF UI as a fetch proxy, SecureComm/core_online, vehicle Lua VMs, or ffi.load.",
           "Pick an uncommon port (for example 47613) and make it configurable. Avoid 29292 (MCP), 8083 (wsTest), 8084 (extApp), 23512 (httpJsonServer example), 27872 (rally), and 4444 or launcherPort (BeamMP, which the user's settings show is installed). Bind and connect to '127.0.0.1' literally.",
@@ -684,7 +684,7 @@
         "findings": [
           {
             "claim": "GE Lua vec3/quat are double precision (FFI structs of doubles).",
-            "evidence": "/home/tecnagamer/.local/share/Steam/steamapps/common/BeamNG.drive/lua/common/cdefMath.lua:7-10 `struct __luaVec3_t {double x, y, z;}; struct __luaQuat_t {double x, y, z, w;};` and lua/common/mathlib.lua:31-37",
+            "evidence": "~/.local/share/Steam/steamapps/common/BeamNG.drive/lua/common/cdefMath.lua:7-10 `struct __luaVec3_t {double x, y, z;}; struct __luaQuat_t {double x, y, z, w;};` and lua/common/mathlib.lua:31-37",
             "verified": true,
             "importance": "high"
           },
@@ -975,7 +975,7 @@
         "findings": [
           {
             "claim": "Mods must not be installed in content/levels; they go in the user folder's mods/ (zip) or mods/unpacked/<name>/ (folder, good for dev).",
-            "evidence": "/home/tecnagamer/.local/share/Steam/steamapps/common/BeamNG.drive/content/levels/___README___DO_NOT_INSTALL_MODS_HERE___.txt ('Do NOT copy mods into this folder...'); /home/tecnagamer/.local/share/Steam/steamapps/common/BeamNG.drive/lua/ge/extensions/core/modmanager.lua:625-626 `FS:findFiles( \"/mods/\", \"*.zip\", -1, ...)` and `FS:findFiles( \"/mods/unpacked/\", \"*\", 0, false, true )`",
+            "evidence": "~/.local/share/Steam/steamapps/common/BeamNG.drive/content/levels/___README___DO_NOT_INSTALL_MODS_HERE___.txt ('Do NOT copy mods into this folder...'); ~/.local/share/Steam/steamapps/common/BeamNG.drive/lua/ge/extensions/core/modmanager.lua:625-626 `FS:findFiles( \"/mods/\", \"*.zip\", -1, ...)` and `FS:findFiles( \"/mods/unpacked/\", \"*\", 0, false, true )`",
             "verified": true,
             "importance": "high"
           },
@@ -1023,13 +1023,13 @@
           },
           {
             "claim": "UI has two systems. (1) Legacy/stock apps live in ui/modules/apps/<App>/app.json (directive, domElement, css, and now `\"vue\": true` with app.vue in stock apps) or AngularJS app.js with `angular.module('beamng.apps').directive(...)`, calling Lua via bngApi.engineLua. (2) Vue mods live in ui/ui-vue/mods/<name>/ with index.js exporting onLoad/onUnload, .vue SFCs, uiSlots, and lua.extensions.ui_pause_actions.registerModButton/registerModTab.",
-            "evidence": "/home/tecnagamer/.local/share/Steam/steamapps/common/BeamNG.drive/ui/ui-vue/mods/README.md; ui/modules/apps/ArrowGPS/app.json; lua/ge/extensions/ui/uiMods.lua:40 (`modDir = \"/ui/ui-vue/mods\"`); repo sparkmod.zip ui/modules/apps/sparkConfig/{app.json,app.js}; enhancedvehiclefx.zip ui/ui-vue/mods/enhanced-vehicle-fx/index.js",
+            "evidence": "~/.local/share/Steam/steamapps/common/BeamNG.drive/ui/ui-vue/mods/README.md; ui/modules/apps/ArrowGPS/app.json; lua/ge/extensions/ui/uiMods.lua:40 (`modDir = \"/ui/ui-vue/mods\"`); repo sparkmod.zip ui/modules/apps/sparkConfig/{app.json,app.js}; enhancedvehiclefx.zip ui/ui-vue/mods/enhanced-vehicle-fx/index.js",
             "verified": true,
             "importance": "medium"
           },
           {
             "claim": "Repo mods are plain zips with lua/, scripts/, ui/, art/ at root plus mod_info/<TAGID>/{info.json,icon.jpg,images/,thumbs/} added by the repository. The mod manager stores modData.hashes in mods/db.json and uses them to find modScripts.",
-            "evidence": "unzip -l of /home/tecnagamer/.local/share/BeamNG/BeamNG.drive/current/mods/repo/*.zip; mods/db.json; modmanager.lua:907-913",
+            "evidence": "unzip -l of ~/.local/share/BeamNG/BeamNG.drive/current/mods/repo/*.zip; mods/db.json; modmanager.lua:907-913",
             "verified": true,
             "importance": "low"
           },
@@ -1231,7 +1231,7 @@
           {
             "name": "Vue UI mod entry",
             "signature": "ui/ui-vue/mods/<name>/index.js: export async function onLoad(){ await lua.extensions.ui_pause_actions.registerModButton({id,tabId:'mods',label,icon,componentName:'/ui/ui-vue/mods/<name>/X.vue'}) }; export async function onUnload(){...}",
-            "source": "/home/tecnagamer/.local/share/Steam/steamapps/common/BeamNG.drive/ui/ui-vue/mods/README.md"
+            "source": "~/.local/share/Steam/steamapps/common/BeamNG.drive/ui/ui-vue/mods/README.md"
           }
         ],
         "blockers": [
@@ -1467,7 +1467,7 @@
           {
             "name": "ProceduralMesh (BeamNG GE Lua)",
             "signature": "local proc = createObject('ProceduralMesh'); proc:registerObject(name); proc.canSave=false; scenetree.MissionGroup:add(proc.obj); proc:createMesh({{ {verts={{x,y,z}...}, uvs={{u,v}...}, normals={{x,y,z}...}, faces={{v=i,u=i,n=i}...}, material='matName'} }}); proc:setPosition(vec3); proc:setField('rotation',0,'x y z w')",
-            "source": "/home/tecnagamer/.local/share/Steam/steamapps/common/BeamNG.drive/lua/ge/extensions/tech/techCore.lua:283-310; lua/ge/extensions/flowgraph/nodes/environment/planet.lua:237-241,302-318",
+            "source": "~/.local/share/Steam/steamapps/common/BeamNG.drive/lua/ge/extensions/tech/techCore.lua:283-310; lua/ge/extensions/flowgraph/nodes/environment/planet.lua:237-241,302-318",
             "example": "faces are 0-based indices; then be:reloadCollision() so vehicles collide with it"
           },
           {
@@ -1985,7 +1985,7 @@
       "gaps_answered": [
         "Excluding far tiles from collision: TSStatic collisionType='None' works for sure. ProceduralMesh has no collisionType field. disableCollision() exists on SceneObject but its effect on the physics rebuild is untested. Plan: far LOD as TSStatic(.dae, None), or test ProceduralMesh+disableCollision in phase 0.",
         "Texture delivery: Lua has no in-memory texture upload, so textures must be files in the VFS. The engine keeps PNG→DDS caches in /temp (resourceUtil.lua:1520), and the exe has convertToDDS. The companion should write mipmapped BC1/BC7 .dds under <user>/temp/beamngEarth/ to avoid in-game decode and compression.",
-        "Where bulk files go: the user folder /home/tecnagamer/.local/share/BeamNG/BeamNG.drive/current/temp/ is the VFS /temp/. The engine itself reads and writes caches there (temp/art/terrainmaterialcache/*.dds exists on disk). Write-then-rename, plus versioned filenames because resources are cached by path.",
+        "Where bulk files go: the user folder ~/.local/share/BeamNG/BeamNG.drive/current/temp/ is the VFS /temp/. The engine itself reads and writes caches there (temp/art/terrainmaterialcache/*.dds exists on disk). Write-then-rename, plus versioned filenames because resources are cached by path.",
         "Is the collision rebuild truly blocking? Partly asynchronous: the kd-tree is built with std::async/parallel_for (libbeamng strings 4218-4243), and GE resumes before it finishes in some cases (beamng.3.log:9837-9843).",
         "Precision test harness: launch with -levelOffset 500000 0 0 (parseArgs.lua:119) on smallgrid or our level to measure collision and render jitter far from the origin before choosing the rebase radius.",
         "Vehicle rebase primitive: setClusterPosRelRot without velocity zeroing (techCore.lua:909-915), plus setOriginalTransform. Pausing physics around a rebase is advisable because tile moves (GE) and vehicle moves (physics queue) land on different ticks and collision must be rebuilt.",

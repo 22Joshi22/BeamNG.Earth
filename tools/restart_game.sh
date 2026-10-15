@@ -25,6 +25,20 @@ main_pid() {
     return 1
 }
 
+# The game's leftovers after a crash or a SIGKILL: its CEF helpers and Steam's launch wrapper for the app. While
+# they live Steam answers a new launch with "Game already running" (2026-10-15, after a hang). Matched on the exact
+# executable path / the app's reaper line in /proc, never on a pattern this script's own command line contains.
+leftovers() {
+    for d in /proc/[0-9]*; do
+        args=$(tr '\0' ' ' < "$d/cmdline" 2>/dev/null) || continue
+        case "$args" in
+            "$EXE "*) echo "${d#/proc/}" ;;
+            *"/reaper SteamLaunch AppId=$APPID "*) echo "${d#/proc/}" ;;
+            "steam-runtime-launch-client "*"BeamNG.drive.x64"*) echo "${d#/proc/}" ;;
+        esac
+    done
+}
+
 if [ "${1:-}" != "--start" ]; then
     pid=$(main_pid) || pid=""
     if [ -n "$pid" ]; then
@@ -38,6 +52,15 @@ if [ "${1:-}" != "--start" ]; then
             sleep 3
         fi
     fi
+fi
+
+left=$(leftovers)
+if [ -n "$left" ]; then
+    echo "stopping the game's leftover processes: $(echo $left | tr '\n' ' ')"
+    kill $left 2>/dev/null
+    sleep 5
+    left=$(leftovers)
+    [ -n "$left" ] && kill -KILL $left 2>/dev/null && sleep 2
 fi
 
 echo "starting BeamNG via Steam"

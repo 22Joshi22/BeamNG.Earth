@@ -25,6 +25,9 @@ import numpy as np
 POINT, LINE, POLYGON = 1, 2, 3
 
 
+_NO_ROWS = np.zeros(0, np.int64)
+
+
 @dataclass
 class RuleTable:
     feature: np.ndarray                 # int32 feature index
@@ -32,12 +35,24 @@ class RuleTable:
     start: np.ndarray                   # float32 0..1
     end: np.ndarray                     # float32 0..1
 
+    _rows: dict = field(default=None, repr=False, compare=False)    # rows(): feature -> its row indices
+
     def __len__(self):
         return len(self.feature)
 
+    def rows(self, i):
+        """Row indices of feature i, ascending (built once: a scan of the whole table per feature made
+        the road tile builds quadratic in a cell's features, 2026-10-13 profile)."""
+        if self._rows is None:
+            order = np.argsort(self.feature, kind="stable")
+            f = self.feature[order]
+            cut = np.flatnonzero(np.diff(f)) + 1
+            self._rows = {int(g[0]): r for g, r in zip(np.split(f, cut), np.split(order, cut))} if len(f) else {}
+        return self._rows.get(int(i), _NO_ROWS)
+
     def for_feature(self, i):
-        m = self.feature == i
-        return list(zip(self.value[m].tolist(), self.start[m].tolist(), self.end[m].tolist()))
+        r = self.rows(i)
+        return list(zip(self.value[r].tolist(), self.start[r].tolist(), self.end[r].tolist()))
 
 
 @dataclass

@@ -8,3 +8,6 @@ setExtensionUnloadMode('beamngEarth_settings', 'manual')
 extensions.load('beamngEarth_settings')
 setExtensionUnloadMode('beamngEarth_dev', 'manual')
 extensions.load('beamngEarth_dev')
+-- The in-game reports (report.lua: Ctrl+Shift+E a report / GitHub issue, Ctrl+Shift+Y the 30 s performance profiler).
+setExtensionUnloadMode('beamngEarth_report', 'manual')
+extensions.load('beamngEarth_report')

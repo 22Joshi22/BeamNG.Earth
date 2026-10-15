@@ -39,11 +39,12 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageFilter
 
 import cache as cachemod
 import dem as demmod
 import netfetch
+import season
 
 log = logging.getLogger("earthd.imagery")
 
@@ -60,6 +61,10 @@ MAX_MOSAIC = 36                    # source tiles per texture and source (zoom i
 MESH_CELLS = 8                     # render(): exact reprojection on an 8 x 8 grid of texture cells
 FALLBACK_RGB = (100, 89, 69)       # no imagery anywhere: the terrain material's dirt colour
 BLANK_RANGE = 2                    # a tile whose pixels all lie within this many levels is uniform
+NODATA_MAX, NODATA_SHARE = 6, 0.02   # an export tile with > 2 % texels this black is outside the data
+NODATA_WHITE_MIN, NODATA_WHITE_SHARE = 250, 0.25   # ... or (nodata "white") > 25 % this white: white roofs
+                                                   # are bright but rarely a quarter of a 240 m tile (MD
+                                                   # iMAP's white comes back as 253 in its JPEGs)
 
 
 @dataclass(frozen=True)
@@ -76,6 +81,23 @@ class Source:
     # z <= 9 (verified 2026-10-10: imagery for the Alps / Pyrenees / open Pacific at z6 and z8,
     # 404 at z10), which would put a different source on the far rings outside the US.
     min_zoom: int = 0
+    # ArcGIS exportImage instead of XYZ tiles: one request covers 2^export x 2^export tiles of zoom z
+    # (the parent at z - export, (TILE << export)² px), split into z tiles on disk; url takes {bbox}
+    # (EPSG:3857) and {size}. 0: an XYZ source (url takes {z}, {x}, {y}).
+    export: int = 0
+    # Never fetched by a render: a tile not on disk yet is missing there this time (the next source fills
+    # it); warm() fetches them ahead of the player, one request at a time (slow hosts: USGS's NAIP
+    # service took ~10 s a request in-game, 512 or 1024 px alike, and 5xx'd under parallel requests).
+    lazy: bool = False
+    # The coverage probes ask this source instead (an export source's own probe would be a huge area)
+    probe_source: str = ""
+    # (south, west, north, east) degrees: tiles wholly outside are never asked (a state's own service)
+    bounds: tuple = ()
+    # The colour an export source fills outside its data with ("black" or "white"), see NODATA_*
+    nodata: str = "black"
+    # Flown leaf-off (bare trees, dormant grass): render() gives its vegetation the summer reference's colour
+    # (season.leaf_on) when the Imagery's leaf_on is set
+    leaf_off: bool = False
 
 
 SOURCES = {
@@ -88,7 +110,44 @@ SOURCES = {
                       14, "EOxCloudless https://cloudless.eox.at by EOX IT Services GmbH (Contains modified "
                           "Copernicus Sentinel data 2016 & 2017), CC BY 4.0"),
 }
-DEFAULT_CHAIN = ("usgs", "eox2023", "eox2016")
+# NAIP (USDA aerial photography, 0.3-0.6 m, the flights the USGS layer above is made from at ~1.9 m),
+# at z17 only (~0.9 m): the block's base photo (1 m texels) and the nearest far tiles (L0 1 m, L-1
+# 0.5 m texels: capped at z17 so they use the tiles warm() fetched for the block; 0.5 m texels from
+# z18 looked hardly sharper in the 2026-10-13 comparison); where it has
+# nothing (outside the lower 48: a uniform image) or its tile is not fetched yet, USGS takes over.
+SOURCES["naip"] = Source(
+    "naip", "https://imagery.nationalmap.gov/arcgis/rest/services/USGSNAIPImagery/ImageServer/exportImage"
+            "?bbox={bbox}&bboxSR=3857&imageSR=3857&size={size},{size}&format=jpg&f=image",
+    17, "USDA NAIP via USGS The National Map (public domain)", probe_zooms=(10, 12), min_zoom=17,
+    export=2, lazy=True, probe_source="usgs")
+# The same NAIP from USDA's own service: newer flights (2024-25, some states 0.3 m) and 2-5x faster
+# (1.6-4 s per 1024² in-game 2026-10-13 vs ~10 s), but blank in places (Maryland, Denver: black, so
+# missing, and "naip" fills in).
+SOURCES["naipusda"] = Source(
+    "naipusda", "https://apps.geo.fpac.usda.gov/geo-imagery/rest/services/naip/conus_naip/ImageServer/exportImage"
+                "?bbox={bbox}&bboxSR=3857&imageSR=3857&size={size},{size}&format=jpg&f=image",
+    17, "USDA NAIP (public domain)", probe_zooms=(10, 12), min_zoom=17, export=2, lazy=True, probe_source="usgs")
+# Maryland's own six-inch orthophotos (MD iMAP, 0.15 m, flown 2023-25, leaf-off spring): ~1.3 s per
+# 1024² (in-game 2026-10-13, vs ~10 s for the USGS NAIP service Maryland otherwise needs; USDA's has none
+# there). White outside the state. Free with acknowledgement (docs/research/2026-10-10-us-state-imagery.md).
+# A cached MapServer: it draws only at ~1 m per pixel or coarser (0.75 and 0.5 m requests came back all
+# white, 2026-10-13); the z15 parent at 1024 px is 0.93 m at 39 N. Keep max_zoom 17 / export 2 (finer
+# texels need the three-inch ImageServer of that research).
+SOURCES["md6in"] = Source(
+    "md6in", "https://mdgeodata.md.gov/imagery/rest/services/SixInch/SixInchImagery2023_2024_2025/MapServer/export"
+             "?bbox={bbox}&bboxSR=3857&imageSR=3857&size={size},{size}&format=jpg&f=image",
+    17, "State of Maryland, MD iMAP / DoIT six-inch imagery", min_zoom=17, export=2, lazy=True,
+    bounds=(37.88, -79.49, 39.73, -75.04), nodata="white", leaf_off=True)
+BASE_CHAIN = ("md6in", "naipusda", "naip", "usgs", "eox2023", "eox2016")     # the chain before the regional sources
+# Regional aerial imagery (imagery_regional.py: state and national orthophoto services, each within its box)
+import imagery_regional  # noqa: E402
+for _n, (_url, _attr, _bounds, _kind, _leaf) in imagery_regional.REGIONAL.items():
+    if _kind == "xyz":          # a fast tile cache: also on the nearer far rings (z13+); blank z12 parents skipped
+        SOURCES[_n] = Source(_n, _url, 17, _attr, probe_zooms=(12,), min_zoom=13, bounds=_bounds, leaf_off=_leaf)
+    else:                       # a WMS / ArcGIS export: one 1024 px image per z15 parent, ahead of the player
+        SOURCES[_n] = Source(_n, _url, 17, _attr, min_zoom=17, export=2, lazy=True, bounds=_bounds, nodata="white",
+                             leaf_off=_leaf)
+DEFAULT_CHAIN = ("md6in", *imagery_regional.REGIONAL, "naipusda", "naip", "usgs", "eox2023", "eox2016")
 # The line the mod shows (V1_3_SPEC §C), for the default chain: every source's own credit, EOX's in
 # its June 2026 wording (docs/research/2026-10-10-rate-limits.md: "EOxCloudless https://cloudless.eox.at
 # by EOX IT Services GmbH (Contains modified Copernicus Sentinel data 2023)", 2016: "... 2016 & 2017").
@@ -157,6 +216,69 @@ def is_uniform(a):
     return int((a.max(axis=(0, 1)).astype(int) - a.min(axis=(0, 1))).max()) <= BLANK_RANGE
 
 
+MATCH_SIGMA_M = 40.0     # m: match_colours keeps the detail below this scale, the colours above it (20: haloes)
+
+
+MATCH_DOWN, MATCH_MIN_PX = 8, 16    # render(): the reference at px / MATCH_DOWN (at least MATCH_MIN_PX)
+
+
+def match_colours(rgb, ref, sigma_px):
+    """rgb with the large-scale colour of ref (uint8; ref the same size or coarser, sigma_px in ref's texels):
+    rgb * blur(ref) / blur(rgb), per channel, the gain clipped to [1/3, 3] (Gaussian blur of sigma_px
+    texels) and, for a coarser ref, computed at its size and scaled up. Where rgb already is ref, nothing
+    changes; elsewhere the detail is rgb's and everything coarser than ~sigma ref's."""
+    r = max(1.0, float(sigma_px))
+    h, w = ref.shape[:2]
+    im = Image.fromarray(rgb, "RGB")
+    if (h, w) != rgb.shape[:2]:
+        im = im.resize((w, h), Image.BOX)
+    a = im.filter(ImageFilter.GaussianBlur(r))
+    b = Image.fromarray(ref, "RGB").filter(ImageFilter.GaussianBlur(r))
+    gain = np.clip((np.asarray(b, np.float32) + 4.0) / (np.asarray(a, np.float32) + 4.0), 1 / 3, 3)
+    if (h, w) != rgb.shape[:2]:
+        gain = np.stack([np.asarray(Image.fromarray(gain[..., c], "F").resize(rgb.shape[1::-1], Image.BILINEAR))
+                         for c in range(3)], -1)
+    out = rgb.astype(np.float32) * gain
+    return np.clip(np.rint(out), 0, 255).astype(np.uint8)
+
+
+def in_bounds(src, z, x, y):
+    """Tile (z, x, y) overlaps src.bounds (True when the source has none)."""
+    if not src.bounds:
+        return True
+    s, w, n, e = src.bounds
+    k = 2 ** z
+    lon0, lon1 = x / k * 360 - 180, (x + 1) / k * 360 - 180
+    lat1 = math.degrees(math.atan(math.sinh(math.pi * (1 - 2 * y / k))))
+    lat0 = math.degrees(math.atan(math.sinh(math.pi * (1 - 2 * (y + 1) / k))))
+    return lon1 > w and lon0 < e and lat1 > s and lat0 < n
+
+
+# The US federal sources have no bounds (their coverage probes find where they have data); for the world map's
+# credits their area is the US: (s, w, n, e), the lower 48 for NAIP, with Alaska and Hawaii for USGS
+US_CREDIT_BOXES = {"naip": (24.0, -125.0, 50.0, -66.0), "naipusda": (24.0, -125.0, 50.0, -66.0),
+                   "usgs": (18.0, -180.0, 72.0, -65.0)}
+
+
+def range_in_bounds(src, z, tx0, tx1, ty0, ty1):
+    """Any tile of the range (z; tx0..tx1, ty0..ty1, inclusive) overlaps src.bounds."""
+    if not src.bounds:
+        return True
+    s, w, n, e = src.bounds
+    k = 2 ** z
+    lon0, lon1 = tx0 / k * 360 - 180, (tx1 + 1) / k * 360 - 180
+    lat1 = math.degrees(math.atan(math.sinh(math.pi * (1 - 2 * ty0 / k))))
+    lat0 = math.degrees(math.atan(math.sinh(math.pi * (1 - 2 * (ty1 + 1) / k))))
+    return lon1 > w and lon0 < e and lat1 > s and lat0 < n
+
+
+def mercator_bbox(z, x, y):
+    """EPSG:3857 extent (minx, miny, maxx, maxy) of XYZ tile (z, x, y)."""
+    size = EARTH_CIRC / 2 ** z
+    x0, y1 = -EARTH_CIRC / 2 + x * size, EARTH_CIRC / 2 - y * size
+    return x0, y1 - size, x0 + size, y1
+
+
 @dataclass(frozen=True)
 class Tile:
     """A decoded source tile: RGB uint8 [256, 256, 3], and whether it is one colour (blank)."""
@@ -178,18 +300,22 @@ class Imagery:
     disk = cachemod.NONE    # the server's cache.Cache (last use per file, the size cap); set by earthd
 
     def __init__(self, cache_dir, chain=DEFAULT_CHAIN, fetch_workers=FETCH_WORKERS, mem_tiles=MEM_TILES,
-                 tone=1.0, deshadow=None, colormatch=None, fetcher=None):
+                 tone=1.0, deshadow=None, colormatch=None, fetcher=None, leaf_on=True, season_mode="off"):
         """deshadow: an optional deshadow.Deshadow (--deshadow lambert|full): _mosaic relights its
         source's tiles; None = the imagery as served (byte-identical textures).
         colormatch: an optional colormatch.ColorMatch (--colormatch s2): _mosaic removes the colour
         seams of its source's tiles, after the relight and before the tone curve; None = off.
-        fetcher: the server's netfetch.Fetcher (shared limits); None = one of its own."""
+        fetcher: the server's netfetch.Fetcher (shared limits); None = one of its own.
+        leaf_on: leaf-off sources' vegetation takes the summer reference's colour (season.leaf_on).
+        season_mode: the season grade of every texture (season.amounts_for: "auto" = today's, "fall", "off")."""
         self.cache_dir = cache_dir
         self.chain = tuple(SOURCES[s] if isinstance(s, str) else s for s in chain)
         self.fetcher = fetcher if fetcher is not None else netfetch.Fetcher()
         self.fetcher.register_chain("imagery", [s.url for s in self.chain])
         self.pool = ThreadPoolExecutor(min(fetch_workers, FETCH_WORKERS), thread_name_prefix="img-fetch")
         self.mem_tiles = mem_tiles
+        self.leaf_on = leaf_on
+        self.season_mode = season_mode
         self.lut = tone_lut(tone)
         self.lut_table = self.lut.tolist() * 3          # Image.point: one LUT per band
         self.deshadow = deshadow
@@ -201,6 +327,10 @@ class Imagery:
             colormatch.bind(self)
         self._cm_lru = OrderedDict()        # (source, z, x, y, "cm1", relit) -> corrected RGB, or the input
         self._lru = OrderedDict()           # (source, z, x, y) -> Tile, or None (404)
+        self._export_locks = {}             # export parent -> its fetch lock (_download_export)
+        self._warm_want = []                # warm(): lazy tiles ahead of the player, nearest first
+        self._warm_cv = threading.Condition()
+        self._warm_thread = None
         self._inflight = {}
         self._lock = threading.RLock()     # RLock: a done future's callback runs at once
         self._local = threading.local()     # per fetch thread: the kind of the request being loaded
@@ -215,6 +345,22 @@ class Imagery:
         if names == list(DEFAULT_CHAIN) and not extra:
             return ATTRIBUTION
         return "Imagery: " + "; ".join(s.attribution for s in list(self.chain) + extra)
+
+    def credits_by_area(self):
+        """[[attribution, w, s, e, n] or [attribution]] per source in use (a box: the source covers only that
+        area), for the world map to credit what its view shows (2026-10-15: the map listed 31 regional services
+        over Paris)."""
+        names = [s.name for s in self.chain]
+        extra = [SOURCES[n] for n in getattr(self.colormatch, "refs", ()) if n not in names]
+        out = []
+        for src in list(self.chain) + extra:
+            box = src.bounds or US_CREDIT_BOXES.get(src.name)
+            if box:
+                s_, w_, n_, e_ = box
+                out.append([src.attribution, w_, s_, e_, n_])
+            else:
+                out.append([src.attribution])
+        return out
 
     def _count(self, what):
         with self._lock:
@@ -252,7 +398,9 @@ class Imagery:
         if data is not None:
             self._count(src.name + ":disk")
             return data
-        url = src.url.format(z=z, x=x, y=y)
+        if src.export:
+            return self._download_export(src, z, x, y)
+        url = src.url.format(z=z, x=x, y=y, ty=(1 << z) - 1 - y)     # {ty}: a TMS cache's flipped row
         if self.fetcher.miss_alive(miss, url):
             return None
         kind = getattr(self._local, "kind", "demand")
@@ -284,6 +432,78 @@ class Imagery:
             self.disk.forget(miss)
         self._count(src.name + ":net")
         return data
+
+    def _download_export(self, src, z, x, y):
+        """An export source's tile: its parent (src.export levels up) fetched as one image and split into
+        its children on disk (one fetch per parent at a time); None if the host has no image there."""
+        k = src.export
+        parent = (src.name, z - k, x >> k, y >> k)
+        with self._lock:
+            lock = self._export_locks.setdefault(parent, threading.Lock())
+        with lock:
+            path, miss = self._paths(src, z, x, y)
+            data = self.disk.read(path)         # a sibling's fetch wrote it meanwhile
+            if data is not None:
+                self._count(src.name + ":disk")
+                return data
+            url = src.url.format(bbox=",".join(f"{v:.3f}" for v in mercator_bbox(z - k, x >> k, y >> k)),
+                                 size=TILE << k)
+            if self.fetcher.miss_alive(miss, url):
+                return None
+            kind = getattr(self._local, "kind", "demand")
+            try:
+                r = self.fetcher.get(url, kind=kind)
+            except netfetch.NotFound:
+                os.makedirs(os.path.dirname(miss), exist_ok=True)
+                open(miss, "wb").close()
+                self.disk.wrote(miss, 0)
+                self._count(src.name + ":404")
+                return None
+            except netfetch.FetchError as e:
+                deferred = kind != "demand" and isinstance(e, _DEFERRED)
+                self._count(src.name + (":deferred" if deferred else ":skipped" if isinstance(e, netfetch.HostUnavailable)
+                                        else ":error"))
+                raise ImageryError(f"imagery fetch failed: {url}: {e}", deferred) from None
+            with self._lock:
+                self.fetch_ms.append(r.elapsed * 1000)
+                del self.fetch_ms[:-2000]
+            try:
+                im = Image.open(io.BytesIO(r.body)).convert("RGB")
+            except (OSError, ValueError) as e:
+                raise ImageryError(f"undecodable {src.name} image {parent}: {e}") from None
+            if im.size != (TILE << k, TILE << k):
+                im = im.resize((TILE << k, TILE << k), Image.BILINEAR)
+            out = None
+            a = np.asarray(im)
+            for j in range(1 << k):
+                for i in range(1 << k):
+                    cx, cy = ((x >> k) << k) + i, ((y >> k) << k) + j
+                    cpath, cmiss = self._paths(src, z, cx, cy)
+                    child = a[j * TILE:(j + 1) * TILE, i * TILE:(i + 1) * TILE]
+                    if (child.max(axis=2) <= NODATA_MAX).mean() > NODATA_SHARE or (
+                            src.nodata == "white" and (child.min(axis=2) >= NODATA_WHITE_MIN).mean() > NODATA_WHITE_SHARE):
+                        # outside the flights (the image is black there): missing, the next source fills it
+                        os.makedirs(os.path.dirname(cmiss), exist_ok=True)
+                        open(cmiss, "wb").close()
+                        self.disk.wrote(cmiss, 0)
+                        continue
+                    buf = io.BytesIO()
+                    Image.fromarray(child).save(buf, "JPEG", quality=92)
+                    b = buf.getvalue()
+                    os.makedirs(os.path.dirname(cpath), exist_ok=True)
+                    tmp = f"{cpath}.{threading.get_ident()}.tmp"
+                    with open(tmp, "wb") as f:
+                        f.write(b)
+                    os.replace(tmp, cpath)
+                    self.disk.wrote(cpath, len(b))
+                    if (cx, cy) == (x, y):
+                        out = b
+            self._count(src.name + ":net")
+            return out
+
+    def _on_disk(self, key):
+        src, z, x, y = key
+        return os.path.exists(self._paths(src, z, x, y)[0])
 
     def _load_kind(self, key, kind):
         """_load(key) in a pool thread, its requests made as `kind` (subclasses override _load(key))."""
@@ -319,7 +539,7 @@ class Imagery:
         pz = max((p for p in src.probe_zooms if p < z), default=None)
         if pz is None:
             return None
-        return (src, pz, x >> (z - pz), y >> (z - pz))
+        return (SOURCES[src.probe_source] if src.probe_source else src, pz, x >> (z - pz), y >> (z - pz))
 
     @staticmethod
     def _covered(probe):
@@ -329,8 +549,11 @@ class Imagery:
         """'covered' / 'outside' / 'unknown' from the key's coverage probes, coarsest first;
         starts the fetch of the first unknown one. Caller holds the lock."""
         src, z, x, y = key
+        if not in_bounds(*key):
+            return "outside"                # (never ask a source about a place outside its area)
+        psrc = SOURCES[src.probe_source] if src.probe_source else src
         for pz in sorted(p for p in src.probe_zooms if p < z):
-            p = (src, pz, x >> (z - pz), y >> (z - pz))
+            p = (psrc, pz, x >> (z - pz), y >> (z - pz))
             if p not in self._lru:
                 self._future(p, "prefetch")
                 return "unknown"
@@ -374,6 +597,10 @@ class Imagery:
                 elif k in self._lru:
                     self._lru.move_to_end(k)
                     out[k] = self._lru[k]
+                elif not in_bounds(*k):
+                    out[k] = None                   # outside the source's area
+                elif k[0].lazy and not self._on_disk(k):
+                    out[k] = None                   # not fetched (warm() does, ahead): the next source now
                 else:
                     futs[k] = self._future(k, kind)
         err = None
@@ -402,7 +629,7 @@ class Imagery:
         zw = zoom_for(float(lat[1, 1]), t)
         for k, src in enumerate(self.chain):
             z = min(zw, src.max_zoom)
-            if z < src.min_zoom:
+            if z < src.min_zoom or src.lazy:    # (a lazy source's tiles: only warm() fetches them)
                 continue
             n = 2 ** z
             fx, fy = mercator_px(lat.ravel(), lon.ravel(), z)
@@ -410,6 +637,12 @@ class Imagery:
             tx0, tx1 = int(math.floor(fx.min() - 1)) // TILE, int(math.floor(fx.max() + 1)) // TILE
             ty0, ty1 = max(0, int(math.floor(fy.min() - 1)) // TILE), min(n - 1, int(math.floor(fy.max() + 1)) // TILE)
             if (tx1 - tx0 + 1) * (ty1 - ty0 + 1) > MAX_MOSAIC:
+                return
+            if not range_in_bounds(src, z, tx0, tx1, ty0, ty1):
+                # outside the source's area: never asked, and the prefetch ends here as it did when this
+                # source's coverage probe was fetched first (2026-10-15: carrying on to the base sources made
+                # the integration drive's far field 1729 coverage holes; tonight's game measurements all ran
+                # with this behaviour; render fetches what is missing on demand)
                 return
             host = netfetch.host_of(src.url)
             if not self.fetcher.available(host):
@@ -442,6 +675,116 @@ class Imagery:
                         self._future(key, "prefetch")
             if not missing:
                 return
+
+    def warm(self, frame, points, radius, texel_m):
+        """Fetch the lazy sources' tiles ahead of the player (one background thread, nearest first): the
+        tiles at the zoom of `texel_m` m texels (the block's base photo) within `radius` m of the ENU
+        points (the player's path, in order). Replaces the previous list (the player moved on)."""
+        lazy = [s for s in self.chain if s.lazy]
+        if not lazy or not points:
+            return
+        pts = np.asarray(points, float)
+        lat, lon, _ = frame.enu_to_geodetic(pts[:, 0], pts[:, 1], np.zeros(len(pts)))
+        if np.abs(lat).max() > MAX_LAT:
+            return
+        want, seen = [], set()
+        pad = radius / 111000.0 * 2         # deg: a generous margin for the bounds test below
+        for la, lo in zip(np.atleast_1d(lat), np.atleast_1d(lon)):
+            for src in lazy:                # per place, the lazy sources in chain order (_warm_done)
+                if src.bounds:              # a regional source elsewhere: none of its tiles (17 of them since
+                    bs, bw, bn, be = src.bounds     # the regional chain: their per-tile loop cost the far field)
+                    if la < bs - pad or la > bn + pad or lo < bw - pad or lo > be + pad:
+                        continue
+                z = min(zoom_for(float(lat[0]), texel_m), src.max_zoom)
+                if z < src.min_zoom:
+                    continue
+                k = src.export
+                r_px = radius / ground_res(float(la), z)
+                fx, fy = mercator_px(np.array([la]), np.array([lo]), z)
+                for ty in range(int((fy[0] - r_px) // TILE), int((fy[0] + r_px) // TILE) + 1):
+                    for tx in range(int((fx[0] - r_px) // TILE), int((fx[0] + r_px) // TILE) + 1):
+                        key = (src, z, (tx >> k) << k, (ty >> k) << k)   # one child per parent
+                        if key not in seen and in_bounds(*key):
+                            seen.add(key)
+                            want.append(key)
+        with self._warm_cv:
+            self._warm_want = want
+            if self._warm_thread is None:
+                self._warm_thread = threading.Thread(target=self._warm_loop, name="img-warm", daemon=True)
+                self._warm_thread.start()
+            self._warm_cv.notify()
+
+    def _warm_loop(self):
+        self._local.kind = "prefetch"
+        while True:
+            with self._warm_cv:
+                key = None
+                while key is None:
+                    key = next((k for k in self._warm_want if not self._warm_done(k)), None)
+                    if key is None:
+                        self._warm_cv.wait()
+            try:
+                self._download(*key)
+                self._count(key[0].name + ":warm")
+            except ImageryError as e:       # the host takes no prefetch now / failed: later
+                with self._warm_cv:
+                    self._warm_cv.wait(5.0 if e.deferred else 30.0)
+            except Exception:
+                log.exception("imagery warm %s", key[1:])
+                with self._warm_cv:
+                    self._warm_want = [k for k in self._warm_want if k != key]
+
+    def _warm_done(self, key):
+        """Nothing (more) to fetch for key's parent: it was fetched (its last child, the one written last, is
+        on disk or known to be missing), an earlier lazy source of the chain has data there (its last
+        child is on disk: this one is only the fallback where that one is black), or the area is outside
+        the coverage probes."""
+        src, z, x, y = key
+        last = (1 << src.export) - 1
+        for s in self.chain:
+            if s is src:
+                break
+            if s.lazy and s.export == src.export and os.path.exists(self._paths(s, z, x | last, y | last)[0]):
+                return True
+        path, miss = self._paths(src, z, x | last, y | last)
+        if os.path.exists(path) or os.path.exists(miss):
+            return True
+        with self._lock:
+            return self._probe_status(key) == "outside"
+
+    def lazy_ready(self, frame, x0, y0, size, px):
+        """True when render(frame, x0, y0, size, px) would find every lazy-source tile it can use on disk
+        (or known missing, or outside the coverage probes): rendering again would not get any sharper."""
+        lazy = [s for s in self.chain if s.lazy]
+        if not lazy:
+            return True
+        c = np.array([0.0, 0.5, 1.0]) * size
+        E, N = np.meshgrid(x0 + c, y0 + c)
+        lat, lon, _ = frame.enu_to_geodetic(E, N, 0.0)
+        if np.abs(lat).max() > MAX_LAT:
+            return True
+        zw = zoom_for(float(lat[1, 1]), size / px)
+        z = min(zw, lazy[0].max_zoom)
+        if z < lazy[0].min_zoom:
+            return True
+        fx, fy = mercator_px(lat.ravel(), lon.ravel(), z)
+        lazy = [s_ for s_ in lazy if not s_.bounds or not (lat.max() < s_.bounds[0] or lat.min() > s_.bounds[2]
+                                                           or lon.max() < s_.bounds[1] or lon.min() > s_.bounds[3])]
+        for ty in range(int(math.floor(fy.min() - 1)) // TILE, int(math.floor(fy.max() + 1)) // TILE + 1):
+            for tx in range(int(math.floor(fx.min() - 1)) // TILE, int(math.floor(fx.max() + 1)) // TILE + 1):
+                for src in lazy:            # the first with data decides; a missing one passes to the next
+                    if not in_bounds(src, z, tx, ty):
+                        continue
+                    path, miss = self._paths(src, z, tx, ty)
+                    if os.path.exists(path):
+                        break
+                    if os.path.exists(miss):
+                        continue
+                    with self._lock:
+                        if self._probe_status((src, z, tx, ty)) == "outside":
+                            continue
+                    return False
+        return True
 
     def _finish(self, key, fut):
         with self._lock:
@@ -515,6 +858,45 @@ class Imagery:
         return rgb if out is None else out
 
     def render(self, frame, x0, y0, size, px, pending=None):
+        """_render(); texels from a lazy source (NAIP) then take their large-scale colour from the rest of
+        the chain (match_colours): NAIP's detail, USGS's colours, so the block's photo meets the far tiles
+        around it (USGS, colour-matched and de-shadowed) without a seam (in-game 2026-10-13, Annapolis: the
+        NAIP block was a darker, greener square, its water much darker)."""
+        rgb, used = self._render(frame, x0, y0, size, px, pending)
+        if any(s.lazy and s.name in used for s in self.chain) and not all(s.lazy for s in self.chain):
+            # the reference only gives the colour above MATCH_SIGMA_M: rendered and matched at MATCH_DOWN times
+            # coarser texels (64x fewer texels to render, blur and stream through memory than at full size)
+            small = max(MATCH_MIN_PX, px // MATCH_DOWN)
+            try:
+                ref, _ = self._render(frame, x0, y0, size, small, pending, skip_lazy=True)
+            except ImageryError:            # the reference is unreachable: NAIP as served
+                ref = None
+            if ref is not None:
+                rgb = match_colours(rgb, ref, MATCH_SIGMA_M / (size / small))
+                if self.leaf_on and any(s.leaf_off and s.name in used for s in self.chain):
+                    rgb = season.leaf_on(rgb, ref)
+                    used["leafon"] = sum(used.get(s.name, 0) for s in self.chain if s.leaf_off)
+        return self._seasoned(frame, x0, y0, size, rgb), used
+
+    SEASON_GRID = 17            # world positions for the season noise: on this grid, bilinear in between
+
+    def _seasoned(self, frame, x0, y0, size, rgb):
+        """rgb graded toward the season (season.grade; season_mode "off": unchanged)."""
+        if self.season_mode in (None, "off", "summer"):
+            return rgb
+        n = self.SEASON_GRID
+        k = np.linspace(0.0, size, n)
+        E, N = np.meshgrid(x0 + k, y0 + size - k)               # row 0 = north
+        lat, lon, _ = frame.enu_to_geodetic(E, N, 0.0)
+        amounts = season.amounts_for(self.season_mode, float(np.mean(lat)))
+        if not any(v > 0 for v in amounts.values()):
+            return rgb
+        xm, ym = season.world_metres(lat, lon)
+        px = rgb.shape[0]
+        up = lambda a: np.asarray(Image.fromarray(a.astype(np.float32), "F").resize((px, px), Image.BILINEAR))
+        return season.grade(rgb, up(xm - xm.min()) + float(xm.min()), up(ym - ym.min()) + float(ym.min()), amounts)
+
+    def _render(self, frame, x0, y0, size, px, pending=None, skip_lazy=False):
         """Texture of the ENU square [x0, x0+size] x [y0, y0+size] (anchor `frame`), px x px,
         row 0 = north edge, column 0 = west edge (texel centres at (i + 0.5) * size / px).
         Returns (uint8 [px, px, 3] after the tone curve, {source: texels}).
@@ -544,8 +926,12 @@ class Imagery:
         for i, src in enumerate(self.chain):
             cm_keys = set() if self.colormatch is not None else None
             z = min(zw, src.max_zoom)
-            if z < src.min_zoom:
+            if z < src.min_zoom or (skip_lazy and src.lazy):
                 continue
+            if src.bounds:                  # a regional source elsewhere: not even its mosaic's keys
+                bs, bw, bn, be = src.bounds
+                if lat.max() < bs or lat.min() > bn or lon.max() < bw or lon.min() > be:
+                    continue
             while True:
                 fx, fy = mercator_px(lat, lon, z)
                 w = TILE * 2 ** z
@@ -646,13 +1032,42 @@ def dxt1_size(w, h):
     return max(1, (w + 3) // 4) * max(1, (h + 3) // 4) * 8
 
 
+# Mip levels (LOD research 2026-10-14: the plain sRGB 2 x 2 box is the softest possible chain, and ground at a
+# grazing angle is drawn from the small levels): averaged in linear light (dark detail does not swallow light
+# detail) and each smaller level sharpened a little (MIP_SHARPEN, a 3 x 3 unsharp mask).
+MIP_SHARPEN = 0.35
+_TO_LIN = ((np.arange(256) / 255.0) ** 2.2).astype(np.float32)
+
+
+def _to_srgb(lin):
+    return np.clip(np.rint(np.clip(lin, 0.0, 1.0) ** (1 / 2.2) * 255.0), 0, 255).astype(np.uint8)
+
+
+def mip_arrays(rgb):
+    """[level 0, 1, ...] (uint8 [h, w, 3] arrays) down to 1 x 1 of a power-of-two image: linear-light 2 x 2
+    averages, each level from the previous unsharpened one, then sharpened by MIP_SHARPEN."""
+    rgb = np.asarray(rgb, np.uint8)
+    out = [rgb]
+    lin = _TO_LIN[rgb]
+    while max(lin.shape[:2]) > 1:
+        h, w = lin.shape[:2]
+        if h > 1:
+            lin = 0.5 * (lin[0::2] + lin[1::2])
+        if w > 1:
+            lin = 0.5 * (lin[:, 0::2] + lin[:, 1::2])
+        lev = lin
+        if min(lev.shape[:2]) >= 4 and MIP_SHARPEN > 0:
+            p = np.pad(lev, ((1, 1), (1, 1), (0, 0)), mode="edge")
+            blur = (p[:-2, :-2] + p[:-2, 1:-1] + p[:-2, 2:] + p[1:-1, :-2] + p[1:-1, 1:-1] + p[1:-1, 2:]
+                    + p[2:, :-2] + p[2:, 1:-1] + p[2:, 2:]) / 9.0
+            lev = lev + MIP_SHARPEN * (lev - blur)
+        out.append(_to_srgb(lev))
+    return out
+
+
 def mip_chain(img):
-    """[level 0, 1, ...] down to 1 x 1, each a 2 x 2 box average of the previous one."""
-    levels = [img]
-    while max(levels[-1].size) > 1:
-        w, h = levels[-1].size
-        levels.append(levels[-1].reduce((2 if w > 1 else 1, 2 if h > 1 else 1)))
-    return levels
+    """[level 0, 1, ...] PIL images down to 1 x 1 (mip_arrays)."""
+    return [Image.fromarray(a, "RGB") for a in mip_arrays(np.asarray(img.convert("RGB")))]
 
 
 def encode_dds(rgb):

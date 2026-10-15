@@ -25,6 +25,8 @@ M.MIN_WRAP = 320          -- ... but never narrower (px)
 M.TEXT_RGBA = { 1, 1, 1, 0.8 }
 M.BACK_RGBA = { 0, 0, 0, 0.3 }
 
+M.MAP_ROUTE = 'beamngEarthMap' -- our world map's UI state (settings.lua MAP_ROUTE)
+
 M.enabled = true
 M.corner = 'bottom-left'
 M.size = 'small'
@@ -82,12 +84,19 @@ end
 -- core.lua's onUiChangedState hook: the pause menu is the 'menu' state (and its sub-states), a
 -- loading screen 'loading'. Decided here, once per change, not per frame.
 function M.setUiState(toState)
-  uiHidden = type(toState) == 'string' and (toState:sub(1, 4) == 'menu' or toState == 'loading')
+  uiHidden = type(toState) == 'string' and (toState:sub(1, 4) == 'menu' or toState == 'loading'
+    or toState == M.MAP_ROUTE)
 end
 
--- Hidden by the game's UI: the pause menu, a loading screen, the big map.
+-- Hidden by the game's UI: the pause menu, a loading screen, the big map, our world map (EarthMap.vue has its own
+-- credits line; the two are never on screen together, the user 2026-10-14).
 function M.hiddenByUi()
   if uiHidden then return true end
+  local st = rawget(_G, 'beamngEarth_settings')
+  if st and st.isMapOpen then
+    local ok, on = pcall(st.isMapOpen)
+    if ok and on then return true end
+  end
   local bm = rawget(_G, 'freeroam_bigMapMode')
   if bm and bm.bigMapActive then
     local ok, on = pcall(bm.bigMapActive)

@@ -524,7 +524,7 @@ return jsonEncode({n = n, maxAbsDelta = m})
 ### P2: Lua/JSON Material overrides a DAE effect, and translucent instance alpha works on a TSStatic
 Python helper: write a 32×32 tile DAE with material `bngEarthProbeFade1`:
 ```python
-import sys; sys.path.insert(0, '/home/tecnagamer/Documents/BeamNG.Earth/server'); import dae, os, math
+import sys; sys.path.insert(0, './server'); import dae, os, math
 d = os.path.expanduser('~/.local/share/BeamNG/BeamNG.drive/current/temp/beamngEarth/probe')
 p, uv, t = dae.grid(32, 8.0, lambda x, y: 3*math.sin(x*0.05)); dae.write_grid_dae(d + '/fade1.dae', p, uv, t, material='bngEarthProbeFade1')
 ```

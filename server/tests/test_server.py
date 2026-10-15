@@ -62,7 +62,7 @@ class FakeImagery(imagery.Imagery):
     140 for the EOX layers (no network). usgs has data only east of LON (so the chain falls back to eox2023
     west of it); counts every load."""
 
-    def __init__(self, cache_dir, chain=imagery.DEFAULT_CHAIN, **kw):
+    def __init__(self, cache_dir, chain=("usgs", "eox2023", "eox2016"), **kw):     # (no lazy NAIP: timing)
         super().__init__(cache_dir, chain, **kw)
         self.loads = 0
 
@@ -179,7 +179,7 @@ class ServerHarness(unittest.TestCase):
         return done, seen
 
     def check_terrain(self, t, cx, cy):
-        self.assertEqual(set(t), {"cx", "cy", "heightmap", "size", "squareSize", "zBase", "maxHeight", "q"})
+        self.assertEqual(set(t), {"cx", "cy", "heightmap", "size", "squareSize", "zBase", "maxHeight", "q", "ter"})
         self.assertEqual((t["cx"], t["cy"]), (cx, cy))
         self.assertEqual((t["size"], t["squareSize"]), (self.block, 2.0))
         self.assertEqual(t["maxHeight"], t["q"] * 65536)
@@ -329,7 +329,7 @@ class ServerTest(ServerHarness):
         far.apply(seen)
         self.assertFalse([m for m in seen if m["type"] in ("far_tile", "far_swap")])
         self.assertEqual(set(tr), {"type", "requestId", "anchorId", "cx", "cy", "heightmap", "size",
-                                   "squareSize", "zBase", "maxHeight", "q"})
+                                   "squareSize", "zBase", "maxHeight", "q", "ter"})
         self.assertEqual((tr["requestId"], tr["anchorId"]), (5, aid))
         h2 = self.check_terrain({k: tr[k] for k in tr if k not in ("type", "requestId", "anchorId")}, 512.0, 0.0)
         # Same anchor frame and quantum: the overlap is bit-identical (§1.8). Block 2 sample
@@ -823,7 +823,7 @@ class MeshServer64Block512Test(MeshServer64Test):
         tr, _ = c.until(lambda m: m["type"] == "terrain_ready", timeout=60)
         self.assertEqual((tr["cx"], tr["cy"], tr["size"]), (128.0, -128.0, 512))
         h = self.check_terrain({k: tr[k] for k in ("cx", "cy", "heightmap", "size", "squareSize", "zBase",
-                                                   "maxHeight", "q")}, 128.0, -128.0)
+                                                   "maxHeight", "q", "ter")}, 128.0, -128.0)
         self.assertEqual(h.shape, (512, 512))
         self.assertEqual(conn.pending_block, ff.Block(128.0, -128.0, 512))
         self.assertEqual(conn.pending_block.bbox, (-384.0, -640.0, 640.0, 384.0))
@@ -1136,11 +1136,19 @@ class AnchorQTest(unittest.TestCase):
                 return 1000 + self.relief * (np.asarray(lat) - LAT) / 0.27     # +-15 km = +-0.135 deg
         f = geodesy.EnuFrame(LAT, LON)
         d = Dem(10)
-        self.assertEqual(earthd.survey_q(f, d), 1 / 256)    # 10 m + 35 m of curvature
+        self.assertEqual(earthd.survey_q(f, d), 1 / 256)
         self.assertEqual(d.zoom, earthd.SURVEY_ZOOM)
-        self.assertEqual(earthd.survey_q(f, Dem(500)), 1 / 64)
-        self.assertEqual(earthd.survey_q(f, Dem(1000)), 1 / 32)
-        self.assertEqual(earthd.survey_q(f, Dem(3000)), 1 / 16)
+        # the relief inside block-sized windows decides, not the whole survey's: a steady slope of
+        # 3000 m over 30 km is 200 m per window (5 samples, 2 km, for 1.5 blocks of 1024 m)
+        self.assertEqual(earthd.survey_q(f, Dem(3000), 1024.0), 1 / 128)
+        self.assertEqual(earthd.survey_q(f, Dem(9000), 1024.0), 1 / 64)      # 600 m per window
+        self.assertEqual(earthd.survey_q(f, Dem(9000), 2048.0), 1 / 32)      # bigger blocks, bigger windows
+
+        class Peak(Dem):            # flat, with one 1200 m spike: the window over it decides
+            def sample(self, lat, lon, zoom, progress=None):
+                la, lo = np.asarray(lat), np.asarray(lon)
+                return 1000 + 1200 * np.exp(-(((la - LAT) * 111320) ** 2 + ((lo - LON) * 86000) ** 2) / 600.0 ** 2)
+        self.assertEqual(earthd.survey_q(f, Peak(0), 1024.0), 1 / 32)
 
 
 class PredictTest(unittest.TestCase):

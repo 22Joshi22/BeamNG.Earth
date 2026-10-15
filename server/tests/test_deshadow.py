@@ -535,6 +535,27 @@ class DeshadowObjectTest(unittest.TestCase):
         dark = lw < 0.04
         self.assertLess(np.median(lr[dark] / lw[dark]), ds.LAM_CAP + 0.05)  # the cast shadow stays
 
+    def test_no_wait(self):
+        """Under no_wait() a render takes a region that is still being computed as pending at once (the
+        block's base photo), though the anchor's deadline would have it wait 120 s."""
+        gate = threading.Event()
+        root = tempfile.mkdtemp(dir=self.tmp.name)
+        d = ds.Deshadow(root, FakeDem(block=gate), "full", wait_s=120)
+        im = RegionImagery(os.path.join(root, "imagery"), deshadow=d, tone=0.0)
+        d.prepare(*region_xy(1800, -4000))
+        pending = set()
+        t0 = time.monotonic()
+        with d.no_wait():
+            rgb, used = im.render(self.frame, *self.square, pending)
+        took = time.monotonic() - t0
+        gate.set()
+        im.close()
+        self.assertLess(took, 10.0)
+        self.assertNotIn("deshadow", used)
+        self.assertTrue((rgb == self.raw).all())
+        self.assertTrue(any(p[0] == imagery.DS_PENDING for p in pending), "the region is reported pending")
+        self.assertFalse(getattr(d._tl, "nowait", False), "no_wait() is undone")
+
     def test_pending_and_gated_regions_render_raw(self):
         """Until a region is ready (and where it is gated off) the texture is byte-identical to
         the imagery without de-shadowing."""

@@ -390,7 +390,7 @@ def _empty(elem):
 
 
 def encode(positions, tris, normals=None, uvs=None, material="bngEarthDae", uvs2=None,
-           tangent_uvs=None, object_name="tile", tri_materials=None):
+           tangent_uvs=None, object_name="tile", tri_materials=None, colors=None, collision_only=False):
     """Shape bytes for one static mesh, laid out exactly as the engine writes a compiled
     Collada file with the same geometry.
 
@@ -399,7 +399,10 @@ def encode(positions, tris, normals=None, uvs=None, material="bngEarthDae", uvs2
     uvs (n,2) and optional uvs2 (n,2) in Collada convention (v up), tangent_uvs (n,2) the
     parametrisation the tangents follow (default: uvs).
     Several materials: material a list of names and tri_materials (m,) each triangle's index in
-    it; the triangles are grouped into one primitive per material (in list order)."""
+    it; the triangles are grouped into one primitive per material (in list order). colors (n, 4)
+    uint8 RGBA per vertex (materials with vertColor multiply their base colour by it).
+    collision_only: the one detail is a collision detail ("Collision-1", negative size): never drawn, used by a
+    TSStatic with collisionType "Collision Mesh" (a hidden "Visible Mesh" object got no collision at all)."""
     P = np.asarray(positions, np.float64).reshape(-1, 3)
     T = np.asarray(tris, np.int64).reshape(-1, 3)
     if len(T) == 0:
@@ -446,7 +449,7 @@ def encode(positions, tris, normals=None, uvs=None, material="bngEarthDae", uvs2
     bounds = [float(x) for x in lo] + [float(x) for x in hi]
     centre = [float(x) for x in center]
 
-    names = [object_name, "detail2"]
+    names = [object_name, "Collision-1" if collision_only else "detail2"]
     shape_vecs = {
         # node: name, parent, firstObject, firstChild, nextSibling
         "nodes": _vec(struct.pack("<5i", 0, -1, 0, -1, -1), 1, 20),
@@ -462,7 +465,8 @@ def encode(positions, tris, normals=None, uvs=None, material="bngEarthDae", uvs2
         "objectStates": _vec(struct.pack("<fii", 1.0, 0, 0), 1, 12),
         # detail "detail2": name, subShape, objectDetail, size, avgError, maxError, polyCount,
         # billboard dimension/detailLevel/equatorSteps/polarSteps/polarAngle/includePoles
-        "details": _vec(struct.pack("<3i3fi2i2IfI", 1, 0, 0, 2.0, -1.0, -1.0, ntri, 0, 0, 0, 0, 0.0, 0), 1, 52),
+        "details": _vec(struct.pack("<3i3fi2i2IfI", 1, 0, 0, -1.0 if collision_only else 2.0, -1.0, -1.0, ntri,
+                                    0, 0, 0, 0, 0.0, 0), 1, 52),
     }
     out = bytearray()
     for v in (2.0, 0, radius, radius, centre, bounds):    # smallestVisibleSize/DL, radius, tubeRadius
@@ -483,6 +487,8 @@ def encode(positions, tris, normals=None, uvs=None, material="bngEarthDae", uvs2
         "tverts2": _empty(8) if UV2 is None else _vec(
             np.stack([UV2[order, 0].astype(np.float32),
                       np.float32(1.0) - UV2[order, 1].astype(np.float32)], 1).astype("<f4").tobytes(), nv, 8),
+        "colors": _empty(4) if colors is None else _vec(
+            np.asarray(colors, np.uint8).reshape(-1, 4)[order].tobytes(), nv, 4),
         "norms": _vec(NN.astype("<f4").tobytes(), nv, 12),
         "primitives": _primitives(TM, len(materials)),
         "indices": _vec(idx.astype("<u4").tobytes(), ntri * 3, 4),

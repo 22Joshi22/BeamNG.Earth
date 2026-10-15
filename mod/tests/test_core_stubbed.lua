@@ -9,6 +9,7 @@
 local dir = (arg[0]:match('^(.*)[/\\]') or '.')
 local T = dofile(dir .. '/testlib.lua')
 local S = dofile(dir .. '/stubs.lua')
+require('beamngEarth/farfield').SPARE_MAX = 0 -- deletion timing as before; the spare pool: test_farfield_spares.lua
 local framing = require('beamngEarth/framing')
 local geodesy = require('beamngEarth/geodesy')
 local follow = require('beamngEarth/follow')
@@ -151,6 +152,7 @@ end
 -- the session
 
 local core = require('beamngEarth/core')
+require('beamngEarth/statusbar').enabled = false   -- its own test: test_statusbar.lua (these count text draws)
 -- the governor's wall clock: 16 ms per frame (deterministic heavy-slot timing)
 local wallNow = 0
 core._governor().clock = function() return wallNow end

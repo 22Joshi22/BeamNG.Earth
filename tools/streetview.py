@@ -44,6 +44,17 @@ DATA = os.path.join(ROOT, "docs", "research", "streetview")
 FIELDS = ("id,computed_geometry,geometry,computed_compass_angle,compass_angle,captured_at,camera_type,"
           "camera_parameters,is_pano,thumb_2048_url,width,height,creator,sequence")
 CAMERA_AGL = 2.0            # m: most street photos are taken from a car roof or a dashboard
+# The user's car stands this far behind the photo along its heading: under the camera, the idling car's exhaust
+# puffs drifted through the shots (the user spotted it, 2026-10-14)
+CAR_BACK_M = 8.0
+
+
+def car_spot(lat, lon, heading):
+    """(lat, lon) CAR_BACK_M behind (lat, lon) looking along heading (deg from north)."""
+    h = math.radians(heading)
+    m_lat = 111320.0
+    m_lon = m_lat * math.cos(math.radians(lat))
+    return lat - CAR_BACK_M * math.cos(h) / m_lat, lon - CAR_BACK_M * math.sin(h) / m_lon
 MIN_SPACING_M = 25.0        # chosen photos are at least this far apart, or look another way
 MIN_TURN_DEG = 45.0
 PER_SEQUENCE = 3            # photos from one capture run at most (variety across the place)
@@ -131,6 +142,59 @@ def place_dir(name):
     return os.path.join(DATA, name)
 
 
+DRIVE_CLASSES = {"motorway", "trunk", "primary", "secondary", "tertiary", "residential", "unclassified",
+                 "living_street", "service"}
+SNAP_M = 25.0           # a photo inside a building is moved to the nearest road centreline this close
+
+
+def snapper(lat, lon, radius):
+    """snap(la, lo) -> (la, lo, moved m): a photo position that falls inside a building footprint (Mapillary's
+    computed positions are a few metres off at times: Times Square's camera stood on a roof, 2026-10-14) moved to the
+    nearest road centreline; elsewhere unchanged."""
+    import numpy as np
+    from matplotlib.path import Path
+    import mapcells
+    import mapdata
+    md = mapdata.MapData()
+    d = (radius + 100) / M_PER_DEG
+    blds, roads = [], []
+    for key in mapcells.cells_for_bbox(lat - d, lon - d, lat + d, lon + d):
+        cell = md.cell(key, layers=("buildings", "roads"), kind="demand")
+        for layer, out in (("buildings", blds), ("roads", roads)):
+            f = cell.layers.get(layer)
+            if f is None:
+                continue
+            for i in range(len(f.kind)):
+                if layer == "roads" and (str(f.attrs.get("subtype", ["road"] * len(f.kind))[i]) != "road"
+                                         or str(f.attrs["class"][i]) not in DRIVE_CLASSES):
+                    continue            # dashcams are on roads cars drive (a footway beside a wall is no spot)
+                a = f.coord_off[f.ring_off[f.part_off[i]]]
+                b = f.coord_off[f.ring_off[f.part_off[i] + 1]] if layer == "buildings" else \
+                    f.coord_off[f.ring_off[f.part_off[i + 1]]]
+                out.append(np.asarray(f.lonlat[a:b], np.float64))
+    mx = M_PER_DEG * math.cos(math.radians(lat))
+
+    def snap(la, lo):
+        p = np.array([lo, la])
+        if not any(Path(r).contains_point(p) for r in blds if len(r) >= 4):
+            return la, lo, 0.0
+        best = None
+        for ln in roads:
+            q = (ln - p) * [mx, M_PER_DEG]
+            for u, v in zip(q[:-1], q[1:]):
+                w = v - u
+                t = max(0.0, min(1.0, float(-(u @ w) / max(w @ w, 1e-9))))
+                c = u + w * t
+                dd = float(np.hypot(*c))
+                if best is None or dd < best[0]:
+                    best = (dd, c)
+        if best is None or best[0] > SNAP_M:
+            return la, lo, 0.0
+        c = best[1]
+        return la + c[1] / M_PER_DEG, lo + c[0] / mx, round(best[0], 1)
+    return snap
+
+
 def cmd_fetch(a):
     tok = token()
     d = place_dir(a.name)
@@ -138,7 +202,10 @@ def cmd_fetch(a):
     images = search(a.lat, a.lon, a.radius, tok)
     chosen = pick(images, a.lat, a.lon, a.n)
     photos, views = [], []
+    sys.path.insert(0, os.path.join(ROOT, "server"))
+    snap = snapper(a.lat, a.lon, a.radius)
     for im, la, lo, hd in chosen:
+        la, lo, moved = snap(la, lo)
         fn = f"mly_{im['id']}.jpg"
         path = os.path.join(d, fn)
         if not os.path.exists(path):
@@ -149,7 +216,7 @@ def cmd_fetch(a):
         creator = (im.get("creator") or {}).get("username", "unknown")
         photos.append({"id": im["id"], "file": fn, "lat": la, "lon": lo, "heading": round(hd, 1),
                        "fov": round(hfov(im), 1), "captured": when.isoformat(), "creator": creator,
-                       "width": im.get("width"), "height": im.get("height")})
+                       "width": im.get("width"), "height": im.get("height"), "snapped_m": moved})
         views.append({"name": f"mly_{im['id']}", "lat": la, "lon": lo, "agl": CAMERA_AGL, "heading": round(hd, 1),
                       "pitch": 0, "fov": round(hfov(im), 1)})
         time.sleep(0.2)
@@ -164,7 +231,8 @@ def cmd_fetch(a):
                          # required by the set format; the place's own views are the ones used
                          "views": [{"name": "ground", "agl": 1.7, "pitch": -3, "fov": 70}]},
             # one place per photo: the car (and so the detailed ground) at the photo, as when driving there
-            "places": [{"id": f"{a.name}_{k:02d}", "name": f"{a.name} photo {k}", "lat": v["lat"], "lon": v["lon"],
+            "places": [{"id": f"{a.name}_{k:02d}", "name": f"{a.name} photo {k}",
+                        **dict(zip(("lat", "lon"), car_spot(v["lat"], v["lon"], v["heading"]))),
                         "heading": v["heading"], "group": "streetview", "heldout": False, "tags": ["streetview"],
                         "why": "street view comparison", "views": [v]} for k, v in enumerate(views)]}
     with open(os.path.join(d, "set.json"), "w") as f:

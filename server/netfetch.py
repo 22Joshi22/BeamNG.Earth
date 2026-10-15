@@ -105,6 +105,28 @@ TILE_HOST = dict(redirect_limited=True, binary=True)
 POLICIES = {
     "basemap.nationalmap.gov": HostPolicy(rate=15.0, burst=60.0, max_conc=6, daily_budget=60000,
                                           allow_prefetch=True, offline_ok=True, miss_ttl=90 * DAY, **TILE_HOST),
+    # NAIP through USGS's ArcGIS exportImage (imagery.py "naip"): one 1024² image a request, 4-10 s each
+    # and 5xx under parallel requests (docs/research/2026-10-10-us-state-imagery.md, in-game 2026-10-13):
+    # one at a time, only imagery.warm()'s look-ahead (never on a render's critical path)
+    "imagery.nationalmap.gov": HostPolicy(rate=0.5, burst=4.0, max_conc=1, daily_budget=3000,
+                                          allow_prefetch=True, offline_ok=True, miss_ttl=90 * DAY,
+                                          binary=True, timeout=40.0, max_attempts=2, base_delay=2.0,
+                                          breaker_threshold=6, breaker_window=120.0),
+    # USDA FPAC's NAIP ImageServer (imagery.py "naipusda"): 1.6-4 s a 1024² image in-game 2026-10-13
+    "apps.geo.fpac.usda.gov": HostPolicy(rate=1.0, burst=4.0, max_conc=1, daily_budget=4000,
+                                         allow_prefetch=True, offline_ok=True, miss_ttl=90 * DAY,
+                                         binary=True, timeout=30.0, max_attempts=2, base_delay=2.0,
+                                         breaker_threshold=6, breaker_window=120.0),
+    # MD iMAP six-inch MapServer export (imagery.py "md6in"): ~1.3 s a 1024² image in-game 2026-10-13
+    "mdgeodata.md.gov": HostPolicy(rate=1.0, burst=4.0, max_conc=1, daily_budget=4000,
+                                   allow_prefetch=True, offline_ok=True, miss_ttl=90 * DAY,
+                                   binary=True, timeout=30.0, max_attempts=2, base_delay=2.0,
+                                   breaker_threshold=6, breaker_window=120.0),
+    # NOAA NCEI's DEM global mosaic (bathymetry for the sea floor, seacarve.py): one export per map-data cell
+    "gis.ngdc.noaa.gov": HostPolicy(rate=1.0, burst=4.0, max_conc=2, daily_budget=4000,
+                                    allow_prefetch=True, offline_ok=True, miss_ttl=30 * DAY,
+                                    binary=True, timeout=60.0, max_attempts=2, base_delay=2.0,
+                                    breaker_threshold=6, breaker_window=120.0),
     "tiles.maps.eox.at": HostPolicy(rate=6.0, burst=30.0, max_conc=4, daily_budget=20000,
                                     allow_prefetch=True, offline_ok=True, miss_ttl=90 * DAY, **TILE_HOST),
     "tiles.mapterhorn.com": HostPolicy(rate=20.0, burst=80.0, max_conc=8, daily_budget=30000,
@@ -133,12 +155,44 @@ POLICIES = {
     "davidmegginson.github.io": HostPolicy(rate=0.2, burst=2.0, max_conc=1, daily_budget=20, daily_hard=40,
                                            offline_ok=True, miss_ttl=None, binary=True, timeout=120.0,
                                            max_attempts=2, base_delay=5.0),
+    # Photon (komoot's OpenStreetMap geocoder, made for search-as-you-type; geocode.py): the map's search box,
+    # debounced and cached; a modest rate, a daily cap (fair use of a free public service)
+    "photon.komoot.io": HostPolicy(rate=2.0, burst=4.0, max_conc=1, daily_budget=2000, daily_hard=3000,
+                                   cache_ttl=7 * DAY, miss_ttl=None, max_wait=5.0, timeout=8.0, max_attempts=1),
+    # OSRM on OpenStreetMap by FOSSGIS (routing.py): one request per GPS destination or re-route; their fair use:
+    # ~1 request a second at most, no bulk
+    "routing.openstreetmap.de": HostPolicy(rate=0.5, burst=2.0, max_conc=1, daily_budget=300, daily_hard=500,
+                                           cache_ttl=DAY, miss_ttl=None, max_wait=10.0, timeout=20.0, max_attempts=1),
+    # the update check (updates.py): the project's VERSION file on GitHub, a few times a day at most
+    "raw.githubusercontent.com": HostPolicy(rate=0.1, burst=1.0, max_conc=1, daily_budget=24, daily_hard=48,
+                                            cache_ttl=6 * 3600, miss_ttl=None, max_wait=5.0, timeout=8.0,
+                                            max_attempts=1),
     # never at runtime (OSM Overpass, OSMF vector tiles, Protomaps builds): §3.3
     "overpass-api.de": HostPolicy(denied=True, daily_hard=0),
     "vector.openstreetmap.org": HostPolicy(denied=True, daily_hard=0),
     "build.protomaps.com": HostPolicy(denied=True, daily_hard=0),
 }
 # Any other host: the conservative WMS-type row of §5.2 (2/s, 2 at once, no prefetch).
+# Regional orthophoto services (imagery_regional.py): tile caches at a modest shared rate, exports one at a time
+def _regional_policies():
+    import urllib.parse
+    import imagery_regional
+    out = {}
+    for url, _attr, _bounds, kind, _leaf in imagery_regional.REGIONAL.values():
+        host = urllib.parse.urlsplit(url).hostname
+        if host in POLICIES or host in out:
+            continue
+        if kind == "xyz":
+            out[host] = HostPolicy(rate=6.0, burst=20.0, max_conc=4, daily_budget=20000, allow_prefetch=True,
+                                   miss_ttl=30 * DAY, timeout=20.0, **TILE_HOST)
+        else:
+            out[host] = HostPolicy(rate=1.0, burst=4.0, max_conc=1, daily_budget=4000, allow_prefetch=True,
+                                   miss_ttl=30 * DAY, binary=True, timeout=30.0, max_attempts=2, base_delay=2.0,
+                                   breaker_threshold=6, breaker_window=120.0)
+    return out
+
+
+POLICIES.update(_regional_policies())
 DEFAULT_POLICY = HostPolicy()
 
 

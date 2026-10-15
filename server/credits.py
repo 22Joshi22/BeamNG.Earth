@@ -52,12 +52,16 @@ MAX_DEM_KEYS = 64               # DEM tiles looked up per far tile (a footprint 
 # without the licence name); the others as in imagery.SOURCES / earthd.ELEVATION_CREDIT. The full
 # credits stay in hello.attribution (the settings page) and CREDITS.md.
 IMAGERY = {
+    "md6in": "State of Maryland, MD iMAP / DoIT",
+    "naipusda": "USDA NAIP",
+    "naip": "USDA NAIP via USGS The National Map",
     "usgs": "USGS The National Map",
     "eox2023": "EOxCloudless https://cloudless.eox.at by EOX IT Services GmbH "
                "(Contains modified Copernicus Sentinel data 2023)",
     "eox2016": "EOxCloudless https://cloudless.eox.at by EOX IT Services GmbH "
                "(Contains modified Copernicus Sentinel data 2016 & 2017)",
 }
+IMAGERY.update({n: v[1] for n, v in __import__("imagery_regional").REGIONAL.items()})   # their own wording
 ELEVATION = {
     demmod.MAPTERHORN["name"]: "Mapterhorn (see mapterhorn.com/attribution)",
     demmod.AWS["name"]: "AWS Terrain Tiles / Mapzen",

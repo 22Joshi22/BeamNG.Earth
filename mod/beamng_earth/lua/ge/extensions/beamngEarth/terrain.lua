@@ -18,6 +18,7 @@
 -- the 1024² or 512² layer map and flat heightmap (the layer map must match the heightmap size).
 
 local lattice = require('beamngEarth/lattice')
+local stopwatch = require('beamngEarth/stopwatch')
 
 local M = {}
 
@@ -74,7 +75,7 @@ local function look(detail, dsize, macro, msize, strength)
   -- colour: the photo carries it, the detail only adds grain (West Coast USA: 0.25 / 0.1)
   l.baseColorDetailStrength = (strength or 0.25) .. ' 0.08'
   l.normalDetailStrength, l.roughnessDetailStrength, l.aoDetailStrength = '1 0.3', '1 0.4', '0.8 0.2'
-  l.baseColorMacroStrength, l.normalMacroStrength, l.roughnessMacroStrength = '0.12 0.08', '0.5 0.3', '0.5 0.5'
+  l.baseColorMacroStrength, l.normalMacroStrength, l.roughnessMacroStrength = '0.12 0.08', '0.5 0.3', '0 0.8'
   return l
 end
 M.LOOKS = {
@@ -86,6 +87,7 @@ M.LOOKS = {
   bngEarthGroundSnow = look('sand/t_sand/t_sand', 4, 'sand/t_macro_sand/t_macro_sand', 64, 0.12),
   bngEarthGroundMud = look('mud/mud/t_mud', 2, 'soil/macro_clumply/t_macro_clumpy', 64),
   bngEarthGroundCobble = look('asphalt/t_asphalt_02/t_asphalt_02', 2, 'asphalt/macro_asphalt/t_macro_asphalt', 32, 0.3),
+  bngEarthGroundLawn = look('grass/t_grass_01/t_grass_01', 1, 'grass/t_macro_grass/t_macro_grass', 64, 0.2),
   beamngEarthDirt = look('soil/dirt_crumbly/t_dirt_crumbly', 2, 'soil/macro_clumply/t_macro_clumpy', 64),
 }
 M.LEVEL_BASE = { tex = TERRAIN_DIR_BASE, size = '256' }
@@ -264,6 +266,47 @@ function M.load(path, squareSize, maxHeight, x, y, z, layers, base, baseSize)
   tb:setPosition(vec3(x, y, z))
   applyRender(tb) -- mesh mode: hidden again after every import
   if base ~= nil then M.setBase(base or nil, baseSize) end
+  return true
+end
+
+-- Move the block by swapping in the server's .ter of the new block (terrainFile + postApply, a new file
+-- name each time: the engine skips a name it already has). ~11 ms for 512², and collision follows by the
+-- next frame with no reloadCollision (docs/research/2026-10-12-engine-limits-and-worldgen.md §7) against
+-- importMaps (~20 ms) + reloadCollision (~10 ms Lua + a ~20 ms physics frame). Only after a first
+-- importMaps (the block exists with its material set-up) and at the same square size: returns false
+-- (nothing changed) otherwise, and the caller imports. The .ter names its materials (server
+-- surface.write_ter: layers.materials, or M.MATERIAL alone). The caller does NOT rebuild collision.
+function M.swap(terPath, squareSize, maxHeight, x, y, z, layers, base, baseSize)
+  local tb = M.get()
+  local sq = tonumber(squareSize)
+  if not tb or not M.slots or not sq or math.abs(sq - M.square) > 1e-9 then return false end
+  if type(terPath) ~= 'string' or not FS:fileExists(terPath) then return false end
+  local slots = { M.MATERIAL }
+  if layers then
+    if type(layers.materials) ~= 'table' or #layers.materials == 0 or not ensureSurfaceMaterials(layers.materials) then
+      return false
+    end
+    slots = {}
+    for i, nm in ipairs(layers.materials) do slots[i] = nm[1] end
+  end
+  local sw = stopwatch.new()
+  local ok, err = pcall(function()
+    tb:setField('maxHeight', 0, tostring(maxHeight))
+    tb:setPosition(vec3(x, y, z))
+    tb:setField('terrainFile', 0, terPath)
+    tb:postApply()
+  end)
+  local tApply = sw()
+  if not ok then
+    log('W', 'beamngEarth', 'terrain .ter swap failed: ' .. tostring(err))
+    return false
+  end
+  M.slots = slots
+  M.swaps = (M.swaps or 0) + 1
+  applyRender(tb)
+  if base ~= nil then M.setBase(base or nil, baseSize) end
+  -- ms of the last swap: the .ter load (postApply) and the whole call (with the base photo)
+  M.lastSwap = { apply = tApply, total = sw() }
   return true
 end
 

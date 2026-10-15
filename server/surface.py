@@ -18,6 +18,7 @@ the same every time.
 import logging
 import math
 import os
+import struct
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -25,6 +26,7 @@ from concurrent.futures import ThreadPoolExecutor
 import numpy as np
 from PIL import Image, ImageDraw
 
+import heightmap
 import mapcells
 import mapdata as mapdatamod
 import roads as roadsmod
@@ -46,13 +48,23 @@ MATERIALS = (
     ("bngEarthGroundSnow", "SNOW"),
     ("bngEarthGroundMud", "MUD"),
     ("bngEarthGroundCobble", "COBBLESTONE"),      # roads with paving stones / setts (roads.py "cobble")
+    ("bngEarthGroundLawn", "GRASS"),              # mown yards in towns (short grass only, groundcover.lua)
     ("beamngEarthDirt", "DIRT"),
 )
-ASPHALT, GRASS, DUSTY, LOOSE, ROCK, SNOW, MUD, COBBLE, DIRT = range(len(MATERIALS))
-# WorldCover class -> material (§5.4 of the world-data research; built-up is asphalt until the OSM
-# land-use overrides tell lawns from streets)
-CLASS_MATERIAL = {0: DIRT, 10: GRASS, 20: DUSTY, 30: GRASS, 40: DIRT, 50: ASPHALT, 60: LOOSE, 70: SNOW,
+ASPHALT, GRASS, DUSTY, LOOSE, ROCK, SNOW, MUD, COBBLE, LAWN, DIRT = range(len(MATERIALS))
+# WorldCover class -> material (§5.4 of the world-data research). Built-up land is the plain dirt layer
+# (2026-10-14): its yards, lawns and lots took the asphalt layer's grey detail and macro textures, which
+# washed whole towns pale grey in the street photos (Moab, Frederick); the roads are painted asphalt anyway
+# (paint_roads), and the photo's own colours now show through.
+CLASS_MATERIAL = {0: DIRT, 10: GRASS, 20: DUSTY, 30: GRASS, 40: DIRT, 50: DIRT, 60: LOOSE, 70: SNOW,
                   80: MUD, 90: MUD, 95: MUD, 100: GRASS}
+# Lawns (2026-10-14, street photos of Ocean City, Lancaster, Frederick, Moab): built-up land between the
+# buildings is mostly mown grass, which the dirt layer drew pale and bare. A share of it is LAWN, in patches
+# of smooth noise on a fixed world grid: most of it where the climate is humid, less in the dry West (yards
+# of gravel and dirt there). The rest stays dirt (lots, gravel, bare yards); roads and lots paint over both.
+LAWN_SHARE_HUMID = 0.9
+LAWN_SHARE_DRY = 0.75
+LAWN_PATCH_M = 30.0
 ROCK_SLOPE_DEG = 35.0       # steeper ground is rock (cliffs, scree), except snow
 # Organic borders (user 2026-10-11: rectangular grass in Monument Valley). WorldCover's 10 m square
 # pixels give stair-stepped, ruler-straight class borders, which the grass makes visible. Every
@@ -68,11 +80,33 @@ for _c, _m in CLASS_MATERIAL.items():
     _LUT[_c] = _m
 
 
-def classify(classes, u, square):
+def dry_west(lat, lon):
+    """The arid West (a coarse climate stand-in, vegetation.regional's): its towns have fewer lawns."""
+    lat, lon = np.asarray(lat), np.asarray(lon)
+    return (lon < -102.0) & (lat > 25.0) & (lat < 46.0) & ~((lon < -121.0) & (lat > 37.0))
+
+
+def lawns(lat, lon):
+    """True where built-up land is a lawn (LAWN_* above). A pure function of the world position."""
+    lat = np.asarray(lat, np.float64)
+    lon = np.asarray(lon, np.float64)
+    xm = lon * M_PER_DEG * np.cos(np.radians(lat))
+    ym = lat * M_PER_DEG
+    n = 0.65 * _value_noise(xm / LAWN_PATCH_M, ym / LAWN_PATCH_M, 5) \
+        + 0.35 * _value_noise(xm / (LAWN_PATCH_M / 3), ym / (LAWN_PATCH_M / 3), 6)
+    share = np.where(dry_west(lat, lon), LAWN_SHARE_DRY, LAWN_SHARE_HUMID)
+    # threshold near the noise sum's share quantile (see the test)
+    return n > (0.5 - share) * 1.1
+
+
+def classify(classes, u, square, lat=None, lon=None):
     """Material index per sample: the land-cover class's material, ROCK where the slope of the
     height grid u (metres, [row, col], `square` m apart) is steeper than ROCK_SLOPE_DEG (snow stays
-    snow). Pure."""
-    idx = _LUT[np.asarray(classes, np.uint8)]
+    snow). With the samples' positions, built-up land is LAWN where lawns() says. Pure."""
+    classes = np.asarray(classes, np.uint8)
+    idx = _LUT[classes]
+    if lat is not None and lon is not None:
+        idx = np.where((classes == 50) & lawns(lat, lon), np.uint8(LAWN), idx)
     u = np.asarray(u, np.float64)
     if min(u.shape) < 2:            # no slope from a single row / column
         return idx.astype(np.uint8)
@@ -172,6 +206,12 @@ def paint_roads(idx, lat, lon, feats_list, square, urban_fn=None, widths=None):
                 continue
             seen.add(fid)
             width, kind = specs[i].width, specs[i].kind
+            if kind == "paved" and roadsmod._rule_value(feats.rules.get("subclass"), i) == "parking_aisle":
+                width += 2 * AISLE_STALLS_M         # the stalls either side (parking.aisle_spots): no grass under cars
+            if roadsmod.has_sidewalks(specs[i]):
+                width += 2 * (specs[i].walk + square)   # the sidewalks (+ a sample: tufts at the outer edge): grass
+                                                    # grew up through them (ground cover is the terrain's: Lauterbrunnen,
+                                                    # Baltimore 2026-10-15)
             px = max(1, int(round(width / square)))
             for ring in roadsmod.ground_parts(feats, i):      # not bridges / tunnels
                 c, r = to_px(ring[:, 0], ring[:, 1])
@@ -182,6 +222,63 @@ def paint_roads(idx, lat, lon, feats_list, square, urban_fn=None, widths=None):
     for k in ROAD_ORDER:
         m = np.asarray(layers[k]) > 0
         out[m] = ROAD_MATERIAL[k]
+    return out
+
+
+AISLE_STALLS_M = 5.5        # a parking aisle's stall rows (parking.LOT_SPOT_D_M), painted with it
+PARKING_CLASSES = {"parking"}     # Overture infrastructure (transit) polygons drawn as asphalt: no grass on a lot
+# Squares and pedestrian areas (Overture land_use subtype "pedestrian": Mexico City's Zocalo read as bare dirt,
+# 2026-10-15): paving, under the parking lots and the roads drawn over them
+PLAZA_CLASSES = {"pedestrian", "plaza"}
+
+
+def paint_lots(idx, lat, lon, feats_list):
+    """idx with the squares and pedestrian areas (land_use polygons of subtype "pedestrian") of feats_list
+    drawn in as plain paving (the asphalt layer), then the parking lots (polygons of class "parking") as asphalt (Lancaster County's
+    photos: the grass layer's ground cover grew on lots). Pure."""
+    # (grey paving: the cobble layer's setts drew big squares and promenades pink, Harbor Point 2026-10-15)
+    idx = _paint(idx, lat, lon, feats_list, _plazas, ASPHALT)
+    return _paint(idx, lat, lon, feats_list, _parking, ASPHALT)
+
+
+def _parking(feats):
+    cls = feats.attrs.get("class")
+    return None if cls is None else np.isin(cls.astype(str), list(PARKING_CLASSES))
+
+
+def _plazas(feats):
+    cls, sub = feats.attrs.get("class"), feats.attrs.get("subtype")
+    if cls is None or sub is None:
+        return None
+    return (sub.astype(str) == "pedestrian") & np.isin(cls.astype(str), list(PLAZA_CLASSES))
+
+
+def _paint(idx, lat, lon, feats_list, select, material):
+    h, w = idx.shape
+    to_px = grid_affine(lat, lon)
+    im = Image.new("L", (w, h), 0)
+    draw = ImageDraw.Draw(im)
+    n = 0
+    for feats in feats_list:
+        if feats is None or len(feats) == 0:
+            continue
+        sel = select(feats)
+        if sel is None:
+            continue
+        for i in np.flatnonzero(sel & (feats.kind == 3)):
+            for part in feats.parts(i):
+                if not part:
+                    continue
+                ring = np.asarray(part[0], np.float64)
+                c, r = to_px(ring[:, 0], ring[:, 1])
+                if c.max() < 0 or c.min() > w or r.max() < 0 or r.min() > h:
+                    continue
+                draw.polygon(list(zip(c.tolist(), r.tolist())), fill=255)
+                n += 1
+    if n == 0:
+        return idx
+    out = idx.copy()
+    out[np.asarray(im) > 0] = material
     return out
 
 
@@ -199,6 +296,56 @@ def write_masks(idx, out_dir, stem):
         Image.fromarray(np.where(idx == i, 255, 0).astype(np.uint8), "L").save(tmp, format="PNG", compress_level=1)
         os.replace(tmp, path)
     return names
+
+
+LAWN_GREEN = 10             # 2g - r - b of the ground photo above which a lawn candidate stays a lawn
+
+
+def photo_lawns(out_dir, ter_name, mask_names_, rgb):
+    """Detail mode: the block's LAWN samples where the ground photo (rgb (px, px, 3), row 0 = north, the
+    block's footprint) is not green turn DIRT (paved yards, lots and driveways: the grass layer's blades
+    over a pale photo looked like snow, Lancaster 2026-10-14). Patches the .ter's layer map and the two
+    masks in place, atomically. Returns the number of samples changed."""
+    path = os.path.join(out_dir, ter_name)
+    with open(path, "rb") as f:
+        data = bytearray(f.read())
+    n = struct.unpack_from("<I", data, 1)[0]
+    off = 5 + 2 * n * n
+    lay = np.frombuffer(bytes(data[off:off + n * n]), np.uint8).reshape(n, n)       # row 0 = south
+    lawn = lay == LAWN
+    if not lawn.any():
+        return 0
+    px = rgb.shape[0]
+    rows = np.clip(((n - 1 - np.arange(n)) + 0.5) * px / n, 0, px - 1).astype(np.int64)
+    cols = np.clip((np.arange(n) + 0.5) * px / n, 0, px - 1).astype(np.int64)
+    c = rgb.astype(np.int32)
+    exg = 2 * c[:, :, 1] - c[:, :, 0] - c[:, :, 2]
+    green = exg[rows[:, None], cols[None, :]] > LAWN_GREEN
+    bare = lawn & ~green
+    k = int(bare.sum())
+    if not k:
+        return 0
+    lay = lay.copy()
+    lay[bare] = DIRT
+    data[off:off + n * n] = lay.tobytes()
+    with open(path + ".tmp", "wb") as f:
+        f.write(data)
+    os.replace(path + ".tmp", path)
+    north = lay[::-1]
+    for i in (LAWN, DIRT):
+        p = os.path.join(out_dir, mask_names_[i])
+        Image.fromarray(np.where(north == i, 255, 0).astype(np.uint8), "L").save(p + ".tmp", format="PNG",
+                                                                                  compress_level=1)
+        os.replace(p + ".tmp", p)
+    return k
+
+
+def write_ter(out_dir, name, qgrid, idx):
+    """The block's .ter (heightmap.write_ter) with these materials (idx: MATERIALS indices, row 0 =
+    south) or, idx None, the level's single dirt layer (the mod's terrain.MATERIAL). Returns name."""
+    mats = [m for m, _ in MATERIALS] if idx is not None else [MATERIALS[DIRT][0]]
+    heightmap.write_ter(os.path.join(out_dir, name), qgrid, idx, mats)
+    return name
 
 
 class Surface:
@@ -257,22 +404,29 @@ class Surface:
         self._last = (lat, lon)
         dlat = radius_m / 111320.0
         dlon = radius_m / (111320.0 * max(0.05, math.cos(math.radians(lat))))
+        # a file test, not a load: this runs on the server's event loop at every pose, and reading each
+        # cell's arrays there stalled it for seconds while driving (2026-10-12); an unreadable file is
+        # rebuilt when a block reads it
         for key in mapcells.cells_for_bbox(lat - dlat, lon - dlon, lat + dlat, lon + dlon):
-            if self.md._load(self.md.path(key, "landcover")) is None:
+            if not self.md.has(key, "landcover"):
                 self._queue(key)
-            if self.md._load(self.md.path(key, "roads")) is None:
+            if not self.md.has(key, "roads"):
                 self._queue(key, ("roads",))
 
-    def ready(self, lat, lon, radius_m=1000.0, timeout_s=2.0):
-        """Fetch the land cover within radius_m now and wait for it, at most timeout_s (a teleport's
-        first block: built once and kept while the player stands still). Returns True if it all
-        arrived. Worker threads only (it blocks)."""
+    def ready(self, lat, lon, radius_m=1000.0, timeout_s=3.0):
+        """Fetch the land cover within radius_m now, and the squares and lots (land_use, infrastructure:
+        paint_lots) too, and wait for them, at most timeout_s (a teleport's first block: built once and kept
+        while the player stands still; Cluj's Piata Unirii stayed bare ground, its square not cached yet).
+        Returns True if it all arrived. Worker threads only (it blocks)."""
         dlat = radius_m / 111320.0
         dlon = radius_m / (111320.0 * max(0.05, math.cos(math.radians(lat))))
-        keys = [k for k in mapcells.cells_for_bbox(lat - dlat, lon - dlon, lat + dlat, lon + dlon)
-                if self.md._load(self.md.path(k, "landcover")) is None]
-        for k in keys:
-            self._queue(k)
+        cells = mapcells.cells_for_bbox(lat - dlat, lon - dlon, lat + dlat, lon + dlon)
+        keys = []
+        for layer in ("landcover", "land_use", "infrastructure"):
+            for k in cells:
+                if self.md._load(self.md.path(k, layer)) is None:
+                    self._queue(k, (layer,))
+                    keys.append(k)
         deadline = time.monotonic() + timeout_s
         while time.monotonic() < deadline:
             if not any(self._is_queued(k) for k in keys):
@@ -297,6 +451,23 @@ class Surface:
                 log.debug("surface: roads of %s: %s: %s", key, type(e).__name__, e)
                 complete = False
         return out, complete
+
+    def lots(self, lat, lon):
+        """The "infrastructure" and "land_use" Features of the cells around the points that are cached
+        (parking lots, squares: paint_lots); never waits (missing cells are fetched in the background)."""
+        lat = np.asarray(lat, np.float64)
+        lon = np.asarray(lon, np.float64)
+        out = []
+        for key in mapcells.cells_for_bbox(float(lat.min()), float(lon.min()), float(lat.max()), float(lon.max())):
+            for layer in ("infrastructure", "land_use"):
+                if self.md._load(self.md.path(key, layer)) is None:
+                    self._queue(key, (layer,))
+                    continue
+                try:
+                    out.append(self.md.cell(key, layers=(layer,), kind="background").layers.get(layer))
+                except Exception as e:      # an unreadable cache file: like a missing one
+                    log.debug("surface: %s of %s: %s: %s", layer, key, type(e).__name__, e)
+        return out
 
     def urban(self, lat, lon):
         """Built-up land cover (WorldCover 50) at the points: roads.road_specs's urban_fn. Uncached cells

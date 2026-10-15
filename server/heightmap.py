@@ -27,6 +27,9 @@ torque_split45), and a 128 m move is exactly 64 samples.
 """
 import math
 import os
+import struct
+import threading
+from collections import OrderedDict
 
 import numpy as np
 from PIL import Image
@@ -38,6 +41,8 @@ VALID = (SIZE - 1) * SQUARE         # 2046 m: collidable extent from the SW corn
 GRID = 256.0                        # block centres are multiples of this (= 128 samples)
 GRIDS = {1024: GRID, 512: 128.0}    # the centre grid per block size (M4: 512² on 128 m = 64 samples)
 CHUNK_ROWS = 256                    # bounds the geodesy temporaries
+CHUNK = 64                          # samples: ChunkCache's chunk, 128 m (the 512² block's follow grid)
+CHUNK_CACHE = 1024                  # chunks kept per frame (32 KB each: 32 MB)
 # Height quanta (m), finest first: 65536 Q = 256 ... 4096 m of range per block.
 Q_LADDER = (1 / 256, 1 / 128, 1 / 64, 1 / 32, 1 / 16)
 Q_DEFAULT = 1 / 64
@@ -116,6 +121,73 @@ def grid_u(frame, elev_fn, cx=0.0, cy=0.0, size=SIZE, keep=None):
     return surface(frame, elev_fn, xs, ys, keep)[1]
 
 
+class ChunkCache:
+    """Surface heights (grid_u's values) per CHUNK×CHUNK lattice chunk of one frame, so a block that moved
+    by a grid step computes only its new samples (a 512² block moving 128 m shares 7/8 of its samples
+    with the last; computing all of them every move took 2-10 s, more than the 2.2 s between moves at
+    58 m/s, 2026-10-12). Exact: the heights are elementwise (surface_u). LRU, thread-safe."""
+
+    def __init__(self, cap=CHUNK_CACHE):
+        self.cap = cap
+        self.chunks = OrderedDict()             # (kx, ky) lattice chunk -> (CHUNK, CHUNK) float64 [j, i]
+        self.lock = threading.Lock()
+
+    def get(self, k):
+        with self.lock:
+            got = self.chunks.get(k)
+            if got is not None:
+                self.chunks.move_to_end(k)
+            return got
+
+    def put(self, k, u):
+        with self.lock:
+            self.chunks[k] = u
+            self.chunks.move_to_end(k)
+            while len(self.chunks) > self.cap:
+                self.chunks.popitem(last=False)
+
+
+def grid_u_chunked(frame, elev_fn, cx, cy, size, cache, keep=None):
+    """grid_u through a ChunkCache: elev_fn runs once, on the samples of the chunks the cache lacks.
+    Returns (u, the share of samples computed)."""
+    kx0, ky0 = lattice_index(cx, size), lattice_index(cy, size)
+    if kx0 % CHUNK or ky0 % CHUNK or size % CHUNK:
+        return grid_u(frame, elev_fn, cx, cy, size, keep), 1.0
+    xs, ys = sample_coords(cx, cy, size)
+    lat = np.empty((size, size))
+    lon = np.empty((size, size))
+    for r0 in range(0, size, CHUNK_ROWS):
+        e, n = np.meshgrid(xs, ys[r0:r0 + CHUNK_ROWS])
+        lat[r0:r0 + CHUNK_ROWS], lon[r0:r0 + CHUNK_ROWS], _ = frame.enu_to_geodetic(e, n, 0.0)
+    if keep is not None:
+        keep["lat"], keep["lon"] = lat, lon
+    nc = size // CHUNK
+    u = np.empty((size, size))
+    missing = []
+    for cj in range(nc):
+        for ci in range(nc):
+            k = ((kx0 // CHUNK) + ci, (ky0 // CHUNK) + cj)
+            got = cache.get(k)
+            if got is None:
+                missing.append((ci, cj, k))
+            else:
+                u[cj * CHUNK:(cj + 1) * CHUNK, ci * CHUNK:(ci + 1) * CHUNK] = got
+    if missing:
+        sl = [(slice(cj * CHUNK, (cj + 1) * CHUNK), slice(ci * CHUNK, (ci + 1) * CHUNK)) for ci, cj, _ in missing]
+        mla = np.concatenate([lat[a, b].ravel() for a, b in sl])
+        mlo = np.concatenate([lon[a, b].ravel() for a, b in sl])
+        elev = np.asarray(elev_fn(mla, mlo), np.float64)
+        mu = np.empty(len(mla))
+        for r0 in range(0, len(mla), CHUNK_ROWS * size):
+            r = slice(r0, r0 + CHUNK_ROWS * size)
+            mu[r] = frame.geodetic_to_enu(mla[r], mlo[r], elev[r])[2]
+        for n_, ((a, b), (_, _, k)) in enumerate(zip(sl, missing)):
+            c = mu[n_ * CHUNK * CHUNK:(n_ + 1) * CHUNK * CHUNK].reshape(CHUNK, CHUNK)
+            u[a, b] = c
+            cache.put(k, c.copy())
+    return u, len(missing) / (nc * nc)
+
+
 def quantise(u, q):
     """Global quantum index round(u / Q) (exact: Q is a power of two)."""
     return np.rint(np.asarray(u, np.float64) / q)
@@ -161,6 +233,37 @@ def write_png(path, u, q=Q_DEFAULT):
     return q, z_base, max_height, qgrid
 
 
+TER_VERSION = 9
+TER_HOLE = 255          # a .ter layer index: no ground there (drawn or colliding)
+
+
+def write_ter(path, qgrid, idx, materials):
+    """The block as the engine's own terrain file (.ter v9: version u8, size u32, size² u16 heights,
+    size² u8 material indices, material count u32, names as u8 length + bytes), written atomically.
+    Rows as qgrid's: row 0 = south (the engine's sample (x, y) is at block-local (x, y) * squareSize).
+    idx: the material index per sample (None: material 0 everywhere); materials: their names. The mod
+    swaps it in with terrainFile + postApply: ~11 ms for 512² and collision follows without a
+    reloadCollision (docs/research/2026-10-12-engine-limits-and-worldgen.md §7), against ~30 ms of
+    importMaps + reloadCollision and a ~20 ms physics frame."""
+    n = qgrid.shape[0]
+    lay = np.zeros((n, n), np.uint8) if idx is None else np.array(idx, np.uint8)
+    # the outermost samples are holes (TER_HOLE): the engine lights a block's edge cells as if it repeated
+    # (their normals take the opposite edge's heights), a dark 2 m strip along an edge that is lower than
+    # the opposite one (in-game 2026-10-13); the edge ring under them (0.3 m lower) shows instead. No
+    # collision there: the edge guard keeps the car tens of metres inside.
+    lay[0, :] = lay[-1, :] = lay[:, 0] = lay[:, -1] = TER_HOLE
+    tmp = path + ".tmp"
+    with open(tmp, "wb") as f:
+        f.write(struct.pack("<BI", TER_VERSION, n))
+        f.write(np.ascontiguousarray(qgrid, "<u2").tobytes())
+        f.write(np.ascontiguousarray(lay).tobytes())
+        f.write(struct.pack("<I", len(materials)))
+        for name in materials:
+            b = name.encode()
+            f.write(struct.pack("<B", len(b)) + b)
+    os.replace(tmp, path)
+
+
 def heights(qgrid, z_base, max_height):
     """Stored heights of a quantised grid, as the engine computes them (float64 here)."""
     return z_base + qgrid.astype(np.float64) * (max_height / 65536)
@@ -181,14 +284,20 @@ def height_at(qgrid, z_base, max_height, cx, cy, x, y, square=SQUARE):
     return float((h[0, 0] * (1 - wx) + h[0, 1] * wx) * (1 - wy) + (h[1, 0] * (1 - wx) + h[1, 1] * wx) * wy)
 
 
-def generate(frame, elev_fn, path, cx=0.0, cy=0.0, ground_at=(0.0, 0.0), q=Q_DEFAULT, size=SIZE, keep=None):
+def generate(frame, elev_fn, path, cx=0.0, cy=0.0, ground_at=(0.0, 0.0), q=Q_DEFAULT, size=SIZE, keep=None,
+             chunks=None):
     """Build the size² block centred at (cx, cy) with height quantum q and write it to path.
     groundZ is the terrain height at ground_at (None if that point is outside the block). keep (a
-    dict, optional) receives "lat", "lon" and "u" of the grid ([gy, gx], gy = north)."""
-    u = grid_u(frame, elev_fn, cx, cy, size, keep)
+    dict, optional) receives "lat", "lon" and "u" of the grid ([gy, gx], gy = north) and write_png's
+    "qgrid". chunks: a ChunkCache of this frame (the heights it holds are reused, the new ones added)."""
+    if chunks is None:
+        u = grid_u(frame, elev_fn, cx, cy, size, keep)
+    else:
+        u, _ = grid_u_chunked(frame, elev_fn, cx, cy, size, chunks, keep)
+    q, z_base, max_height, qgrid = write_png(path, u, q)
     if keep is not None:
         keep["u"] = u
-    q, z_base, max_height, qgrid = write_png(path, u, q)
+        keep["qgrid"] = qgrid
     gz = height_at(qgrid, z_base, max_height, cx, cy, *ground_at) if ground_at else None
     return {"cx": cx, "cy": cy, "zBase": z_base, "maxHeight": max_height, "q": q,
             "groundZ": None if gz is None else round(gz, 3),

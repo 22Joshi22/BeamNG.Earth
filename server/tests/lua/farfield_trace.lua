@@ -34,6 +34,9 @@ end
 
 local governor = require('beamngEarth/governor')
 local farfield = require('beamngEarth/farfield')
+-- the Python port (modsim.FarField) models no spares (lazy unloading, farfield.lua SPARE_MAX): removed
+-- tiles are deleted, as before 2026-10-13
+farfield.SPARE_MAX = 0
 local gov = governor.new({ clock = function() return now end })
 
 local function hash(s, h)

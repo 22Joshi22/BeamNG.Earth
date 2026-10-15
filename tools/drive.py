@@ -322,6 +322,12 @@ def summarize(polls, profile, label=None, visual=False):
         fails.append("driver did not finish")
     summary["fails"] = fails
     summary["pass"] = not fails
+    try:                                            # what each frame over 50 ms went to (core.lua hitches)
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        import autodrive_perf
+        summary["hitch_causes"] = autodrive_perf._causes(polls)
+    except Exception as e:                          # an older mod: no hitches in the polls
+        summary["hitch_causes"] = f"unavailable: {e}"
     # probe P0 (§7): the physics speed within 2 % of the profile, no reset events
     ratio = summary["physicsSpeedRatio"]
     summary["p0"] = {"speedWithin2pct": ratio is not None and abs(ratio - 1.0) <= 0.02,
@@ -476,6 +482,9 @@ def main(argv=None):
     ap.add_argument("--step-mode", choices=("ge", "mcp"), default="ge",
                     help="ge: the per-frame driver (default); mcp: the old sim_drive.py set_position stepping")
     a = ap.parse_args(argv)
+    # a fresh game shows our welcome page over the whole screen: closed and kept away for this game session (the
+    # drive measures the world, not our UI)
+    _mcp().quiet_ui()
     if a.step_mode == "mcp":
         if a.profile or a.speed is None or a.km is None:
             raise SystemExit("--step-mode mcp takes --speed, --km and --heading only (sim_drive.py)")

@@ -64,6 +64,7 @@ function TerrainBlock()
     for i, m in ipairs(self.lastImport and self.lastImport.mats or {}) do r[i] = m end
     return r
   end
+  function tb:postApply() S.count('postApply_TerrainBlock'); self.applied = self.fields.terrainFile end
   function tb:importMaps(path, sq, maxH, hole, mats, maps, flip)
     S.count('importMaps'); self.lastImport = { path = path, sq = sq, maxH = maxH, mats = mats, maps = maps, flip = flip }
     return true
