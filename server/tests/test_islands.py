@@ -60,5 +60,22 @@ class IslandTest(unittest.TestCase):
         self.assertEqual(islands.find(rs), [], "two-way streets round a block: not an island")
 
 
+class RingTest(unittest.TestCase):
+    def test_rings(self):
+        two = roads.Spec(7.0, "paved", True, "tertiary", False)
+        ow = roads.Spec(7.0, "paved", True, "primary", True, 2.5, 1)
+        circle = [(f"c{k}", two, arc(14, k * math.pi / 3, (k + 1) * math.pi / 3, 4), 0.0) for k in range(6)]
+        self.assertEqual(islands.ring_fids(circle), {f"c{k}" for k in range(6)}, "a round loop: a ring, oneway or not")
+        sq = [((0, 0), (60, 0)), ((60, 0), (60, 60)), ((60, 60), (0, 60)), ((0, 60), (0, 0))]
+        block = [(f"s{k}", ow, np.array([(*a, 0.0), (*b, 0.0)]), 0.0) for k, (a, b) in enumerate(sq)]
+        self.assertEqual(islands.ring_fids(block), set(), "a block of one-way streets driven round: no ring")
+        back = roads.Spec(7.0, "paved", True, "primary", True, 2.5, -1)
+        pair = [("n", ow, np.array([(0.0, 0.0, 0.0), (0.0, 200.0, 0.0)]), 0.0),
+                ("s", back, np.array([(12.0, 0.0, 0.0), (12.0, 200.0, 0.0)]), 0.0),
+                ("j0", two, np.array([(0.0, 0.0, 0.0), (12.0, 0.0, 0.0)]), 0.0),
+                ("j1", two, np.array([(0.0, 200.0, 0.0), (12.0, 200.0, 0.0)]), 0.0)]
+        self.assertEqual(islands.ring_fids(pair), set(), "a divided road's carriageways: no ring")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -106,26 +106,36 @@ def _cycles(edges, adj, max_edges=MAX_EDGES, max_loop=MAX_LOOP_M):
 RING_MAX_AREA_M2 = 12000.0  # a roundabout up to ~120 m across
 RING_MAX_LOOP_M = 450.0
 RING_MAX_EDGES = 10
+# roundness 4 pi area / perimeter^2: a circle 1, a square block 0.785, the two carriageways of a divided road (a loop
+# "driven round" too) ~0.1. City blocks of one-way streets came out 0.66-0.81 in Timisoara, its rings 0.87-0.99.
+RING_ROUND_ANY = 0.9        # this round: a ring whatever its oneway tags (Timisoara's ring had none at all)
+RING_ROUND = 0.82           # this round: a ring if RING_ONEWAY_SHARE of it is one-way, all driven the same way round
+RING_ONEWAY_SHARE = 0.5
 
 
 def ring_fids(roads_list):
-    """{fid} of the roads that form roundabout rings: small loops of one-way roads all driven the same way round
-    (spec.dir: +1 along the geometry, -1 against). A junction on a ring gets no signals or stop signs
-    (furniture.junction_controls): a ring entry looked like a crossroads of three major roads, and its signal poles
-    stood on the ring (Timisoara 2026-10-15). Shared by the road tiles and the road graph, so both decide the same."""
+    """{fid} of the roads that form roundabout rings: small loops round as a circle, or nearly that round and at least
+    half one-way, all those driven the same way round (spec.dir: +1 along the geometry, -1 against). A junction on a ring gets no
+    signals or stop signs (furniture.junction_controls): a ring entry looked like a crossroads of three major roads,
+    and its signal poles stood on the ring (Timisoara 2026-10-15). Shared by the road tiles and the road graph, so
+    both decide the same."""
     edges, adj = _graph(roads_list)
     out = set()
     for cyc in _cycles(edges, adj, RING_MAX_EDGES, RING_MAX_LOOP_M):
-        if not all(getattr(edges[k][1], "oneway", False) and getattr(edges[k][1], "dir", 0) for k, _ in cyc):
-            continue
-        along = [(edges[k][1].dir > 0) == fwd for k, fwd in cyc]     # driven round: all along, or all against
-        if not (all(along) or not any(along)):
-            continue
+        L = sum(edges[k][5] for k, _ in cyc)
         parts = [edges[k][2] if fwd else edges[k][2][::-1] for k, fwd in cyc]
         poly = np.concatenate([p[:-1, :2] for p in parts])
-        if len(poly) < 3 or not (MIN_AREA_M2 <= abs(_area(poly)) <= RING_MAX_AREA_M2):
+        area = abs(_area(poly)) if len(poly) >= 3 else 0.0
+        if not (MIN_AREA_M2 <= area <= RING_MAX_AREA_M2):
             continue
-        out.update(edges[k][0] for k, _ in cyc)
+        rnd = 4 * math.pi * area / (L * L)
+        ow = [(k, fwd) for k, fwd in cyc if getattr(edges[k][1], "oneway", False) and getattr(edges[k][1], "dir", 0)]
+        along = [(edges[k][1].dir > 0) == fwd for k, fwd in ow]      # driven round: all along, or all against
+        if along and not (all(along) or not any(along)):
+            continue                                                 # one-ways against each other: not a ring
+        oneway_ok = along and sum(edges[k][5] for k, _ in ow) >= RING_ONEWAY_SHARE * L
+        if rnd >= RING_ROUND_ANY or (rnd >= RING_ROUND and oneway_ok):
+            out.update(edges[k][0] for k, _ in cyc)
     return out
 
 
