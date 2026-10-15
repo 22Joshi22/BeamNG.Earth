@@ -670,7 +670,10 @@ class Tracker:
             self.aid, self.sent, self.building = aid, set(), set()
         want = [k for k in roadsmod.tiles_near(x, y, self.send_m) if k not in self.sent and k not in self.building]
         want.sort(key=lambda k: roadsmod.tile_distance(k[0], k[1], x, y))
-        for tx, ty in want[:self.per_pose]:
+        # at most per_pose in flight: each waits in a thread of the loop's shared executor, and a teleport's
+        # hundreds (one per pose, uncapped) held every thread while the road tiles under the car waited for one
+        # (Sinaia 2026-10-15: bare ground for minutes)
+        for tx, ty in want[:max(0, self.per_pose - len(self.building))]:
             self.building.add((tx, ty))
             fut = loop.run_in_executor(None, build, aid, tx, ty)
             fut.add_done_callback(lambda f, k=(tx, ty), a=aid: self._built(conn, a, k, f))

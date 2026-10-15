@@ -413,16 +413,20 @@ class Surface:
             if not self.md.has(key, "roads"):
                 self._queue(key, ("roads",))
 
-    def ready(self, lat, lon, radius_m=1000.0, timeout_s=2.0):
-        """Fetch the land cover within radius_m now and wait for it, at most timeout_s (a teleport's
-        first block: built once and kept while the player stands still). Returns True if it all
-        arrived. Worker threads only (it blocks)."""
+    def ready(self, lat, lon, radius_m=1000.0, timeout_s=3.0):
+        """Fetch the land cover within radius_m now, and the squares and lots (land_use, infrastructure:
+        paint_lots) too, and wait for them, at most timeout_s (a teleport's first block: built once and kept
+        while the player stands still; Cluj's Piata Unirii stayed bare ground, its square not cached yet).
+        Returns True if it all arrived. Worker threads only (it blocks)."""
         dlat = radius_m / 111320.0
         dlon = radius_m / (111320.0 * max(0.05, math.cos(math.radians(lat))))
-        keys = [k for k in mapcells.cells_for_bbox(lat - dlat, lon - dlon, lat + dlat, lon + dlon)
-                if self.md._load(self.md.path(k, "landcover")) is None]
-        for k in keys:
-            self._queue(k)
+        cells = mapcells.cells_for_bbox(lat - dlat, lon - dlon, lat + dlat, lon + dlon)
+        keys = []
+        for layer in ("landcover", "land_use", "infrastructure"):
+            for k in cells:
+                if self.md._load(self.md.path(k, layer)) is None:
+                    self._queue(k, (layer,))
+                    keys.append(k)
         deadline = time.monotonic() + timeout_s
         while time.monotonic() < deadline:
             if not any(self._is_queued(k) for k in keys):

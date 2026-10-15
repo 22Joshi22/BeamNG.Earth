@@ -298,6 +298,20 @@ def main():
     mcp.quiet_ui()          # (the recording too: our welcome page closed and kept away this session)
     if a.start:
         lua("return tostring(beamngEarth_core.teleport(%r, %r, 'autodrive_perf start', {record = false}))" % a.start)
+        # the game teleports once the server answers (after a server restart that was ~85 s later: the snap and the
+        # drive ran at the old place, Cluj 2026-10-15): the settle counts from the arrival
+        t_arrive = time.time() + 300
+        while time.time() < t_arrive:
+            try:
+                d = float(lua("local a=beamngEarth_core._state().anchor; if not a then return '1e9' end "
+                              "return tostring(math.abs(a.lat-%r)+math.abs(a.lon-%r))" % a.start))
+            except (Exception, SystemExit):
+                d = 1e9
+            if d < 0.02:
+                break
+            time.sleep(2)
+        else:
+            print("the teleport did not happen within 300 s", file=sys.stderr)
         time.sleep(a.settle)
     if a.start:                     # on the road: the nearest graph node, facing along its edge toward the goal
         print(lua(SNAP_LUA % a.to), flush=True)

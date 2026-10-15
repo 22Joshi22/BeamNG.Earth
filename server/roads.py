@@ -1588,7 +1588,7 @@ class Tracker:
             self.aid, self.sent, self.building = aid, set(), set()
         want = [k for k in tiles_near(x, y, SEND_M) if k not in self.sent and k not in self.building]
         want.sort(key=lambda k: tile_distance(k[0], k[1], x, y))
-        for tx, ty in want[:BUILD_PER_POSE]:
+        for tx, ty in want[:max(0, BUILD_PER_POSE - len(self.building))]:   # in flight at most (vegetation.Tracker)
             self.building.add((tx, ty))
             fut = loop.run_in_executor(None, build, aid, tx, ty)
             fut.add_done_callback(lambda f, k=(tx, ty), a=aid: self._built(conn, a, k, f))

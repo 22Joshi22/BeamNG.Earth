@@ -50,6 +50,7 @@ ROOF_METAL = "bne_bld_roof_metal"   # standing-seam metal (barns, sheds, farm bu
 PANEL = "bne_bld_panel"     # precast concrete panels (big-box stores, strip malls)
 METALWALL = "bne_bld_metalwall"     # corrugated metal walls (warehouses, factories)
 BIG_BOX_M2 = 1200.0         # m2: a low commercial building this big is a big box (blank walls, one storefront)
+CHURCH_CLASSES = ("church", "chapel", "cathedral")
 BARN_CLASSES = {"barn", "farm_auxiliary", "stable", "cowshed"}
 # The mesh's materials (vertColor: each building's colours are its vertices'); the names above are the
 # looks plan() picks, each one of these with a colour (LOOKS).
@@ -377,7 +378,7 @@ def plan(ring, attrs, neighbours=0, lat=None, lon=None, look=None, town=False, d
     cls = (attrs.get("class") or "").lower()
     name = str(attrs.get("name") or "").lower()
     terminal = any(w in name for w in ("terminal", "concourse"))
-    church = cls in ("church", "chapel", "cathedral") or any(w in name for w in ("church", "chapel", "cathedral"))
+    church = cls in CHURCH_CLASSES or any(w in name for w in ("church", "chapel", "cathedral"))
     if "hangar" in name:
         cls = "hangar"
     # a parking structure (a small "parking" building is a carport or a booth: a shed); "parking" is also a
@@ -408,7 +409,7 @@ def plan(ring, attrs, neighbours=0, lat=None, lon=None, look=None, town=False, d
     floor_h = FLOOR_M
     if industrial:
         floor_h = 4.5
-    if church and area < 2500:
+    if church:
         floor_h = 7.5
     # (a big shed is a barn; a row of garages, a carport or a canopy is not)
     barn = cls in BARN_CLASSES or (shed and area >= 150 and cls not in ("garage", "garages", "carport", "roof"))
@@ -462,13 +463,17 @@ def plan(ring, attrs, neighbours=0, lat=None, lon=None, look=None, town=False, d
                 roof = "gabled" if seed < 1.0 - style.hipped else "hipped"
         else:
             roof = "flat"
-    if roof != "flat" and (box_fill < 0.8 or hw < 2.0 or hw > (18.0 if barn else 14.0)):
-        roof = "flat"                               # pitched roofs only on near-rectangular footprints
+    # pitched roofs only on near-rectangular footprints (a church's nave keeps its gable beside a tower or an apse)
+    if roof != "flat" and (box_fill < (0.6 if church else 0.8) or hw < 2.0
+                           or hw > (18.0 if barn else 20.0 if church else 14.0)):
+        roof = "flat"
     # a city tower's ground floor is shops or a lobby (Midtown, 2026-10-14: most towers have no class, and their
     # curtain wall came down to the pavement)
     tall = (nf or (h or 0) / FLOOR_M) >= TOWER_SHOP_FLOORS
-    if dense and tall and cls not in HOUSE_CLASSES and not (shed or barn or garage or terminal):
+    if dense and tall and cls not in HOUSE_CLASSES and not (shed or barn or garage or terminal or church):
         shop = True
+    if church:
+        shop = False                                # (no shopfronts on a church, Cluj 2026-10-15)
     if h is None:
         h = nf * floor_h + (GROUND_FLOOR_SHOP_M - floor_h if shop and nf > 1 else 0.0) + (0.6 if roof == "flat" else 0.2)
         if west_town and roof == "flat" and nf == 1 and area >= 80 and not (shed or barn):
@@ -479,7 +484,8 @@ def plan(ring, attrs, neighbours=0, lat=None, lon=None, look=None, town=False, d
         elif roof != "flat":
             h = max(2.5, h - hw * math.tan(math.radians(style.pitch or PITCH[roof])))
         if nf is None:
-            nf = max(1, int(round(h / floor_h)))
+            # a church: one tall storey (Cluj's St. Michael's, 25 m, came out as three 8 m floors)
+            nf = 1 if church else max(1, int(round(h / floor_h)))
     nf = max(1, min(nf, 120))
     floor_h = h / nf
     if shed or barn:
@@ -551,7 +557,8 @@ def plan(ring, attrs, neighbours=0, lat=None, lon=None, look=None, town=False, d
     elif garage:
         facade, band, plain = FACADE_TINTS[3], BAND_PANEL, False
     windows = True
-    if not (shed or barn or row or house or terminal or garage) and nf <= 2 and roof == "flat" and (area >= BIG_BOX_M2 or industrial) \
+    if not (shed or barn or row or house or terminal or garage or church) and nf <= 2 and roof == "flat" \
+            and (area >= BIG_BOX_M2 or industrial) \
             and cls not in HOUSE_CLASSES and cls != "apartments":
         kind = METALWALL if industrial else PANEL
         wall = f"{kind}|{int(_hash01(seed, 'wc') * len(WALL_TINTS[kind]))}"
@@ -579,7 +586,7 @@ def plan(ring, attrs, neighbours=0, lat=None, lon=None, look=None, town=False, d
         porch = area >= 0.9 * 4 * hl * hw
     return Spec(ring=ring, floors=nf, floor_h=floor_h, height=h, roof=roof, roof_mat=roof_mat, facade=facade,
                 band=band, shop=shop and not shed and nf >= 1, plain=plain, seed=seed, min_h=0.0, wall=wall,
-                windows=windows, steeple=church and roof == "gabled" and area < 2500, porch=porch, cls=cls,
+                windows=windows, steeple=church and area < 2500, porch=porch, cls=cls,
                 deck=garage and roof == "flat", pitch=style.pitch)
 
 
@@ -882,7 +889,11 @@ def _steeple(m, spec, z_eave, mat_idx):
         u = -u
     side = float(np.clip(1.1 * hw, 3.0, 6.0)) / 2
     p = c + u * (hl - side)
-    rise = (hw + EAVE_M) * math.tan(math.radians(spec.pitch or PITCH["gabled"]))
+    for k in range(1, 12):              # on the footprint (an irregular one's box end can be outside it)
+        if _inside(spec.ring, p):
+            break
+        p = c + u * (hl - side) * (1 - k / 12)
+    rise = (min(hw, 12.0) + EAVE_M) * math.tan(math.radians(spec.pitch or PITCH["gabled"]))
     top = z_eave + rise + 6.0
     _box(m, p, u, side, side, z_eave - 1.0, top, mat_idx[spec.facade])
     v = np.array([-u[1], u[0]])
@@ -899,7 +910,7 @@ ROOF_CLUTTER_M2 = 250.0     # flat roofs this large get boxes: air-conditioning 
 
 def _clutter(m, spec, ring, z_eave, mat_idx):
     area = _area2(ring) / 2
-    if spec.roof != "flat" or spec.plain or area < ROOF_CLUTTER_M2:
+    if spec.roof != "flat" or spec.plain or area < ROOF_CLUTTER_M2 or spec.cls in CHURCH_CLASSES:
         return
     c, u, hl, hw = oriented_box(ring)
     v = np.array([-u[1], u[0]])
@@ -1534,7 +1545,7 @@ def doors(items, lines, x0, y0, drives=None):
             continue
         if no_door:
             continue
-        if on_main and not spec.wall and spec.roof == "flat" \
+        if on_main and not spec.wall and spec.roof == "flat" and spec.cls not in CHURCH_CLASSES \
                 and _hash01(spec.seed, "shop") < MAIN_STREET_SHOPS:
             spec.shop = True                    # a main street's ground floor: a shopfront, no house door
             if not spec.plain:
