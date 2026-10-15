@@ -28,6 +28,8 @@ class RoutingTest(unittest.TestCase):
         u = routing.url(39.28, -76.59, 38.9, -77.03)
         self.assertIn("-76.590000,39.280000;-77.030000,38.900000", u)
         self.assertTrue(u.startswith("https://routing.openstreetmap.de/"))
+        self.assertNotIn("bearings", u)
+        self.assertTrue(routing.url(39.28, -76.59, 38.9, -77.03, 370).endswith("&bearings=10,60;"))
 
 
 if __name__ == "__main__":

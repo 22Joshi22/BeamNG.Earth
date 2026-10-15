@@ -53,7 +53,8 @@ local pos, vel = v:getPosition(), v:getVelocity()
 local s = loadstring('return ' .. beamngEarth_core.status())() or {}
 local pl = s.player or {}
 local ob = map and map.objects and map.objects[v:getId()]
-return jsonEncode({ t = os.clock(), x = pos.x, y = pos.y, z = pos.z, v = math.sqrt(vel.x ^ 2 + vel.y ^ 2), lat = pl.lat,
+local rs = require('beamngEarth/roads').status() or {}
+return jsonEncode({ roadsQ = rs.walksQueued, roadMeshes = rs.roadMeshes, t = os.clock(), x = pos.x, y = pos.y, z = pos.z, v = math.sqrt(vel.x ^ 2 + vel.y ^ 2), lat = pl.lat,
   lon = pl.lon, damage = ob and ob.damage or 0,
   perf = { frames = p.frames, avgMs = p.avgMs, p50 = p.p50, p95 = p.p95, p99 = p.p99, maxMs = p.maxMs,
            over33 = p.over33, over50 = p.over50, over100 = p.over100 },

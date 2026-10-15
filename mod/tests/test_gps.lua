@@ -107,4 +107,6 @@ do -- a new path waits for the car's copy of the graph
   T.check(not G.vehicleHasGraph(veh), 'a newer graph: wait again')
   map = savedMap
 end
+T.check(G.compass(0, 1) == 0 and G.compass(1, 0) == 90 and G.compass(-1, 0) == 270 and G.compass(0, 0) == nil,
+  'the car heading as a compass bearing')
 T.done('test_gps')

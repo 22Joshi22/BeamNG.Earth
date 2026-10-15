@@ -1138,10 +1138,13 @@ local function onUpdate(dtReal, dtSim)
     t = mark('player', t)
     updateWorld(dtReal)
     t = mark('world', t)
-    farfield.update(gov, (gov.w1 or dtReal * 1000) / 1000, st.cam, st.player)
-    t = mark('far', t)
+    -- the roads before the far tiles: they share the governor's budget and the first to ask gets it; after a
+    -- teleport the far field's hundreds of tiles took it frame after frame and the road meshes under the car
+    -- came after it had passed (Brasov, Sinaia 2026-10-15: the car drove bare ground)
     roads.update(gov, st.anchorId)
     t = mark('roads', t)
+    farfield.update(gov, (gov.w1 or dtReal * 1000) / 1000, st.cam, st.player)
+    t = mark('far', t)
     sea.update(st.anchorId, st.player)
     trees.update(st.anchorId, st.player)
     t = mark('sea+trees', t)
@@ -1457,9 +1460,9 @@ function M.requestGeocode(id, q, lat, lon)
   net.send({ type = 'geocode', id = id, q = q, lat = lat, lon = lon })
   return true
 end
-function M.requestRoute(id, lat0, lon0, lat1, lon1)
+function M.requestRoute(id, lat0, lon0, lat1, lon1, bearing)
   if not net.isConnected() then return false end
-  net.send({ type = 'route', id = id, lat0 = lat0, lon0 = lon0, lat1 = lat1, lon1 = lon1 })
+  net.send({ type = 'route', id = id, lat0 = lat0, lon0 = lon0, lat1 = lat1, lon1 = lon1, bearing = bearing })
   return true
 end
 function M.takeRoute(id)

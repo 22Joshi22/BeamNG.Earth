@@ -135,11 +135,23 @@ end
 
 local function core() return rawget(_G, 'beamngEarth_core') end
 
+-- Pure: the compass bearing (degrees, 0 north, clockwise) of a direction (x east, y north), or nil when it is ~vertical.
+function M.compass(dx, dy)
+  if not dx or not dy or dx * dx + dy * dy < 0.01 then return nil end
+  return math.floor((math.deg(math.atan2(dx, dy)) + 360) % 360 + 0.5) % 360
+end
+
 local function requestRoute(player)
   local c = core()
   if not c or not c.requestRoute or not dest or not player or not player.lat then return end
   nextId = nextId + 1
-  if c.requestRoute(nextId, player.lat, player.lon, dest.lat, dest.lon) then
+  -- the car's heading: the route starts on the carriageway it drives on, the way it drives (without it OSRM began
+  -- divided boulevards on the other carriageway, the car turned round to follow, left the route and was routed
+  -- back again, over and over: Timisoara 2026-10-15)
+  local veh = playerVeh()
+  local d = veh and veh.getDirectionVector and veh:getDirectionVector()
+  local b = d and M.compass(d.x, d.y)
+  if c.requestRoute(nextId, player.lat, player.lon, dest.lat, dest.lon, b) then
     pendingId, lastRequest = nextId, os.clock()
   end
 end
