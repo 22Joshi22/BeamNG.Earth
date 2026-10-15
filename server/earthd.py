@@ -114,6 +114,7 @@ import maptiles as maptilesmod  # noqa: E402
 import geocode as geocodemod  # noqa: E402
 import routing as routingmod  # noqa: E402
 import updates as updatesmod  # noqa: E402
+import cpupin  # noqa: E402
 import netfetch  # noqa: E402
 import protocol  # noqa: E402
 import weather as weathermod  # noqa: E402
@@ -2063,6 +2064,9 @@ class Connection:
             if self.s.cache is not None:            # the download cache's usage (the settings page)
                 self.send(self.s.cache.message())
             self.spawn(self.check_update())         # a newer version on GitHub: the mod says so (updates.py)
+            if getattr(self.s, "game_cpus", None):  # the game off the server's cores (cpupin.py)
+                n = cpupin.pin_game(self.s.game_cpus)
+                log.info("the game's %d threads on CPUs %s", n, ",".join(map(str, sorted(self.s.game_cpus))))
         elif kind == "prepare_anchor":
             self.spawn(self.prepare_anchor(msg))
         elif kind == "prepare_terrain":
@@ -2872,6 +2876,8 @@ async def main_async(args):
                     sea=seacarvemod.SeaCarver(mapdata, args.cache_dir) if args.sea == "on" else None,
                     vegetation=(vegetationmod.Vegetation(mapdata, args.cache_dir) if args.trees == "on" else None))
 
+    server.game_cpus = getattr(args, "game_cpus", None)    # (cpupin.py: the game pinned at each hello)
+
     async def net_log():
         while True:
             await asyncio.sleep(NET_TICK_S)
@@ -3003,6 +3009,9 @@ def main():
                     help="a refined tile stays refined until the player is (1 + h) x its switch distance away")
     ap.add_argument("--far-radius", type=float, default=farfield.RADIUS, help="far-field radius (m)")
     ap.add_argument("--nice", type=int, default=NICE, help="process niceness increment (0 = leave as is)")
+    ap.add_argument("--pin", choices=("on", "off"), default="on",
+                    help="Linux: the server on the last quarter of the physical cores and the game on the rest "
+                         "(cpupin.py; default on)")
     ap.add_argument("--sched", choices=("idle", "normal"), default="idle",
                     help="Linux: idle scheduling (the server runs only on CPU time the game leaves; default) or normal")
     ap.add_argument("--imagery", type=imagerymod.parse_chain, default=imagerymod.DEFAULT_CHAIN,
@@ -3158,6 +3167,18 @@ def main():
             os.sched_setscheduler(0, os.SCHED_IDLE, os.sched_param(0))
         except OSError as e:
             log.warning("could not set idle scheduling: %s", e)
+    game_cpus = None
+    if args.pin == "on" and sys.platform.startswith("linux"):
+        try:
+            server_cpus, game_cpus = cpupin.split()
+            cpupin.pin_self(server_cpus)
+            if server_cpus:
+                log.info("cores: the server on CPUs %s, the game on %s (cpupin.py; --pin off)",
+                         ",".join(map(str, sorted(server_cpus))), ",".join(map(str, sorted(game_cpus))))
+        except OSError as e:
+            log.warning("could not split the cores: %s", e)
+            game_cpus = None
+    args.game_cpus = game_cpus
     try:
         asyncio.run(main_async(args))
     except KeyboardInterrupt:
