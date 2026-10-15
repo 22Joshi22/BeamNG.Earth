@@ -163,6 +163,10 @@ POLICIES = {
     # ~1 request a second at most, no bulk
     "routing.openstreetmap.de": HostPolicy(rate=0.5, burst=2.0, max_conc=1, daily_budget=300, daily_hard=500,
                                            cache_ttl=DAY, miss_ttl=None, max_wait=10.0, timeout=20.0, max_attempts=1),
+    # the update check (updates.py): the project's VERSION file on GitHub, a few times a day at most
+    "raw.githubusercontent.com": HostPolicy(rate=0.1, burst=1.0, max_conc=1, daily_budget=24, daily_hard=48,
+                                            cache_ttl=6 * 3600, miss_ttl=None, max_wait=5.0, timeout=8.0,
+                                            max_attempts=1),
     # never at runtime (OSM Overpass, OSMF vector tiles, Protomaps builds): §3.3
     "overpass-api.de": HostPolicy(denied=True, daily_hard=0),
     "vector.openstreetmap.org": HostPolicy(denied=True, daily_hard=0),

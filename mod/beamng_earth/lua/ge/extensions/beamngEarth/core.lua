@@ -105,6 +105,7 @@ local bannerInfo = { port = net.PORT } -- banner.update's inputs, filled every f
 local horizonOn = false       -- hello.horizon (M1h); outlives levels like the connection
 local farRadius = nil         -- status.radius: the server's far-field radius (m), horizon mode only
 local cacheInfo = nil         -- the server's last 'cache' message (download cache usage); outlives levels
+local updateInfo = nil       -- a newer version on GitHub: { current, latest, url } (server updates.py)
 local cacheClears = 0         -- answers to a clear so far (the settings page waits for the next one)
 
 local function resetState()
@@ -722,6 +723,16 @@ local function onMessage(msg)
   elseif t == 'credits' then
     -- the sources around the player (server credits.py): msg.near, msg.far, drawn by credits.lua
     credits.onMessage(msg)
+  elseif t == 'update' then
+    -- a newer version on GitHub (server updates.py): said once a session in game, and on the settings page
+    if type(msg.latest) == 'string' then
+      local first = not updateInfo
+      updateInfo = { current = tostring(msg.current or ''), latest = msg.latest, url = tostring(msg.url or '') }
+      if first and ui_message then
+        pcall(ui_message, string.format('BeamNG.Earth %s is available (you have %s): %s', updateInfo.latest,
+          updateInfo.current, updateInfo.url), 15, 'beamngEarthUpdate')
+      end
+    end
   elseif t == 'cache' then
     -- the download cache (server cache.py): its usage for the settings page; clearedBytes answers a clear
     local prev = cacheInfo
@@ -1456,6 +1467,8 @@ end
 
 -- The on-screen data credits in use: the server's (near + far), else the attribution line.
 function M.credits() return credits.text(creditsFallback) end
+-- The update the server found on GitHub ({ current, latest, url }) or nil (settings page).
+function M.updateInfo() return updateInfo end
 
 -- The download cache (server cache.py), for the settings page: the last usage the server sent (nil
 -- before any: no server, or one without a cache), and the page's requests to the server: the size cap

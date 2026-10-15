@@ -113,6 +113,7 @@ import imagery as imagerymod  # noqa: E402
 import maptiles as maptilesmod  # noqa: E402
 import geocode as geocodemod  # noqa: E402
 import routing as routingmod  # noqa: E402
+import updates as updatesmod  # noqa: E402
 import netfetch  # noqa: E402
 import protocol  # noqa: E402
 import weather as weathermod  # noqa: E402
@@ -1888,6 +1889,19 @@ class Connection:
                  (" (" + out["error"] + ")") if "error" in out else "")
         self.send(out)
 
+    async def check_update(self):
+        """The update check after a hello: an 'update' message when GitHub has a newer version (updates.py); offline or
+        up to date: nothing."""
+        try:
+            r = await asyncio.get_running_loop().run_in_executor(
+                self.s.ui_pool, updatesmod.check, updatesmod.local_version(), self.s.net)
+        except Exception as e:          # never a reason to drop the connection
+            log.debug("update check: %s: %s", type(e).__name__, e)
+            return
+        if r:
+            log.info("update available: %s -> %s (%s)", r["current"], r["latest"], r["url"])
+            self.send({"type": "update", **r})
+
     async def where(self, msg):
         """The status bar's location {"id", "lat", "lon", "online"} -> where_result {"id", "street", "place", "region",
         "country"}: the street from the cached map cells (never waits for a download), the town, state and country from
@@ -2048,6 +2062,7 @@ class Connection:
                 self.status(self.last_status)
             if self.s.cache is not None:            # the download cache's usage (the settings page)
                 self.send(self.s.cache.message())
+            self.spawn(self.check_update())         # a newer version on GitHub: the mod says so (updates.py)
         elif kind == "prepare_anchor":
             self.spawn(self.prepare_anchor(msg))
         elif kind == "prepare_terrain":

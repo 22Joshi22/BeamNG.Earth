@@ -67,6 +67,8 @@ roads, water, navigation, traffic, cities).
 - Settings in the pause menu, keybinds, in-game reports (notes and performance recordings to share).
 - Easy setup: `install.py` installs everything, `start.py` keeps the mod in sync and starts the server.
 - Offline play from the download cache (with a size cap and "clear cache").
+- Update check: the mod tells you in game (and on its settings page, with a link) when a newer version is on
+  GitHub.
 
 ## How it works
 - A small **companion server** (`server/`, Python) downloads elevation and imagery, builds terrain

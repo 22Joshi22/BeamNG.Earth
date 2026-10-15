@@ -15,6 +15,12 @@
       <span class="state-text">{{ bannerText }}</span>
     </div>
 
+    <!-- A newer version on GitHub (server updates.py) -->
+    <div v-if="update" class="options-presets state-bar state-ok update-bar">
+      <span class="state-text">Update available: BeamNG.Earth {{ update.latest }} (you have {{ update.current }})</span>
+      <button class="update-link" @click="openUpdate">Download page</button>
+    </div>
+
     <!-- Status line -->
     <div class="options-presets status-bar">
       <span class="status-text">{{ statusText }}</span>
@@ -339,6 +345,12 @@ const statusText = computed(() => status.value.status || "-")
 // / connected, plus the edge guard's line) and its level (info / ok / warn / error)
 const bannerText = computed(() => (status.value.banner && status.value.banner.text) || "")
 const bannerLevel = computed(() => (status.value.banner && status.value.banner.level) || "info")
+// a newer version on GitHub: { current, latest, url } (core.updateInfo)
+const update = computed(() => status.value.update || null)
+function openUpdate() {
+  const url = update.value && update.value.url
+  if (url) engineLua(`openWebBrowser(${JSON.stringify(url)})`)
+}
 
 function fmt(v, digits) {
   return (typeof v === "number") ? v.toFixed(digits) : "-"
@@ -538,6 +550,15 @@ onUnmounted(() => {
 
     &.is-connected { color: #8f8; }
   }
+}
+
+/* The update line: its text and a button to the download page */
+.update-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1em;
+  .update-link { padding: 0.2em 0.8em; }
 }
 
 /* Connection state line (the on-screen banner's text); a plain div, nothing focusable */
