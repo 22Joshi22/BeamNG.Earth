@@ -653,6 +653,22 @@ class ExportImageryTest(unittest.TestCase):
             time.sleep(0.02)
         self.assertFalse([r for r in self.requests[n:] if r[0] == "md6in"])
 
+    def test_regional_source_never_probed_outside_its_area(self):
+        """A regional source's coverage probe is not fetched for a tile outside its bounds (2026-10-15: Vermont,
+        Ohio, NJ ... servers got hundreds of probe requests from a session in Maryland and Switzerland)."""
+        im = imagery.Imagery(self.tmp.name, ("vermont", "usgs"), tone=0.0)      # (nothing may be fetched)
+        src = imagery.SOURCES["vermont"]
+        z = 17
+        x, y = imagery.mercator_px(np.array([39.29]), np.array([-76.61]), z)       # Baltimore
+        key = (src, z, int(x[0]) // imagery.TILE, int(y[0]) // imagery.TILE)
+        with im._lock:
+            self.assertEqual(im._probe_status(key), "outside")
+        self.assertFalse(im._inflight)
+        self.assertFalse(imagery.range_in_bounds(src, z, key[2], key[2] + 3, key[3], key[3] + 3))
+        x, y = imagery.mercator_px(np.array([44.26]), np.array([-72.58]), z)       # Montpelier
+        self.assertTrue(imagery.range_in_bounds(src, z, int(x[0]) // imagery.TILE, int(x[0]) // imagery.TILE,
+                                                int(y[0]) // imagery.TILE, int(y[0]) // imagery.TILE))
+
     def test_colours_from_the_chain(self):
         """A rendered NAIP texture keeps its detail but takes the next source's large-scale colour (no seam
         against far tiles in USGS colours)."""

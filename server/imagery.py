@@ -254,6 +254,18 @@ def in_bounds(src, z, x, y):
     return lon1 > w and lon0 < e and lat1 > s and lat0 < n
 
 
+def range_in_bounds(src, z, tx0, tx1, ty0, ty1):
+    """Any tile of the range (z; tx0..tx1, ty0..ty1, inclusive) overlaps src.bounds."""
+    if not src.bounds:
+        return True
+    s, w, n, e = src.bounds
+    k = 2 ** z
+    lon0, lon1 = tx0 / k * 360 - 180, (tx1 + 1) / k * 360 - 180
+    lat1 = math.degrees(math.atan(math.sinh(math.pi * (1 - 2 * ty0 / k))))
+    lat0 = math.degrees(math.atan(math.sinh(math.pi * (1 - 2 * (ty1 + 1) / k))))
+    return lon1 > w and lon0 < e and lat1 > s and lat0 < n
+
+
 def mercator_bbox(z, x, y):
     """EPSG:3857 extent (minx, miny, maxx, maxy) of XYZ tile (z, x, y)."""
     size = EARTH_CIRC / 2 ** z
@@ -515,6 +527,8 @@ class Imagery:
         """'covered' / 'outside' / 'unknown' from the key's coverage probes, coarsest first;
         starts the fetch of the first unknown one. Caller holds the lock."""
         src, z, x, y = key
+        if not in_bounds(*key):
+            return "outside"                # (never ask a source about a place outside its area)
         psrc = SOURCES[src.probe_source] if src.probe_source else src
         for pz in sorted(p for p in src.probe_zooms if p < z):
             p = (psrc, pz, x >> (z - pz), y >> (z - pz))
@@ -602,6 +616,8 @@ class Imagery:
             ty0, ty1 = max(0, int(math.floor(fy.min() - 1)) // TILE), min(n - 1, int(math.floor(fy.max() + 1)) // TILE)
             if (tx1 - tx0 + 1) * (ty1 - ty0 + 1) > MAX_MOSAIC:
                 return
+            if not range_in_bounds(src, z, tx0, tx1, ty0, ty1):
+                continue                    # outside the source's area: never asked
             host = netfetch.host_of(src.url)
             if not self.fetcher.available(host):
                 continue                    # circuit open: render fails over to the next source, warm that
