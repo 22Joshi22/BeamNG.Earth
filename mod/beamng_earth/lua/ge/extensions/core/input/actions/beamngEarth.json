@@ -13,7 +13,7 @@
 "ctx": "tlua",
 "onDown": "if beamngEarth_report then beamngEarth_report.note() end",
 "title": "BeamNG.Earth: report an issue / idea",
-"desc": "Captures a screenshot, the location, the performance and your hardware now, and opens a window to describe a map issue, performance issue, bug or idea; saves a ready-to-post GitHub issue (Ctrl+Shift+I)."
+"desc": "Captures a screenshot, the location, the performance and your hardware now, and opens a window to describe a map issue, performance issue, bug or idea; saves a ready-to-post GitHub issue (Ctrl+Shift+E)."
 },
 "beamngEarth_reportBench": {
 "cat": "gameplay",

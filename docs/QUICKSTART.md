@@ -50,7 +50,7 @@ driving with the game's **radial menu** (the traffic entry). The amounts are the
 settings (Options > Gameplay > Traffic).
 
 ## Something wrong? Tell us
-In the game, press **Ctrl+Shift+I** where it happens: the mod takes a screenshot and notes the place,
+In the game, press **Ctrl+Shift+E** where it happens: the mod takes a screenshot and notes the place,
 the frame rate and your hardware and graphics settings. Pick the kind (**Map issue**, **Performance
 issue**, **Bug**, **Idea / suggestion**), type a short title and what you saw, and Save. For stutters
 or low fps, press **Ctrl+Shift+Y** instead while it happens: the **performance profiler** records 30 s

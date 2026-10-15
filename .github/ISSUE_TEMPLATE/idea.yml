@@ -6,7 +6,7 @@ body:
   - type: markdown
     attributes:
       value: |
-        Tip: press **Ctrl+Shift+I** in the game and pick "Idea / suggestion" to save a screenshot and the place with it.
+        Tip: press **Ctrl+Shift+E** in the game and pick "Idea / suggestion" to save a screenshot and the place with it.
   - type: textarea
     id: idea
     attributes:

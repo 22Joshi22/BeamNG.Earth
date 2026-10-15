@@ -380,7 +380,7 @@ sun / weather override, matching the real photo itself (the photo benchmark is c
 the photo stays on Commons).
 
 ## Reports (GitHub issues: map / performance / bug / idea; `report.lua`, 2026-10-13, kinds 2026-10-14)
-- **Ctrl+Shift+I:** captures the moment at once: a screenshot, the location (lat/lon, anchor), the
+- **Ctrl+Shift+E:** captures the moment at once: a screenshot, the location (lat/lon, anchor), the
   vehicle and camera, the last ~10 s of frame times, the engine's per-system frame metrics, the fps limit
   and VRAM, and the mod's whole status (far tiles, trees, sea...). Then a window: the kind (Map issue /
   Performance issue / Bug / Idea / suggestion), a title and a description; "Save report", for a

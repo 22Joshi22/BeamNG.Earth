@@ -351,7 +351,7 @@ function infoValue(item) {
   if (item.id === "attribution") return s.attribution || "-"
   if (item.id === "credits") return s.credits || "-"
   if (item.id === "placesMoved") return "M"
-  if (item.id === "reportKey") return "Ctrl+Shift+I"
+  if (item.id === "reportKey") return "Ctrl+Shift+E"
   if (item.id === "profilerKey") return "Ctrl+Shift+Y"
   if (item.id === "reportPost") return "github.com/TecnaGamer/BeamNG.Earth/issues"
   if (item.id === "weather") return s.weather || "-"

@@ -6,7 +6,7 @@ body:
   - type: markdown
     attributes:
       value: |
-        Tip: press **Ctrl+Shift+I** in the game at the spot and pick "Map issue". It fills all of this in for you
+        Tip: press **Ctrl+Shift+E** in the game at the spot and pick "Map issue". It fills all of this in for you
         (issue.md in the report folder; `python3 tools/reports.py issue` opens this page with it).
   - type: input
     id: location
