@@ -28,14 +28,15 @@
     {
       "appName": "damageApp",
       "placement": {
-        "bottom": "0px",
+        "bottom": "64px",
         "height": "300px",
         "left": "0px",
         "position": "absolute",
         "right": "",
         "top": "",
         "width": "168.75px"
-      }
+      },
+      "appVersion": 2
     },
     {
       "appName": "tacho2",
@@ -128,10 +129,10 @@
     },
     {
       "appName": "beamngEarthCredits",
-      "appVersion": 1,
+      "appVersion": 2,
       "placement": {
         "bottom": "0px",
-        "left": "175px",
+        "left": "0px",
         "position": "absolute",
         "width": "560px",
         "height": "64px"
@@ -146,5 +147,5 @@
   },
   "title": ".Earth",
   "type": "beamngEarth",
-  "version": 1
+  "version": 2
 }

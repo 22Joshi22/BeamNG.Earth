@@ -7,7 +7,7 @@
   "description": "The sources of the map data around you (their licences ask for visible credit).",
   "css": {
     "bottom": "0px",
-    "left": "180px",
+    "left": "0px",
     "height": "64px",
     "width": "560px"
   },
