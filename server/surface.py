@@ -208,6 +208,10 @@ def paint_roads(idx, lat, lon, feats_list, square, urban_fn=None, widths=None):
             width, kind = specs[i].width, specs[i].kind
             if kind == "paved" and roadsmod._rule_value(feats.rules.get("subclass"), i) == "parking_aisle":
                 width += 2 * AISLE_STALLS_M         # the stalls either side (parking.aisle_spots): no grass under cars
+            if roadsmod.has_sidewalks(specs[i]):
+                width += 2 * (specs[i].walk + square)   # the sidewalks (+ a sample: tufts at the outer edge): grass
+                                                    # grew up through them (ground cover is the terrain's: Lauterbrunnen,
+                                                    # Baltimore 2026-10-15)
             px = max(1, int(round(width / square)))
             for ring in roadsmod.ground_parts(feats, i):      # not bridges / tunnels
                 c, r = to_px(ring[:, 0], ring[:, 1])
