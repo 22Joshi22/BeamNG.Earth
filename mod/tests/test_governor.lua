@@ -200,4 +200,20 @@ do
   T.near(g:maxUnit(), math.max(P.cdaeTex512, g.est.cdaeTex256), 1e-12, 'maxUnit covers every used kind')
 end
 
+-- the engine's tick beyond ENGINE_FREE_MS is a debt: no import until the budget paid it (100 mph drives, 2026-10-15)
+do
+  local t = 0
+  local g = governor.new({ clock = function() return t end })
+  g:try('cdae')                          -- the kind in use (it sets the bucket's size)
+  for i = 1, 200 do t = t + 16; g:beginFrame(true) end
+  T.check(g:try('cdae'), 'a calm stream: an import may run')
+  T.check(math.abs(g:chargeEngine(102) - 100) < 1e-9 and g.tokens < 0, 'a 102 ms engine tick: 100 ms of debt')
+  T.check(not g:try('cdae'), 'in debt: no import')
+  local frames = 0
+  repeat t = t + 16; g:beginFrame(true); frames = frames + 1 until g:try('cdae') or frames > 500
+  T.check(frames > 10 and frames < 500, 'imports again once the budget paid it (' .. frames .. ' frames)')
+  g:chargeEngine(1e6)
+  T.check(g.tokens >= -governor.ENGINE_MAX_DEBT_MS, "the debt is capped")
+  T.check(g:chargeEngine(1.5) == 0, 'a normal tick is free')
+end
 T.done('test_governor')

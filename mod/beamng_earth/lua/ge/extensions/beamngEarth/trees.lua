@@ -198,6 +198,14 @@ local function itemType(shape)
   return d
 end
 
+-- Every item type's wind response (tests; 0 = trees stand still)
+function M.setWind(scale)
+  for _, d in pairs(types) do
+    d:setField('windScale', 0, tostring(scale))
+  end
+  return true
+end
+
 -- The variant of a group for an item of height h: those within 0.8 .. 1.25 of it (else 0.6 .. 1.6), picked by the
 -- item's rank; else the nearest. Returns shape, scale.
 function M.pick(group, h, rank)

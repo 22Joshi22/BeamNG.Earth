@@ -1050,6 +1050,15 @@ function M.hitches()
   return out
 end
 
+-- The previous frame's engine tick (ms), 0 without the metrics.
+local tickMetrics = {}
+local function engineTickMs()
+  local dbg = Engine and Engine.Debug
+  if not (dbg and dbg.getLastPerformanceMetrics) then return 0 end
+  if not pcall(dbg.getLastPerformanceMetrics, tickMetrics) then return 0 end
+  return tonumber(tickMetrics.Ticking) or 0
+end
+
 local function onUpdate(dtReal, dtSim)
   dtReal = dtReal or 0
   local frameMs0 = frameTimer and frameTimer:stopAndReset() or dtReal * 1000
@@ -1086,6 +1095,7 @@ local function onUpdate(dtReal, dtSim)
   -- the governor's frame opens first: its clock is the wall time since the last onUpdate (hptimer)
   gov:setLoading(st.placeFrames ~= nil or st.clock < st.loadingUntil or st.slowFor > SLOW_S)
   gov:beginFrame(farfield.hasWork() or roads.hasWork())
+  gov:chargeEngine(engineTickMs())     -- what the engine spent on last frame's new tiles (governor.lua)
   for _, msg in ipairs(net.update(dtReal)) do
     local ok, err = pcall(onMessage, msg)
     if not ok then log('E', 'beamngEarth', 'message ' .. tostring(msg.type) .. ' failed: ' .. tostring(err)) end
