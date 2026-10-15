@@ -121,7 +121,7 @@ def build(frame, feats_list, elev, centre, urban_fn=None, window=WINDOW_M, decks
     cx, cy = centre
     nodes, edges, seen = {}, [], set()
     prop_arms = {}          # connector name -> [(fid, spec, unit vector away, point, end, length)] (the props' view)
-    ring_cands = []         # the one-way roads the road tiles draw (fid, spec, pts, None): roundabout rings
+    ring_cands = []         # the roads the road tiles draw (fid, spec, pts, None): roundabout rings (islands.ring_fids)
     approaches = {}         # (connector, fid, end) -> (graph node next to it, traffic comes in)
     pending = {}            # name -> (x, y) of nodes whose z is still to sample
     node_fid = {}           # name -> the feature it was made on (its deck, if any)
@@ -151,7 +151,7 @@ def build(frame, feats_list, elev, centre, urban_fn=None, window=WINDOW_M, decks
             p = np.stack([e, n], 1)
             if (np.abs(p[:, 0] - cx).min() > window + 200) or (np.abs(p[:, 1] - cy).min() > window + 200):
                 continue
-            if rspecs[i] is not None and rspecs[i].oneway:
+            if rspecs[i] is not None:
                 ring_cands.append((fid, rspecs[i], np.column_stack([p, np.zeros(len(p))]), None))
             seg = np.hypot(*np.diff(p, axis=0).T)
             s = np.concatenate([[0.0], np.cumsum(seg)])

@@ -225,7 +225,7 @@ def junction_props(roads, box, curb_h=0.15, left_hand=False):
     junctions = _arms(roads)
     link_ok = _link_check(junctions)
     import islands
-    ring = islands.ring_fids([r for r in roads if r[1].oneway])
+    ring = islands.ring_fids(roads)
     for k, arms in junctions.items():
         if len(arms) < 3 or not all(a[1].urban for a in arms):
             continue
