@@ -139,32 +139,52 @@ JUNCTION_SNAP_M = 1.0       # road ends this close are one junction
 
 
 def _arms(roads):
-    """Junctions: {(x, y) rounded: [(fid, spec, unit vector away from the junction), ...]} of road ends that
-    meet (Overture splits segments at their connectors)."""
+    """Junctions: {(x, y) rounded: [(fid, spec, unit vector away from the junction, point, at its start, road
+    length), ...]} of road ends that meet (Overture splits segments at their connectors)."""
     ends = {}
     for fid, spec, pts, _ in roads:
         if len(pts) < 2:
             continue
-        for p, q in ((pts[0], pts[1]), (pts[-1], pts[-2])):
+        length = float(np.sum(np.hypot(*np.diff(pts[:, :2], axis=0).T)))
+        for p, q, start in ((pts[0], pts[1], True), (pts[-1], pts[-2], False)):
             d = q[:2] - p[:2]
             L = float(np.hypot(*d))
             if L < 1e-3:
                 continue
             k = (round(float(p[0]) / JUNCTION_SNAP_M), round(float(p[1]) / JUNCTION_SNAP_M))
-            ends.setdefault(k, []).append((fid, spec, d / L, p))
+            ends.setdefault(k, []).append((fid, spec, d / L, p, start, length))
     return ends
 
 
-def junction_controls(arms, k):
+LINK_M = 30.0           # a road this short joining two signalled junctions is a link inside one intersection (the
+                        # crossing of a divided road's median): no signal on it
+
+
+def _outbound(a):
+    """Does traffic on arm a (fid, spec, u, p[, at its start[, length]]) only leave the junction (one-way away)?"""
+    if len(a) < 5 or not a[1].oneway or not getattr(a[1], "dir", 0):
+        return False
+    return (a[1].dir > 0) == bool(a[4])
+
+
+def _is_signalled(arms):
+    major = [a for a in arms if a[1].cls in MAJOR]
+    return len(major) >= 3 or (len(major) >= 2 and len(arms) >= 4)
+
+
+def junction_controls(arms, k, link_ok=None):
     """[(arm, G_SIGNAL | G_STOP)] of an urban junction's arms (fid, spec, unit vector away, point): signals on
     every arm where two or more major roads meet, stop signs on the minor arms meeting a major road, on the
     stem of a minor T and on half the minor four-ways (hashed by the junction's 8 m cell; k is unused). Shared with
     navgraph.py, so the AI's signals and stop signs are where the props stand."""
     major = [a for a in arms if a[1].cls in MAJOR]
     minor = [a for a in arms if a[1].cls in MINOR]
-    signalled = len(major) >= 3 or (len(major) >= 2 and len(arms) >= 4)
-    if signalled:
-        return [(a, G_SIGNAL) for a in arms if a[1].cls in MAJOR | MINOR]
+    if _is_signalled(arms):
+        # one head per way in: none on a one-way arm leaving it, none on a short link to the next signalled
+        # junction (a divided road crossing a street is two junctions 20 m apart: the user's report 2026-10-14,
+        # Boston St, "way too many traffic lights"); link_ok(arm) says whether that link's far end is signalled
+        return [(a, G_SIGNAL) for a in arms if a[1].cls in MAJOR | MINOR and not _outbound(a)
+                and not (link_ok is not None and len(a) >= 6 and a[5] < LINK_M and link_ok(a))]
     if major:
         return [(a, G_STOP) for a in minor]
     if len(arms) == 3:
@@ -180,6 +200,18 @@ def junction_controls(arms, k):
     return [(a, G_STOP) for a in minor] if _h01("allway", key) < 0.5 else []
 
 
+def _link_check(junctions):
+    """link_ok(arm) for junction_controls: is the junction at the other end of arm's road a signalled urban one?"""
+    where = {}                                  # (fid, at start) -> the junction's arms
+    for arms in junctions.values():
+        for a in arms:
+            where[(a[0], a[4])] = arms
+    def link_ok(a):
+        other = where.get((a[0], not a[4]))
+        return other is not None and len(other) >= 3 and all(x[1].urban for x in other) and _is_signalled(other)
+    return link_ok
+
+
 def junction_props(roads, box, curb_h=0.15, left_hand=False):
     """Signals at urban junctions of two or more major roads (every arm), stop signs at urban junctions
     of minor roads (the minor arms meeting a major road; the stem of a T; half the four-way ones, hashed).
@@ -187,17 +219,19 @@ def junction_props(roads, box, curb_h=0.15, left_hand=False):
     the drivers who come in."""
     x0, y0, x1, y1 = box
     rows = []
-    for k, arms in _arms(roads).items():
+    junctions = _arms(roads)
+    link_ok = _link_check(junctions)
+    for k, arms in junctions.items():
         if len(arms) < 3 or not all(a[1].urban for a in arms):
             continue
         p = arms[0][3]
         if not (x0 <= p[0] < x1 and y0 <= p[1] < y1):
             continue
-        put = junction_controls(arms, k)
+        put = junction_controls(arms, k, link_ok)
         if not put:
             continue
         wide = max(a[1].width for a in arms) / 2
-        for (fid, spec, u, c), what in put:
+        for (fid, spec, u, c, *_), what in put:
             # the approach comes in along -u; its right is (-u_y, u_x)... rotated: right of travel (-u)
             inc = -u
             right = np.array([inc[1], -inc[0]]) * (-1 if left_hand else 1)     # the kerb side of the approach

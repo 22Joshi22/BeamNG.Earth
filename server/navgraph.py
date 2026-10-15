@@ -114,7 +114,7 @@ def build(frame, feats_list, elev, centre, urban_fn=None, window=WINDOW_M, decks
     measured street widths (roadwidth.py), so the AI's lanes are on the carriageway the road mesh draws."""
     cx, cy = centre
     nodes, edges, seen = {}, [], set()
-    prop_arms = {}          # connector name -> [(fid, spec, unit vector away, point, end)] (the props' view)
+    prop_arms = {}          # connector name -> [(fid, spec, unit vector away, point, end, length)] (the props' view)
     approaches = {}         # (connector, fid, end) -> (graph node next to it, traffic comes in)
     pending = {}            # name -> (x, y) of nodes whose z is still to sample
     node_fid = {}           # name -> the feature it was made on (its deck, if any)
@@ -162,7 +162,7 @@ def build(frame, feats_list, elev, centre, urban_fn=None, window=WINDOW_M, decks
                     dl = float(np.hypot(*dd))
                     if dl > 1e-6:
                         prop_arms.setdefault("c" + str(con.value[r]), []).append(
-                            (fid, rspecs[i], dd / dl, np.array([p[j0][0], p[j0][1], 0.0]), end))
+                            (fid, rspecs[i], dd / dl, np.array([p[j0][0], p[j0][1], 0.0]), end, L))
             if spec.cls not in DRIVE or roads._rule_value(sub, i) in SKIP_SUBCLASSES:
                 continue
             tunnels = [(a_, b_) for a_, b_, k_ in roads.level_ranges(feats, i) if k_ == "tunnel"]
@@ -273,10 +273,14 @@ def _signals(arms, approaches, nodes, left_hand=False):
     approach), the travel direction, the phase (0 / 1, by the approach's axis) and the head's prop transform."""
     import furniture
     out = []
+    # furniture's arm tuples (fid, spec, u, point, at its start, length): the same decision as the road tiles' props
+    farms = {name: [(x[0], x[1], x[2], x[3], x[4] == 0, x[5] if len(x) > 5 else math.inf) for x in a]
+             for name, a in arms.items()}
+    link_ok = furniture._link_check(farms)
     for name, a in arms.items():
         if name not in nodes or len(a) < 3 or not all(x[1].urban for x in a):
             continue
-        put = furniture.junction_controls([x[:4] for x in a], None)
+        put = furniture.junction_controls(farms[name], None, link_ok)
         if not put:
             continue
         kind = "signal" if put[0][1] == furniture.G_SIGNAL else "stop"
@@ -286,7 +290,7 @@ def _signals(arms, approaches, nodes, left_hand=False):
         app = []
         for arm, _ in put:
             full = next(x for x in a if x[0] == arm[0] and x[2] is arm[2])
-            fid, spec, u, _, end = full
+            fid, spec, u, _, end, *_ = full
             nb, incoming = approaches.get((name, fid, end), (None, False))
             if not incoming or nb not in nodes:
                 continue

@@ -94,6 +94,19 @@ class JunctionTest(unittest.TestCase):
         for r in rows:              # on the approach's right, outside the carriageways
             self.assertGreater(max(abs(r[1] - 100), abs(r[2] - 100)), 5.0)
 
+    def test_divided_road_crossing_one_signal_per_way_in(self):
+        # Boston St: a divided road (two one-way carriageways 20 m apart) crossing a street is two junctions; the
+        # user saw ten heads there (2026-10-14). One per way in: none on the arms leaving, none across the median.
+        def seg(fid, cls, a, b, oneway=False):
+            sp = roads.Spec(10.0, "paved", True, cls, oneway, 2.5, 1 if oneway else 0)
+            return (fid, sp, np.array([(a[0], a[1], 0.0), (b[0], b[1], 0.0)]), 0.0)
+        rs = [seg("eb_w", "primary", (20, 100), (100, 100), True), seg("eb_e", "primary", (100, 100), (180, 100), True),
+              seg("wb_e", "primary", (180, 120), (100, 120), True), seg("wb_w", "primary", (100, 120), (20, 120), True),
+              seg("s", "tertiary", (100, 100), (100, 20)), seg("link", "tertiary", (100, 100), (100, 120)),
+              seg("n", "tertiary", (100, 120), (100, 200))]
+        rows = furniture.junction_props(rs, (0, 0, 256, 256))
+        self.assertEqual([r[0] for r in rows], [furniture.G_SIGNAL] * 4, "the two carriageways' and the street's ways in")
+
     def test_left_hand_traffic_stands_them_on_the_left(self):
         rs = [self.arm("e", "residential", 1, 0), self.arm("w", "residential", -1, 0), self.arm("s", "residential", 0, -1)]
         rows = furniture.junction_props(rs, (0, 0, 256, 256), left_hand=True)
