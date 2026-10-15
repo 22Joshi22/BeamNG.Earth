@@ -83,7 +83,7 @@ local lattice = require('beamngEarth/lattice')
 lattice.configure(512)
 T.check(f.configure(512) == 512, 'configure(512)')
 T.check(f.SIZE == 512 and f.HALF == 512 and f.GRID == 128 and f.PREPARE_DIST == 128 and f.COMMIT_DIST == 192
-  and f.HARD_COMMIT_DIST == 320 and f.EDGE_MARGIN == 250 and f.REACH == 260 and f.LOOKAHEAD_S == 2
+  and f.HARD_COMMIT_DIST == 320 and f.EDGE_MARGIN == 250 and f.REACH == 260 and f.LOOKAHEAD_S == 5
   and f.RECHECK_S == 2 and f.FAST_MODE_V == 150, '512 table active')
 T.check(f.REACH_FAST == 420 and f.LOOKAHEAD_FAST_S == 3 and f.PREP_AHEAD_FAST_S == 0.75, 'fast mode: reach 420, 3 s, test 0.75 s ahead')
 x0, y0 = f.blockOrigin(128, -384)
@@ -101,7 +101,7 @@ end
 -- 40 m/s geometry: prepare past 128 m, commit past 192 m
 T.check(d(128, 0, 40, 0, 0, 0, nil, 0, 0) == nil, '512: at 128 m: no request')
 a, cx, cy = d(129, 0, 40, 0, 0, 0, nil, 0, 0)
-T.check(a == 'prepare' and cx == 256 and cy == 0, '512: past 128 m: prepare snap128(p + 2 s v)')
+T.check(a == 'prepare' and cx == 384 and cy == 0, '512: past 128 m: prepare snap128(p + 5 s v)')
 pend = { cx = 256, cy = 0, ready = true }
 T.check(d(192, 0, 40, 0, 0, 0, pend, 0, 0) == nil, '512: ready at 192 m: hold')
 T.check(d(193, 0, 40, 0, 0, 0, pend, 0, 0) == 'commit', '512: ready past 192 m: commit')

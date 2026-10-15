@@ -43,7 +43,8 @@ M.COMMIT_DIST_512 = 192
 M.HARD_COMMIT_DIST_512 = 320
 M.EDGE_MARGIN_512 = 250
 M.REACH_512 = 510 - M.EDGE_MARGIN_512        -- 260 m; the collidable east/north edge is at +510
-M.LOOKAHEAD_S_512 = 2
+M.LOOKAHEAD_S_512 = 5                       -- (was 2: a hop of 128-256 m at road speeds; 5 s hops 256-384 m: each
+                                             -- move is a ~50 ms frame, the new block's first draw; 2026-10-15)
 M.RECHECK_S_512 = 2
 M.RECHECK_SAFE_512 = 510 - 150               -- the re-check waits only while the player stays this close
 M.FAST_V_512 = 150

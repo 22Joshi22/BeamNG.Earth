@@ -239,11 +239,11 @@ class FollowRule:
 
 
 # docs/V1_4_SPEC.md §3.5 (M4): the 512² block (collidable [c-512, c+510]) on a 128 m grid: prepare at
-# 128 m, lead 2 s, reach 510 - 250 = 260 m; fast mode above 150 m/s: lead 3 s, reach 510 - 90 = 420 m,
+# 128 m, lead 5 s (was 2: 2026-10-15, fewer moves), reach 510 - 250 = 260 m; fast mode above 150 m/s: lead 3 s, reach 510 - 90 = 420 m,
 # prepare test 0.75 s ahead; the prefetch starts 28 m before the prepare distance.
 FOLLOW_RULES = {
     1024: FollowRule(heightmap.GRIDS[1024], FOLLOW_PREPARE, FOLLOW_LEAD, FOLLOW_REACH, PREFETCH_START),
-    512: FollowRule(heightmap.GRIDS[512], 128.0, 2.0, 260.0, 100.0,
+    512: FollowRule(heightmap.GRIDS[512], 128.0, 5.0, 260.0, 100.0,
                     fast_v=150.0, fast_lead=3.0, fast_reach=420.0, fast_ahead=0.75),
 }
 BLOCK_DEFAULT = 1024        # Server()'s block (test_v131_default.py pins the library default)
