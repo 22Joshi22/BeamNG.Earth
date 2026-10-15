@@ -16,11 +16,11 @@ M.RINGS = { { 300, 1.0 }, { 700, 0.6 }, { 1500, 0.35 }, { 1e9, 0.2 } }   -- tile
 M.GROUP_MAX_M = { door = 120, hydrant = 200, bin = 200, bench = 200, polelamp = 400, stop = 300, signal = 500,
   fence = 150, wallsign_logistics = 800, wallsign_rentabox = 800, wallsign_lemon = 800, wallsign_turboburger = 500,
   speed30 = 300, speed40 = 300, speed50 = 300, speed60 = 300, speed70 = 300 }
-M.FOREST_NAME = 'bngEarthForest'      -- a prefix: one Forest per tile ('bngEarthForest_<key>')
--- One Forest per tile, deleted whole with its tile (2026-10-15, 100 mph drives: one shared Forest with ~240k items
--- made and ~220k removed over a session made frames with any tree change cost ~100 ms in the engine's tick, and a
--- fresh game ran the same drive at 71 fps instead of 30-42; a small Forest per tile keeps each change cheap and drops
--- a tile without removing its items one by one)
+M.FOREST_NAME = 'bngEarthForest'      -- a prefix: small Forests from a pool ('bngEarthForest_<n>')
+-- A small Forest per tile, from a pool (2026-10-15, 100 mph drives: one shared Forest with ~240k items made and ~220k
+-- removed over a session made frames with any tree change cost ~100 ms in the engine's tick, and a fresh game ran the
+-- same drive at 71 fps instead of 30-42). A dropped tile's items are removed (cheap in its small Forest) and the empty
+-- Forest goes back to the pool: deleting a Forest whose items are in the physics' static collision hung the game.
 -- Items made this close to the player ask for a collision rebuild (roads.lua, throttled): a Forest item collides only
 -- after be:reloadCollision, and where no road tile arrives (the Sahara's rocks, 2026-10-14) none came at all
 M.COLLIDE_M = 400
@@ -140,25 +140,33 @@ local types = {}        -- shape path -> TSForestItemData
 local ready = false
 M.made, M.removed, M.errors = 0, 0, 0
 
--- Pure: the tile's Forest name.
-function M.forestName(key)
-  return M.FOREST_NAME .. '_' .. tostring(key):gsub('[^%w]', '_')
+local pool = {}          -- ids of empty Forests to reuse
+local forestCount = 0
+M.forests = 0
+
+-- Pure: the n-th pool Forest's name.
+function M.forestName(n)
+  return M.FOREST_NAME .. '_' .. tostring(n)
 end
 
-local function forest(t, key)
+-- The tile's Forest: its own, else one from the pool, else a new one.
+local function forest(t)
   local f = t.forestId and scenetree.findObjectById(t.forestId)
+  while not f and #pool > 0 do f = scenetree.findObjectById(table.remove(pool)) end
   if not f then
+    forestCount = forestCount + 1
     f = createObject('Forest')
-    f:registerObject(M.forestName(key))
+    f:registerObject(M.forestName(forestCount))
     if scenetree.MissionGroup then scenetree.MissionGroup:addObject(f) end
-    t.forestId = f:getID()
+    M.forests = forestCount
   end
+  t.forestId = f:getID()
   return f
 end
 
-local function deleteForest(t)
-  local f = t.forestId and scenetree.findObjectById(t.forestId)
-  if f then f:delete() end
+-- An emptied tile's Forest back to the pool.
+local function releaseForest(t)
+  if t.forestId then pool[#pool + 1] = t.forestId end
   t.forestId = nil
 end
 
@@ -298,13 +306,16 @@ function M.update(anchorId, player)
   local budget = M.PER_FRAME
   for key, t in pairs(tiles) do
     if t.anchor ~= anchorId or t.drop then
-      if budget <= 0 then return end
-      local n = 0
-      for _ in pairs(t.made) do n = n + 1 end
-      deleteForest(t)                       -- the tile's whole Forest: no item-by-item removal
-      M.removed = M.removed + n
+      local f = t.forestId and scenetree.findObjectById(t.forestId)
+      local fd = f and f:getData()
+      for i, it in pairs(t.made) do
+        if budget <= 0 then return end
+        if fd then removeItem(fd, it) end
+        t.made[i] = nil
+        budget = budget - 1
+      end
+      releaseForest(t)
       tiles[key] = nil
-      budget = budget - math.min(n, 50)
     end
   end
   if not player then return end
@@ -326,7 +337,7 @@ function M.update(anchorId, player)
   for _, o in ipairs(order) do
     local t = tiles[o[1]]
     local fd = nil                          -- the tile's Forest data, made when it first needs an item
-    local function data() fd = fd or forest(t, o[1]):getData(); return fd end
+    local function data() fd = fd or forest(t):getData(); return fd end
     local want = threshold(o[2])
     local band = groupBand(t, o[2])
     if want ~= t.shown or band ~= t.band or t.pending then
@@ -359,13 +370,18 @@ end
 
 -- Disconnect, a new server session, mod unload: every item removed.
 function M.clear()
-  for _, t in pairs(tiles) do deleteForest(t) end
+  for _, t in pairs(tiles) do
+    local f = t.forestId and scenetree.findObjectById(t.forestId)
+    local fd = f and f:getData()
+    for _, it in pairs(t.made) do if fd then removeItem(fd, it) end end
+    releaseForest(t)
+  end
   tiles = {}
 end
 
 -- Level end: the level deletes its objects itself.
 function M.reset()
-  tiles, types, ready = {}, {}, false
+  tiles, types, ready, pool, forestCount = {}, {}, false, {}, 0
 end
 
 function M.status()
