@@ -29,14 +29,29 @@ roads, water, navigation, traffic, cities).
   wires, traffic signals, stop signs and speed-limit signs (mph or km/h by country).
 - Water: the sea with real depth (cars sink), lakes, and rivers kept beside the roads.
 - Airports with graded, marked runways.
-- Real sky (sun, moon and stars for the place and time), real weather (rain, snow, wind, clouds from
-  Open-Meteo) and real gravity.
 
-**Driving**
+**Time, weather and physics**
+- **Real time**: the sun, moon and stars are where they really are for the place, the date and the clock
+  (the real time zone); the clock runs in real time. Change the time in the pause menu and the mod hands it
+  over to you (switch back to Real any time).
+- **Real weather** at the player from Open-Meteo, updated as you travel: cloud cover and high cirrus, clouds
+  drifting with the wind aloft, fog from the real visibility, ground wind with gusts that pushes the cars,
+  rain and snow, the air temperature, and the sun dimming under overcast. It goes through the game's own
+  weather system, so the Time & Weather menu shows the real values; a manual mode leaves it to you.
+- **Seasons**: the photos' colours and the trees' leaves follow the time of year (autumn colours, bare
+  trees in winter where the photos were taken leaf-off).
+- **Real gravity**: the WGS84 gravity for your latitude and altitude plus the EGM2008 local anomalies, so
+  gravity really is weaker on a mountain or at the equator.
+
+**Driving and traffic**
 - Drive anywhere: the physics ground follows the car at 100+ mph, the world origin moves with you
-  (floating origin), and the world streams ahead of you.
-- Parked cars along streets and in lots (stock BeamNG parking).
-- A road graph for the game's AI: stock traffic and police can be turned on.
+  (floating origin), and the world streams ahead of you; you never fall out of the world.
+- **AI support**: the mod builds BeamNG's road graph (the AI's map) from the real roads around you, with
+  lanes, one-way streets, speed limits (mapped, or the country's defaults), the country's driving side and
+  road rules, and traffic signals at real junctions. The stock AI, traffic, police and the AI modes in the
+  vehicle menu work on it.
+- **Traffic**: stock BeamNG traffic and police can be switched on, and parked cars line the streets and fill
+  parking lots (stock BeamNG parking).
 
 **Map and navigation**
 - World map (**M**): pan and zoom the globe, borders and place names, search for addresses and
