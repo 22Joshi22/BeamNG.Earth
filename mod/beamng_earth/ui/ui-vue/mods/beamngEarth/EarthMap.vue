@@ -518,11 +518,14 @@ function onContext(ev) {
   ctx.value = { x: Math.min(p.x, w.value - 210), y: Math.min(p.y, h.value - 170), lat: ll.lat, lon: ll.lon }
 }
 function closeCtx() { ctx.value = null }
+// picked from the right-click menu: straight away (a second "Teleport here?" with the same choices was one click too
+// many, the user 2026-10-14); a failure shows in the confirmation box
 function ctxTeleport() {
   if (!ctx.value || state.value.cannotGo) return
   const c = ctx.value
   closeCtx()
   askTeleport(c.lat, c.lon, "")
+  teleport()
 }
 function ctxSave() {
   if (!ctx.value) return
