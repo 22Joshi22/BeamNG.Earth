@@ -72,7 +72,8 @@ WALL_TINTS = {               # houses with plain walls and laid-over windows: th
     SIDING: ((0.96, 0.95, 0.92), (0.90, 0.86, 0.76), (0.78, 0.84, 0.90), (0.95, 0.92, 0.74), (0.78, 0.84, 0.74),
              (0.82, 0.78, 0.72), (0.70, 0.72, 0.75), (0.62, 0.20, 0.17), (0.66, 0.24, 0.20)),   # the last: barn red
     STUCCO: ((1.0, 0.97, 0.90), (0.96, 0.88, 0.74), (0.93, 0.80, 0.68), (0.98, 0.95, 0.88), (0.88, 0.84, 0.78)),
-    PANEL: ((0.96, 0.94, 0.89), (0.86, 0.86, 0.86), (0.92, 0.85, 0.74), (0.78, 0.80, 0.82), (0.88, 0.78, 0.68)),
+    PANEL: ((0.96, 0.94, 0.89), (0.86, 0.86, 0.86), (0.92, 0.85, 0.74), (0.78, 0.80, 0.82), (0.88, 0.78, 0.68),
+            (0.62, 0.62, 0.60), (0.56, 0.54, 0.50)),    # the last two: weathered concrete (parking decks)
     METALWALL: ((0.88, 0.89, 0.90), (0.72, 0.74, 0.77), (0.84, 0.80, 0.72), (0.66, 0.72, 0.78)),
 }
 for _m, _cs in list(ROOF_TINTS.items()) + list(WALL_TINTS.items()):
@@ -915,7 +916,8 @@ def _parking_deck(m, spec, gmin, gmax, mat_idx):
     if plan_ is None:
         return False
     ring, floors, storey, (i, A, u, n, s0, s1) = plan_
-    mat = mat_idx[f"{PANEL}|{int(_hash01(spec.seed, 'deck') * len(WALL_TINTS[PANEL]))}"]
+    # weathered concrete (Baltimore's street photos: the white decks read as a skeleton; city garages are grey)
+    mat = mat_idx[f"{PANEL}|{len(WALL_TINTS[PANEL]) - 1 - int(_hash01(spec.seed, 'deck') * 2)}"]
     W, e = DECK_LANE_M, DECK_EDGE_M
     depth = e + 2 * W
     zs = [gmax + 0.03 + k * storey for k in range(floors + 1)]
