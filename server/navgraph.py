@@ -21,6 +21,9 @@ DRIVE = {"motorway": (1.0, 65), "trunk": (1.0, 55), "primary": (1.0, 45), "secon
          "service": (0.4, 15), "unknown": (0.6, 25)}
 SKIP_SUBCLASSES = {"driveway", "parking_aisle", "sidewalk", "crosswalk", "cycle_crossing"}
 URBAN_MPH_CAP = {"primary": 35, "secondary": 35, "tertiary": 30}   # in town (spec.urban) unless mapped
+# the km/h countries' rural defaults for the fast classes (Europe's 120-130 motorways: Bavaria's A9, unmapped, was
+# driven at the US 65 mph, 2026-10-15)
+KMH_DEFAULT = {"motorway": 120, "trunk": 100, "primary": 80, "secondary": 70}
 MPH = 0.44704
 LANE_W_M = 3.3
 SIMPLIFY_M = 0.6            # a shape point is kept where the chord would be off by more than this
@@ -28,7 +31,7 @@ MAX_EDGE_M = 80.0           # long straight edges are split (the AI and the spaw
 WINDOW_M = 1100.0           # half size of the square around the player the graph covers
 
 
-def road_mph(feats, i, spec):
+def road_mph(feats, i, spec, mph=True):
     """The speed limit (mph) of road feature i: the mapped one at its middle, else the class default (capped
     in town for arterials), or None for a class the AI does not drive. Shared by the graph and the road tiles'
     speed signs (furniture.py), so a sign shows what the traffic drives."""
@@ -39,10 +42,12 @@ def road_mph(feats, i, spec):
         for r in speed.rows(i):
             if speed.start[r] <= 0.5 <= speed.end[r]:
                 return float(speed.value[r]) / 1.609344
-    mph = DRIVE[spec.cls][1]
+    v = DRIVE[spec.cls][1]
+    if not mph and spec.cls in KMH_DEFAULT:
+        v = KMH_DEFAULT[spec.cls] / 1.609344
     if spec.urban and spec.cls in URBAN_MPH_CAP:
-        mph = min(mph, URBAN_MPH_CAP[spec.cls])
-    return float(mph)
+        v = min(v, URBAN_MPH_CAP[spec.cls])
+    return float(v)
 
 
 def _rdp(p, tol):
@@ -104,7 +109,8 @@ def _deck_z(decks, fid, x, y):
     return None if best is None else best[1]
 
 
-def build(frame, feats_list, elev, centre, urban_fn=None, window=WINDOW_M, decks=None, widths=None, left_hand=False):
+def build(frame, feats_list, elev, centre, urban_fn=None, window=WINDOW_M, decks=None, widths=None, left_hand=False,
+          mph=True):
     """{"nodes": {name: [x, y, z, radius]}, "edges": [[in, out, oneway, lanes_out, lanes_in, speed m/s,
     drivability, radius]]} of the drivable roads in the square of half size `window` around centre (x, y) of
     the anchor frame. feats_list: the "roads" mapgeom.Features of the cells around (duplicates across cells
@@ -197,7 +203,7 @@ def build(frame, feats_list, elev, centre, urban_fn=None, window=WINDOW_M, decks
             w = driving_width(spec)       # the AI's lanes and radius: not the parking lanes
             mid = 0.5
             driv = DRIVE[spec.cls][0]
-            v = road_mph(feats, i, spec) * MPH
+            v = road_mph(feats, i, spec, mph) * MPH
             direction = 0
             if ow is not None:
                 for r in ow.rows(i):

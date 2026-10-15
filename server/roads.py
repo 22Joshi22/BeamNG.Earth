@@ -1555,7 +1555,7 @@ def build_tile(frame, tx, ty, cells, elev, urban_fn=None, walks=None, bridges=No
     if props is not None and walks is not None:     # street lights and utility poles (furniture.py)
         import furniture
         import navgraph
-        speeds = {fid: navgraph.road_mph(f, i, sp) for fid, (f, i, sp) in seen.items()}
+        speeds = {fid: navgraph.road_mph(f, i, sp, mph) for fid, (f, i, sp) in seen.items()}
         props.extend(furniture.place(roads, walks, (x0, y0, x1, y1), wires=wires, town=bool(town), left_hand=left_hand,
                                      speeds={k: v for k, v in speeds.items() if v is not None}, mph=mph))
     if park is not None and walks is not None:      # curbside parking spots (parking.py)

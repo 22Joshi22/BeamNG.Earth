@@ -845,6 +845,8 @@ Next, from the photo comparisons (docs/research/streetview/fp*, base_*):
 - **Roundabouts** (user report 2026-10-14, Harbor Point, 39.2801, -76.5890): the ring is cobbles with a D-shaped
   sidewalk island, odd sidewalk pieces at the entries and road patches that do not meet; needs proper roundabout
   handling (Overture junction=roundabout rings: one-way ring road, a raised round island, splitter islands).
+- **Roundabout furniture** (2026-10-15, Timisoara 45.7427, 21.2430): a traffic-signal pole and a stop sign stood on
+  the ring road; furniture at junction nodes ignores the ring.
 - **Sidewalks at offset multi-road junctions** (user report 2026-10-14 19:35, Fells Point 39.28188, -76.59114):
   five roads where Overture's connectors sit ~10 m apart (a diagonal street and a N-S street meeting an E-W one at
   two nodes) get no curb returns on that side (junctions.py pairs arms at one node), so the sidewalks end in bare

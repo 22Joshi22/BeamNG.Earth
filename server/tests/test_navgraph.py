@@ -9,6 +9,7 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import navgraph  # noqa: E402
+import roads  # noqa: E402
 from test_roads import FRAME, features, flat, rules  # noqa: E402
 
 
@@ -107,6 +108,17 @@ class SignalsTest(unittest.TestCase):
 
 
 class RulesTest(unittest.TestCase):
+    def test_default_speeds_by_country(self):
+        class F:            # a feature without a mapped limit
+            rules = {}
+        mw = roads.Spec(11.0, "paved", False, "motorway", True)
+        self.assertAlmostEqual(navgraph.road_mph(F, 0, mw), 65.0)
+        self.assertAlmostEqual(navgraph.road_mph(F, 0, mw, mph=False) * 1.609344, 120.0)
+        town = roads.Spec(9.0, "paved", True, "primary", False)
+        self.assertAlmostEqual(navgraph.road_mph(F, 0, town, mph=False), 35.0, msg="in town: the urban cap")
+        res = roads.Spec(6.0, "paved", True, "residential", False)
+        self.assertAlmostEqual(navgraph.road_mph(F, 0, res, mph=False), 25.0)
+
     def test_driving_side_and_signals_by_country(self):
         self.assertEqual(navgraph.road_rules("US"), {"rightHandDrive": False, "turnOnRed": True, "redYellow": False,
                                                      "country": "US", "mph": True})
