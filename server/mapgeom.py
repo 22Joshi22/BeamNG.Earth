@@ -36,6 +36,7 @@ class RuleTable:
     end: np.ndarray                     # float32 0..1
 
     _rows: dict = field(default=None, repr=False, compare=False)    # rows(): feature -> its row indices
+    _major: np.ndarray = field(default=None, repr=False, compare=False)     # major(): feature -> a row or -1
 
     def __len__(self):
         return len(self.feature)
@@ -49,6 +50,21 @@ class RuleTable:
             cut = np.flatnonzero(np.diff(f)) + 1
             self._rows = {int(g[0]): r for g, r in zip(np.split(f, cut), np.split(order, cut))} if len(f) else {}
         return self._rows.get(int(i), _NO_ROWS)
+
+    def major(self, i):
+        """The row of feature i's rule covering the largest share of it (the first such row), or -1. One
+        sort for the whole table (a road cell asked ~10 tables for each of its ~3000 features)."""
+        if self._major is None:
+            m = len(self.feature)
+            f = np.asarray(self.feature, np.int64)
+            maj = np.full(int(f.max()) + 1 if m else 0, -1, np.int64)
+            if m:
+                span = self.end - self.start
+                order = np.lexsort((np.arange(m), -span, f))
+                first = np.r_[True, f[order][1:] != f[order][:-1]]
+                maj[f[order][first]] = order[first]
+            self._major = maj
+        return int(self._major[i]) if 0 <= i < len(self._major) else -1
 
     def for_feature(self, i):
         r = self.rows(i)

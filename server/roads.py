@@ -118,11 +118,8 @@ def _rule_value(table, i):
     """The value of the rule of feature i covering the largest share of it, or None."""
     if table is None or len(table.feature) == 0:
         return None
-    sel = table.rows(i)
-    if len(sel) == 0:
-        return None
-    span = table.end[sel] - table.start[sel]
-    return table.value[sel[int(np.argmax(span))]]
+    j = table.major(i)
+    return None if j < 0 else table.value[j]
 
 
 def level_ranges(feats, i):
@@ -267,24 +264,46 @@ def carriageway(cls, kind, urban, rule_width=None, oneway=False):
     return w
 
 
-def _dir_kmh(feats, i, ncon):
+def _dir_kmh(feats, i, ncon, lengths=None):
     """(one-way direction along the geometry +1 / -1 or 0, speed limit km/h or None, m per junction or None)
-    of feature i; ncon: connectors per feature (None: unknown)."""
+    of feature i; ncon: connectors per feature (None: unknown); lengths: _lengths(feats) (None: measured
+    here)."""
     rules = feats.rules
     v = _rule_value(rules.get("oneway"), i)
     d = 0 if v is None else (-1 if float(v) < 0 else 1)
     k = _rule_value(rules.get("max_speed_kmh"), i)
     gap = None
     if ncon is not None and ncon[i] >= 2:
-        a = feats.coord_off[feats.ring_off[feats.part_off[i]]]
-        b = feats.coord_off[feats.ring_off[feats.part_off[i + 1]]]
-        ll = feats.lonlat[a:b]
-        if len(ll) >= 2:
-            m = 111320.0
-            L = float(np.sum(np.hypot(np.diff(ll[:, 0]) * m * math.cos(math.radians(float(ll[0, 1]))),
-                                      np.diff(ll[:, 1]) * m)))
-            gap = L / (ncon[i] - 1)
+        L = (lengths if lengths is not None else _lengths(feats, i))[i if lengths is not None else 0]
+        if L is not None and not np.isnan(L):
+            gap = float(L) / (ncon[i] - 1)
     return d, (float(k) if k is not None and float(k) > 0 else None), gap
+
+
+def _lengths(feats, only=None):
+    """Length (m, lon scaled by the cos of each feature's first latitude) of every feature's geometry, NaN for
+    fewer than two points; only: just that feature (an array of one). All features at once: one numpy pass
+    instead of ~3000 small ones a cell."""
+    po, ro, co = feats.part_off, feats.ring_off, feats.coord_off
+    idx = np.arange(len(feats)) if only is None else np.array([only])
+    a = np.asarray(co[ro[po[idx]]], np.int64)
+    b = np.asarray(co[ro[po[idx + 1]]], np.int64)
+    out = np.full(len(idx), np.nan)
+    ll = np.asarray(feats.lonlat, np.float64)
+    cnt = b - a
+    if not len(idx) or cnt.sum() < 2:
+        return out
+    m = 111320.0
+    fid = np.repeat(np.arange(len(idx)), cnt)
+    pos = np.concatenate([np.arange(x, y) for x, y in zip(a, b)]) if only is not None else np.arange(a[0], b[-1])
+    pl = ll[pos]
+    same = fid[1:] == fid[:-1]
+    c = np.cos(np.radians(ll[np.minimum(a, len(ll) - 1), 1]))
+    seg = np.hypot(np.diff(pl[:, 0]) * m * c[fid[:-1]], np.diff(pl[:, 1]) * m)
+    L = np.bincount(fid[:-1][same], weights=seg[same], minlength=len(idx))
+    ok = cnt >= 2
+    out[ok] = L[ok]
+    return out
 
 
 DUAL_CLASSES = {"motorway", "trunk", "primary", "secondary", "tertiary"}
@@ -383,6 +402,7 @@ def road_specs(feats, urban_fn=None, widths=None, left_hand=False):
     ask = []                                    # (index in out, cls, kind, rule_w, coordinate range)
     cr = rules.get("connectors")
     ncon = np.bincount(np.asarray(cr.feature), minlength=len(feats)) if cr is not None and len(cr.feature) else None
+    lens = _lengths(feats) if ncon is not None else None
     for i in range(len(feats)):
         cls = str(feats.attrs["class"][i]) if "class" in feats.attrs else "unknown"
         if str(feats.attrs.get("subtype", ["road"] * len(feats))[i]) != "road" or cls not in STYLE:
@@ -398,7 +418,7 @@ def road_specs(feats, urban_fn=None, widths=None, left_hand=False):
         ow = _rule_value(rules.get("oneway"), i) is not None
         if rule_w is None and _rule_value(rules.get("subclass"), i) == "link":
             rule_w = LINK_M[1] if ow else LINK_M[2]
-        dk = _dir_kmh(feats, i, ncon)
+        dk = _dir_kmh(feats, i, ncon, lens)
         if urban_fn is not None and rule_w is None and kind in BUILT:
             a = feats.coord_off[feats.ring_off[feats.part_off[i]]]
             b = feats.coord_off[feats.ring_off[feats.part_off[i + 1]]]
