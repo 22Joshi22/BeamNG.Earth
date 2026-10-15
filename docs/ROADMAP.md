@@ -785,6 +785,23 @@ Next, from the photo comparisons (docs/research/streetview/fp*, base_*):
 - Forest edges along roads (humid country) get a thicket band of bigger bushes (vegetation.py EDGE_*);
   watch the frame time on wooded roads (about +20k bushes per z14 cell).
 
+## Overnight queue (2026-10-15, the user's priorities: bugs, performance at 100+ mph, a living world beyond
+## Baltimore, easy sharing)
+- Performance at 100+ mph: stable frame rate, no hitches (hitch attribution in core.lua; autodrive_perf at speed).
+- Imagery beyond Maryland: the keyless state / national sources in docs/research (us-state-imagery, imagery-sources-world).
+- Easy setup: a one-time info popup about the project; installer and first run streamlined; gcpatch optional.
+- Reports 2026-10-14 23:37-00:00:
+  - NYC 40.7488, -73.9922: a building's parts get different facades (brick block on a glass tower): decide per building.
+  - Garage deck undersides invisible (40.7494, -73.9928).
+  - Sahara 22.288, -4.642: rocks have no collision; check the rock density / other plants there.
+  - Skyscrapers all one texture and colour: vary them (match real colours where data allows).
+  - Large buildings: LODs / drawn much farther (like the horizon: what you'd see in real life).
+  - World map: tiles vanish while zooming (scale what is loaded until the new zoom arrives); 3D globe toggle;
+    map layers (roads, borders, country names).
+  - A slim status bar at the top (BeamMP-like) instead of the Lua status window: loading, performance, street /
+    city / country.
+  - Italy coast 40.190, 16.689: a pale rectangle in the sea (water tile mismatch?).
+
 ## Bugs to look at (reported, not fixed yet)
 - **Roundabouts** (user report 2026-10-14, Harbor Point, 39.2801, -76.5890): the ring is cobbles with a D-shaped
   sidewalk island, odd sidewalk pieces at the entries and road patches that do not meet; needs proper roundabout
