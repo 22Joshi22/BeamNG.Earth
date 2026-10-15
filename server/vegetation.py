@@ -31,7 +31,7 @@ import mapcells
 
 log = logging.getLogger("earthd.vegetation")
 
-VERSION = 8
+VERSION = 10
 TREE_MIN_M = 3.0
 CROWN_SPACING = 0.5          # tops kept this many crown radii apart (0.8 looked sparse: the user, 2026-10-13)
 BUSH_MIN_M = 1.0
@@ -49,6 +49,7 @@ SCATTER_CELL_M = 6.0        # the hashed scatter's grid (one candidate per cell)
 # of shrubs and vines under the trees; ours were bare ground between trunks), also under the canopy.
 SCATTER_P = {10: (0.30, 0.0), 20: (0.10, 0.04), 30: (0.01, 0.003), 60: (0.0, 0.08), 100: (0.02, 0.02)}
 UNDERSTORY = 10
+BUILT_NEAR_M = 60.0         # bare ground with built-up land this far around gets no scatter (squares, lots)
 # Forest edges along roads in humid country (Columbia's photos: a wall of shrubs, saplings and vines from the
 # ground up, where ours showed bare trunks over grass): a denser band of bigger bushes within EDGE_M of a road.
 EDGE_M = 7.0
@@ -349,7 +350,18 @@ class Vegetation:
         tree = Items(tlon2, tlat2, th.astype(np.float32), (0.12 * th + 1.0).astype(np.float32), kind, group,
                      _hash01(gx, gy, 5).astype(np.float32), (u2 * 360.0).astype(np.float32),
                      (0.85 + 0.3 * _hash01(gx, gy, 6)).astype(np.float32))
-        scatter = self._scatter(cd, lc, blocked, chm, hs)
+        # squares, pedestrian areas and parking lots: no scattered bushes or rocks (a real tree there stays)
+        paved = np.zeros(h.shape, bool)
+        try:
+            cl = self.md.cell((mapcells.ZOOM, x, y), layers=("land_use", "infrastructure"))
+            lu, inf = cl.layers.get("land_use"), cl.layers.get("infrastructure")
+            if lu is not None and len(lu) and lu.attrs.get("subtype") is not None:
+                _mask_polys(lu, paved, chm, 0.0, select=lu.attrs["subtype"].astype(str) == "pedestrian")
+            if inf is not None and len(inf) and inf.attrs.get("class") is not None:
+                _mask_polys(inf, paved, chm, 0.0, select=inf.attrs["class"].astype(str) == "parking")
+        except Exception as e:                  # not at hand: scattered as before
+            log.debug("vegetation: land use of %s: %s", (x, y), e)
+        scatter = self._scatter(cd, lc, blocked | paved, chm, hs)
         edge = self._edge(cd, lc, blocked, road, chm, hs)
         return _concat(_concat(tree, scatter), edge)
 
@@ -424,6 +436,15 @@ class Vegetation:
         ok = (c_ >= 0) & (c_ < hs.shape[1]) & (r_ >= 0) & (r_ < hs.shape[0])
         free = np.zeros(len(px), bool)
         free[ok] = ~blocked[r_[ok], c_[ok]] & ((hs[r_[ok], c_[ok]] < BUSH_MIN_M) | (cls[ok] == UNDERSTORY))
+        # bare land in a town is a square, a lot or a building site, not a rock field (desert rocks stood on
+        # Mexico City's Zocalo, 2026-10-15): none where built-up land is around (2 of 4 points BUILT_NEAR_M away)
+        bare = np.flatnonzero(free & (cls == WC["bare"]))
+        if len(bare):
+            near = np.zeros(len(bare), np.int64)
+            for dx, dy in ((BUILT_NEAR_M, 0.0), (-BUILT_NEAR_M, 0.0), (0.0, BUILT_NEAR_M), (0.0, -BUILT_NEAR_M)):
+                lo2, la2 = _to4326(px[bare] + dx, py[bare] + dy)
+                near += lc.sample(lo2, la2) == WC["built"]
+            free[bare[near >= 2]] = False
         rock = free & (u < pr)
         bush = free & ~rock & (u < pr + pb)
         sel = rock | bush
@@ -499,13 +520,14 @@ def _grid(chm, mx, my):
     return (np.asarray(mx) - chm.x0) / chm.dx, (chm.y0 - np.asarray(my)) / chm.dy
 
 
-def _mask_polys(f, mask, chm, grow_m, kind=3):
-    """Mark the polygons of Features f (buildings, water) on the CHM-grid mask, grown by grow_m."""
+def _mask_polys(f, mask, chm, grow_m, kind=3, select=None):
+    """Mark the polygons of Features f (buildings, water) on the CHM-grid mask, grown by grow_m (select: a
+    bool per feature, only those)."""
     if f is None:
         return
     n_r, n_c = mask.shape
     g = grow_m / chm.dx
-    for i in np.flatnonzero(f.kind == kind):
+    for i in np.flatnonzero((f.kind == kind) & (True if select is None else select)):
         for part in f.parts(i):
             rings = []
             for ring in part:
