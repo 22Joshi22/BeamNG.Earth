@@ -1154,9 +1154,10 @@ class DriveBase(unittest.TestCase):
         self.assertEqual(stats["rebases"], 1)
         self.assertEqual(stats["prepare_anchor"], 1, "one prepare_anchor per rebase")
         # the prefetch predicts the mod's requests: each terrain is built once, and only a straight-line
-        # prediction that the bend or the final stop overtook is never asked for
+        # prediction that the bend or the final stop overtook is never asked for (512 blocks' 5 s lead since
+        # 2026-10-15: a prediction further ahead, a few more of those)
         self.assertEqual(len(set(built)), hm_built, "a terrain was built twice")
-        self.assertLessEqual(len(unasked), 3, unasked)
+        self.assertLessEqual(len(unasked), 5, unasked)
         self.assertEqual(stats["superseded_tiles"], 0)
         self.assertFalse(far.unknown_removes, far.unknown_removes[:5])
         self.assertEqual(far.counters["unknown_swap_keys"], 0)
