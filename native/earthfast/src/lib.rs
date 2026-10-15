@@ -105,11 +105,115 @@ fn polyline_dist<'py>(py: Python<'py>, line: PyReadonlyArray2<'py, f64>, pts: Py
     v.into_pyarray(py)
 }
 
+/// furniture._clear: is (px, py) farther than its segment's half width + margin from every segment not owned by
+/// `own` (segs (m, 4), half (m,), owner (m,) as i64)?
+#[pyfunction]
+fn clear_of(segs: PyReadonlyArray2<f64>, half: PyReadonlyArray1<f64>, owner: PyReadonlyArray1<i64>, px: f64, py: f64,
+            own: i64, margin: f64) -> bool {
+    let s = segs.as_array();
+    let h = half.as_slice().unwrap();
+    let o = owner.as_slice().unwrap();
+    for i in 0..s.nrows() {
+        if o[i] == own {
+            continue;
+        }
+        if seg_dist(s[[i, 0]], s[[i, 1]], s[[i, 2]], s[[i, 3]], px, py) < h[i] + margin {
+            return false;
+        }
+    }
+    true
+}
+
+/// roads._dual_side: (share of a's ~10 m samples with b beside it gap_min..gap_max apart and parallel within
+/// cos_par, mean side of b over those: +1 left of a's direction, -1 right). a (k, 2), b (m, 2).
+#[pyfunction]
+fn dual_side(a: PyReadonlyArray2<f64>, b: PyReadonlyArray2<f64>, gap_min: f64, gap_max: f64, cos_par: f64)
+             -> (f64, f64) {
+    let a = a.as_array();
+    let b = b.as_array();
+    let ka = a.nrows();
+    let kb = b.nrows();
+    if ka < 2 || kb < 2 {
+        return (0.0, 0.0);
+    }
+    let nseg = ka - 1;
+    let mut s = vec![0.0f64; ka];
+    let mut seg = vec![[0.0f64; 2]; nseg];
+    let mut len = vec![0.0f64; nseg];
+    for i in 0..nseg {
+        let dx = a[[i + 1, 0]] - a[[i, 0]];
+        let dy = a[[i + 1, 1]] - a[[i, 1]];
+        seg[i] = [dx, dy];
+        len[i] = (dx * dx + dy * dy).sqrt();
+        s[i + 1] = s[i] + len[i];
+    }
+    let total = s[ka - 1];
+    if total < 1.0 {
+        return (0.0, 0.0);
+    }
+    let n = std::cmp::max(2, (total / 10.0).floor() as usize + 1);
+    let mb = kb - 1;
+    let mut bs = vec![[0.0f64; 2]; mb];
+    let mut bl2 = vec![0.0f64; mb];
+    for i in 0..mb {
+        let dx = b[[i + 1, 0]] - b[[i, 0]];
+        let dy = b[[i + 1, 1]] - b[[i, 1]];
+        bs[i] = [dx, dy];
+        bl2[i] = (dx * dx + dy * dy).max(1e-12);
+    }
+    let (mut ok_n, mut side_sum) = (0usize, 0.0f64);
+    let step = total / ((n - 1) as f64);
+    for si in 0..n {
+        // np.linspace: i * step, the last exactly the end
+        let t = if si == n - 1 { total } else { (si as f64) * step };
+        // np.searchsorted(s, t, side="right") - 1, clipped to a segment
+        let mut k = s.partition_point(|&v| v <= t) as isize - 1;
+        k = k.clamp(0, nseg as isize - 1);
+        let k = k as usize;
+        // np.interp(t, s, a): linear within the segment holding t (the last point at the end)
+        let (qx, qy) = if t >= total {
+            (a[[ka - 1, 0]], a[[ka - 1, 1]])
+        } else {
+            let f = if len[k] > 0.0 { (t - s[k]) / len[k] } else { 0.0 };
+            (a[[k, 0]] + seg[k][0] * f, a[[k, 1]] + seg[k][1] * f)
+        };
+        let lk = len[k].max(1e-9);
+        let (tax, tay) = (seg[k][0] / lk, seg[k][1] / lk);
+        let (mut best, mut bj, mut nx, mut ny) = (f64::INFINITY, 0usize, 0.0, 0.0);
+        for j in 0..mb {
+            let f = (((qx - b[[j, 0]]) * bs[j][0] + (qy - b[[j, 1]]) * bs[j][1]) / bl2[j]).clamp(0.0, 1.0);
+            let (px, py) = (b[[j, 0]] + bs[j][0] * f, b[[j, 1]] + bs[j][1] * f);
+            let d = (px - qx).hypot(py - qy);    // (as np.hypot: ties at a shared vertex pick the same segment)
+            if d < best {
+                best = d;
+                bj = j;
+                nx = px;
+                ny = py;
+            }
+        }
+        let bn = bl2[bj].sqrt();
+        let (tbx, tby) = (bs[bj][0] / bn, bs[bj][1] / bn);
+        let par = (tax * tbx + tay * tby).abs() >= cos_par;
+        if best >= gap_min && best <= gap_max && par {
+            ok_n += 1;
+            let (vx, vy) = (nx - qx, ny - qy);
+            let c = tax * vy - tay * vx;
+            side_sum += if c > 0.0 { 1.0 } else if c < 0.0 { -1.0 } else { 0.0 };
+        }
+    }
+    if ok_n == 0 {
+        return (0.0, 0.0);
+    }
+    (ok_n as f64 / n as f64, side_sum / ok_n as f64)
+}
+
 #[pymodule]
 fn earthfast(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(island_ring_rays, m)?)?;
     m.add_function(wrap_pyfunction!(points_inside, m)?)?;
     m.add_function(wrap_pyfunction!(polyline_dist, m)?)?;
-    m.add("VERSION", 1)?;
+    m.add_function(wrap_pyfunction!(clear_of, m)?)?;
+    m.add_function(wrap_pyfunction!(dual_side, m)?)?;
+    m.add("VERSION", 3)?;
     Ok(())
 }

@@ -223,7 +223,8 @@ def aisle_spots(roads, aisles, box, blockers=(), lots=()):
     of its ends, of other roads, of buildings (blockers) and of mapped lots (lots: lot_spots covers those);
     nose in, away from the aisle."""
     x0, y0, x1, y1 = box
-    others = [(fid, spec.width / 2, pts) for fid, spec, pts, _ in roads if fid not in aisles]
+    import fast
+    others = fast.Others([(fid, spec.width / 2, pts) for fid, spec, pts, _ in roads if fid not in aisles])
     paths = [Path(np.asarray(b, np.float64)) for b in list(blockers) + list(lots) if len(b) >= 3]
     out = []
     for fid, spec, line, _ in roads:

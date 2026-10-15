@@ -296,6 +296,10 @@ DUAL_ANGLE_DEG = 25.0       # ... parallel within this
 def _dual_side(a, b):
     """For polylines a, b (k, 2) in metres: the share of a's points (every ~10 m) with b beside it (DUAL_GAP_M,
     parallel within DUAL_ANGLE_DEG) and the mean side b is on (+1 left / -1 right of a's direction)."""
+    import fast
+    if fast.AVAILABLE:          # the Rust kernel (the same, ~25k calls a Las Vegas road tile set)
+        return fast._ef.dual_side(np.ascontiguousarray(a, np.float64), np.ascontiguousarray(b, np.float64),
+                                  DUAL_GAP_M[0], DUAL_GAP_M[1], math.cos(math.radians(DUAL_ANGLE_DEG)))
     seg = np.diff(a, axis=0)
     L = np.hypot(seg[:, 0], seg[:, 1])
     if len(b) < 2 or L.sum() < 1.0:

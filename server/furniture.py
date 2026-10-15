@@ -69,6 +69,12 @@ def _yaw(dx, dy):
 
 
 def _clear(p, others, own):
+    import fast
+    if isinstance(others, fast.Others):         # the Rust check (Python below without the module)
+        r = others.clear(p, own, CLEAR_OTHER_M)
+        if r is not None:
+            return r
+        others = others.others
     for fid, half, line in others:
         if fid == own:
             continue
@@ -333,7 +339,8 @@ def place(roads, walks, box, curb_h=0.15, wires=None, town=False, left_hand=Fals
     runs (dicts with fid, pts, side, w)."""
     x0, y0, x1, y1 = box
     by_fid = {fid: (spec, pts) for fid, spec, pts, _ in roads}
-    others = [(fid, spec.width / 2, pts) for fid, spec, pts, _ in roads]
+    import fast
+    others = fast.Others([(fid, spec.width / 2, pts) for fid, spec, pts, _ in roads])
     rows = []
     lit = set()
     for wk in walks:
