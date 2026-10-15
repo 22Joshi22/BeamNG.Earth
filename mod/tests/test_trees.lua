@@ -3,14 +3,22 @@ local dir = (arg[0]:match('^(.*)[/\\]') or '.')
 local T = dofile(dir .. '/testlib.lua')
 local S = dofile(dir .. '/stubs.lua')
 
-local items = {}
-local fdata = {}
-function fdata:createNewItem(d, m, sc) local it = { d = d, m = m, sc = sc }; items[it] = true; return it end
-function fdata:removeItem(it) items[it] = nil end
+local items = {}                 -- every live item of every Forest
+local forests = 0
 local realCreate = createObject
 createObject = function(class)
   local o = realCreate(class)
-  if class == 'Forest' then function o:getData() return fdata end end
+  if class == 'Forest' then
+    -- a Forest of its own items (trees.lua: one per tile), deleted with them
+    local mine = {}
+    local fdata = {}
+    function fdata:createNewItem(d, m, sc) local it = { d = d, m = m, sc = sc }; items[it] = true; mine[it] = true; return it end
+    function fdata:removeItem(it) items[it] = nil; mine[it] = nil end
+    function o:getData() return fdata end
+    local del = o.delete
+    function o:delete() for it in pairs(mine) do items[it] = nil end; forests = forests - 1; if del then del(self) end end
+    forests = forests + 1
+  end
   return o
 end
 worldEditorCppApi = { createObject = function(class) return createObject(class) end }
@@ -45,7 +53,8 @@ T.check(count() == 60, 'middle distance: 60 %')
 
 trees.onDrop({ anchorId = 1, key = '0_0' })
 trees.update(1, { x = 50, y = 50 })
-T.check(count() == 0 and trees.status().tiles == 0, 'dropped: removed')
+T.check(count() == 0 and trees.status().tiles == 0 and forests == 0, 'dropped: its Forest deleted with its items')
+T.check(trees.forestName('1:p3_-2') == 'bngEarthForest_1_p3__2', 'a Forest per tile, named by its key')
 
 trees.onTile({ anchorId = 1, key = '0_0', path = '/t/v.json', n = 100 }, 1)
 trees.update(1, { x = 50, y = 50 })

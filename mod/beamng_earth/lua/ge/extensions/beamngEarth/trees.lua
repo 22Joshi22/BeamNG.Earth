@@ -16,7 +16,11 @@ M.RINGS = { { 300, 1.0 }, { 700, 0.6 }, { 1500, 0.35 }, { 1e9, 0.2 } }   -- tile
 M.GROUP_MAX_M = { door = 120, hydrant = 200, bin = 200, bench = 200, polelamp = 400, stop = 300, signal = 500,
   fence = 150, wallsign_logistics = 800, wallsign_rentabox = 800, wallsign_lemon = 800, wallsign_turboburger = 500,
   speed30 = 300, speed40 = 300, speed50 = 300, speed60 = 300, speed70 = 300 }
-M.FOREST_NAME = 'bngEarthForest'
+M.FOREST_NAME = 'bngEarthForest'      -- a prefix: one Forest per tile ('bngEarthForest_<key>')
+-- One Forest per tile, deleted whole with its tile (2026-10-15, 100 mph drives: one shared Forest with ~240k items
+-- made and ~220k removed over a session made frames with any tree change cost ~100 ms in the engine's tick, and a
+-- fresh game ran the same drive at 71 fps instead of 30-42; a small Forest per tile keeps each change cheap and drops
+-- a tile without removing its items one by one)
 -- Items made this close to the player ask for a collision rebuild (roads.lua, throttled): a Forest item collides only
 -- after be:reloadCollision, and where no road tile arrives (the Sahara's rocks, 2026-10-14) none came at all
 M.COLLIDE_M = 400
@@ -136,14 +140,26 @@ local types = {}        -- shape path -> TSForestItemData
 local ready = false
 M.made, M.removed, M.errors = 0, 0, 0
 
-local function forest()
-  local f = scenetree.findObject(M.FOREST_NAME)
+-- Pure: the tile's Forest name.
+function M.forestName(key)
+  return M.FOREST_NAME .. '_' .. tostring(key):gsub('[^%w]', '_')
+end
+
+local function forest(t, key)
+  local f = t.forestId and scenetree.findObjectById(t.forestId)
   if not f then
     f = createObject('Forest')
-    f:registerObject(M.FOREST_NAME)
+    f:registerObject(M.forestName(key))
     if scenetree.MissionGroup then scenetree.MissionGroup:addObject(f) end
+    t.forestId = f:getID()
   end
   return f
+end
+
+local function deleteForest(t)
+  local f = t.forestId and scenetree.findObjectById(t.forestId)
+  if f then f:delete() end
+  t.forestId = nil
 end
 
 local function setup()
@@ -236,7 +252,7 @@ function M.onRows(anchorId, tileKey, rows, groups)
   local old = tiles[key]
   local tx, ty = tostring(tileKey):match('(%-?%d+)_(%-?%d+)$')
   local t = { anchor = anchorId, rows = rows, groups = type(groups) == 'table' and groups or nil,
-    made = old and old.made or {}, shown = old and old.shown or 0,
+    made = old and old.made or {}, shown = old and old.shown or 0, forestId = old and old.forestId or nil,
     cx = (tonumber(tx) or 0) * 256 + 128, cy = (tonumber(ty) or 0) * 256 + 128, drop = false }
   tiles[key] = t
 end
@@ -279,17 +295,16 @@ end
 function M.update(anchorId, player)
   if not next(tiles) then return end
   if not setup() then return end
-  local fd = forest():getData()
   local budget = M.PER_FRAME
   for key, t in pairs(tiles) do
     if t.anchor ~= anchorId or t.drop then
-      for i, it in pairs(t.made) do
-        if budget <= 0 then return end
-        removeItem(fd, it)
-        t.made[i] = nil
-        budget = budget - 1
-      end
+      if budget <= 0 then return end
+      local n = 0
+      for _ in pairs(t.made) do n = n + 1 end
+      deleteForest(t)                       -- the tile's whole Forest: no item-by-item removal
+      M.removed = M.removed + n
       tiles[key] = nil
+      budget = budget - math.min(n, 50)
     end
   end
   if not player then return end
@@ -310,6 +325,8 @@ function M.update(anchorId, player)
   end
   for _, o in ipairs(order) do
     local t = tiles[o[1]]
+    local fd = nil                          -- the tile's Forest data, made when it first needs an item
+    local function data() fd = fd or forest(t, o[1]):getData(); return fd end
     local want = threshold(o[2])
     local band = groupBand(t, o[2])
     if want ~= t.shown or band ~= t.band or t.pending then
@@ -323,12 +340,12 @@ function M.update(anchorId, player)
         if g and M.suppress and M.suppress(g, row[2], row[3]) then r = 2 end
         if r < want and not t.made[i] then
           if budget <= 0 then t.pending = true; finish(); return end
-          t.made[i] = makeItem(fd, row, t.groups)
+          t.made[i] = makeItem(data(), row, t.groups)
           if o[2] <= M.COLLIDE_M then nearMade = true end
           budget = budget - 1
         elseif r >= want and t.made[i] then
           if budget <= 0 then t.pending = true; finish(); return end
-          removeItem(fd, t.made[i])
+          removeItem(data(), t.made[i])
           t.made[i] = nil
           budget = budget - 1
         end
@@ -342,11 +359,7 @@ end
 
 -- Disconnect, a new server session, mod unload: every item removed.
 function M.clear()
-  local f = scenetree.findObject(M.FOREST_NAME)
-  local fd = f and f:getData()
-  for _, t in pairs(tiles) do
-    for _, it in pairs(t.made) do if fd then removeItem(fd, it) end end
-  end
+  for _, t in pairs(tiles) do deleteForest(t) end
   tiles = {}
 end
 
