@@ -3003,6 +3003,8 @@ def main():
                     help="a refined tile stays refined until the player is (1 + h) x its switch distance away")
     ap.add_argument("--far-radius", type=float, default=farfield.RADIUS, help="far-field radius (m)")
     ap.add_argument("--nice", type=int, default=NICE, help="process niceness increment (0 = leave as is)")
+    ap.add_argument("--sched", choices=("idle", "normal"), default="idle",
+                    help="Linux: idle scheduling (the server runs only on CPU time the game leaves; default) or normal")
     ap.add_argument("--imagery", type=imagerymod.parse_chain, default=imagerymod.DEFAULT_CHAIN,
                     help="satellite imagery source chain, first with data wins: any of usgs,eox2023,eox2016, "
                          "or 'off' for the v1.2 palette look (default: usgs,eox2023,eox2016)")
@@ -3147,6 +3149,15 @@ def main():
                 k32.SetPriorityClass(k32.GetCurrentProcess(), 0x4000)
         except (OSError, AttributeError) as e:
             log.warning("could not lower the process priority: %s", e)
+    if args.sched == "idle" and hasattr(os, "sched_setscheduler") and hasattr(os, "SCHED_IDLE"):
+        # Linux: CPU time only when a core would idle otherwise (the worker processes and threads made after this
+        # inherit it). A recorded session (2026-10-15): with the server over 3 cores the game's physics fell behind
+        # real time in 22 % of seconds (5 % under 1 core) and frame spikes nearly tripled; niceness alone still
+        # gives it slices of the game's cores
+        try:
+            os.sched_setscheduler(0, os.SCHED_IDLE, os.sched_param(0))
+        except OSError as e:
+            log.warning("could not set idle scheduling: %s", e)
     try:
         asyncio.run(main_async(args))
     except KeyboardInterrupt:

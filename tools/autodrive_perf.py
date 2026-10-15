@@ -57,11 +57,83 @@ local rs = require('beamngEarth/roads').status() or {}
 return jsonEncode({ roadsQ = rs.walksQueued, roadMeshes = rs.roadMeshes, t = os.clock(), x = pos.x, y = pos.y, z = pos.z, v = math.sqrt(vel.x ^ 2 + vel.y ^ 2), lat = pl.lat,
   lon = pl.lon, damage = ob and ob.damage or 0,
   perf = { frames = p.frames, avgMs = p.avgMs, p50 = p.p50, p95 = p.p95, p99 = p.p99, maxMs = p.maxMs,
-           over33 = p.over33, over50 = p.over50, over100 = p.over100 },
+           over33 = p.over33, over50 = p.over50, over100 = p.over100, simRatio = p.simRatio, simWall = p.simWall,
+           slowSim = p.slowSimFrames, minSim = p.minSimRatio },
+  backlog = (beamngEarth_core._state() or {}).serverBacklog,
   gps = { remaining = g.remaining, off = g.off, arrows = g.arrows, autodrive = g.autodrive, planning = g.planning },
   pending = s.pending, anchor = s.anchorId,
   hitches = beamngEarth_core.hitches and beamngEarth_core.hitches() or {} })
 '''
+
+
+CLK = os.sysconf("SC_CLK_TCK")
+PAGE = os.sysconf("SC_PAGE_SIZE")
+
+
+def _procs():
+    """{pid: (ppid, cmdline)} of every process."""
+    out = {}
+    for d in os.listdir("/proc"):
+        if not d.isdigit():
+            continue
+        try:
+            with open(f"/proc/{d}/stat") as f:
+                st = f.read()
+            with open(f"/proc/{d}/cmdline", "rb") as f:
+                cmd = f.read().replace(b"\0", b" ").decode("utf-8", "replace")
+        except OSError:
+            continue
+        ppid = int(st[st.rindex(")") + 2:].split()[1])
+        out[int(d)] = (ppid, cmd)
+    return out
+
+
+def _cpu_rss(pids):
+    """(cpu seconds, rss MB) summed over pids."""
+    cpu = rss = 0.0
+    for pid in pids:
+        try:
+            with open(f"/proc/{pid}/stat") as f:
+                st = f.read()
+        except OSError:
+            continue
+        v = st[st.rindex(")") + 2:].split()
+        cpu += (int(v[11]) + int(v[12])) / CLK
+        rss += int(v[21]) * PAGE / 1e6
+    return cpu, rss
+
+
+class ProcSampler:
+    """CPU % (of one core) and memory of the world server (with its worker processes) and of the game, per poll."""
+
+    def __init__(self):
+        self.last = {}
+
+    def groups(self):
+        ps = _procs()
+        server = [p for p, (_, c) in ps.items() if "earthd.py" in c and "grep" not in c]
+        kids = set(server)
+        changed = True
+        while changed:                  # the server's process pools (spawned workers) and their children
+            changed = False
+            for p, (pp, _) in ps.items():
+                if pp in kids and p not in kids:
+                    kids.add(p)
+                    changed = True
+        exe = os.path.expanduser("~/.local/share/Steam/steamapps/common/BeamNG.drive/BinLinux/BeamNG.drive.x64")
+        game = [p for p, (_, c) in ps.items() if c.startswith(exe) and "--type=" not in c]
+        return {"server": sorted(kids), "game": game}
+
+    def sample(self):
+        now = time.time()
+        out = {}
+        for name, pids in self.groups().items():
+            cpu, rss = _cpu_rss(pids)
+            prev = self.last.get(name)
+            pct = round(100 * (cpu - prev[1]) / (now - prev[0]), 1) if prev and now > prev[0] else None
+            self.last[name] = (now, cpu)
+            out[name] = {"cpu": pct, "rssMB": round(rss), "procs": len(pids)}
+        return out
 
 
 def lua(code):
@@ -331,6 +403,8 @@ def main():
     if a.rec:                       # the game's own frames (no screen capture: works unattended on Wayland)
         import gamerec
         grec = gamerec.start(a.rec_fps)
+    sampler = ProcSampler()
+    sampler.sample()
     rows, end = [], time.time() + a.minutes * 60
     evf = open(os.path.join(a.out, "events.jsonl"), "w")
     checks = Checks(lambda n, ev: shot(a.out, f"event_{n}_{ev['kind']}.jpg"))
@@ -344,6 +418,7 @@ def main():
                     print(f"poll: {e}", file=sys.stderr)
                     r = None
                 if r:
+                    r["procs"] = sampler.sample()
                     rows.append(r)
                     f.write(json.dumps(r) + "\n")
                     f.flush()

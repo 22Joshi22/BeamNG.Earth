@@ -21,11 +21,15 @@ local timer = hptimer and hptimer() or nil
 -- Sim-time vs real-time per frame (onPreRender gets both): detects "time warp" where the engine
 -- advances simulation less than real time on long frames.
 local simSum, realSum, slowFrames, minRatio = 0, 0, 0, 1
+local simWallSum, wallSum = 0, 0    -- sim time against the measured wall time (the engine's dtReal is smoothed: a
+                                    -- physics slowdown hidden in it shows here)
+local lastWallMs = nil
 local harnessTag = false
 local harnessFrames, harnessMax = 0, 0
 
 local function reset()
   simSum, realSum, slowFrames, minRatio = 0, 0, 0, 1
+  simWallSum, wallSum = 0, 0
   n, sum, maxDt = 0, 0, 0
   over33, over50, over100 = 0, 0, 0
   worst = {}
@@ -45,6 +49,7 @@ function M.onUpdate(dtReal)
   end
   n = n + 1
   sum = sum + ms
+  lastWallMs = ms
   ring[(n - 1) % RING + 1] = ms
   if ms > maxDt then maxDt = ms end
   if ms > 33.4 then over33 = over33 + 1 end
@@ -60,6 +65,7 @@ end
 function M.onPreRender(dtReal, dtSim)
   if not dtReal or dtReal <= 0 or not dtSim or dtSim <= 0 then return end -- paused
   simSum, realSum = simSum + dtSim, realSum + dtReal
+  if lastWallMs then simWallSum, wallSum = simWallSum + dtSim, wallSum + lastWallMs / 1000; lastWallMs = nil end
   local r = dtSim / dtReal
   if r < 0.95 then slowFrames = slowFrames + 1 end
   if r < minRatio then minRatio = r end
@@ -77,6 +83,7 @@ function M.snapshot()
     over33 = over33, over50 = over50, over100 = over100, clock = clock,
     worst = worst,
     simRatio = realSum > 0 and simSum / realSum or 1, slowSimFrames = slowFrames, minSimRatio = minRatio,
+    simWall = wallSum > 0 and simWallSum / wallSum or 1,
     harnessFrames = harnessFrames, harnessMaxMs = harnessMax,
   }
   reset()
