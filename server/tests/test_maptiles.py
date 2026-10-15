@@ -35,8 +35,8 @@ class FakeImagery:
             self.calls.append((src.name, z, x, y, kind))
             if src.name in self.fail:
                 raise imagery.ImageryError("down")
-            if src.name in self.missing:
-                out[k] = None
+            if src.name in self.missing or src.name not in ("usgs", "eox2023", "eox2016"):
+                out[k] = None               # (the regional sources: no tile here)
                 continue
             a = np.zeros((256, 256, 3), np.uint8)
             a[..., 0] = {"usgs": 60, "eox2023": 140, "eox2016": 200}[src.name]

@@ -435,7 +435,7 @@ end
 -- The map's basemap tiles as files (the game's UI browser cancels every http request, even to 127.0.0.1): list
 -- {{z, x, y}, ...} the map shows; returns the keys "z/x/y" whose file is there (/temp/beamngEarth/maptiles/z/x/y.jpg)
 -- and asks the server for the others (map_tiles; each at most every MAP_ASK_S).
-M.MAP_ASK_S = 8
+M.MAP_ASK_S = 4
 M.MAP_TILES_DIR = '/temp/beamngEarth/maptiles/'
 local mapAsked = {}
 function M.mapTiles(list)

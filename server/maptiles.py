@@ -34,7 +34,10 @@ log = logging.getLogger("earthd.maptiles")
 MAX_Z = 18                  # the deepest zoom served (overzoomed above the sources' own)
 EOX_FIRST_MAX_Z = 12        # up to here EOX goes before the rest of the chain
 JPEG_QUALITY = 85
-FETCH_KIND = "prefetch"     # netfetch kind: the map never takes the terrain's demand budget
+# netfetch kind: "demand", what the player is looking at (2026-10-15: as "prefetch" the map's tiles were dropped
+# while the terrain streamed after a teleport, "bucket low", and the map stayed blank squares for a minute; the
+# UI asks for at most 48 at a time, so the terrain still gets most of the budget)
+FETCH_KIND = "demand"
 MAX_REQUEST = 8192          # bytes of request head accepted
 READ_TIMEOUT_S = 10
 
@@ -114,6 +117,8 @@ class MapTiles:
             sz = min(z, src.max_zoom)
             dz = z - sz
             key = (src, sz, x >> dz, y >> dz)
+            if not imagerymod.in_bounds(*key):
+                continue                    # a regional source elsewhere
             try:
                 t = self.imagery.tiles([key], self.kind).get(key)
             except imagerymod.ImageryError as e:

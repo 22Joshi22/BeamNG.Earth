@@ -254,6 +254,12 @@ def in_bounds(src, z, x, y):
     return lon1 > w and lon0 < e and lat1 > s and lat0 < n
 
 
+# The US federal sources have no bounds (their coverage probes find where they have data); for the world map's
+# credits their area is the US: (s, w, n, e), the lower 48 for NAIP, with Alaska and Hawaii for USGS
+US_CREDIT_BOXES = {"naip": (24.0, -125.0, 50.0, -66.0), "naipusda": (24.0, -125.0, 50.0, -66.0),
+                   "usgs": (18.0, -180.0, 72.0, -65.0)}
+
+
 def range_in_bounds(src, z, tx0, tx1, ty0, ty1):
     """Any tile of the range (z; tx0..tx1, ty0..ty1, inclusive) overlaps src.bounds."""
     if not src.bounds:
@@ -348,8 +354,9 @@ class Imagery:
         extra = [SOURCES[n] for n in getattr(self.colormatch, "refs", ()) if n not in names]
         out = []
         for src in list(self.chain) + extra:
-            if src.bounds:
-                s_, w_, n_, e_ = src.bounds
+            box = src.bounds or US_CREDIT_BOXES.get(src.name)
+            if box:
+                s_, w_, n_, e_ = box
                 out.append([src.attribution, w_, s_, e_, n_])
             else:
                 out.append([src.attribution])
