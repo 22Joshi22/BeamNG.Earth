@@ -1,7 +1,7 @@
 -- A slim status bar at the top of the screen (the user, 2026-10-15: "replace the current status lua window with a
 -- status bar at the top of the screen, like BeamMP ... level loading / performance and location info like street,
 -- city, country ... simple and precise"). One line, top centre:
---   Thames Street  |  Baltimore, Maryland, United States  |  Loading 120/433  |  71 fps
+--   Thames Street  |  Baltimore, Maryland, United States  |  Loading 120/433
 -- The street comes from the server's map data (geocode.nearest_street), the town / state / country from Photon's
 -- reverse geocoding with the position rounded to ~1 km (setting placeNamesOnline); asked with a 'where' message when
 -- the car moved WHERE_STREET_M (street) / WHERE_PLACE_M (place), at most every WHERE_MIN_S. Loading shows while the
@@ -26,6 +26,7 @@ local loc = { street = '', place = '', region = '', country = '' }
 local last = nil           -- { x, y, t, px, py, pt } of the last request (street / place)
 local nextId = 0
 local fps = nil
+M.SHOW_FPS = false     -- (the user, 2026-10-15: Steam has an fps overlay, we do not need our own counter)
 local layout, textU32, backU32, vecs = nil, nil, nil, nil
 M.draws, M.measures, M.requests = 0, 0, 0
 
@@ -135,14 +136,14 @@ end
 
 -- The bar's text now (the UI app's too: hudapps.lua), '' when there is nothing to say.
 function M.text(status)
-  return M.compose(loc, M.loadingLine(status), fps)
+  return M.compose(loc, M.loadingLine(status), M.SHOW_FPS and fps or nil)
 end
 
 -- Once per frame: draw the bar. active: our world is shown; hidden: the game's UI covers it; status: core's status
 -- text. An error in the imgui calls turns the bar off (logged once).
 function M.draw(active, hidden, status)
   if not M.enabled or not active or hidden then return false end
-  local text = M.compose(loc, M.loadingLine(status), fps)
+  local text = M.compose(loc, M.loadingLine(status), M.SHOW_FPS and fps or nil)
   if text == '' then return false end
   local im = rawget(_G, 'ui_imgui')
   if not im or not im.GetMainViewport then return false end

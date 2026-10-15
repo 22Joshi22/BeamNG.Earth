@@ -13,7 +13,7 @@ class FramingTest(unittest.TestCase):
         b = protocol.encode({"type": "hello", "protocol": 1, "s": "é"})
         n = struct.unpack("<I", b[:4])[0]
         self.assertEqual(n, len(b) - 4)
-        self.assertEqual(b[4:].decode("utf-8"), '{"type":"hello","protocol":1,"s":"\\u00e9"}')
+        self.assertEqual(b[4:].decode("utf-8"), '{"type":"hello","protocol":1,"s":"é"}')   # UTF-8: the game's jsonDecode keeps \\u escapes as text
 
     def test_decoder_split_and_batched(self):
         msgs = [{"type": "pose", "x": i * 1.5} for i in range(5)]

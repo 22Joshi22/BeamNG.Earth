@@ -61,7 +61,7 @@ roads, water, navigation, traffic, cities).
 - Saved places and recent places.
 
 **Interface and tools**
-- A slim status bar (street, town, country, loading, performance), a connection banner when something is
+- A slim status bar (street, town, country, world loading), a connection banner when something is
   wrong and the data credits on screen, as BeamNG UI apps in a ".Earth" app layout (based on Freeroam's;
   move or resize them in the UI apps editor), and a one-time welcome page about the project.
 - Settings in the pause menu, keybinds, in-game reports (notes and performance recordings to share).

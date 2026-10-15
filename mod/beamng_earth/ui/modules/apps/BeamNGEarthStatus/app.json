@@ -4,7 +4,7 @@
   "types": [
     "ui.apps.categories.utility"
   ],
-  "description": "Street, town and country, the world loading and the frame rate (BeamNG.Earth).",
+  "description": "Street, town and country, and the world loading (BeamNG.Earth).",
   "css": {
     "top": "0px",
     "height": "32px",

@@ -1,4 +1,4 @@
-// BeamNG.Earth status bar as a UI app (lua/ge/extensions/beamngEarth/hudapps.lua): street | place | loading | fps.
+// BeamNG.Earth status bar as a UI app (lua/ge/extensions/beamngEarth/hudapps.lua): street | place | loading.
 angular.module('beamng.apps')
 .directive('beamngEarthStatus', [function () {
   return {
