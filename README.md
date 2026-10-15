@@ -8,6 +8,50 @@ Status: early development (see VERSION; a preview). Tested on BeamNG.drive 0.39.
 [docs/ROADMAP.md](docs/ROADMAP.md) for what is coming (high-speed streaming, real view distance,
 roads, water, navigation, traffic, cities).
 
+## Features (working today)
+**The world**
+- The whole planet at 1:1 scale on real elevation: national lidar where it exists (Mapterhorn: much of
+  Europe, the US and more), Copernicus 30 m elsewhere with buildings and small tree stands filtered out of it.
+- Aerial and satellite imagery on the ground: open state and national orthophotos (Maryland's 15 cm photos,
+  a dozen more US states, NAIP across the US, Switzerland, France, Spain, the Netherlands, Germany's states,
+  Austria, Japan, parts of Australia and Canada, and more), Sentinel-2 cloudless everywhere else; shadows and
+  colour seams taken out of the photos, the season's colours graded in, cliffs drawn as rock.
+- A real view distance out to the horizon, with the Earth's curvature, and no popping between levels of detail.
+- Ground materials from land cover (grass, dirt, rock, sand, snow, mud, lawns, paved squares and parking
+  lots) with 3D grass and bushes.
+- Trees and forests from a canopy height model, regional species (conifers, broadleaf, palms, desert
+  shrubs), autumn colours in season.
+- Buildings from Overture / OpenStreetMap with regional styles (US siding and brick, Alpine chalets, Nordic
+  wood, Mediterranean stucco, East Asian and Latin American looks), real heights, roofs, windows, shopfronts,
+  porches, churches with steeples, glass towers, far-away buildings drawn as a skyline.
+- Roads as meshes with lane markings, sidewalks and curbs, curb ramps, storm drains, cobblestone streets,
+  bridges with decks, traffic islands; the ground graded under them; street lights, utility poles with
+  wires, traffic signals, stop signs and speed-limit signs (mph or km/h by country).
+- Water: the sea with real depth (cars sink), lakes, and rivers kept beside the roads.
+- Airports with graded, marked runways.
+- Real sky (sun, moon and stars for the place and time), real weather (rain, snow, wind, clouds from
+  Open-Meteo) and real gravity.
+
+**Driving**
+- Drive anywhere: the physics ground follows the car at 100+ mph, the world origin moves with you
+  (floating origin), and the world streams ahead of you.
+- Parked cars along streets and in lots (stock BeamNG parking).
+- A road graph for the game's AI: stock traffic and police can be turned on.
+
+**Map and navigation**
+- World map (**M**): pan and zoom the globe, borders and place names, search for addresses and
+  places as you type, teleport anywhere.
+- GPS routes to any destination (OSRM on OpenStreetMap), with the stock route arrows on the road.
+- **Autodrive**: the car drives itself along the GPS route (in lane, legal speed, minding traffic).
+- Saved places and recent places.
+
+**Interface and tools**
+- A slim status bar (street, town, country, loading, performance), a connection banner when something is
+  wrong, the data credits on screen, a one-time welcome page about the project.
+- Settings in the pause menu, keybinds, in-game reports (notes and performance recordings to share).
+- Easy setup: `install.py` installs everything, `start.py` keeps the mod in sync and starts the server.
+- Offline play from the download cache (with a size cap and "clear cache").
+
 ## How it works
 - A small **companion server** (`server/`, Python) downloads elevation and imagery, builds terrain
   tiles in a local flat frame around a moving origin, and streams them to the game over a local

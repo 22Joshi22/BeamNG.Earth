@@ -249,35 +249,32 @@ local m = map.getMap()
 local veh = getPlayerVehicle(0)
 if not (m and m.nodes and veh) then return 'snap: no graph' end
 local p = veh:getPosition()
-local best, bd = nil, math.huge
-for id, n in pairs(m.nodes) do
-  local fast = minSpeed <= 0
-  for _, e in pairs(n.links or {}) do if (tonumber(e.speedLimit) or 0) >= minSpeed then fast = true end end
-  if n.pos and next(n.links or {}) and fast then
-    local d = (n.pos.x - p.x) ^ 2 + (n.pos.y - p.y) ^ 2
-    if d < bd then best, bd = id, d end
-  end
-end
-if not best then return 'snap: no node' end
 local st = beamngEarth_core and beamngEarth_core._state and beamngEarth_core._state()
 local a = st and st.anchor
-local n = m.nodes[best]
 local gx, gy = 0, 0
 if a and a.geodeticToEnu then gx, gy = a:geodeticToEnu(tlat, tlon, 0) end
-local dir, bs = nil, -math.huge
-for other in pairs(n.links) do
-  local o = m.nodes[other]
-  if o and o.pos then
-    local dx, dy = o.pos.x - n.pos.x, o.pos.y - n.pos.y
-    local L = math.sqrt(dx * dx + dy * dy)
-    local tx, ty = gx - n.pos.x, gy - n.pos.y
-    local T = math.sqrt(tx * tx + ty * ty)
-    local sc = (L > 0 and T > 0) and (dx * tx + dy * ty) / (L * T) or 0
-    if sc > bs then bs, dir = sc, vec3(dx / L, dy / L, 0) end
-  end
+-- every edge both ways it may be driven (the game keeps an edge on one node only; one-way edges from their inNode),
+-- fast enough, running toward the goal: the nearest one's start
+local best, bd, bdir = nil, math.huge, nil
+local function try(from, to, e)
+  local A, B = m.nodes[from], m.nodes[to]
+  if not (A and B and A.pos and B.pos) then return end
+  if (tonumber(e.speedLimit) or 0) < minSpeed then return end
+  if e.oneWay and e.inNode and e.inNode ~= from then return end
+  local dx, dy = B.pos.x - A.pos.x, B.pos.y - A.pos.y
+  local L = math.sqrt(dx * dx + dy * dy)
+  local tx, ty = gx - A.pos.x, gy - A.pos.y
+  local T = math.sqrt(tx * tx + ty * ty)
+  if L < 1 or (T > 0 and (dx * tx + dy * ty) / (L * T) < 0.3) then return end
+  local d = (A.pos.x - p.x) ^ 2 + (A.pos.y - p.y) ^ 2
+  if d < bd then best, bd, bdir = from, d, vec3(dx / L, dy / L, 0) end
 end
-dir = dir or vec3(0, 1, 0)
-local rot = quatFromDir(dir, vec3(0, 0, 1))
+for id, n in pairs(m.nodes) do
+  for other, e in pairs(n.links or {}) do try(id, other, e); try(other, id, e) end
+end
+if not best then return 'snap: no node' end
+local n = m.nodes[best]
+local rot = quatFromDir(bdir, vec3(0, 0, 1))
 local z = be:getSurfaceHeightBelow(n.pos + vec3(0, 0, 3))
 veh:setPositionRotation(n.pos.x, n.pos.y, ((z and z > -1e6) and z or n.pos.z) + 0.5, rot.x, rot.y, rot.z, rot.w)
 return string.format('snap: node %%s %%.1f m away', tostring(best), math.sqrt(bd))
@@ -302,24 +299,30 @@ def main():
     os.makedirs(a.out, exist_ok=True)
     mcp.quiet_ui()          # (the recording too: our welcome page closed and kept away this session)
     if a.start:
+        aid0 = lua("return tostring(beamngEarth_core._state().anchorId)").strip()
         lua("return tostring(beamngEarth_core.teleport(%r, %r, 'autodrive_perf start', {record = false}))" % a.start)
         # the game teleports once the server answers (after a server restart that was ~85 s later: the snap and the
-        # drive ran at the old place, Cluj 2026-10-15): the settle counts from the arrival
+        # drive ran at the old place, Cluj 2026-10-15): the settle counts from the arrival, a new anchor (an old one at
+        # the same place does not count: A9 2026-10-15)
         t_arrive = time.time() + 300
         while time.time() < t_arrive:
             try:
-                d = float(lua("local a=beamngEarth_core._state().anchor; if not a then return '1e9' end "
-                              "return tostring(math.abs(a.lat-%r)+math.abs(a.lon-%r))" % a.start))
+                aid = lua("return tostring(beamngEarth_core._state().anchorId)").strip()
             except (Exception, SystemExit):
-                d = 1e9
-            if d < 0.02:
+                aid = aid0
+            if aid != aid0:
                 break
             time.sleep(2)
         else:
             print("the teleport did not happen within 300 s", file=sys.stderr)
         time.sleep(a.settle)
     if a.start:                     # on the road: the nearest graph node, facing along its edge toward the goal
-        print(lua(SNAP_LUA % (a.to[0], a.to[1], a.snap_kmh / 3.6)), flush=True)
+        for _ in range(30):         # (the new place's road graph can come a while after the settle)
+            r = lua(SNAP_LUA % (a.to[0], a.to[1], a.snap_kmh / 3.6))
+            if "snap: node" in r:
+                break
+            time.sleep(2)
+        print(r, flush=True)
         time.sleep(3)
     lua("beamngEarth_settings.uiMapGps(%r, %r, 'autodrive_perf') return 'ok'" % a.to)
     lua("return tostring(beamngEarth_settings.uiGpsAutodrive(true).autodrive)")
