@@ -1830,6 +1830,39 @@ class Connection:
                  (" (" + out["error"] + ")") if "error" in out else "")
         self.send(out)
 
+    async def where(self, msg):
+        """The status bar's location {"id", "lat", "lon", "online"} -> where_result {"id", "street", "place", "region",
+        "country"}: the street from the cached map cells (never waits for a download), the town, state and country from
+        Photon's reverse geocoding with the position rounded to ~1 km, only when "online" (the mod's setting), and
+        asked again only when that rounded position changed."""
+        try:
+            lat, lon = float(msg["lat"]), float(msg["lon"])
+        except (KeyError, TypeError, ValueError):
+            return
+        out = {"type": "where_result", "id": msg.get("id"), "street": ""}
+        loop = asyncio.get_running_loop()
+        if self.s.surface is not None:
+            def street():
+                layers, _ = self.s.surface.roads(lat, lon)
+                return geocodemod.nearest_street(layers, lat, lon)
+            try:
+                out["street"] = await loop.run_in_executor(self.s.ui_pool, street)
+            except Exception as e:      # a cell being written, an odd feature: no street this time
+                log.debug("where: street: %s: %s", type(e).__name__, e)
+        if msg.get("online"):
+            key = (round(lat, geocodemod.REVERSE_ROUND), round(lon, geocodemod.REVERSE_ROUND))
+            cached = getattr(self, "_where_place", None)
+            if cached is None or cached[0] != key:
+                try:
+                    place = await loop.run_in_executor(self.s.ui_pool, geocodemod.reverse, lat, lon, self.s.net)
+                    self._where_place = (key, place)
+                    cached = self._where_place
+                except Exception as e:  # offline, rate limited: the bar shows the street alone
+                    log.debug("where: place: %s: %s", type(e).__name__, e)
+            if cached is not None and cached[0] == key:
+                out.update(cached[1])
+        self.send(out)
+
     async def geocode(self, msg):
         """The map's search {"id", "q", "lat"?, "lon"?} -> geocode_result {"id", "results": [...], "error"?}."""
         q = str(msg.get("q") or "")[:200]
@@ -1970,6 +2003,8 @@ class Connection:
             self.spawn(self.geocode(msg))
         elif kind == "route":                   # the GPS: the whole road route (routing.py)
             self.spawn(self.route(msg))
+        elif kind == "where":                   # the status bar's street, town and country (geocode.py)
+            self.spawn(self.where(msg))
         elif kind == "cache":
             self.on_cache(msg)
         elif kind == "roads_reset":             # the mod dropped its roads (settings): send them all again

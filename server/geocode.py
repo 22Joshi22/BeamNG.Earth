@@ -67,3 +67,68 @@ def search(q, lat=None, lon=None, net=None):
         return []
     net = net if net is not None else netfetch.default_fetcher()
     return parse(json.loads(net.get(url(q, lat, lon), kind="demand").body.decode("utf-8")))
+
+
+# ------------------------------------------------------------------------------------------- where am I
+# The status bar (the user, 2026-10-15: "location info like street, city, country"): the town, state and country
+# from Photon's reverse geocoding, asked with the position ROUNDED to REVERSE_ROUND decimals (~1 km: the bar needs the
+# town, not the house) and only when the mod's setting allows it; the street comes from our own map data (nearest_street).
+REVERSE_URL = "https://photon.komoot.io/reverse"
+REVERSE_ROUND = 2
+STREET_M = 40.0                 # the nearest named road within this is "the street"
+
+
+def reverse_url(lat, lon, lang="en"):
+    """The Photon reverse request for (lat, lon) rounded to REVERSE_ROUND decimals. Pure."""
+    return REVERSE_URL + "?" + urllib.parse.urlencode(
+        [("lat", f"{round(float(lat), REVERSE_ROUND):.{REVERSE_ROUND}f}"),
+         ("lon", f"{round(float(lon), REVERSE_ROUND):.{REVERSE_ROUND}f}"), ("lang", lang), ("limit", "1")])
+
+
+def parse_place(data):
+    """{place, region, country} of a Photon reverse response (the first feature; missing parts ''). Pure."""
+    feats = (data or {}).get("features") or []
+    p = (feats[0].get("properties") or {}) if feats else {}
+    place = p.get("city") or p.get("town") or p.get("village") or p.get("district") or p.get("county") or ""
+    if not place and p.get("type") in ("city", "town", "village", "locality"):
+        place = p.get("name") or ""
+    return {"place": place, "region": p.get("state") or "", "country": p.get("country") or ""}
+
+
+def reverse(lat, lon, net=None):
+    """The town, state and country around (lat, lon) (blocking). Raises netfetch.FetchError on network trouble."""
+    net = net if net is not None else netfetch.default_fetcher()
+    return parse_place(json.loads(net.get(reverse_url(lat, lon), kind="demand").body.decode("utf-8")))
+
+
+def nearest_street(roads_layers, lat, lon, max_m=STREET_M):
+    """The name of the nearest named road (mapgeom "roads" Features) within max_m of (lat, lon), or ''. Pure."""
+    import math
+
+    import numpy as np
+    mx = 111320.0 * math.cos(math.radians(lat))
+    best, bd = "", max_m
+    for f in roads_layers:
+        if f is None or len(f.kind) == 0:
+            continue
+        names = f.attrs.get("name")
+        if names is None:
+            continue
+        for i in range(len(f.kind)):
+            nm = names[i]
+            if nm is None or str(nm) in ("", "None", "nan"):
+                continue
+            a = f.coord_off[f.ring_off[f.part_off[i]]]
+            b = f.coord_off[f.ring_off[f.part_off[i + 1]]]
+            ll = f.lonlat[a:b]
+            if len(ll) < 2:
+                continue
+            xy = np.column_stack([(ll[:, 0] - lon) * mx, (ll[:, 1] - lat) * 110540.0])
+            p, q = xy[:-1], xy[1:]
+            d = q - p
+            L2 = np.maximum((d * d).sum(1), 1e-9)
+            t = np.clip(-(p * d).sum(1) / L2, 0.0, 1.0)
+            dist = float(np.min(np.hypot(*(p + d * t[:, None]).T)))
+            if dist < bd:
+                best, bd = str(nm), dist
+    return best

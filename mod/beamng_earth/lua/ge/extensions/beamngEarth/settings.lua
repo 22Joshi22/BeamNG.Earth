@@ -51,6 +51,10 @@ M.SCHEMA = {
   -- roads near the player (roads.lua; the server's --roads on)
   roads = { kind = 'bool', default = true, label = 'Roads' },
   hudVisible = { kind = 'bool', default = false, label = 'Status HUD at level start' },
+  -- the status bar at the top (statusbar.lua): street, town / state / country, loading, fps
+  statusBar = { kind = 'bool', default = true, label = 'Status bar' },
+  -- town / state / country names from Photon (komoot), sent the position rounded to ~1 km
+  placeNamesOnline = { kind = 'bool', default = true, label = 'Place names in the status bar (online)' },
   -- the on-screen data credits (credits.lua): on by default, CC BY licences ask for visible attribution
   creditsVisible = { kind = 'bool', default = true, label = 'Data credits on screen' },
   creditsCorner = { kind = 'enum', default = 'bottom-left', values = credits.CORNERS, label = 'Data credits corner' },
@@ -64,7 +68,8 @@ M.SCHEMA = {
   welcomeSeen = { kind = 'number', default = 0, min = 0, max = 1000, label = 'Welcome page seen (version)' },
 }
 M.ORDER = { 'rebaseDistance', 'viewDistanceMode', 'viewDistanceKm', 'hazeStrength', 'skyMode', 'clouds',
-  'weatherMode', 'realGravity', 'groundCover', 'groundCoverDensity', 'roads', 'hudVisible', 'creditsVisible',
+  'weatherMode', 'realGravity', 'groundCover', 'groundCoverDensity', 'roads', 'hudVisible', 'statusBar',
+  'placeNamesOnline', 'creditsVisible',
   'creditsCorner', 'creditsSize', 'cacheCapGb', 'devOutlineKm', 'devMapKm' }
 
 -- Stored but not on the settings page
@@ -239,6 +244,7 @@ M.APPLY = {
     if M.pageExists() then ui.visible = v end
   end,
   creditsVisible = function(v) credits.setEnabled(v) end,
+  statusBar = function(v) require('beamngEarth/statusbar').enabled = v and true or false end,
   creditsCorner = function(v) credits.setCorner(v) end,
   creditsSize = function(v) credits.setSize(v) end,
   cacheCapGb = function()

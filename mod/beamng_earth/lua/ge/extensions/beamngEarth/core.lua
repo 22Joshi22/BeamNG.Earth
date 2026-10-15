@@ -47,6 +47,7 @@ local horizon = require('beamngEarth/horizon')
 local ui = require('beamngEarth/ui')
 local settings = require('beamngEarth/settings') -- the pause-menu page's values (docs/DEVTOOLS.md)
 local credits = require('beamngEarth/credits') -- the on-screen data credits (docs/DEVTOOLS.md)
+local statusbar = require('beamngEarth/statusbar') -- the slim bar at the top: street, place, loading, fps
 local places = require('beamngEarth/places') -- saved and recent places (the settings page)
 local banner = require('beamngEarth/banner') -- the connection banner (docs/DEVTOOLS.md)
 local edgeguard = require('beamngEarth/edgeguard') -- never fall off the last block (docs/ROADMAP.md)
@@ -699,6 +700,8 @@ local function onMessage(msg)
     roads.onFarTile(msg, st.anchorId)
   elseif t == 'bldfar_drop' then
     roads.onFarDrop(msg)
+  elseif t == 'where_result' then
+    statusbar.onResult(msg)
   elseif t == 'route_result' then
     if msg.id then routeResults[msg.id] = { points = msg.points or {}, dist = msg.dist, dur = msg.dur, error = msg.error } end
   elseif t == 'geocode_result' then
@@ -1010,6 +1013,7 @@ local function drawUi(dt)
   credits.draw(st.active, creditsFallback)
   updateBanner(dt)
   banner.draw(st.inOurLevel or st.active, credits.hiddenByUi())
+  statusbar.draw(st.inOurLevel and st.active, credits.hiddenByUi(), st.status)
 end
 
 -- Hitch attribution (the user, 2026-10-14: "there's definitely some performance issues sometimes"): each frame
@@ -1073,6 +1077,12 @@ local function onUpdate(dtReal, dtSim)
   seasonlook.update(st.inOurLevel, st.anchor and st.anchor.lat)
   t = mark('ui', t)
   local frameMs = frameMs0
+  statusbar.frame(frameMs0)
+  if st.inOurLevel and net.isConnected() then
+    local stg2 = rawget(_G, 'beamngEarth_settings')
+    local q = statusbar.request(st.clock, st.player, not stg2 or not stg2.get or stg2.get('placeNamesOnline') ~= false)
+    if q then net.send({ type = 'where', id = q.id, lat = q.lat, lon = q.lon, online = q.online }) end
+  end
   local cf = st.commitFrames
   if cf then                    -- the commit frame and the two after it (wall ms between updates)
     cf.f[#cf.f + 1] = frameMs
@@ -1279,6 +1289,7 @@ teleportTo = function(lat, lon, name, kind)
     parking.onTeleport()
     navgraph.onTeleport()
     if kind ~= 'tool' then
+      statusbar.reset()
       local ok, err = pcall(places.noteTeleport, lat, lon, name, kind)
       if not ok then log('W', 'beamngEarth', 'recent places: ' .. tostring(err)) end
     end

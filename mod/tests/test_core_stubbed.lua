@@ -152,6 +152,7 @@ end
 -- the session
 
 local core = require('beamngEarth/core')
+require('beamngEarth/statusbar').enabled = false   -- its own test: test_statusbar.lua (these count text draws)
 -- the governor's wall clock: 16 ms per frame (deterministic heavy-slot timing)
 local wallNow = 0
 core._governor().clock = function() return wallNow end
