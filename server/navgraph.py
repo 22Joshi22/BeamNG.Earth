@@ -121,7 +121,7 @@ def build(frame, feats_list, elev, centre, urban_fn=None, window=WINDOW_M, decks
     for feats in feats_list:
         if feats is None or len(feats) == 0:
             continue
-        rspecs = roads.road_specs(feats, urban_fn, widths)      # the roads the road tiles (and their props) see
+        rspecs = roads.road_specs(feats, urban_fn, widths, left_hand)      # the roads the road tiles (and their props) see
         bspecs = roads.bridge_specs(feats)
         specs = [sp if sp is not None else bs for sp, bs in zip(rspecs, bspecs)]
         rules = feats.rules
@@ -203,6 +203,8 @@ def build(frame, feats_list, elev, centre, urban_fn=None, window=WINDOW_M, decks
                 for r in ow.rows(i):
                     if ow.start[r] <= mid <= ow.end[r]:
                         direction = int(ow.value[r])
+            if direction == 0 and spec.oneway and spec.dir:     # a divided road's carriageway (roads.dual_carriageways)
+                direction = int(spec.dir)
             lo, li = _lanes(w, direction != 0)
             # this road's approaches at its two ends (the graph node next to the junction, whether traffic comes in)
             for end in (0, -1):

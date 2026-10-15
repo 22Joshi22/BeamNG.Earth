@@ -287,7 +287,90 @@ def _dir_kmh(feats, i, ncon):
     return d, (float(k) if k is not None and float(k) > 0 else None), gap
 
 
-def road_specs(feats, urban_fn=None, widths=None):
+DUAL_CLASSES = {"motorway", "trunk", "primary", "secondary", "tertiary"}
+DUAL_GAP_M = (4.0, 45.0)    # centreline to centreline of a divided road's two carriageways
+DUAL_SHARE = 0.6            # this share of the shorter one runs beside the other ...
+DUAL_ANGLE_DEG = 25.0       # ... parallel within this
+
+
+def _dual_side(a, b):
+    """For polylines a, b (k, 2) in metres: the share of a's points (every ~10 m) with b beside it (DUAL_GAP_M,
+    parallel within DUAL_ANGLE_DEG) and the mean side b is on (+1 left / -1 right of a's direction)."""
+    seg = np.diff(a, axis=0)
+    L = np.hypot(seg[:, 0], seg[:, 1])
+    if len(b) < 2 or L.sum() < 1.0:
+        return 0.0, 0.0
+    s = np.concatenate([[0.0], np.cumsum(L)])
+    t = np.linspace(0.0, s[-1], max(2, int(s[-1] // 10) + 1))
+    q = np.stack([np.interp(t, s, a[:, 0]), np.interp(t, s, a[:, 1])], 1)
+    k = np.clip(np.searchsorted(s, t, side="right") - 1, 0, len(seg) - 1)
+    ta = seg[k] / np.maximum(L[k], 1e-9)[:, None]
+    bs = np.diff(b, axis=0)
+    bL2 = np.maximum((bs * bs).sum(1), 1e-12)
+    f = np.clip(((q[:, None, :] - b[None, :-1, :]) * bs[None]).sum(2) / bL2[None], 0.0, 1.0)
+    near = b[None, :-1, :] + bs[None] * f[..., None]
+    d = np.hypot(*(near - q[:, None, :]).transpose(2, 0, 1))
+    j = np.argmin(d, 1)
+    dist = d[np.arange(len(q)), j]
+    tb = bs[j] / np.sqrt(bL2[j])[:, None]
+    par = np.abs((ta * tb).sum(1)) >= math.cos(math.radians(DUAL_ANGLE_DEG))
+    ok = (dist >= DUAL_GAP_M[0]) & (dist <= DUAL_GAP_M[1]) & par
+    if not ok.any():
+        return 0.0, 0.0
+    v = near[np.arange(len(q)), j] - q
+    side = np.sign(ta[:, 0] * v[:, 1] - ta[:, 1] * v[:, 0])
+    return float(ok.mean()), float(side[ok].mean())
+
+
+def dual_carriageways(feats, specs, left_hand=False):
+    """specs with the two carriageways of a divided road made one-way when the map says neither is (Boston St,
+    Baltimore: two "primary" roads either side of a wide median, each with its own double yellow centre line, the
+    user's report 2026-10-14). Two roads of one name and class running side by side DUAL_GAP_M apart over most of
+    the shorter one; each runs so that the other is on its left (driving on the right) or right. Pure."""
+    groups = {}
+    names = feats.attrs.get("name")
+    if names is None:
+        return specs
+    for i, sp in enumerate(specs):
+        if sp is None or sp.oneway or sp.cls not in DUAL_CLASSES:
+            continue
+        nm = str(names[i] or "").strip()
+        if nm and nm != "None":
+            groups.setdefault((nm, sp.cls), []).append(i)
+    out = list(specs)
+    for idx in groups.values():
+        if len(idx) < 2:
+            continue
+        lines = {}
+        for i in idx:
+            a = feats.coord_off[feats.ring_off[feats.part_off[i]]]
+            b = feats.coord_off[feats.ring_off[feats.part_off[i + 1]]]
+            ll = feats.lonlat[a:b]
+            lines[i] = ll
+        lat0 = float(np.mean(np.concatenate(list(lines.values()))[:, 1]))
+        m = np.array([111320.0 * math.cos(math.radians(lat0)), 110540.0])
+        ref = lines[idx[0]][0]
+        xy = {i: (ll - ref) * m for i, ll in lines.items()}
+        for i in idx:
+            best = None
+            for j in idx:
+                if i == j:
+                    continue
+                share, side = _dual_side(xy[i], xy[j])
+                if share >= DUAL_SHARE and abs(side) > 0.5 and (best is None or share > best[0]):
+                    best = (share, side)
+            if best is None:
+                continue
+            sp = out[i]
+            # driving on the right the other carriageway is on the left
+            d = (1 if best[1] > 0 else -1) * (-1 if left_hand else 1)
+            w = sp.width if _rule_value(feats.rules.get("width"), i) is not None else \
+                carriageway(sp.cls, sp.kind, sp.urban, None, True)
+            out[i] = sp._replace(oneway=True, dir=d, width=w)
+    return out
+
+
+def road_specs(feats, urban_fn=None, widths=None, left_hand=False):
     """Per feature: None (left out) or (width m, surface kind). urban_fn(lat, lon) -> bool array (built-up
     land cover), None = rural everywhere; called once for every candidate's points (its cost is per
     call: 2026-10-11, one call per road made 4.4 of a physics block's 6 s). Pure given urban_fn."""
@@ -328,6 +411,7 @@ def road_specs(feats, urban_fn=None, widths=None):
             urban = float(np.mean(u[k:k + (b - a)])) >= URBAN_SHARE
             k += b - a
             out[j] = Spec(carriageway(cls, kind, urban, None, ow), kind, urban, cls, ow, 2.5, *dk)
+    out = dual_carriageways(feats, out, left_hand)
     if widths is not None:                      # measured between the buildings (roadwidth.py)
         for j, sp in enumerate(out):
             if sp is None or sp.kind not in BUILT or sp.cls not in SIDEWALK_CLASSES or sp.cls in MEASURE_SKIP:
@@ -1327,7 +1411,7 @@ def build_tile(frame, tx, ty, cells, elev, urban_fn=None, walks=None, bridges=No
     for feats in cells:
         if feats is None or len(feats) == 0:
             continue
-        specs = road_specs(feats, urban_fn, widths)
+        specs = road_specs(feats, urban_fn, widths, left_hand)
         bspecs = bridge_specs(feats)
         for i in range(len(feats)):
             if bspecs[i] is not None and str(feats.ids[i]) not in bseen:
@@ -1480,7 +1564,7 @@ def build_tile(frame, tx, ty, cells, elev, urban_fn=None, walks=None, bridges=No
         for fid, (f, i, sp) in seen.items():
             if sp.oneway:
                 v = _rule_value(f.rules.get("oneway"), i)
-                dirs[fid] = -1 if v is not None and float(v) < 0 else 1
+                dirs[fid] = (-1 if float(v) < 0 else 1) if v is not None else (sp.dir or 1)
         park.extend(parking.curb_spots(roads, walks, (x0, y0, x1, y1), left_hand, dirs))
         aisles = {fid for fid, (f, i, sp) in seen.items()
                   if sp.kind == "paved" and _rule_value(f.rules.get("subclass"), i) == "parking_aisle"}

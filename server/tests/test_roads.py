@@ -91,6 +91,33 @@ class RulesTest(unittest.TestCase):
         self.assertEqual(s[1][0], 9.0, "width rule wins over the parking guess")
 
 
+class DualCarriagewayTest(unittest.TestCase):
+    def feats(self, lines, names, classes=None):
+        f = features(lines, classes or ["primary"] * len(lines))
+        f.attrs["name"] = np.array(names)
+        return f
+
+    def test_divided_road_one_way_each_with_the_other_on_its_left(self):
+        # Boston St (Baltimore): two "primary" carriageways 20 m apart, neither one-way in the data
+        f = self.feats([[(0, 0), (300, 0)], [(300, 20), (0, 20)], [(0, -80), (300, -80)]],
+                       ["Boston Street", "Boston Street", "Boston Street"])
+        sp = roads.road_specs(f)
+        self.assertTrue(sp[0].oneway and sp[1].oneway, "both carriageways one-way")
+        self.assertEqual((sp[0].dir, sp[1].dir), (1, 1), "each runs with the other on its left (driving on the right)")
+        self.assertFalse(sp[2].oneway, "a same-named road 80 m off is not a carriageway of it")
+        self.assertLess(sp[0].width, roads.carriageway("primary", "paved", False, None, False), "a one-way width")
+        lh = roads.road_specs(f, left_hand=True)
+        self.assertEqual((lh[0].dir, lh[1].dir), (-1, -1), "driving on the left: the other way")
+        ex = roads.extras(sp[0], np.array([[0, 0, 0], [300, 0, 0.0]]), LON)
+        self.assertFalse(any(abs(abs(float(pts[0][1])) - roads.CENTRE["gap"]) < 1e-6 for _, _, pts in ex),
+                         "no double centre line (a lane line instead)")
+
+    def test_other_names_and_crossing_roads_untouched(self):
+        f = self.feats([[(0, 0), (300, 0)], [(300, 20), (0, 20)], [(150, -100), (150, 100)]],
+                       ["Boston Street", "Elliott Street", "Boston Street"])
+        self.assertFalse(any(s.oneway for s in roads.road_specs(f)))
+
+
 class GeometryTest(unittest.TestCase):
     def test_clip(self):
         pts = np.array([[-10.0, 5.0], [20.0, 5.0], [20.0, 30.0], [5.0, 30.0], [5.0, 5.0]])
