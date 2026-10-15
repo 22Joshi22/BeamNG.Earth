@@ -9,6 +9,12 @@ Fallback: AWS Terrain Tiles, 256 px PNG, z<=15, global, includes bathymetry.
 All sampling happens on the Mapterhorn grid (512 px tiles). A fallback tile is
 assembled from AWS tiles of the same footprint and resampled to 512 px.
 
+Outside the lidar areas (no Mapterhorn tile deeper than z12) Mapterhorn is Copernicus GLO-30, a surface model:
+its z12 tiles get their buildings and small tree stands taken out (dsmground.ground, with the 8 neighbouring
+tiles as context so neighbours agree), and deeper zooms there are that ground upsampled, not AWS (SRTM there:
+25 m building bumps in Mexico City, a 28 m void fill over Botafogo's bay; 2026-10-15). Dem.ground_filter = False
+keeps the raw tiles and AWS (tests, comparisons).
+
 Requests go through a netfetch.Fetcher (rate limit, retries, circuit breaker per host). When
 Mapterhorn cannot be asked (circuit open, rate limited, failing) the same tile comes from AWS
 (failover); if AWS fails too, DemUnavailable. 404s are remembered as <y>.404 markers that expire
@@ -26,6 +32,7 @@ import numpy as np
 from PIL import Image
 
 import cache as cachemod
+import dsmground
 import netfetch
 
 log = logging.getLogger("earthd.dem")
@@ -33,6 +40,7 @@ log = logging.getLogger("earthd.dem")
 TILE = 512                  # sampling grid tile size (Mapterhorn)
 MAX_ZOOM = 15               # AWS stops at z15; nothing in v1 needs more
 GLOBAL_ZOOM = 12            # Mapterhorn is complete on land up to here
+GROUND_MARGIN = 96          # px of the neighbouring z12 tiles the ground filter sees around a tile
 MAX_LAT = 85.0511287798     # Web Mercator limit
 MAX_TILES_PER_SAMPLE = 1024
 
@@ -69,6 +77,7 @@ def _resize(a, size):
 
 class Dem:
     disk = cachemod.NONE    # the server's cache.Cache (last use per file, the size cap); set by earthd
+    ground_filter = True    # surface-model areas: buildings out, deeper zooms from that ground (see above)
 
     # mem_tiles: decoded float32 512² tiles kept in memory (1 MB each; 512 per docs/V1_2_DESIGN.md §4.3).
     # fetcher: the server's netfetch.Fetcher (shared rate limits); None = a Fetcher of its own.
@@ -179,6 +188,13 @@ class Dem:
             return np.zeros((TILE, TILE), np.float32) if a is None else a
         if a is not None:
             self.served[key] = MAPTERHORN["name"]
+            if self.ground_filter and z == GLOBAL_ZOOM and not self._lidar(x, y):
+                a = self._ground12(x, y, a)
+            return a
+        if self.ground_filter and z > GLOBAL_ZOOM:
+            # no lidar here: the surface model's ground, upsampled
+            a = self._from_ground12(z, x, y)
+            self.served[key] = MAPTERHORN["name"]
             return a
         try:
             a = self._aws_tile(z, x, y)
@@ -192,6 +208,85 @@ class Dem:
             # open ocean. Drop AWS bathymetry: the sea surface is what we draw.
             a = np.maximum(a, 0.0)
         return a
+
+    # --- the ground under the surface model ------------------------------
+    def _lidar(self, x, y):
+        """Has Mapterhorn deeper tiles (national lidar: a terrain model already) under z12 tile (x, y)? Two of
+        its z13 children asked (404s are remembered)."""
+        for cx, cy in ((2 * x, 2 * y), (2 * x + 1, 2 * y + 1)):
+            try:
+                if self._download(MAPTERHORN, GLOBAL_ZOOM + 1, cx, cy) is not None:
+                    return True
+            except netfetch.FetchError:
+                pass
+        return False
+
+    def _raw12(self, x, y):
+        """A z12 Mapterhorn tile as it is (zeros where there is none: the open sea)."""
+        n = 2 ** GLOBAL_ZOOM
+        if not 0 <= y < n:
+            return None
+        x %= n
+        try:
+            data = self._download(MAPTERHORN, GLOBAL_ZOOM, x, y)
+        except netfetch.FetchError:
+            return None
+        if data is None:
+            return np.zeros((TILE, TILE), np.float32)
+        return self._decode(MAPTERHORN, GLOBAL_ZOOM, x, y, data)
+
+    def _ground12(self, x, y, a):
+        """z12 tile (x, y) (elevations a) with the surface objects taken out, its neighbours as context."""
+        m = GROUND_MARGIN
+        big = np.empty((TILE + 2 * m, TILE + 2 * m), np.float32)
+        big[m:m + TILE, m:m + TILE] = a
+        for dy in (-1, 0, 1):
+            for dx in (-1, 0, 1):
+                if dx == 0 and dy == 0:
+                    continue
+                nb = self._raw12(x + dx, y + dy)
+                r0, r1 = (0, m) if dy < 0 else (m + TILE, 2 * m + TILE) if dy > 0 else (m, m + TILE)
+                c0, c1 = (0, m) if dx < 0 else (m + TILE, 2 * m + TILE) if dx > 0 else (m, m + TILE)
+                if nb is None:      # beyond the map's top / bottom, or not to be had: the edge repeated
+                    rr = np.clip(np.arange(r0, r1) - m, 0, TILE - 1)
+                    cc = np.clip(np.arange(c0, c1) - m, 0, TILE - 1)
+                    big[r0:r1, c0:c1] = a[np.ix_(rr, cc)]
+                else:
+                    sr = slice(TILE - m, TILE) if dy < 0 else slice(0, m) if dy > 0 else slice(0, TILE)
+                    sc = slice(TILE - m, TILE) if dx < 0 else slice(0, m) if dx > 0 else slice(0, TILE)
+                    big[r0:r1, c0:c1] = nb[sr, sc]
+        n = 2 ** GLOBAL_ZOOM
+        lat = math.degrees(math.atan(math.sinh(math.pi * (1 - 2 * (y + 0.5) / n))))
+        px = 40075016.686 * math.cos(math.radians(lat)) / n / TILE
+        g = dsmground.ground(big, px)
+        self._count("dem:ground12")
+        return np.ascontiguousarray(g[m:m + TILE, m:m + TILE])
+
+    def _from_ground12(self, z, x, y):
+        """Tile (z, x, y), z > 12, bilinear from its z12 ancestor's ground (edges held at the ancestor's)."""
+        d = z - GLOBAL_ZOOM
+        ax, ay = x >> d, y >> d
+        key = (GLOBAL_ZOOM, ax, ay)
+        with self._lock:
+            anc = self._lru.get(key)
+        if anc is None:
+            anc = self._load_tile(key)      # (in this thread: a pool worker waiting on the pool could deadlock)
+            with self._lock:
+                self._lru[key] = anc
+                while len(self._lru) > self.mem_tiles:
+                    self._lru.popitem(last=False)
+        k = 2 ** d
+        i = (np.arange(TILE) + 0.5) / k - 0.5
+        u = np.clip((x - ax * k) * TILE / k + i, 0, TILE - 1)
+        v = np.clip((y - ay * k) * TILE / k + i, 0, TILE - 1)
+        u0 = np.minimum(np.floor(u).astype(np.int64), TILE - 2)
+        v0 = np.minimum(np.floor(v).astype(np.int64), TILE - 2)
+        fu, fv = (u - u0)[None, :], (v - v0)[:, None]
+        a00 = anc[np.ix_(v0, u0)]
+        a01 = anc[np.ix_(v0, u0 + 1)]
+        a10 = anc[np.ix_(v0 + 1, u0)]
+        a11 = anc[np.ix_(v0 + 1, u0 + 1)]
+        return ((a00 * (1 - fu) + a01 * fu) * (1 - fv) + (a10 * (1 - fu) + a11 * fu) * fv).astype(np.float32)
 
     def tiles(self, keys, progress=None):
         """Fetch many tiles concurrently (deduplicated across callers)."""

@@ -31,7 +31,7 @@ import mapcells
 
 log = logging.getLogger("earthd.vegetation")
 
-VERSION = 7
+VERSION = 8
 TREE_MIN_M = 3.0
 CROWN_SPACING = 0.5          # tops kept this many crown radii apart (0.8 looked sparse: the user, 2026-10-13)
 BUSH_MIN_M = 1.0
@@ -144,8 +144,11 @@ def regional(group, height, lat, lon, lcls, u):
     # dry open country: junipers, desert bushes and rocks
     g = np.where(open_dry & tree & (h < 9.0), G_JUNIPER, g)
     g = np.where(open_dry & (g == G_CONIFER), G_PINE_WEST, g)
-    g = np.where(dry_west & (g == G_SHRUB), G_DESERT_SHRUB, g)
-    g = np.where(dry_west & (g == G_ROCK), G_DESERT_ROCK, g)
+    # arid land elsewhere (the land cover says shrubland or bare: the Sahara, Arabia, inner Australia, the
+    # Thar, the Kalahari): its bushes and rocks are the desert ones
+    arid = ~_north_america(lat, lon) & np.isin(lcls, (WC["shrub"], WC["bare"])) & (np.abs(lat) < 42.0)
+    g = np.where((dry_west | arid) & (g == G_SHRUB), G_DESERT_SHRUB, g)
+    g = np.where((dry_west | arid) & (g == G_ROCK), G_DESERT_ROCK, g)
     # palms: most of a warm coast's town trees, some of its others; tall broadleaves in the tropics
     palm_p = np.where(built, 0.6, 0.2)
     g = np.where((warm_coast | tropics) & tree & (u < palm_p), G_PALM, g)
@@ -153,12 +156,24 @@ def regional(group, height, lat, lon, lcls, u):
     return g.astype(np.uint8)
 
 
+def _north_america(lat, lon):
+    lat, lon = np.asarray(lat), np.asarray(lon)
+    return (lat > 24.0) & (lon > -170.0) & (lon < -50.0)
+
+
 def _conifer_share(lat, lon):
-    """The regional share of conifers (a coarse climate stand-in until a species map)."""
+    """The regional share of conifers (a coarse climate stand-in until a species map). Beyond North America
+    (2026-10-15: Douglas firs stood in Punjab's fields): few in the tropics and subtropics, the pines of the
+    Mediterranean, the boreal north."""
+    lat, lon = np.asarray(lat, np.float64), np.asarray(lon, np.float64)
     west = lon < -100.0
     share = np.where(west, 0.7, 0.2)
     share = np.where(np.abs(lat) > 45.0, np.maximum(share, 0.6), share)
-    return share
+    alat = np.abs(lat)
+    other = np.where(alat < 23.5, 0.02, np.where(alat < 35.0, 0.08, np.where(alat <= 45.0, 0.2, share)))
+    mediterranean = (lat > 30.0) & (lat < 46.0) & (lon > -10.0) & (lon < 40.0)
+    other = np.where(mediterranean, 0.3, other)
+    return np.where(_north_america(lat, lon), share, other)
 
 
 class Vegetation:
