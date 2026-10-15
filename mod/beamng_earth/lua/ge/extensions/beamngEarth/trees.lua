@@ -7,23 +7,40 @@
 -- hundred per frame (~19 us each, 2026-10-13 probe).
 local M = {}
 
-M.PER_FRAME = 300       -- items made or removed per frame at most
+M.PER_FRAME = 250       -- items made or removed per frame at most
+M.ROWS_PER_FRAME = 12000 -- rows of changing tiles looked at per frame at most (Lua time: 30000 averaged 2.5 ms)
 -- 2026-10-14: was { 300, 1 }, { 550, 0.5 }, { 900, 0.25 }, { 1e9, 0.12 }; the engine already draws far trees as
 -- billboards (their LODs), so our extra thinning made far forest sparse. Columbia: 48k -> 78k items, no frame cost seen.
 M.RINGS = { { 300, 1.0 }, { 700, 0.6 }, { 1500, 0.35 }, { 1e9, 0.2 } }   -- tile distance (m): the rank shown below
 -- small props only near the player (2026-10-14, Fells Point at street level: ~10 ms a frame for the Forest
 -- with a door on every house out to 300 m): the tile distance (m) beyond which a group is not shown
-M.GROUP_MAX_M = { door = 120, hydrant = 200, bin = 200, bench = 200, polelamp = 400, stop = 300, signal = 500,
-  fence = 150, wallsign_logistics = 800, wallsign_rentabox = 800, wallsign_lemon = 800, wallsign_turboburger = 500,
+M.GROUP_MAX_M = { shrub = 250, desert_shrub = 250, door = 120, hydrant = 200, bin = 200, bench = 200, polelamp = 400,
+  stop = 300, signal = 500, fence = 150, wallsign_logistics = 800, wallsign_rentabox = 800, wallsign_lemon = 800, wallsign_turboburger = 500,
   speed30 = 300, speed40 = 300, speed50 = 300, speed60 = 300, speed70 = 300 }
 M.FOREST_NAME = 'bngEarthForest'      -- a prefix: small Forests from a pool ('bngEarthForest_<n>')
 -- A small Forest per tile, from a pool (2026-10-15, 100 mph drives: one shared Forest with ~240k items made and ~220k
 -- removed over a session made frames with any tree change cost ~100 ms in the engine's tick, and a fresh game ran the
 -- same drive at 71 fps instead of 30-42). A dropped tile's items are removed (cheap in its small Forest) and the empty
 -- Forest goes back to the pool: deleting a Forest whose items are in the physics' static collision hung the game.
--- Items made this close to the player ask for a collision rebuild (roads.lua, throttled): a Forest item collides only
--- after be:reloadCollision, and where no road tile arrives (the Sahara's rocks, 2026-10-14) none came at all
-M.COLLIDE_M = 400
+-- Only tiles this near the player get colliding items (their trees, rocks and street furniture), the rest are made of
+-- item types that never collide, a tile's items re-made when it crosses (back beyond SOLID_M + SOLID_HYST_M).
+-- Solid items made ask for a collision rebuild (roads.lua, throttled): a Forest item collides only after
+-- be:reloadCollision, and where no road tile arrives (the Sahara's rocks, 2026-10-14) none came at all.
+-- 2026-10-15 probes: with ~150k trees all colliding, a frame changing 10 items cost the engine's tick ~124 ms, ~68 ms
+-- when the changed items' type did not collide: much of a Forest change's cost grew with the colliding items.
+M.SOLID_M = 300
+M.SOLID_HYST_M = 100
+M.NO_COLLIDE = { shrub = true, desert_shrub = true, door = true, wallsign_logistics = true, wallsign_rentabox = true,
+  wallsign_lemon = true, wallsign_turboburger = true }
+-- The 100 mph stutter (2026-10-15 probes): a frame that adds or removes Forest items costs the engine's tick ~0.5 us
+-- for every item in the level of each SHAPE touched (whatever its item type or Forest), so a frame making 300 items of
+-- ~20 shapes among ~130k items cost ~100 ms. A frame touches shapes whose items add up to SHAPE_ITEMS_PER_FRAME at most
+-- (at least one shape), and bushes (half of all items, one shape alone 34k) show near the player only.
+M.SHAPE_ITEMS_PER_FRAME = 4000
+-- The engine tells shapes apart by their path, so a tile's items use one of SHAPE_VARIANTS spellings of each shape's
+-- path ('dir/./name', 'dir/././name', ...: the same file, a shape of its own), which splits the big populations (one
+-- beech ~7.7k items: a frame touching it cost ~4-9 ms). A variant's first items cost one ~12 ms frame (its load).
+M.SHAPE_VARIANTS = 4
 
 local ECA = '/levels/east_coast_usa/art/shapes/'
 local WCA = '/levels/west_coast_usa/art/shapes/'
@@ -136,7 +153,8 @@ local MATERIALS = {
 }
 
 local tiles = {}        -- key "a:tx_ty" -> { anchor, cx, cy, rows, made = { i -> item }, shown = rank }
-local types = {}        -- shape path -> TSForestItemData
+local types = {}        -- "shape" / "shape#n" (not solid) -> TSForestItemData
+local pop = {}          -- shape -> its items in the level
 local ready = false
 M.made, M.removed, M.errors = 0, 0, 0
 
@@ -180,30 +198,29 @@ local function setup()
   return true
 end
 
-local function itemType(shape)
-  local d = types[shape]
+-- Pure: the item type's name of a shape, solid (collides) or not.
+function M.typeName(shape, solid)
+  return 'bngEarthTree_' .. shape:gsub('[^%w]', '_') .. (solid and '' or '_n')
+end
+
+local function itemType(shape, solid)
+  local key = solid and shape or (shape .. '#n')
+  local d = types[key]
   if d then return d end
-  local name = 'bngEarthTree_' .. shape:gsub('[^%w]', '_')
+  local name = M.typeName(shape, solid)
   d = scenetree.findObject(name)
   if not d then
     d = (worldEditorCppApi and worldEditorCppApi.createObject) and worldEditorCppApi.createObject('TSForestItemData')
       or createObject('TSForestItemData')
     if not d then return nil end
     d:setField('shapeFile', 0, shape .. '.dae')
+    d:setField('collidable', 0, solid and '1' or '0')
     d:setField('windScale', 0, '0.4'); d:setField('branchAmp', 0, '0.1'); d:setField('detailAmp', 0, '0.2')
     d:registerObject(name)
     if Sim and Sim.getDataBlockSet then Sim.getDataBlockSet():addObject(d) end
   end
-  types[shape] = d
+  types[key] = d
   return d
-end
-
--- Every item type's wind response (tests; 0 = trees stand still)
-function M.setWind(scale)
-  for _, d in pairs(types) do
-    d:setField('windScale', 0, tostring(scale))
-  end
-  return true
 end
 
 -- The variant of a group for an item of height h: those within 0.8 .. 1.25 of it (else 0.6 .. 1.6), picked by the
@@ -232,9 +249,32 @@ end
 local GROUPS = { 'deciduous', 'conifer', 'shrub', 'rock' }
 local groupBand
 
-local function makeItem(fd, row, groups)
-  local shape, sc = M.pick((groups or GROUPS)[(row[1] or 0) + 1] or 'deciduous', row[7] or 10, row[8] or 0)
-  local d = itemType(shape)
+-- Pure: the variant v's spelling of a shape path (0: itself).
+function M.variant(shape, v)
+  if not v or v <= 0 then return shape end
+  return (shape:gsub('/([^/]+)$', '/' .. string.rep('./', v) .. '%1'))
+end
+
+-- Pure: a tile's shape variant from its key ("a:tx_ty" / "a:ptx_ty"): neighbours differ.
+function M.tileVariant(key)
+  local tx, ty = tostring(key):match('(%-?%d+)_(%-?%d+)$')
+  if not tx then return 0 end
+  return (tonumber(tx) * 3 + tonumber(ty) * 5) % math.max(M.SHAPE_VARIANTS, 1)
+end
+
+-- The shape (the tile's variant) and scale of a tile's row i (cached: M.pick makes tables).
+local function shapeOf(t, i, row)
+  local s = t.shapes[i]
+  if s then return s, t.scales[i] end
+  local sc
+  s, sc = M.pick((t.groups or GROUPS)[(row[1] or 0) + 1] or 'deciduous', row[7] or 10, row[8] or 0)
+  s = M.variant(s, t.variant)
+  t.shapes[i], t.scales[i] = s, sc
+  return s, sc
+end
+
+local function makeItem(fd, row, shape, sc, solid)
+  local d = itemType(shape, solid)
   if not d then M.errors = M.errors + 1; return nil end
   local m = MatrixF(true)
   m:setFromEuler(vec3(0, 0, math.rad(row[5] or 0)))
@@ -242,12 +282,24 @@ local function makeItem(fd, row, groups)
   local ok, it = pcall(function() return fd:createNewItem(d, m, sc) end)
   if not ok then M.errors = M.errors + 1; return nil end
   M.made = M.made + 1
+  pop[shape] = (pop[shape] or 0) + 1
   return it
 end
 
-local function removeItem(fd, it)
+local function removeItem(fd, it, shape)
   pcall(function() fd:removeItem(it) end)
   M.removed = M.removed + 1
+  if shape then pop[shape] = math.max((pop[shape] or 1) - 1, 0) end
+end
+
+-- This frame's shapes: may an item of this shape change now? (see SHAPE_ITEMS_PER_FRAME)
+local touched, touchedItems = {}, 0
+local function allow(shape)
+  if touched[shape] then return true end
+  local n = pop[shape] or 0
+  if next(touched) ~= nil and touchedItems + n > M.SHAPE_ITEMS_PER_FRAME then return false end
+  touched[shape], touchedItems = true, touchedItems + n
+  return true
 end
 
 -- A 'veg_tile' message: { anchorId, key, path, n }.
@@ -268,8 +320,10 @@ function M.onRows(anchorId, tileKey, rows, groups)
   local old = tiles[key]
   local tx, ty = tostring(tileKey):match('(%-?%d+)_(%-?%d+)$')
   local t = { anchor = anchorId, rows = rows, groups = type(groups) == 'table' and groups or nil,
-    made = old and old.made or {}, shown = old and old.shown or 0, forestId = old and old.forestId or nil,
-    cx = (tonumber(tx) or 0) * 256 + 128, cy = (tonumber(ty) or 0) * 256 + 128, drop = false }
+    made = old and old.made or {}, solid = old and old.solid or {}, near = old and old.near,
+    shapes = old and old.rows == rows and old.shapes or {}, scales = old and old.rows == rows and old.scales or {},
+    madeShape = old and old.madeShape or {}, shown = old and old.shown or 0, forestId = old and old.forestId or nil,
+    variant = M.tileVariant(key), cx = (tonumber(tx) or 0) * 256 + 128, cy = (tonumber(ty) or 0) * 256 + 128, drop = false }
   tiles[key] = t
 end
 
@@ -312,30 +366,41 @@ function M.update(anchorId, player)
   if not next(tiles) then return end
   if not setup() then return end
   local budget = M.PER_FRAME
+  M.lastShapeItems = touchedItems        -- the previous frame's (diagnostics)
+  touched, touchedItems = {}, 0
   for key, t in pairs(tiles) do
     if t.anchor ~= anchorId or t.drop then
       local f = t.forestId and scenetree.findObjectById(t.forestId)
       local fd = f and f:getData()
+      local left = false
       for i, it in pairs(t.made) do
         if budget <= 0 then return end
-        if fd then removeItem(fd, it) end
-        t.made[i] = nil
-        budget = budget - 1
+        local sh = t.madeShape[i]
+        if not sh or allow(sh) then
+          if fd then removeItem(fd, it, sh) end
+          t.made[i], t.solid[i], t.madeShape[i] = nil, nil, nil
+          budget = budget - 1
+        else left = true end
       end
-      releaseForest(t)
-      tiles[key] = nil
+      if not left then
+        releaseForest(t)
+        tiles[key] = nil
+      end
     end
   end
   if not player then return end
   -- nearest tiles first
   local order = {}
   for key, t in pairs(tiles) do
+    if t.anchor ~= anchorId or t.drop then goto continue end     -- still being emptied
     local dx = math.max(math.abs(player.x - t.cx) - 128, 0)
     local dy = math.max(math.abs(player.y - t.cy) - 128, 0)
     order[#order + 1] = { key, math.sqrt(dx * dx + dy * dy) }
+    ::continue::
   end
   table.sort(order, function(a, b) return a[2] < b[2] end)
   local nearMade = false
+  local rowsScanned = 0
   local function finish()
     if nearMade then
       local ok, roads = pcall(require, 'beamngEarth/roads')
@@ -348,29 +413,42 @@ function M.update(anchorId, player)
     local function data() fd = fd or forest(t):getData(); return fd end
     local want = threshold(o[2])
     local band = groupBand(t, o[2])
-    if want ~= t.shown or band ~= t.band or t.pending then
+    local near = o[2] <= M.SOLID_M or (t.near and o[2] <= M.SOLID_M + M.SOLID_HYST_M) or false
+    if want ~= t.shown or band ~= t.band or near ~= t.near or t.pending then
       t.pending = false
+      if rowsScanned > M.ROWS_PER_FRAME then finish(); return end
+      rowsScanned = rowsScanned + #t.rows
       for i, row in ipairs(t.rows) do
         local r = row[8] or 0
-        local g = t.groups and t.groups[(row[1] or 0) + 1]
+        local g = (t.groups or GROUPS)[(row[1] or 0) + 1]
         local cap = g and M.GROUP_MAX_M[g]
         if cap and o[2] > cap then r = 2 end     -- this group is not shown this far out
         -- an item something else stands in for (navgraph.lua's switchable signal heads)
         if g and M.suppress and M.suppress(g, row[2], row[3]) then r = 2 end
-        if r < want and not t.made[i] then
+        local solid = near and not M.NO_COLLIDE[g or '']
+        if r < want and (not t.made[i] or (t.solid[i] == true) ~= solid) then
+          local sh, sc = shapeOf(t, i, row)
           if budget <= 0 then t.pending = true; finish(); return end
-          t.made[i] = makeItem(data(), row, t.groups)
-          if o[2] <= M.COLLIDE_M then nearMade = true end
-          budget = budget - 1
+          if allow(sh) then
+            if t.made[i] then removeItem(data(), t.made[i], t.madeShape[i]); budget = budget - 1 end  -- solid <-> not
+            t.made[i] = makeItem(data(), row, sh, sc, solid)
+            t.solid[i] = (t.made[i] and solid) or nil      -- true or nil
+            t.madeShape[i] = t.made[i] and sh or nil
+            if solid then nearMade = true end
+            budget = budget - 1
+          else t.pending = true end                -- another frame (this one's shapes are full)
         elseif r >= want and t.made[i] then
           if budget <= 0 then t.pending = true; finish(); return end
-          removeItem(data(), t.made[i])
-          t.made[i] = nil
-          budget = budget - 1
+          if allow(t.madeShape[i] or '') then
+            removeItem(data(), t.made[i], t.madeShape[i])
+            t.made[i], t.solid[i], t.madeShape[i] = nil, nil, nil
+            budget = budget - 1
+          else t.pending = true end
         end
       end
       t.shown = want
       t.band = band
+      t.near = near
     end
   end
   finish()
@@ -381,7 +459,7 @@ function M.clear()
   for _, t in pairs(tiles) do
     local f = t.forestId and scenetree.findObjectById(t.forestId)
     local fd = f and f:getData()
-    for _, it in pairs(t.made) do if fd then removeItem(fd, it) end end
+    for i, it in pairs(t.made) do if fd then removeItem(fd, it, t.madeShape[i]) end end
     releaseForest(t)
   end
   tiles = {}
@@ -389,16 +467,17 @@ end
 
 -- Level end: the level deletes its objects itself.
 function M.reset()
-  tiles, types, ready, pool, forestCount = {}, {}, false, {}, 0
+  tiles, types, ready, pool, forestCount, pop = {}, {}, false, {}, 0, {}
 end
 
 function M.status()
-  local n, items = 0, 0
+  local n, items, pending = 0, 0, 0
   for _, t in pairs(tiles) do
     n = n + 1
+    if t.pending or t.shown == 0 then pending = pending + 1 end
     for _ in pairs(t.made) do items = items + 1 end
   end
-  return { tiles = n, items = items, made = M.made, removed = M.removed, errors = M.errors }
+  return { tiles = n, items = items, pending = pending, made = M.made, removed = M.removed, errors = M.errors }
 end
 
 return M

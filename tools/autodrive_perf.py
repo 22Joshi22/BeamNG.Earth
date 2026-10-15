@@ -24,6 +24,7 @@ import glob
 import json
 import math
 import os
+import shutil
 import subprocess
 import sys
 import time
@@ -142,7 +143,7 @@ def shot(out_dir, name):
             if os.path.exists(p) and os.path.getsize(p) > 0:
                 break
         time.sleep(0.5)
-        os.replace(p, os.path.join(out_dir, name))
+        shutil.move(p, os.path.join(out_dir, name))
         return name
     except (Exception, SystemExit) as e:
         return f"no screenshot: {e}"
