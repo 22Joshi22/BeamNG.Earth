@@ -914,6 +914,8 @@ local function serverHealthy()
   return net.isConnected() and st.sessionId ~= nil and st.block ~= nil and not st.resync and not terrainStuck()
 end
 
+M.serverHealthy = function() return serverHealthy() end
+
 -- The collidable area of the block in use (the anchor's, else the level-start flat block), or nil.
 local function guardBox()
   local cx, cy

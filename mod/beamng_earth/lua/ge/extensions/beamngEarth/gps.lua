@@ -32,6 +32,10 @@ M.TAIL_STEP_M = 25
 -- applied again (its nodes are new tables) and when the car has stood still for AUTO_STALL_S.
 M.AUTO_STALL_S = 6
 M.AUTO_AGGRESSION = 0.3
+-- Safety: the AI brakes to a stop while the world server is away (no new ground or roads: an autodrive left on through
+-- server restarts drove off the loaded world and wrecked the car, 2026-10-14) and goes on when it is back; a car
+-- damaged this much ends the autodrive.
+M.AUTO_DAMAGE = 20000
 
 local dest = nil        -- { lat, lon, name }
 local route = nil       -- { points = {{lat, lon}...}, dist, dur, version } | false (no route: steering) | nil (none yet)
@@ -48,6 +52,7 @@ local auto = false      -- autodrive on
 local autoPath = nil    -- the node ids last given to the AI
 local autoSerial = nil  -- the graph (navgraph applies) they were taken from
 local stillSince = nil
+local paused = false    -- the AI holds the car (world server away)
 
 -- Pure: the id and position {x, y, z} of the node in `nodes` (map.getMap().nodes: id -> { pos = {x, y, z} })
 -- nearest (tx, ty), and its distance; nil when there are none.
@@ -302,7 +307,7 @@ local function setArrows(key, target, tail, nodes)
   if pcall(gm.setPath, target, { clearPathOnReachingTarget = false }) then
     routedTo, arrowsSerial = key, serial
     -- (not before the route is in: the AI would set off on its own way toward the destination)
-    if auto and route ~= nil then pcall(driveArrowsPath, gm, nodes) end    -- before the tail: the AI drives the graph part only
+    if auto and route ~= nil and not paused then pcall(driveArrowsPath, gm, nodes) end    -- before the tail: the AI drives the graph part only
     if tail then pcall(appendTail, gm, tail.e, tail.s, tail.z) end
   end
 end
@@ -311,7 +316,7 @@ function M.setAutodrive(on)
   on = on and true or false
   if on == auto then return auto end
   auto = on
-  autoPath, autoSerial, stillSince = nil, nil, nil
+  autoPath, autoSerial, stillSince, paused = nil, nil, nil, false
   if on then
     routedTo = nil                       -- the arrows (and the AI's path) set again at the next check
     lastCheck = -math.huge
@@ -323,11 +328,32 @@ function M.setAutodrive(on)
 end
 function M.autodrive() return auto end
 
--- Autodrive kept going: the path given again when the graph was applied anew or the car stands still.
+local function damage(veh)
+  local m = rawget(_G, 'map')
+  local o = m and m.objects and m.objects[veh:getId()]
+  return o and tonumber(o.damage) or 0
+end
+
+-- Autodrive kept going: the path given again when the graph was applied anew or the car stands still; paused while the
+-- world server is away, ended when the car is wrecked.
 local function autoKeep(nodes, now)
   if not auto then return end
   local veh = playerVeh()
   if not veh then return end
+  if damage(veh) > M.AUTO_DAMAGE then
+    M.setAutodrive(false)
+    if ui_message then pcall(ui_message, 'Autodrive off: the car is damaged', 6, 'beamngEarthGps') end
+    return
+  end
+  local c = core()
+  local healthy = not (c and c.serverHealthy) or c.serverHealthy()
+  if not healthy then
+    if not paused then veh:queueLuaCommand('ai.setMode("stop")') end
+    paused, stillSince = true, nil
+    return
+  elseif paused then
+    paused, routedTo = false, nil         -- back: the path given again
+  end
   local v = veh.getVelocity and veh:getVelocity()
   local speed = v and math.sqrt(v.x * v.x + v.y * v.y) or 0
   if speed < 1 then stillSince = stillSince or now else stillSince = nil end

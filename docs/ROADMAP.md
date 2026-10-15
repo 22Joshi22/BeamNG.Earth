@@ -789,6 +789,18 @@ Next, from the photo comparisons (docs/research/streetview/fp*, base_*):
 - **Roundabouts** (user report 2026-10-14, Harbor Point, 39.2801, -76.5890): the ring is cobbles with a D-shaped
   sidewalk island, odd sidewalk pieces at the entries and road patches that do not meet; needs proper roundabout
   handling (Overture junction=roundabout rings: one-way ring road, a raised round island, splitter islands).
+- **Sidewalks at offset multi-road junctions** (user report 2026-10-14 19:35, Fells Point 39.28188, -76.59114):
+  five roads where Overture's connectors sit ~10 m apart (a diagonal street and a N-S street meeting an E-W one at
+  two nodes) get no curb returns on that side (junctions.py pairs arms at one node), so the sidewalks end in bare
+  points with ground between. Needs junction clustering (connectors within ~15 m treated as one junction) before
+  the corner pairing.
+- **Sidewalk "grabbing the car and pulling it down"** (user report 2026-10-14 19:50, 39.28499, -76.60554): the
+  pickup's wheel sank at a sidewalk end beside a grass verge; suspect the sidewalk slab's end face or a curb-ramp
+  edge in the collision mesh. Needs an in-game look at that spot.
+- **Garages and tunnels are solid** (user, 2026-10-14): parking structures are closed boxes (no way in), and roads
+  in tunnels are left out with the ground (or the building) solid where they go in. Garages: an open-sided
+  ground storey (columns, a slab) where the map has a parking entrance; tunnels: a tube mesh plus terrain holes at
+  the portals.
 - **Mount Whitney summit hut** (user report 2026-10-14): the plain grey box is the real stone summit shelter
   (Overture building); small huts / shelters above the tree line could use a stone wall look.
 - **Rain particles "spazzing out"** (user, 2026-10-11): some raindrops jump around or streak across the
