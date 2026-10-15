@@ -51,7 +51,11 @@ PAD_PX = 32                 # margin rasterised from the neighbouring cells (> t
 SEA_SUBTYPES = ("ocean",)
 SEA_LO, SEA_HI = -0.5, 0.3  # m: DEM heights in this band are the sea where no polygons are at hand (far
                             # tiles, the large water tiles): the DEMs' sea surfaces are flat at ~0
-SINK_M = 1.5                # m: such ground sunk below the surface (no flicker through the water tiles)
+SINK_M = 6.0                # m: such ground sunk below the surface (no flicker through the water tiles), as
+                            # deep as the carved floor away from the shore (DEPTH_CAP) and past the water's
+                            # colour ramp (sea.lua depthGradientMax 5-6 m): at 1.5 m the water's colour followed
+                            # the WaterBlock tiles' flat surfaces (up to 1.3 m off the curve at their corners),
+                            # nested pale and dark squares over the open sea (Italy 40.190, 16.689; 2026-10-15)
 POLY_TILE_MAX = 2048.0      # water tiles up to this size are placed from the polygons, larger ones by
                             # the DEM band (map data is fetched near the player only)
 CARVE_MAX_LEVEL = 2         # far tiles up to this level are carved (their map data is near the player:
