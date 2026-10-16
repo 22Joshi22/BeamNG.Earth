@@ -156,6 +156,15 @@ class FormatTest(unittest.TestCase):
         a = cdae.mesh_arrays(d["meshes"][0])
         np.testing.assert_array_equal(a["tverts2"], a["tverts"])
 
+    def test_collision_only_object_is_colmesh(self):
+        # the engine collides only with collision-detail objects named "Col..." (in-game test, 2026-10-16)
+        pos, uv, tri = dae.grid(2, 1.0)
+        d = cdae.decode(cdae.encode(pos, tri, uvs=uv, object_name="buildings", collision_only=True))
+        self.assertEqual(d["names"], ["Colmesh", "Collision-1"])
+        self.assertEqual(d["header"]["objectNames"], ["Colmesh"])
+        d = cdae.decode(cdae.encode(pos, tri, uvs=uv, object_name="buildings"))
+        self.assertEqual(d["names"], ["buildings", "detail2"])
+
 
 if __name__ == "__main__":
     unittest.main()

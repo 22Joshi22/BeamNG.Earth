@@ -404,7 +404,12 @@ def encode(positions, tris, normals=None, uvs=None, material="bngEarthDae", uvs2
     it; the triangles are grouped into one primitive per material (in list order). colors (n, 4)
     uint8 RGBA per vertex (materials with vertColor multiply their base colour by it).
     collision_only: the one detail is a collision detail ("Collision-1", negative size): never drawn, used by a
-    TSStatic with collisionType "Collision Mesh" (a hidden "Visible Mesh" object got no collision at all)."""
+    TSStatic with collisionType "Collision Mesh" (a hidden "Visible Mesh" object got no collision at all). Its object
+    is named "Colmesh" whatever object_name says: the engine only collides with collision-detail objects whose name
+    starts with "Col" (stock shapes' Colmesh-1); named "buildings" it had no collision at all (in-game test boxes,
+    2026-10-16: cars drove through every building since 2026-10-15)."""
+    if collision_only:
+        object_name = "Colmesh"
     P = np.asarray(positions, np.float64).reshape(-1, 3)
     T = np.asarray(tris, np.int64).reshape(-1, 3)
     if len(T) == 0:
