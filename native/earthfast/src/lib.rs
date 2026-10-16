@@ -1570,6 +1570,63 @@ fn terrarium_heights<'py>(py: Python<'py>, img: PyReadonlyArray3<'py, u8>) -> Bo
     out.into_pyarray(py)
 }
 
+/// colormatch._rf_pass in place: X (rows, cols, ch) float32 filtered along axis 1, forward then backward, with the
+/// link weight f = 0 where cut_prev[r, c] (no link between c - 1 and c), else a; numpy's float32 operations in order.
+#[pyfunction]
+fn rf_pass(py: Python<'_>, mut x: numpy::PyReadwriteArray3<'_, f32>, cut_prev: PyReadonlyArray2<'_, bool>, a: f64) {
+    let cut = cut_prev.as_array();
+    let mut xa = x.as_array_mut();
+    let (rows, cols, ch) = (xa.shape()[0], xa.shape()[1], xa.shape()[2]);
+    let af = a as f32;
+    py.allow_threads(|| {
+        for r in 0..rows {
+            for c in 1..cols {
+                let f = if cut[[r, c]] { 0.0f32 } else { af };
+                for k in 0..ch {
+                    let prev = xa[[r, c - 1, k]];
+                    let cur = xa[[r, c, k]];
+                    xa[[r, c, k]] = cur + f * (prev - cur);
+                }
+            }
+            for c in (0..cols.saturating_sub(1)).rev() {
+                let f = if cut[[r, c + 1]] { 0.0f32 } else { af };
+                for k in 0..ch {
+                    let next = xa[[r, c + 1, k]];
+                    let cur = xa[[r, c, k]];
+                    xa[[r, c, k]] = cur + f * (next - cur);
+                }
+            }
+        }
+    });
+}
+
+/// colormatch._vmedian: the lower median over axis 0 of X (K, h, w) float32 of the entries with ok (K, h, w), the
+/// (n - 1) // 2-th smallest of them (n: (h, w) counts), 0 where there are none.
+#[pyfunction]
+fn vmedian<'py>(py: Python<'py>, x: PyReadonlyArray3<'py, f32>, ok: PyReadonlyArray3<'py, bool>,
+                n: PyReadonlyArray2<'py, i64>) -> Bound<'py, PyArray2<f32>> {
+    let (xa, oa, na) = (x.as_array(), ok.as_array(), n.as_array());
+    let out = py.allow_threads(|| {
+        let (k, h, w) = (xa.shape()[0], xa.shape()[1], xa.shape()[2]);
+        let mut buf = vec![0f32; k];
+        numpy::ndarray::Array2::from_shape_fn((h, w), |(y, x_)| {
+            for i in 0..k {
+                buf[i] = if oa[[i, y, x_]] { xa[[i, y, x_]] } else { f32::INFINITY };
+            }
+            buf.sort_by(|p, q| p.partial_cmp(q).unwrap_or(std::cmp::Ordering::Equal));
+            let idx = ((na[[y, x_]] - 1).div_euclid(2)).max(0) as usize;
+            let mut m = buf[0];
+            for kk in 1..=(k - 1) / 2 {
+                if idx == kk {
+                    m = buf[kk];
+                }
+            }
+            if m.is_finite() { m } else { 0.0 }
+        })
+    });
+    out.into_pyarray(py)
+}
+
 #[pymodule]
 fn earthfast(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(island_ring_rays, m)?)?;
@@ -1599,6 +1656,8 @@ fn earthfast(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(tangents, m)?)?;
     m.add_function(wrap_pyfunction!(season_noise, m)?)?;
     m.add_function(wrap_pyfunction!(terrarium_heights, m)?)?;
-    m.add("VERSION", 21)?;
+    m.add_function(wrap_pyfunction!(rf_pass, m)?)?;
+    m.add_function(wrap_pyfunction!(vmedian, m)?)?;
+    m.add("VERSION", 22)?;
     Ok(())
 }
