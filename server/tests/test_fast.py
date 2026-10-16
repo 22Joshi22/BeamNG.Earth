@@ -156,6 +156,34 @@ class FastTest(unittest.TestCase):
                 fast.AVAILABLE = True
             self.assertTrue(np.array_equal(got, want), trial)
 
+    def test_measure_row_matches_python(self):
+        import roadwidth
+        rng = np.random.default_rng(6)
+        for trial in range(60):
+            # a street between two rows of building walls (gaps, jitter), sometimes open on one side
+            half = rng.uniform(5, 15)
+            xs = np.arange(-80, 80, 9.0)
+            segs = []
+            for side in (1, -1):
+                if trial % 5 == 0 and side < 0:
+                    continue
+                for x in xs:
+                    if rng.random() < 0.8:
+                        y = side * (half + rng.normal(0, 0.6))
+                        segs.append([x, y, x + rng.uniform(4, 9), y + rng.normal(0, 0.4)])
+            walls = roadwidth.Walls(np.array(segs) if segs else np.zeros((0, 4)))
+            k = int(rng.integers(2, 9))
+            line = np.c_[np.linspace(-60, 60, k), rng.normal(0, 0.5, k)]
+            got = roadwidth.measure_row(line, walls)
+            fast.AVAILABLE = False
+            try:
+                want = roadwidth.measure_row(line, walls)
+            finally:
+                fast.AVAILABLE = True
+            self.assertEqual(got is None, want is None, trial)
+            if got is not None:
+                self.assertAlmostEqual(got, want, places=9)
+
     def test_points_and_distances(self):
         sq = np.array([[0, 0], [10, 0], [10, 10], [0, 10]], float)
         pts = np.array([[5, 5], [15, 5], [-1, -1], [9.9, 0.1]], float)
