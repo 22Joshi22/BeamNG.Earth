@@ -39,6 +39,11 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 
 import numpy as np
+
+try:
+    import earthfast as _ef     # Rust kernels (server/fast.py): mip_arrays
+except ImportError:
+    _ef = None
 from PIL import Image, ImageFilter
 
 import cache as cachemod
@@ -1047,6 +1052,8 @@ def mip_arrays(rgb):
     """[level 0, 1, ...] (uint8 [h, w, 3] arrays) down to 1 x 1 of a power-of-two image: linear-light 2 x 2
     averages, each level from the previous unsharpened one, then sharpened by MIP_SHARPEN."""
     rgb = np.asarray(rgb, np.uint8)
+    if _ef is not None and rgb.ndim == 3 and rgb.shape[2] == 3:     # the Rust loop (the same float32 maths)
+        return [rgb] + list(_ef.mip_levels(np.ascontiguousarray(rgb), _TO_LIN, float(MIP_SHARPEN)))
     out = [rgb]
     lin = _TO_LIN[rgb]
     while max(lin.shape[:2]) > 1:

@@ -1090,6 +1090,134 @@ fn rock<'py>(py: Python<'py>, rgb: PyReadonlyArray3<'py, u8>, u: PyReadonlyArray
     Some(out.into_pyarray(py))
 }
 
+/// The byte of imagery._to_srgb for a float32 in [0, 1]: rint(x ** (1 / 2.2) * 255).
+fn srgb_byte(x: f32) -> u8 {
+    let inv = (1.0f64 / 2.2) as f32;
+    (x.powf(inv) * 255.0f32).round_ties_even().clamp(0.0, 255.0) as u8
+}
+
+/// For k = 1..255 the smallest float32 in [0, 1] whose srgb_byte is >= k (the byte of x is then the number of
+/// thresholds <= x; srgb_byte never decreases in x, checked over every float32 in [0, 1] by srgb_monotonic).
+fn srgb_thresholds() -> &'static [f32; 255] {
+    static T: std::sync::OnceLock<[f32; 255]> = std::sync::OnceLock::new();
+    T.get_or_init(|| {
+        let mut t = [0f32; 255];
+        for k in 1..=255u32 {
+            let (mut lo, mut hi) = (0u32, 1.0f32.to_bits());     // positive floats order as their bits
+            while lo < hi {
+                let mid = lo + (hi - lo) / 2;
+                if (srgb_byte(f32::from_bits(mid)) as u32) >= k { hi = mid } else { lo = mid + 1 }
+            }
+            t[(k - 1) as usize] = f32::from_bits(lo);
+        }
+        t
+    })
+}
+
+/// Whether srgb_byte never decreases over every float32 in [0, 1] (the thresholds' premise; a test calls it).
+#[pyfunction]
+fn srgb_monotonic() -> bool {
+    let mut prev = 0u8;
+    for b in 0..=1.0f32.to_bits() {
+        let v = srgb_byte(f32::from_bits(b));
+        if v < prev {
+            return false;
+        }
+        prev = v;
+    }
+    true
+}
+
+/// imagery.mip_arrays below level 0: the levels 1.. (uint8 [h, w, 3]) of a power-of-two image rgb: linear-light
+/// (lut: the 256 float32 values of _TO_LIN) 2 x 2 averages, each from the previous unsharpened one, then sharpened
+/// by sharpen (3 x 3 box, edge-padded) where both sides are >= 4, back to sRGB (x ** (1 / 2.2)), as the numpy code
+/// in float32.
+#[pyfunction]
+fn mip_levels<'py>(py: Python<'py>, rgb: PyReadonlyArray3<'py, u8>, lut: PyReadonlyArray1<'py, f32>, sharpen: f32)
+                   -> Vec<Bound<'py, numpy::PyArray3<u8>>> {
+    let img = rgb.as_array();
+    let lut = lut.as_array();
+    let (mut h, mut w) = (img.shape()[0], img.shape()[1]);
+    let mut lin: Vec<f32> = match img.as_slice() {
+        Some(sl) => sl.iter().map(|&v| lut[v as usize]).collect(),
+        None => img.iter().map(|&v| lut[v as usize]).collect(),
+    };
+    let mut out = Vec::new();
+    while h.max(w) > 1 {
+        let (mut nh, mut nw) = (h, w);
+        if h > 1 {
+            nh = h / 2;
+            let mut nl = vec![0f32; nh * w * 3];
+            for y in 0..nh {
+                for x in 0..w * 3 {
+                    nl[y * w * 3 + x] = 0.5f32 * (lin[(2 * y) * w * 3 + x] + lin[(2 * y + 1) * w * 3 + x]);
+                }
+            }
+            lin = nl;
+        }
+        if w > 1 {
+            nw = w / 2;
+            let mut nl = vec![0f32; nh * nw * 3];
+            for y in 0..nh {
+                for x in 0..nw {
+                    for c in 0..3 {
+                        nl[(y * nw + x) * 3 + c] =
+                            0.5f32 * (lin[(y * w + 2 * x) * 3 + c] + lin[(y * w + 2 * x + 1) * 3 + c]);
+                    }
+                }
+            }
+            lin = nl;
+        }
+        h = nh;
+        w = nw;
+        let lev: Vec<f32> = if h.min(w) >= 4 && sharpen > 0.0 {
+            let at = |y: isize, x: isize, c: usize| -> f32 {
+                let yy = y.clamp(0, h as isize - 1) as usize;
+                let xx = x.clamp(0, w as isize - 1) as usize;
+                lin[(yy * w + xx) * 3 + c]
+            };
+            let mut l2 = vec![0f32; h * w * 3];
+            let row = w * 3;
+            // the interior: no clamping (the same sum, term by term)
+            for y in 1..h - 1 {
+                for x in 1..w - 1 {
+                    for c in 0..3 {
+                        let q = y * row + x * 3 + c;
+                        let blur = (lin[q - row - 3] + lin[q - row] + lin[q - row + 3] + lin[q - 3] + lin[q]
+                            + lin[q + 3] + lin[q + row - 3] + lin[q + row] + lin[q + row + 3]) / 9.0f32;
+                        l2[q] = lin[q] + sharpen * (lin[q] - blur);
+                    }
+                }
+            }
+            for y in 0..h as isize {
+                for x in 0..w as isize {
+                    if y > 0 && y < h as isize - 1 && x > 0 && x < w as isize - 1 {
+                        continue;
+                    }
+                    for c in 0..3 {
+                        // the numpy sum's order: rows top to bottom, each left to right
+                        let blur = (at(y - 1, x - 1, c) + at(y - 1, x, c) + at(y - 1, x + 1, c) + at(y, x - 1, c)
+                            + at(y, x, c) + at(y, x + 1, c) + at(y + 1, x - 1, c) + at(y + 1, x, c)
+                            + at(y + 1, x + 1, c)) / 9.0f32;
+                        let v = at(y, x, c);
+                        l2[((y as usize) * w + x as usize) * 3 + c] = v + sharpen * (v - blur);
+                    }
+                }
+            }
+            l2
+        } else {
+            lin.clone()
+        };
+        let th = srgb_thresholds();
+        let bytes: Vec<u8> = lev.iter().map(|&v| {
+            let c = v.clamp(0.0, 1.0);
+            th.partition_point(|&t| t <= c) as u8      // the byte the formula gives (monotonic: thresholds)
+        }).collect();
+        out.push(numpy::ndarray::Array3::from_shape_vec((h, w, 3), bytes).unwrap().into_pyarray(py));
+    }
+    out
+}
+
 #[pymodule]
 fn earthfast(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(island_ring_rays, m)?)?;
@@ -1110,6 +1238,8 @@ fn earthfast(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(seg_dist_min, m)?)?;
     m.add_function(wrap_pyfunction!(contains_points, m)?)?;
     m.add_function(wrap_pyfunction!(rock, m)?)?;
-    m.add("VERSION", 13)?;
+    m.add_function(wrap_pyfunction!(mip_levels, m)?)?;
+    m.add_function(wrap_pyfunction!(srgb_monotonic, m)?)?;
+    m.add("VERSION", 15)?;
     Ok(())
 }

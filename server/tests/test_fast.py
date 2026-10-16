@@ -275,6 +275,24 @@ class FastTest(unittest.TestCase):
                 rockface._ef = saved
             self.assertTrue(np.array_equal(got, want), trial)
 
+    def test_mip_levels_match_python(self):
+        import imagery
+        # the Rust sRGB step reads bytes from thresholds: exact only if the formula never decreases (every float32)
+        self.assertTrue(fast._ef.srgb_monotonic())
+        rng = np.random.default_rng(0)
+        for n in (1, 2, 4, 8, 64, 256):
+            rgb = (rng.random((n, n, 3)) * 255).astype(np.uint8)
+            got = imagery.mip_arrays(rgb)
+            saved = imagery._ef
+            imagery._ef = None
+            try:
+                want = imagery.mip_arrays(rgb)
+            finally:
+                imagery._ef = saved
+            self.assertEqual(len(got), len(want), n)
+            for a, b in zip(got, want):
+                self.assertTrue(np.array_equal(a, b), n)
+
     def test_points_and_distances(self):
         sq = np.array([[0, 0], [10, 0], [10, 10], [0, 10]], float)
         pts = np.array([[5, 5], [15, 5], [-1, -1], [9.9, 0.1]], float)
