@@ -57,7 +57,7 @@ MAX_REQUEST = 8192          # bytes of request head accepted
 READ_TIMEOUT_S = 10
 
 
-FILE_WORKERS = 6            # map tile files built at once (network-bound; EOX's host allows 4 requests at a time)
+FILE_WORKERS = 12           # map tile files built at once (network-bound; netfetch caps each host: USGS 12, EOX 6)
 RETRY_S = 4.0               # a tile that failed or has no imagery is asked again only after this
 # The tile files kept (2026-10-16: ~8k files in ~1.2k folders after a night of map use, every layer, never removed;
 # the game watches its user folder): beyond MAX_FILES the oldest go, one at a time PRUNE_GAP_S apart (the game's file
