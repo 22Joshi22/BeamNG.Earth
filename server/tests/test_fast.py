@@ -293,6 +293,28 @@ class FastTest(unittest.TestCase):
             for a, b in zip(got, want):
                 self.assertTrue(np.array_equal(a, b), n)
 
+    def test_loop_crossed_and_any_within_match_python(self):
+        import junctions
+        rng = np.random.default_rng(14)
+        for trial in range(80):
+            k = int(rng.integers(3, 14))
+            ang = np.sort(rng.uniform(0, 2 * np.pi, k))
+            poly = np.c_[25 * np.cos(ang), 25 * np.sin(ang)] * rng.uniform(0.5, 1.5)
+            road = np.c_[np.cumsum(rng.normal(0, 12, (int(rng.integers(2, 7)), 2)), 0) + rng.normal(0, 20, 2),
+                         np.zeros(1)[0] + np.zeros(1)[0]] if False else \
+                np.cumsum(rng.normal(0, 12, (int(rng.integers(2, 7)), 2)), 0) + rng.normal(0, 20, 2)
+            got = islands._crosses(poly, road)
+            saved = fast._ef
+            fast._ef = None
+            try:
+                want = islands._crosses(poly, road)
+            finally:
+                fast._ef = saved
+            self.assertEqual(got, want, trial)
+            pts = rng.normal(0, 30, (int(rng.integers(1, 20)), 2))
+            h = float(rng.uniform(1, 10))
+            self.assertEqual(fast._ef.any_within(pts, road, h), bool((junctions._seg_dist(pts, road) < h).any()))
+
     def test_points_and_distances(self):
         sq = np.array([[0, 0], [10, 0], [10, 10], [0, 10]], float)
         pts = np.array([[5, 5], [15, 5], [-1, -1], [9.9, 0.1]], float)

@@ -20,6 +20,11 @@ import math
 
 import numpy as np
 
+try:
+    import earthfast as _ef     # Rust kernels (server/fast.py)
+except ImportError:
+    _ef = None
+
 RADIUS = 5.0                    # m, curb return radius when the class is not listed in RADII
 # by the larger road's class (street-view study of Fells Point, 2026-10-11: city corners are tight)
 RADII = {"residential": 3.0, "living_street": 3.0, "unclassified": 3.0, "service": 3.0,
@@ -102,7 +107,11 @@ def _on_carriageway(pts, roads, near, margin=0.3, half=None, skip=()):
         xy = line[:, :2]
         if (xy.max(0) < c - r).any() or (xy.min(0) > c + r).any():
             continue
-        if (_seg_dist(pts, xy) < half.get(fid, spec.width / 2) - margin).any():
+        h = half.get(fid, spec.width / 2) - margin
+        if _ef is not None:             # the Rust test (the same distances)
+            if _ef.any_within(np.ascontiguousarray(pts, np.float64)[:, :2], np.ascontiguousarray(xy, np.float64), h):
+                return fid
+        elif (_seg_dist(pts, xy) < h).any():
             return fid
     return None
 
