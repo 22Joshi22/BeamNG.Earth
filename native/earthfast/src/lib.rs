@@ -313,6 +313,7 @@ fn geodetic_to_enu<'py>(py: Python<'py>, lat: PyReadonlyArray1<'py, f64>, lon: P
     const E2: f64 = F * (2.0 - F);
     let (la, lo, hh, o, r) = (lat.as_array(), lon.as_array(), h.as_array(), origin.as_array(), rot.as_array());
     let n = la.len();
+    let (e, nn, u) = py.allow_threads(|| {
     let (mut e, mut nn, mut u) = (Vec::with_capacity(n), Vec::with_capacity(n), Vec::with_capacity(n));
     for i in 0..n {
         let (phi, lam, hv) = (la[i].to_radians(), lo[i].to_radians(), hh[i]);
@@ -326,6 +327,8 @@ fn geodetic_to_enu<'py>(py: Python<'py>, lat: PyReadonlyArray1<'py, f64>, lon: P
         nn.push(r[[1, 0]] * x + r[[1, 1]] * y + r[[1, 2]] * z);
         u.push(r[[2, 0]] * x + r[[2, 1]] * y + r[[2, 2]] * z);
     }
+    (e, nn, u)
+    });
     (e.into_pyarray(py), nn.into_pyarray(py), u.into_pyarray(py))
 }
 
@@ -482,6 +485,7 @@ fn bc7_block(t: &[[i32; 4]; 16]) -> [u8; 16] {
 #[pyfunction]
 fn bc7_encode<'py>(py: Python<'py>, img: PyReadonlyArray3<'py, u8>) -> Bound<'py, PyBytes> {
     let a = img.as_array();
+    let out = py.allow_threads(|| {
     let (h, w, ch) = (a.shape()[0], a.shape()[1], a.shape()[2]);
     let (nby, nbx) = ((h + 3) / 4, (w + 3) / 4);
     let mut out = vec![0u8; nby * nbx * 16];
@@ -503,6 +507,8 @@ fn bc7_encode<'py>(py: Python<'py>, img: PyReadonlyArray3<'py, u8>) -> Bound<'py
             out[o..o + 16].copy_from_slice(&blk);
         }
     }
+    out
+    });
     PyBytes::new(py, &out)
 }
 
@@ -991,6 +997,7 @@ fn rock<'py>(py: Python<'py>, rgb: PyReadonlyArray3<'py, u8>, u: PyReadonlyArray
     let img = rgb.as_array();
     let u = u.as_array();
     let oct = octaves.as_array();
+    let res = py.allow_threads(|| {
     let px = img.shape()[0];
     let (ny, nx) = (u.nrows(), u.ncols());
     let t = size / px as f64;
@@ -1087,7 +1094,9 @@ fn rock<'py>(py: Python<'py>, rgb: PyReadonlyArray3<'py, u8>, u: PyReadonlyArray
             }
         }
     }
-    Some(out.into_pyarray(py))
+    Some(out)
+    });
+    res.map(|o| o.into_pyarray(py))
 }
 
 /// The byte of imagery._to_srgb for a float32 in [0, 1]: rint(x ** (1 / 2.2) * 255).
@@ -1137,6 +1146,7 @@ fn mip_levels<'py>(py: Python<'py>, rgb: PyReadonlyArray3<'py, u8>, lut: PyReado
                    -> Vec<Bound<'py, numpy::PyArray3<u8>>> {
     let img = rgb.as_array();
     let lut = lut.as_array();
+    let levels = py.allow_threads(|| {
     let (mut h, mut w) = (img.shape()[0], img.shape()[1]);
     let mut lin: Vec<f32> = match img.as_slice() {
         Some(sl) => sl.iter().map(|&v| lut[v as usize]).collect(),
@@ -1213,9 +1223,11 @@ fn mip_levels<'py>(py: Python<'py>, rgb: PyReadonlyArray3<'py, u8>, lut: PyReado
             let c = v.clamp(0.0, 1.0);
             th.partition_point(|&t| t <= c) as u8      // the byte the formula gives (monotonic: thresholds)
         }).collect();
-        out.push(numpy::ndarray::Array3::from_shape_vec((h, w, 3), bytes).unwrap().into_pyarray(py));
+        out.push(numpy::ndarray::Array3::from_shape_vec((h, w, 3), bytes).unwrap());
     }
     out
+    });
+    levels.into_iter().map(|a| a.into_pyarray(py)).collect()
 }
 
 fn polyline_min_dist(l: &numpy::ndarray::ArrayView2<f64>, px: f64, py: f64) -> f64 {
@@ -1344,6 +1356,115 @@ fn shared_walls(coords: PyReadonlyArray2<f64>, offs: PyReadonlyArray1<i64>, cent
     cnt
 }
 
+/// numpy's float remainder (np.remainder / %) for a positive divisor: fmod, moved into [0, b), -0 as +0.
+fn np_mod_f32(a: f32, b: f32) -> f32 {
+    let m = a % b;
+    if m != 0.0 {
+        if (b < 0.0) != (m < 0.0) { m + b } else { m }
+    } else {
+        0.0f32.copysign(b)
+    }
+}
+
+/// season._smooth for float32 x with Python-float edges: t = clip((x - a) / (b - a), 0, 1), t * t * (3 - 2 t).
+fn sm_f32(x: f32, a: f64, b: f64) -> f32 {
+    let t = ((x - a as f32) / ((b - a) as f32)).max(0.0).min(1.0);
+    t * t * (3.0f32 - 2.0f32 * t)
+}
+
+/// season.grade_full's per-texel part, the same float32 operations in numpy's order: the vegetation texels (green the
+/// largest channel; hue 60-175 deg ramps, saturation 0.12-0.22) of rgb (h, w, 3) moved toward fall / winter /
+/// spring with the noise n, pick and canopy (h, w) as season.py computes them. None: no vegetation texel (unchanged).
+#[pyfunction]
+#[allow(clippy::too_many_arguments)]
+fn season_grade<'py>(py: Python<'py>, rgb: PyReadonlyArray3<'py, u8>, n: PyReadonlyArray2<'py, f32>,
+                     pick: PyReadonlyArray2<'py, f32>, canopy: PyReadonlyArray2<'py, f32>, fall: f64, winter: f64,
+                     spring: f64, pal: PyReadonlyArray2<'py, f32>, fall_yellow: f64, winter_desat: f64)
+                     -> Option<Bound<'py, numpy::PyArray3<u8>>> {
+    let img = rgb.as_array();
+    let (nv_, pk, cn, pl) = (n.as_array(), pick.as_array(), canopy.as_array(), pal.as_array());
+    let res = py.allow_threads(|| {
+        let (hh, ww) = (img.shape()[0], img.shape()[1]);
+        let mut out = img.to_owned();
+        let mut any = false;
+        let w_fall = (1.0f64).min(fall * 1.6) as f32;
+        let (ta, tb) = (0.62 - 0.5 * fall, 0.72 - 0.5 * fall);
+        let (fy, fl, wi, sp) = (fall_yellow as f32, fall as f32, winter as f32, spring as f32);
+        let wd = winter_desat as f32;
+        let k255 = 255.0f32;
+        for y in 0..hh {
+            for x in 0..ww {
+                let (r8, g8, b8) = (img[[y, x, 0]], img[[y, x, 1]], img[[y, x, 2]]);
+                if !(g8 >= r8 && g8 >= b8) {
+                    continue;
+                }
+                // season._hsv
+                let (r, g, b) = (r8 as f32 / k255, g8 as f32 / k255, b8 as f32 / k255);
+                let mx = r.max(g).max(b);
+                let mn = r.min(g).min(b);
+                let d = mx - mn + 1e-6f64 as f32;
+                let hraw = if mx == r {
+                    np_mod_f32((g - b) / d, 6.0)
+                } else if mx == g {
+                    (b - r) / d + 2.0
+                } else {
+                    (r - g) / d + 4.0
+                } * 60.0f32;
+                let hv = np_mod_f32(hraw, 360.0);
+                let sv = if mx > 0.0 { (mx - mn) / (mx + 1e-6f64 as f32) } else { 0.0 };
+                let vg = sm_f32(hv, 60.0, 75.0) * (1.0f32 - sm_f32(hv, 160.0, 175.0)) * sm_f32(sv, 0.12, 0.22);
+                if !(vg > 0.01f64 as f32) {
+                    continue;
+                }
+                any = true;
+                let vv = mx;
+                let (nn, pkk, cg) = (nv_[[y, x]], pk[[y, x]], cn[[y, x]]);
+                let turned = sm_f32(nn, ta, tb);
+                let k = (pkk * 3.0f32).max(0.0).min(2.999f64 as f32) as i8 as usize;
+                let (th, tv, ts) = (pl[[k, 0]], pl[[k, 1]], pl[[k, 2]]);
+                let w = vg * cg * turned * w_fall;
+                let mut nh = hv + (55.0f32 - hv) * vg * fy * fl;
+                nh = nh + (th - nh) * w;
+                let mut ns = sv * (1.0f32 + (ts - 1.0f32) * w);
+                let mut nvv = vv * (1.0f32 + (tv - 1.0f32) * w);
+                if winter > 0.0 {
+                    let bare = vg * cg * wi * sm_f32(nn, 0.25, 0.4);
+                    let grass = vg * (1.0f32 - cg) * wi;
+                    nh = nh + (30.0f32 - nh) * bare + (45.0f32 - nh) * grass;
+                    ns = ns * (1.0f32 - wd * bare) * (1.0f32 - 0.45f64 as f32 * grass);
+                    nvv = nvv * (1.0f32 + 0.15f64 as f32 * bare);
+                }
+                if spring > 0.0 {
+                    let f = vg * sp;
+                    nh = nh + (82.0f32 - nh) * 0.5f32 * f;
+                    nvv = nvv * (1.0f32 + 0.08f64 as f32 * f);
+                    ns = ns * (1.0f32 + 0.1f64 as f32 * f);
+                }
+                // season._rgb
+                let s_ = ns.max(0.0).min(1.0);
+                let v_ = nvv.max(0.0).min(1.0);
+                let h6 = np_mod_f32(nh, 360.0) / 60.0f32;
+                let fl6 = h6.floor();
+                let i = ((fl6 as i8) as i32).rem_euclid(6) as usize;
+                let f = h6 - fl6;
+                let p = v_ * (1.0f32 - s_);
+                let q = v_ * (1.0f32 - f * s_);
+                let t = v_ * (1.0f32 - (1.0f32 - f) * s_);
+                let four = [v_, q, p, t];
+                const RI: [usize; 6] = [0, 1, 2, 2, 3, 0];
+                const GI: [usize; 6] = [3, 0, 0, 1, 2, 2];
+                const BI: [usize; 6] = [2, 2, 3, 0, 0, 1];
+                let px = [four[RI[i]], four[GI[i]], four[BI[i]]];
+                for c in 0..3 {
+                    out[[y, x, c]] = (px[c] * 255.0f32).round_ties_even().max(0.0).min(255.0) as u8;
+                }
+            }
+        }
+        if any { Some(out) } else { None }
+    });
+    res.map(|o| o.into_pyarray(py))
+}
+
 #[pymodule]
 fn earthfast(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(island_ring_rays, m)?)?;
@@ -1369,6 +1490,7 @@ fn earthfast(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(loop_crossed, m)?)?;
     m.add_function(wrap_pyfunction!(any_within, m)?)?;
     m.add_function(wrap_pyfunction!(shared_walls, m)?)?;
-    m.add("VERSION", 17)?;
+    m.add_function(wrap_pyfunction!(season_grade, m)?)?;
+    m.add("VERSION", 18)?;
     Ok(())
 }

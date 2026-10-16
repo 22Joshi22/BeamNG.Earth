@@ -19,6 +19,8 @@ import math
 import numpy as np
 from PIL import Image, ImageFilter
 
+import fast
+
 M_PER_DEG = 111320.0
 # leaf_on: the reference is vegetation where its green chromaticity g / (r + g + b) is above this (summer USGS at
 # Columbia: canopy and grass 0.35-0.38, pavement and roofs ~0.33)
@@ -180,6 +182,8 @@ def grade_full(rgb, xm, ym, amounts):
     spring = float(amounts.get("spring", 0.0))
     if fall <= 0.0 and winter <= 0.0 and spring <= 0.0:
         return rgb
+    if fast._ef is not None and hasattr(fast._ef, "season_grade") and rgb.dtype == np.uint8 and rgb.ndim == 3:
+        return _grade_rust(rgb, xm, ym, fall, winter, spring)
     v = rgb.max(-1).astype(np.float32) / 255.0
     # vegetation hues (60-175 deg) have green as their largest channel: only those texels are converted
     cand = (rgb[..., 1] >= rgb[..., 0]) & (rgb[..., 1] >= rgb[..., 2])
@@ -237,6 +241,41 @@ def grade_full(rgb, xm, ym, amounts):
     out = rgb.copy()
     out[sel] = _rgb(nh, np.clip(ns, 0, 1), np.clip(nv, 0, 1))
     return out
+
+
+def _noise_and_canopy(v, xm, ym, hh, ww):
+    """grade_full's canopy (h, w) and noise n, pick (h, w), float32."""
+    texel = max(1e-3, float(abs(xm[0, -1] - xm[0, 0])) / max(1, ww - 1))
+    if texel <= CANOPY_TEXTURE_MAX_M:
+        m1 = _box(v, 2)
+        std = np.sqrt(np.clip(_box(v * v, 2) - m1 * m1, 0.0, None))
+        canopy = _smooth(std, *CANOPY_STD) * (1.0 - _smooth(m1, *CANOPY_V))
+    else:
+        canopy = 1.0 - _smooth(v, *CANOPY_V)
+    f = max(1, int(2.0 / texel), -(-max(hh, ww) // NOISE_GRID))
+    xs, ys = xm[::f, ::f], ym[::f, ::f]
+
+    def up(a):
+        return a if f == 1 else np.asarray(Image.fromarray(a.astype(np.float32), "F").resize((ww, hh), Image.BILINEAR))
+    n = up(0.75 * _noise(xs / PATCH_M[0], ys / PATCH_M[0], 1) + 0.25 * _noise(xs / PATCH_M[1], ys / PATCH_M[1], 2))
+    pick = up(_noise(xs / PATCH_M[2], ys / PATCH_M[2], 3))
+    return canopy, n, pick
+
+
+_PAL32 = np.array(FALL_PALETTE, np.float32)
+
+
+def _grade_rust(rgb, xm, ym, fall, winter, spring):
+    """grade_full by the Rust kernel (earthfast.season_grade: the same texels, bit for bit; the noise and canopy as
+    above). ~2/3 of a far tile's season grade was numpy's masked indexing (~14 s of a teleport's far threads)."""
+    hh, ww = rgb.shape[:2]
+    # rgb.max(-1) without the strided reduction (the same bytes)
+    v = np.maximum(np.maximum(rgb[..., 0], rgb[..., 1]), rgb[..., 2]).astype(np.float32) / 255.0
+    canopy, n, pick = _noise_and_canopy(v, xm, ym, hh, ww)
+    f32 = lambda a: np.ascontiguousarray(np.broadcast_to(np.asarray(a, np.float32), (hh, ww)))  # noqa: E731
+    out = fast._ef.season_grade(np.ascontiguousarray(rgb), f32(n), f32(pick), f32(canopy), fall, winter, spring,
+                                _PAL32, FALL_YELLOW, WINTER_BARE_DESAT)
+    return rgb if out is None else out
 
 
 def world_metres(lat, lon):
