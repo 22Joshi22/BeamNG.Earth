@@ -534,6 +534,7 @@ class Server:
         self.imagery_failures = 0           # tiles that fell back to the palette (network trouble)
         self.map_port = None                # the in-game map's tile endpoint (maptiles.py), hello.mapPort
         self.map_tiles = None               # its MapTiles: also written as files on request (map_tiles message)
+        self.map_files = None               # the maptiles.TileFiles writing them (made by the first request)
         # (anchorId, key) of cached tiles built with the palette because the imagery failed; shown in
         # the status note (re-texturing them once the host is back is a ROADMAP follow-up)
         self.degraded = set()
@@ -1890,53 +1891,38 @@ class Connection:
         self.ground_sent = None                 # (anchor id, z, monotonic) of the last ground_ahead sent
         self.following = True                   # the mod moves its block (pose "follow"; false high up)
 
-    MAP_TILES_MAX = 48          # tiles per map_tiles request
-
     async def map_tiles(self, msg):
-        """The world map's basemap tiles {"tiles": [[z, x, y], ...]}: each written once to
-        <user>/temp/beamngEarth/maptiles/z/x/y.jpg (the game's UI loads it from there: its browser cancels every
-        http request, even to 127.0.0.1), then map_tiles_ready {"tiles": [[z, x, y, ok], ...]}."""
+        """The world map's tiles {"tiles": [[z, x, y, layer?], ...]} (layer "sat" by default, "map", "labels"; the
+        most wanted first): each written once under <user>/temp/beamngEarth/maptiles/ (maptiles.tile_path; the
+        game's UI loads it from there: its browser cancels every http request, even to 127.0.0.1) and said as soon
+        as it is there, map_tiles_ready {"tiles": [[z, x, y, ok, layer]]}. Built maptiles.FILE_WORKERS at a time
+        (one by one, a 48-tile view took ~10 s and was said only at the end, 2026-10-16); each request replaces
+        the last one's queue (maptiles.TileFiles; an empty list cancels)."""
         mt = getattr(self.s, "map_tiles", None)
         if mt is None:
             return
         want = []
-        for t in (msg.get("tiles") or [])[:self.MAP_TILES_MAX]:
+        tiles = msg.get("tiles")
+        if not isinstance(tiles, list):         # (an empty Lua table may arrive as {})
+            tiles = []
+        for t in tiles[:maptilesmod.MAX_FILES_REQUEST]:
             try:
-                z, x, y = (int(v) for v in t[:3])
-                maptilesmod.check_tile(z, x, y)
+                z, x, y = maptilesmod.check_tile(*t[:3])
+                layer = t[3] if len(t) > 3 else "sat"
             except (TypeError, ValueError, IndexError):
                 continue
-            want.append((z, x, y))
-        root = os.path.join(self.s.root, "maptiles")
+            if isinstance(layer, str) and layer in maptilesmod.LAYERS:
+                want.append((layer, z, x, y))
+        files = self.s.map_files
+        if files is None:
+            files = self.s.map_files = maptilesmod.TileFiles(mt, os.path.join(self.s.root, "maptiles"))
+        loop, send = self.loop, self.send
 
-        def build():
-            out = []
-            for z, x, y in want:
-                path = os.path.join(root, str(z), str(x), f"{y}.jpg")
-                ok = os.path.exists(path)
-                if not ok:
-                    try:
-                        r = mt.tile(z, x, y)
-                    except Exception as e:      # an unreachable source: the UI asks again later
-                        log.debug("map tile %d/%d/%d: %s", z, x, y, e)
-                        r = None
-                    if r is not None:
-                        # a temporary name of this thread's own: two requests for the same tile at once (the UI
-                        # asks again while one is being built) renamed each other's file away, and the error
-                        # dropped the whole batch's answer (blank map squares, Paris 2026-10-15)
-                        tmp = f"{path}.{threading.get_ident()}.tmp"
-                        try:
-                            os.makedirs(os.path.dirname(path), exist_ok=True)
-                            with open(tmp, "wb") as f:
-                                f.write(r[0])
-                            os.replace(tmp, path)
-                        except OSError as e:
-                            log.debug("map tile %d/%d/%d: %s", z, x, y, e)
-                        ok = os.path.exists(path)
-                out.append([z, x, y, ok])
-            return out
-        out = await asyncio.get_running_loop().run_in_executor(self.s.ui_pool, build)
-        self.send({"type": "map_tiles_ready", "tiles": out})
+        def ready(key, ok):                     # (a worker thread) the connection that asked last hears of it
+            layer, z, x, y = key
+            loop.call_soon_threadsafe(send, {"type": "map_tiles_ready", "tiles": [[z, x, y, ok, layer]]})
+        files.on_ready = ready
+        files.request(want)
 
     async def route(self, msg):
         """{"id", "lat0", "lon0", "lat1", "lon1"} -> route_result {"id", "points": [[lat, lon]...], "dist", "dur",
