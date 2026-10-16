@@ -4,7 +4,7 @@ A 1:1 scale, streamed Earth for [BeamNG.drive](https://www.beamng.com/): drive a
 planet on real elevation data and satellite imagery, with distance-based level of detail and the
 real curvature of the Earth.
 
-Status: early development (see VERSION; a preview). Tested on BeamNG.drive 0.39.4 on Linux (Vulkan). See
+Status: beta (see VERSION). Tested on BeamNG.drive 0.39.4 on Linux (Vulkan). See
 [docs/ROADMAP.md](docs/ROADMAP.md) for what is coming (high-speed streaming, real view distance,
 roads, water, navigation, traffic, cities).
 
