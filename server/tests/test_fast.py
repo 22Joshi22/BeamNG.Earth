@@ -300,9 +300,7 @@ class FastTest(unittest.TestCase):
             k = int(rng.integers(3, 14))
             ang = np.sort(rng.uniform(0, 2 * np.pi, k))
             poly = np.c_[25 * np.cos(ang), 25 * np.sin(ang)] * rng.uniform(0.5, 1.5)
-            road = np.c_[np.cumsum(rng.normal(0, 12, (int(rng.integers(2, 7)), 2)), 0) + rng.normal(0, 20, 2),
-                         np.zeros(1)[0] + np.zeros(1)[0]] if False else \
-                np.cumsum(rng.normal(0, 12, (int(rng.integers(2, 7)), 2)), 0) + rng.normal(0, 20, 2)
+            road = np.cumsum(rng.normal(0, 12, (int(rng.integers(2, 7)), 2)), 0) + rng.normal(0, 20, 2)
             got = islands._crosses(poly, road)
             saved = fast._ef
             fast._ef = None
