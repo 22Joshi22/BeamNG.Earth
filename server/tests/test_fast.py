@@ -224,6 +224,36 @@ class FastTest(unittest.TestCase):
             for a, b in zip(got[1], want[1]):
                 self.assertTrue(np.allclose(a, b, rtol=0, atol=1e-9), trial)
 
+    def test_contains_points_and_seg_dist_match_python(self):
+        import polygon
+        import roads
+        rng = np.random.default_rng(3)
+        for trial in range(100):
+            k = int(rng.integers(3, 40))
+            ang = np.sort(rng.uniform(0, 2 * np.pi, k))
+            rad = rng.uniform(5, 30, k)
+            ring = np.c_[rad * np.cos(ang), rad * np.sin(ang)]
+            if trial % 5 == 0:
+                ring = np.round(ring)               # shared ys, horizontal edges, points on edges
+            pts = np.round(rng.uniform(-35, 35, (300, 2)), 1 if trial % 2 else 3)
+            got = polygon.contains_points(ring, pts)
+            saved = polygon._ef
+            polygon._ef = None
+            try:
+                want = polygon.contains_points(ring, pts)
+            finally:
+                polygon._ef = saved
+            self.assertTrue(np.array_equal(got, want), trial)
+            line = np.cumsum(rng.normal(0, 10, (int(rng.integers(2, 9)), 2)), 0)
+            p = rng.normal(0, 20, 2)
+            a = roads._seg_dist_min(line, p)
+            fast.AVAILABLE = False
+            try:
+                b = roads._seg_dist_min(line, p)
+            finally:
+                fast.AVAILABLE = True
+            self.assertEqual(a, b)
+
     def test_points_and_distances(self):
         sq = np.array([[0, 0], [10, 0], [10, 10], [0, 10]], float)
         pts = np.array([[5, 5], [15, 5], [-1, -1], [9.9, 0.1]], float)

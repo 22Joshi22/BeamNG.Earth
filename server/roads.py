@@ -481,6 +481,13 @@ def _road_specs(feats, urban_fn, widths, left_hand):
 def bridge_specs(feats):
     """Per feature: the Spec of a road bridge (flag is_bridge, or level above ground; not a tunnel), else
     None. No parking widths on bridges (urban False). Pure."""
+    got = feats.__dict__.get("_bridge_specs")      # remembered: cells stay decoded (mapdata)
+    if got is None:
+        got = feats.__dict__["_bridge_specs"] = _bridge_specs(feats)
+    return list(got)
+
+
+def _bridge_specs(feats):
     out = []
     rules = feats.rules
     for i in range(len(feats)):
@@ -1066,6 +1073,9 @@ def _left_normal(two):
 
 
 def _seg_dist_min(line, p):
+    import fast
+    if fast.AVAILABLE and isinstance(line, np.ndarray) and line.dtype == np.float64 and line.ndim == 2:
+        return fast._ef.seg_dist_min(line, float(p[0]), float(p[1]))
     a, b = line[:-1], line[1:]
     d = b - a
     L2 = np.maximum((d * d).sum(1), 1e-12)

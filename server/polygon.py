@@ -6,6 +6,11 @@ did not have it, so the server did not start from the release zip (2026-10-15).
 """
 import numpy as np
 
+try:
+    import earthfast as _ef
+except ImportError:
+    _ef = None
+
 CHUNK = 1 << 22         # point x edge pairs per numpy step (memory bound)
 BANDS = 512
 
@@ -14,6 +19,8 @@ def contains_points(ring, pts):
     """Which of pts (M, 2) lie inside the polygon ring (N, 2) (even-odd crossings of a ray toward +x)."""
     ring = np.asarray(ring, np.float64).reshape(-1, 2)
     pts = np.asarray(pts, np.float64).reshape(-1, 2)
+    if _ef is not None and hasattr(_ef, "contains_points"):     # the Rust loop: the same rule and bands
+        return np.asarray(_ef.contains_points(np.ascontiguousarray(ring), np.ascontiguousarray(pts)))
     out = np.zeros(len(pts), bool)
     if len(ring) < 3 or len(pts) == 0:
         return out
