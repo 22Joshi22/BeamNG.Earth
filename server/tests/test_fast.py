@@ -1,5 +1,6 @@
 """fast: the Rust kernels give what the Python code gives."""
 import math
+import os
 import sys
 import types
 import unittest
@@ -543,6 +544,33 @@ class FastTest(unittest.TestCase):
         self.assertGreater(sum(int(r["into"].sum()) for r in want), 5)
         for g, w in zip(got, want):
             np.testing.assert_array_equal(g["into"], w["into"])
+
+    def test_veg_rows_json_matches_python(self):
+        import json
+        import tempfile
+        import vegetation as veg
+        rng = np.random.default_rng(67)
+        n = 3000
+        cols = [rng.integers(0, 40, n), rng.uniform(-200, 200, n), rng.uniform(-200, 200, n), rng.uniform(-50, 3000, n),
+                rng.uniform(-180, 180, n), rng.uniform(0.5, 2, n), rng.uniform(1, 40, n), rng.uniform(0, 1, n)]
+        cols[1][:300] = rng.integers(-100, 100, 300) + 0.005         # ties
+        cols[7][:300] = rng.uniform(0, 0.0004, 300)                   # tiny ranks
+        cols[2][:50] = -0.001                                         # -0.0
+        rows = [[int(g), round(float(a), 2), round(float(b), 2), round(float(c), 2), round(float(y), 1),
+                 round(float(s), 3), round(float(h), 1), round(float(r), 4)] for g, a, b, c, y, s, h, r in zip(*cols)]
+        js = veg.JsonRows(fast._ef.veg_rows_json(*(np.ascontiguousarray(c, np.int64 if i == 0 else np.float64)
+                                                   for i, c in enumerate(cols))))
+        js.n = n
+        with tempfile.TemporaryDirectory() as tmp:
+            a = veg.write_tile(tmp, "/v", 1, 0, 0, rows)
+            with open(os.path.join(tmp, "veg_1_0_0.json")) as fh:
+                want = fh.read()
+            b = veg.write_tile(tmp, "/v", 1, 0, 0, js)
+            with open(os.path.join(tmp, "veg_1_0_0.json")) as fh:
+                got = fh.read()
+        self.assertEqual(a, b)
+        self.assertEqual(got, want)
+        self.assertEqual(len(json.loads(got)["items"]), n)
 
     def test_vmedian_matches_python(self):
         import colormatch

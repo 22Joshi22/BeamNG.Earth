@@ -843,7 +843,7 @@ class Server:
         zoom = anchor.zooms[0]
         rows = vegetationmod.tile_items(anchor.frame, tx, ty, self.veg, lambda k: True,
                                         lambda la, lo: self.ground(anchor.frame, la, lo, self.dem.sample(la, lo, zoom)),
-                                        self.sea)
+                                        self.sea, as_json=True)
         if rows is None:
             return None
         return vegetationmod.write_tile(self.out_dir, self.vfs_dir, aid, tx, ty, rows)
