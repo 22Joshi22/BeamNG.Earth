@@ -798,6 +798,77 @@ fn grade_points<'py>(py: Python<'py>, px: PyReadonlyArray1<'py, f64>, pyy: PyRea
     out.into_pyarray(py)
 }
 
+/// grading.resample: points every step m along xy (k, 2), the last point kept, and their arc lengths.
+#[pyfunction]
+fn resample<'py>(py: Python<'py>, xy: PyReadonlyArray2<'py, f64>, step: f64)
+                 -> (Bound<'py, PyArray2<f64>>, Bound<'py, PyArray1<f64>>) {
+    let p = xy.as_array();
+    let k = p.nrows();
+    let xs: Vec<f64> = (0..k).map(|i| p[[i, 0]]).collect();
+    let ys: Vec<f64> = (0..k).map(|i| p[[i, 1]]).collect();
+    let mut s = vec![0.0f64; k];
+    for i in 1..k {
+        s[i] = s[i - 1] + (xs[i] - xs[i - 1]).hypot(ys[i] - ys[i - 1]);
+    }
+    let total = s[k - 1];
+    if !(total > 0.0) {
+        let a = numpy::ndarray::Array2::from_shape_vec((1, 2), vec![xs[0], ys[0]]).unwrap();
+        return (a.into_pyarray(py), vec![0.0f64].into_pyarray(py));
+    }
+    let count = (total / step).ceil() as usize;          // numpy.arange(0, total, step)
+    let mut t: Vec<f64> = (0..count).map(|i| i as f64 * step).collect();
+    t.push(total);
+    let mut out = Vec::with_capacity(t.len() * 2);
+    for &v in &t {
+        out.push(np_interp(v, &s, &xs));
+        out.push(np_interp(v, &s, &ys));
+    }
+    let a = numpy::ndarray::Array2::from_shape_vec((t.len(), 2), out).unwrap();
+    (a.into_pyarray(py), t.into_pyarray(py))
+}
+
+/// grading.smooth_profile: Gaussian smoothing of a profile sampled every step m (reflected at the ends, edge-padded
+/// when shorter than the kernel's radius).
+#[pyfunction]
+fn smooth_profile<'py>(py: Python<'py>, z: PyReadonlyArray1<'py, f64>, step: f64, sigma: f64)
+                       -> Bound<'py, PyArray1<f64>> {
+    let z = z.as_array();
+    let n = z.len();
+    if n < 3 || sigma <= 0.0 {
+        return z.to_vec().into_pyarray(py);
+    }
+    let r = (3.0 * sigma / step).ceil() as usize;
+    let mut k: Vec<f64> = (0..=2 * r).map(|i| {
+        let x = (i as f64 - r as f64) * step / sigma;
+        (-0.5 * (x * x)).exp()
+    }).collect();
+    let sum: f64 = k.iter().sum();
+    for v in k.iter_mut() {
+        *v /= sum;
+    }
+    let reflect = n > r;
+    let at = |i: isize| -> f64 {
+        let m = n as isize;
+        if i < 0 {
+            if reflect { z[(-i) as usize] } else { z[0] }
+        } else if i >= m {
+            if reflect { z[(2 * (m - 1) - i) as usize] } else { z[n - 1] }
+        } else {
+            z[i as usize]
+        }
+    };
+    let w = 2 * r + 1;
+    let out: Vec<f64> = (0..n).map(|j| {
+        // numpy.convolve(pad, k, "valid"): out[j] = sum_i pad[j + i] * k[w - 1 - i]
+        let mut acc = 0.0;
+        for i in 0..w {
+            acc += at(j as isize + i as isize - r as isize) * k[w - 1 - i];
+        }
+        acc
+    }).collect();
+    out.into_pyarray(py)
+}
+
 #[pymodule]
 fn earthfast(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(island_ring_rays, m)?)?;
@@ -813,6 +884,8 @@ fn earthfast(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(densify, m)?)?;
     m.add_function(wrap_pyfunction!(measure_row, m)?)?;
     m.add_function(wrap_pyfunction!(grade_points, m)?)?;
-    m.add("VERSION", 10)?;
+    m.add_function(wrap_pyfunction!(resample, m)?)?;
+    m.add_function(wrap_pyfunction!(smooth_profile, m)?)?;
+    m.add("VERSION", 11)?;
     Ok(())
 }

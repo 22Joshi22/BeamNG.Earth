@@ -205,6 +205,25 @@ class FastTest(unittest.TestCase):
                 fast.AVAILABLE = True
             self.assertTrue(np.allclose(got, want, rtol=0, atol=1e-9), trial)
 
+    def test_resample_and_smooth_match_python(self):
+        import grading
+        rng = np.random.default_rng(4)
+        for trial in range(150):
+            k = int(rng.integers(1, 15))
+            xy = np.cumsum(rng.normal(0, 20, (k, 2)), 0)
+            if trial % 9 == 0 and k > 1:
+                xy[1] = xy[0]
+            z = rng.normal(100, 5, int(rng.integers(1, 40)))
+            got = (grading.resample(xy, 4.0), [grading.smooth_profile(z, 4.0, s) for s in (0.0, 6.0, 20.0, 60.0)])
+            fast.AVAILABLE = False
+            try:
+                want = (grading.resample(xy, 4.0), [grading.smooth_profile(z, 4.0, s) for s in (0.0, 6.0, 20.0, 60.0)])
+            finally:
+                fast.AVAILABLE = True
+            self.assertTrue(np.array_equal(got[0][0], want[0][0]) and np.array_equal(got[0][1], want[0][1]), trial)
+            for a, b in zip(got[1], want[1]):
+                self.assertTrue(np.allclose(a, b, rtol=0, atol=1e-9), trial)
+
     def test_points_and_distances(self):
         sq = np.array([[0, 0], [10, 0], [10, 10], [0, 10]], float)
         pts = np.array([[5, 5], [15, 5], [-1, -1], [9.9, 0.1]], float)

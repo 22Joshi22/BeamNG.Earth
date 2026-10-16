@@ -51,6 +51,9 @@ RETRY_S = 60.0              # s before a cell whose road data failed is asked fo
 def smooth_profile(z, step, sigma):
     """Gaussian smoothing of a profile sampled every `step` m (reflected at the ends). Pure."""
     z = np.asarray(z, np.float64)
+    import fast
+    if fast.AVAILABLE:          # the Rust loop (~7000 roads a 9-tile set; equal to ~1e-12 m)
+        return fast._ef.smooth_profile(np.ascontiguousarray(z), float(step), float(sigma))
     if len(z) < 3 or sigma <= 0:
         return z.copy()
     r = int(math.ceil(3 * sigma / step))
@@ -62,6 +65,9 @@ def smooth_profile(z, step, sigma):
 
 def resample(xy, step):
     """Points every `step` m along a polyline (xy (k, 2)), the last point kept, and their arc lengths."""
+    import fast
+    if fast.AVAILABLE and len(xy):
+        return fast._ef.resample(np.ascontiguousarray(np.asarray(xy, np.float64)[:, :2]), float(step))
     seg = np.hypot(*np.diff(xy, axis=0).T)
     s = np.r_[0.0, np.cumsum(seg)]
     if s[-1] <= 0:
