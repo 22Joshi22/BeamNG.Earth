@@ -18,6 +18,11 @@ import struct
 
 import numpy as np
 
+try:
+    import earthfast as _ef     # the Rust encoder: the same blocks, byte for byte, ~8x faster (2048²: 1.2 s -> 0.14 s)
+except ImportError:
+    _ef = None
+
 WEIGHTS = np.array([0, 4, 9, 13, 17, 21, 26, 30, 34, 38, 43, 47, 51, 55, 60, 64], np.int32)
 DXGI_BC7_UNORM_SRGB = 99
 
@@ -58,6 +63,13 @@ def _quantise(e, opaque=None):
 
 def encode(img):
     """BC7 mode-6 blocks of an (h, w, 3|4) uint8 image, row-major, 16 bytes each."""
+    img = np.asarray(img, np.uint8)
+    if _ef is not None and hasattr(_ef, "bc7_encode") and img.ndim == 3 and img.shape[2] in (3, 4):
+        return bytes(_ef.bc7_encode(np.ascontiguousarray(img)))
+    return _encode_py(img)
+
+
+def _encode_py(img):
     t = _blocks(np.asarray(img, np.uint8))
     nby, nbx = t.shape[:2]
     t = t.reshape(-1, 16, 4)

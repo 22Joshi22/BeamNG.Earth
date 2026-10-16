@@ -1,6 +1,7 @@
 //! Geometry kernels for the world server (server/fast.py wraps them, with the Python versions as the fallback).
 //! All coordinates are metres in the anchor's local frame, f64.
-use numpy::{PyArray1, PyArray2, PyReadonlyArray1, PyReadonlyArray2, IntoPyArray};
+use numpy::{PyArray1, PyArray2, PyReadonlyArray1, PyReadonlyArray2, PyReadonlyArray3, IntoPyArray};
+use pyo3::types::PyBytes;
 use pyo3::prelude::*;
 
 /// Even-odd point-in-polygon (the polygon's last vertex joins its first), as islands._inside.
@@ -328,6 +329,183 @@ fn geodetic_to_enu<'py>(py: Python<'py>, lat: PyReadonlyArray1<'py, f64>, lon: P
     (e.into_pyarray(py), nn.into_pyarray(py), u.into_pyarray(py))
 }
 
+/// bc7.encode: BC7 mode-6 blocks (16 bytes each, row-major) of an (h, w, 3|4) uint8 image, edges padded by
+/// repetition. The same encoder as the numpy one: endpoints along the block's main axis (power iteration on the
+/// RGBA covariance), 7-bit endpoints with the best p-bit, indices by projection onto the quantised endpoints.
+const BC7_W: [f64; 16] = [0., 4., 9., 13., 17., 21., 26., 30., 34., 38., 43., 47., 51., 55., 60., 64.];
+
+fn bc7_quantise(e: [f64; 4], opaque: bool) -> ([i32; 4], i32) {
+    let mut best_q = [0i32; 4];
+    let mut best_p = 0;
+    let mut best_err = f64::INFINITY;
+    for p in 0..2 {
+        let mut q = [0i32; 4];
+        let mut err = 0.0;
+        for c in 0..4 {
+            q[c] = ((e[c] - p as f64) / 2.0).round_ties_even().clamp(0.0, 127.0) as i32;
+            err += (((q[c] << 1) | p) as f64 - e[c]).abs();
+        }
+        if err < best_err {
+            best_q = q;
+            best_p = p;
+            best_err = err;
+        }
+    }
+    if opaque {
+        for c in 0..4 {
+            best_q[c] = ((e[c] - 1.0) / 2.0).round_ties_even().clamp(0.0, 127.0) as i32;
+        }
+        best_q[3] = 127;
+        best_p = 1;
+    }
+    (best_q, best_p)
+}
+
+fn bc7_block(t: &[[i32; 4]; 16]) -> [u8; 16] {
+    let mut mean = [0f64; 4];
+    for k in 0..16 {
+        for c in 0..4 {
+            mean[c] += t[k][c] as f64;
+        }
+    }
+    for c in 0..4 {
+        mean[c] /= 16.0;
+    }
+    let mut d = [[0f64; 4]; 16];
+    for k in 0..16 {
+        for c in 0..4 {
+            d[k][c] = t[k][c] as f64 - mean[c];
+        }
+    }
+    let mut cov = [[0f64; 4]; 4];
+    for i in 0..4 {
+        for j in 0..4 {
+            let mut s = 0.0;
+            for k in 0..16 {
+                s += d[k][i] * d[k][j];
+            }
+            cov[i][j] = s;
+        }
+    }
+    let mut v = [0f64; 4];
+    let mut m = 0;
+    for i in 1..4 {
+        if cov[i][i] > cov[m][m] {
+            m = i;
+        }
+    }
+    v[m] = 1.0;
+    for _ in 0..4 {
+        let mut w = [0f64; 4];
+        for i in 0..4 {
+            for j in 0..4 {
+                w[i] += cov[i][j] * v[j];
+            }
+        }
+        let n = (w[0] * w[0] + w[1] * w[1] + w[2] * w[2] + w[3] * w[3]).sqrt().max(1e-9);
+        for i in 0..4 {
+            v[i] = w[i] / n;
+        }
+    }
+    let (mut pmin, mut pmax) = (f64::INFINITY, f64::NEG_INFINITY);
+    for k in 0..16 {
+        let p = d[k][0] * v[0] + d[k][1] * v[1] + d[k][2] * v[2] + d[k][3] * v[3];
+        pmin = pmin.min(p);
+        pmax = pmax.max(p);
+    }
+    let opaque = t.iter().all(|x| x[3] == 255);
+    let mut lo = [0f64; 4];
+    let mut hi = [0f64; 4];
+    for c in 0..4 {
+        lo[c] = (mean[c] + v[c] * pmin).clamp(0.0, 255.0);
+        hi[c] = (mean[c] + v[c] * pmax).clamp(0.0, 255.0);
+    }
+    let (mut q0, mut p0) = bc7_quantise(lo, opaque);
+    let (mut q1, mut p1) = bc7_quantise(hi, opaque);
+    let mut e0 = [0i32; 4];
+    let mut e1 = [0i32; 4];
+    for c in 0..4 {
+        e0[c] = (q0[c] << 1) | p0;
+        e1[c] = (q1[c] << 1) | p1;
+    }
+    let mut axis = [0f64; 4];
+    let mut den = 0.0;
+    for c in 0..4 {
+        axis[c] = (e1[c] - e0[c]) as f64;
+        den += axis[c] * axis[c];
+    }
+    let den = den.max(1e-9);
+    let mut idx = [0u8; 16];
+    for k in 0..16 {
+        let mut dot = 0.0;
+        for c in 0..4 {
+            dot += (t[k][c] - e0[c]) as f64 * axis[c];
+        }
+        let f = dot / den * 64.0;
+        let mut bi = 0;
+        let mut be = f64::INFINITY;
+        for (w, wv) in BC7_W.iter().enumerate() {
+            let e = (f - wv).abs();
+            if e < be {
+                be = e;
+                bi = w;
+            }
+        }
+        idx[k] = bi as u8;
+    }
+    if idx[0] >= 8 {
+        std::mem::swap(&mut q0, &mut q1);
+        std::mem::swap(&mut p0, &mut p1);
+        for k in 0..16 {
+            idx[k] = 15 - idx[k];
+        }
+    }
+    let mut bits: u128 = 1 << 6;
+    let mut pos = 7;
+    let mut put = |v: u128, n: u32, pos: &mut u32| {
+        bits |= v << *pos;
+        *pos += n;
+    };
+    for c in 0..4 {
+        put(q0[c] as u128, 7, &mut pos);
+        put(q1[c] as u128, 7, &mut pos);
+    }
+    put(p0 as u128, 1, &mut pos);
+    put(p1 as u128, 1, &mut pos);
+    put(idx[0] as u128, 3, &mut pos);
+    for k in 1..16 {
+        put(idx[k] as u128, 4, &mut pos);
+    }
+    bits.to_le_bytes()
+}
+
+#[pyfunction]
+fn bc7_encode<'py>(py: Python<'py>, img: PyReadonlyArray3<'py, u8>) -> Bound<'py, PyBytes> {
+    let a = img.as_array();
+    let (h, w, ch) = (a.shape()[0], a.shape()[1], a.shape()[2]);
+    let (nby, nbx) = ((h + 3) / 4, (w + 3) / 4);
+    let mut out = vec![0u8; nby * nbx * 16];
+    let mut t = [[0i32; 4]; 16];
+    for by in 0..nby {
+        for bx in 0..nbx {
+            for yy in 0..4 {
+                let y = (by * 4 + yy).min(h - 1);
+                for xx in 0..4 {
+                    let x = (bx * 4 + xx).min(w - 1);
+                    let k = yy * 4 + xx;
+                    for c in 0..4 {
+                        t[k][c] = if c < ch { a[[y, x, c]] as i32 } else { 255 };
+                    }
+                }
+            }
+            let blk = bc7_block(&t);
+            let o = (by * nbx + bx) * 16;
+            out[o..o + 16].copy_from_slice(&blk);
+        }
+    }
+    PyBytes::new(py, &out)
+}
+
 #[pymodule]
 fn earthfast(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(island_ring_rays, m)?)?;
@@ -338,6 +516,7 @@ fn earthfast(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(deck_crossings, m)?)?;
     m.add_function(wrap_pyfunction!(point_inside, m)?)?;
     m.add_function(wrap_pyfunction!(geodetic_to_enu, m)?)?;
-    m.add("VERSION", 5)?;
+    m.add_function(wrap_pyfunction!(bc7_encode, m)?)?;
+    m.add("VERSION", 6)?;
     Ok(())
 }

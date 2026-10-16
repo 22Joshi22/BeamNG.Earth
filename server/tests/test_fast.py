@@ -111,6 +111,16 @@ class FastTest(unittest.TestCase):
                 for g, w in zip(got, want):
                     self.assertTrue(np.allclose(g, w, rtol=0, atol=1e-6))
 
+    def test_bc7_matches_python(self):
+        import bc7
+        rng = np.random.default_rng(4)
+        lum = np.cumsum(np.cumsum(rng.normal(0, 1.0, (64, 64)), 0), 1)
+        lum = (lum - lum.min()) / (np.ptp(lum) + 1e-9) * 200 + 30
+        photo = np.clip(lum[..., None] * np.array([1.0, 0.9, 0.75]) + rng.normal(0, 6, (64, 64, 3)), 0, 255)
+        for img in (photo.astype(np.uint8), photo.astype(np.uint8)[:61, :37],
+                    (rng.random((32, 48, 4)) * 255).astype(np.uint8), np.full((8, 8, 3), 255, np.uint8)):
+            self.assertEqual(bc7.encode(img), bc7._encode_py(img), img.shape)
+
     def test_points_and_distances(self):
         sq = np.array([[0, 0], [10, 0], [10, 10], [0, 10]], float)
         pts = np.array([[5, 5], [15, 5], [-1, -1], [9.9, 0.1]], float)
