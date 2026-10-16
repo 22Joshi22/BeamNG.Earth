@@ -15,6 +15,11 @@ import math
 
 import numpy as np
 
+try:
+    import earthfast as _ef     # the Rust loop (the same rock, a texel's colour at most 1/255 apart)
+except ImportError:
+    _ef = None
+
 STEEP_DEG = (38.0, 58.0)    # rock from the first slope, fully at the second
 OCTAVES = ((28.0, 0.55), (9.0, 0.3), (3.0, 0.15))  # (m, weight) of the noise
 STRATA_M = 7.0              # the strata's spacing (m of height)
@@ -61,13 +66,28 @@ def steepness(slope):
 def rock(rgb, frame, x0, y0, size, U, ux0, uy0, usp):
     """rgb with the steep texels drawn toward rock (see the module doc); rgb itself when nothing is steep."""
     rgb = np.asarray(rgb)
+    U = np.asarray(U, np.float64)
+    # no texel can be steeper than the grid's steepest cell edge (the bilinear surface's gradient within a cell
+    # interpolates its edges' differences; np.gradient averages it): below the rock slope there, nothing to do
+    # (most tiles: the full-resolution heights and gradient below were computed for them all, ~25 % of a far
+    # tile's CPU, 2026-10-15)
+    if U.shape[0] >= 2 and U.shape[1] >= 2:
+        gmax = math.hypot(float(np.abs(np.diff(U, axis=1)).max()), float(np.abs(np.diff(U, axis=0)).max())) / usp
+        if steepness(gmax) <= 0.01:
+            return rgb
+    if _ef is not None and rgb.dtype == np.uint8 and rgb.ndim == 3 and rgb.shape[2] == 3:
+        a, b = (math.tan(math.radians(d)) for d in STEEP_DEG)
+        got = _ef.rock(np.ascontiguousarray(rgb), np.ascontiguousarray(U), float(x0), float(y0), float(size),
+                       float(ux0), float(uy0), float(usp), frame.lat0, frame.lon0, 111320.0,
+                       111320.0 * math.cos(math.radians(frame.lat0)), a, b, np.array(OCTAVES, np.float64),
+                       STRATA_M, STRATA_W, tuple(float(v) for v in ROCK_TINT), DESAT, DARKEN)
+        return rgb if got is None else got
     px = rgb.shape[0]
     t = size / px                                   # m per texel
     c = (np.arange(px) + 0.5) * t
     X = x0 + c[None, :]
     Y = y0 + size - c[:, None]                      # row 0 north
     # the heights at the texels (bilinear on the tile's grid, held at its edges)
-    U = np.asarray(U, np.float64)
     ny, nx = U.shape
     fi = np.clip((X - ux0) / usp, 0, nx - 1.000001)
     fj = np.clip((Y - uy0) / usp, 0, ny - 1.000001)
