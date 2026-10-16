@@ -333,10 +333,64 @@ def _stations(run, line, spacing, phase, clear, side):
     return out
 
 
-def place(roads, walks, box, curb_h=0.15, wires=None, town=False, left_hand=False, speeds=None, mph=True):
+DECK_HEADROOM_M = 0.5      # m a prop's top stays below a bridge deck over it
+DECK_SIDE_M = 1.0          # m beside a deck's edge that still counts as under it
+DECK_WIRE_M = 1.5          # m a wire stays below a deck over it
+
+
+def under_decks(rows, decks, wires=None):
+    """rows without the props that would reach up into a bridge deck above them (a road's lamps and poles
+    under a motorway bridge stood 9 m tall through its deck: a car hit one at 75 mph on I-80, 2026-10-15).
+    decks: [(points (k, 3) of the deck's centreline, half width)]. wires: removed in place where one passes
+    under a deck closer than the headroom."""
+    if not decks:
+        return rows
+    segs = []
+    for pts, half in decks:
+        p = np.asarray(pts, np.float64)
+        if len(p) >= 2:
+            segs.append((p[:-1], p[1:], half + DECK_SIDE_M))
+
+    def deck_z(x, y):
+        """The lowest deck surface over (x, y), or None."""
+        best = None
+        for a, b, reach in segs:
+            d = b[:, :2] - a[:, :2]
+            L2 = np.maximum((d * d).sum(1), 1e-12)
+            t = np.clip(((np.array([x, y]) - a[:, :2]) * d).sum(1) / L2, 0, 1)
+            q = a[:, :2] + t[:, None] * d
+            near = np.hypot(q[:, 0] - x, q[:, 1] - y) < reach
+            if near.any():
+                z = float((a[:, 2] + t * (b[:, 2] - a[:, 2]))[near].min())
+                best = z if best is None else min(best, z)
+        return best
+    out = []
+    for r in rows:
+        z = deck_z(r[1], r[2])
+        if z is not None and r[3] < z and r[3] + r[6] > z - DECK_HEADROOM_M:
+            continue
+        out.append(r)
+    if wires is not None:
+        keep = []
+        for w in wires:
+            w = np.asarray(w, np.float64)
+            hit = False
+            for x, y, wz in w[:, :3]:
+                z = deck_z(x, y)
+                if z is not None and wz > z - DECK_WIRE_M:     # through the deck, or just under it
+                    hit = True
+                    break
+            if not hit:
+                keep.append(w)
+        wires[:] = keep
+    return out
+
+
+def place(roads, walks, box, curb_h=0.15, wires=None, town=False, left_hand=False, speeds=None, mph=True, decks=()):
     """Rows [group, x, y, z, yaw, scale, height, rank] (trees.lua's tile rows) of the lamps and poles of a
     tile box (x0, y0, x1, y1). roads: build_tile's (fid, spec, centreline (k, 3), lon); walks: its sidewalk
-    runs (dicts with fid, pts, side, w)."""
+    runs (dicts with fid, pts, side, w); decks: the bridge decks over the tile [(centreline (k, 3), half
+    width)]: nothing tall under them (under_decks)."""
     x0, y0, x1, y1 = box
     by_fid = {fid: (spec, pts) for fid, spec, pts, _ in roads}
     import fast
@@ -440,7 +494,7 @@ def place(roads, walks, box, curb_h=0.15, wires=None, town=False, left_hand=Fals
                              round(yaw, 1), 1.0, 9.2, 0.0])
         if len(run) > 1 and wires is not None:
             wires.extend(_own_spans(run, box))
-    return rows
+    return under_decks(rows, list(decks), wires)
 
 
 def _own_spans(run, box):

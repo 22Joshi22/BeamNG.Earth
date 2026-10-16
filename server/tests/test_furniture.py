@@ -159,5 +159,29 @@ class RoundaboutTest(unittest.TestCase):
         self.assertEqual(furniture.junction_controls(arms, None, ring={"r1", "r2"}), [], "a ring entry: none")
 
 
+class UnderDeckTest(unittest.TestCase):
+    def test_tall_props_and_wires_under_a_deck_go(self):
+        import furniture
+        deck = (np.array([[-50.0, 0.0, 8.0], [50.0, 0.0, 8.0]]), 5.5)          # a bridge 8 m up, 11 m wide
+        rows = [["streetlight", 0.0, 2.0, 0.0, 0, 1, 9.0, 0],      # under it, 9 m tall: through the deck
+                ["hydrant", 0.0, -2.0, 0.0, 0, 1, 0.9, 0],         # under it, low: fits
+                ["streetlight", 0.0, 20.0, 0.0, 0, 1, 9.0, 0],     # beside it
+                ["pole", 0.0, 6.0, 0.0, 0, 1, 9.2, 0]]             # within DECK_SIDE_M of its edge
+        wires = [np.c_[np.zeros(13), np.linspace(-30, 30, 13), np.full(13, 7.9)],   # across it (5 m points)
+                 np.array([[30.0, 10.0, 7.9], [60.0, 10.0, 7.9]])]  # clear of it
+        out = furniture.under_decks(rows, [deck], wires)
+        self.assertEqual([r[0] for r in out], ["hydrant", "streetlight"])
+        self.assertEqual(out[1][2], 20.0)
+        self.assertEqual(len(wires), 1)
+        self.assertEqual(float(wires[0][0, 0]), 30.0)
+
+    def test_props_on_the_deck_stay(self):
+        import furniture
+        deck = (np.array([[-50.0, 0.0, 8.0], [50.0, 0.0, 8.0]]), 5.5)
+        rows = [["streetlight", 0.0, 4.0, 8.2, 0, 1, 9.0, 0]]       # on the deck itself (its own lamp)
+        self.assertEqual(furniture.under_decks(rows, [deck]), rows)
+
+
+
 if __name__ == "__main__":
     unittest.main()
