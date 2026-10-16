@@ -308,7 +308,7 @@ BLOCK_SURVEY_M = 2048.0             # m: the largest block (1024² at 2 m); Serv
 SURVEY_ZOOM = 10
 DELTA_MARGIN = 0.1          # m added to measured swap-group deltas (crossings between vertices)
 NICE = 10                   # default niceness of the server process (§4.5)
-IMAGERY_PREFETCH = 12       # queued tiles whose imagery is fetched ahead of their build
+IMAGERY_PREFETCH = 40       # queued tiles whose imagery is fetched ahead of their build (only spare request tokens)
 # status.backlog (docs/V1_4_SPEC.md §3.0, §4): every status message carries the number of desired
 # tiles of the current anchor not shown yet. Status messages only go out on events (v1.3.1); with
 # --status-interval S > 0 the last status is also re-sent from on_pose at most every S seconds

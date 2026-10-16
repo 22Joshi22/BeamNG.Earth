@@ -614,7 +614,7 @@ class PolicyTest(unittest.TestCase):
     def test_policies_match_the_plan(self):
         """docs/research/2026-10-10-rate-limits.md §5.2 for the hosts in use, raised 2026-10-16
         (docs/research/2026-10-16-rate-limits-raised.md)."""
-        want = {USGS: (50, 150, 12, 150000), EOX: (10, 40, 6, 30000), MT: (50, 200, 16, 80000),
+        want = {USGS: (50, 150, 12, 150000), EOX: (10, 40, 6, 30000), MT: (50, 200, 32, 80000),
                 "s3.amazonaws.com": (50, 100, 8, None), "api.open-meteo.com": (0.1, 2, 1, 500),
                 "downloads.sourceforge.net": (1, 1, 1, None)}
         for h, (rate, burst, conc, soft) in want.items():
