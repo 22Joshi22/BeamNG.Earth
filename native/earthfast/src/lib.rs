@@ -951,6 +951,145 @@ fn contains_points<'py>(py: Python<'py>, ring: PyReadonlyArray2<'py, f64>, pts: 
     out.into_pyarray(py)
 }
 
+fn rf_hash3(i: i64, j: i64, k: i64) -> f64 {
+    let mut x = (i as u64).wrapping_mul(0x9E3779B97F4A7C15) ^ (j as u64).wrapping_mul(0xC2B2AE3D27D4EB4F);
+    x ^= (k as u64).wrapping_mul(0x165667B19E3779F9);
+    x ^= x >> 31;
+    x = x.wrapping_mul(0xBF58476D1CE4E5B9);
+    x ^= x >> 29;
+    (x >> 11) as f64 / (1u64 << 53) as f64
+}
+
+fn rf_noise3(x: f64, y: f64, z: f64) -> f64 {
+    let (xi, yi, zi) = (x.floor(), y.floor(), z.floor());
+    let s = |f: f64| f * f * (3.0 - 2.0 * f);
+    let (fx, fy, fz) = (s(x - xi), s(y - yi), s(z - zi));
+    let (xi, yi, zi) = (xi as i64, yi as i64, zi as i64);
+    let mut out = 0.0;
+    for dx in 0..2 {
+        let wx = if dx == 1 { fx } else { 1.0 - fx };
+        for dy in 0..2 {
+            let wy = if dy == 1 { fy } else { 1.0 - fy };
+            for dz in 0..2 {
+                let wz = if dz == 1 { fz } else { 1.0 - fz };
+                out = out + wx * wy * wz * rf_hash3(xi + dx, yi + dy, zi + dz);
+            }
+        }
+    }
+    out
+}
+
+/// rockface.rock: the tile photo rgb (px, px, 3) with its steep texels drawn toward rock, or None when nothing is
+/// steep. U: the tile's height grid [j, i], origin (ux0, uy0), spacing usp. steep_a / steep_b: the slopes
+/// (rise / run) of STEEP_DEG; octaves (k, 2) (scale m, weight); m_lat / m_lon: metres per degree.
+#[pyfunction]
+#[allow(clippy::too_many_arguments)]
+fn rock<'py>(py: Python<'py>, rgb: PyReadonlyArray3<'py, u8>, u: PyReadonlyArray2<'py, f64>, x0: f64, y0: f64,
+             size: f64, ux0: f64, uy0: f64, usp: f64, lat: f64, lon: f64, m_lat: f64, m_lon: f64, steep_a: f64,
+             steep_b: f64, octaves: PyReadonlyArray2<'py, f64>, strata_m: f64, strata_w: f64,
+             tint: (f32, f32, f32), desat: f64, darken: f64) -> Option<Bound<'py, numpy::PyArray3<u8>>> {
+    let img = rgb.as_array();
+    let u = u.as_array();
+    let oct = octaves.as_array();
+    let px = img.shape()[0];
+    let (ny, nx) = (u.nrows(), u.ncols());
+    let t = size / px as f64;
+    let c: Vec<f64> = (0..px).map(|k| (k as f64 + 0.5) * t).collect();
+    let xs: Vec<f64> = c.iter().map(|v| x0 + v).collect();
+    let ys: Vec<f64> = c.iter().map(|v| y0 + size - v).collect();
+    let fi: Vec<(usize, f64)> = xs.iter().map(|x| {
+        let f = ((x - ux0) / usp).clamp(0.0, nx as f64 - 1.000001);
+        let i0 = f.floor();
+        (i0 as usize, f - i0)
+    }).collect();
+    let fj: Vec<(usize, f64)> = ys.iter().map(|y| {
+        let f = ((y - uy0) / usp).clamp(0.0, ny as f64 - 1.000001);
+        let j0 = f.floor();
+        (j0 as usize, f - j0)
+    }).collect();
+    let mut h = vec![0.0f64; px * px];
+    for j in 0..px {
+        let (j0, wj) = fj[j];
+        for i in 0..px {
+            let (i0, wi) = fi[i];
+            h[j * px + i] = (u[[j0, i0]] * (1.0 - wi) + u[[j0, i0 + 1]] * wi) * (1.0 - wj)
+                + (u[[j0 + 1, i0]] * (1.0 - wi) + u[[j0 + 1, i0 + 1]] * wi) * wj;
+        }
+    }
+    // numpy.gradient(H, t): central inside, one-sided at the edges
+    let grad = |a: usize, b: usize, n: usize, f: &dyn Fn(usize) -> f64| -> f64 {
+        let _ = b;
+        if n < 2 {
+            0.0
+        } else if a == 0 {
+            (f(1) - f(0)) / t
+        } else if a == n - 1 {
+            (f(n - 1) - f(n - 2)) / t
+        } else {
+            (f(a + 1) - f(a - 1)) / (2.0 * t)
+        }
+    };
+    let mut slope = vec![0.0f64; px * px];
+    let mut kk = vec![0.0f64; px * px];
+    let mut any = false;
+    for j in 0..px {
+        for i in 0..px {
+            let gx = grad(i, 0, px, &|q| h[j * px + q]);
+            let gy = grad(j, 0, px, &|q| h[q * px + i]);
+            let sl = gx.hypot(gy);
+            let tt = ((sl - steep_a) / (steep_b - steep_a)).clamp(0.0, 1.0);
+            let k = tt * tt * (3.0 - 2.0 * tt);
+            slope[j * px + i] = sl;
+            kk[j * px + i] = k;
+            if k > 0.01 {
+                any = true;
+            }
+        }
+    }
+    if !any {
+        return None;
+    }
+    let wsum: f64 = (0..oct.nrows()).map(|o| oct[[o, 1]]).sum();
+    let mut out = img.to_owned();
+    let (one_m_desat, desat32, darken32) = ((1.0 - desat) as f32, desat as f32, darken as f32);
+    let lw = (0.299f32, 0.587f32, 0.114f32);
+    for j in 0..px {
+        for i in 0..px {
+            let q = j * px + i;
+            let k = kk[q];
+            if !(k > 0.01) {
+                continue;
+            }
+            let (hs, sl) = (h[q], slope[q]);
+            let ex = lon * m_lon + xs[i];
+            let nyv = lat * m_lat + ys[j];
+            let foot = t * sl.max(1.0);
+            let mut n = 0.0f64;
+            for o in 0..oct.nrows() {
+                let (scale, w) = (oct[[o, 0]], oct[[o, 1]]);
+                let a = (1.0 - 1.5 * foot / scale).clamp(0.0, 1.0) * w;
+                if a > 0.0 {
+                    n += a * (rf_noise3(ex / scale, nyv / scale, hs / scale) - 0.5);
+                }
+            }
+            n /= wsum;
+            let sa = (1.0 - 1.5 * foot / strata_m).clamp(0.0, 1.0);
+            let strata = sa * (2.0 * std::f64::consts::PI * hs / strata_m + 3.0 * n).sin() * strata_w;
+            let f = [img[[j, i, 0]] as f32 / 255.0, img[[j, i, 1]] as f32 / 255.0, img[[j, i, 2]] as f32 / 255.0];
+            let lum = f[0] * lw.0 + f[1] * lw.1 + f[2] * lw.2;
+            let tints = [tint.0, tint.1, tint.2];
+            let mult = 1.0 + 0.55 * n + strata;
+            for ch in 0..3 {
+                let rockc = (f[ch] * one_m_desat + lum * desat32) * tints[ch] * darken32;
+                let rc = rockc as f64 * mult;
+                let mixed = f[ch] as f64 * (1.0 - k) + rc * k;
+                out[[j, i, ch]] = (mixed * 255.0).round_ties_even().clamp(0.0, 255.0) as u8;
+            }
+        }
+    }
+    Some(out.into_pyarray(py))
+}
+
 #[pymodule]
 fn earthfast(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(island_ring_rays, m)?)?;
@@ -970,6 +1109,7 @@ fn earthfast(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(smooth_profile, m)?)?;
     m.add_function(wrap_pyfunction!(seg_dist_min, m)?)?;
     m.add_function(wrap_pyfunction!(contains_points, m)?)?;
-    m.add("VERSION", 12)?;
+    m.add_function(wrap_pyfunction!(rock, m)?)?;
+    m.add("VERSION", 13)?;
     Ok(())
 }

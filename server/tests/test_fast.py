@@ -254,6 +254,27 @@ class FastTest(unittest.TestCase):
                 fast.AVAILABLE = True
             self.assertEqual(a, b)
 
+    def test_rock_matches_python(self):
+        import geodesy
+        import rockface
+        frame = geodesy.EnuFrame(46.6, 7.9)
+        rng = np.random.default_rng(5)
+        for trial in range(25):
+            n, usp = int(rng.integers(3, 20)), float(rng.uniform(4, 40))
+            amp = usp * rng.uniform(0.2, 1.6)
+            U = np.cumsum(rng.normal(0, amp / 3, (n, n)), 0) + rng.normal(0, amp / 3, (n, n))
+            px = int(rng.choice([32, 64]))
+            rgb = rng.integers(0, 256, (px, px, 3)).astype(np.uint8)
+            size = usp * (n - 1)
+            got = rockface.rock(rgb, frame, 100.0, -50.0, size, U, 100.0, -50.0, usp)
+            saved = rockface._ef
+            rockface._ef = None
+            try:
+                want = rockface.rock(rgb, frame, 100.0, -50.0, size, U, 100.0, -50.0, usp)
+            finally:
+                rockface._ef = saved
+            self.assertTrue(np.array_equal(got, want), trial)
+
     def test_points_and_distances(self):
         sq = np.array([[0, 0], [10, 0], [10, 10], [0, 10]], float)
         pts = np.array([[5, 5], [15, 5], [-1, -1], [9.9, 0.1]], float)
