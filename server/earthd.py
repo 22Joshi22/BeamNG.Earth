@@ -902,6 +902,29 @@ class Server:
         path = navgraphmod.write(self.out_dir, self.vfs_dir, aid, serial, graph)
         return path, len(graph["nodes"]), len(graph["edges"])
 
+    boost_on = False
+    boost_cpus = server_cpus = None
+
+    def load_boost(self, on, why=""):
+        """The loading boost (cpupin.boosted): the server's processes also on half of the game's cores while the
+        player waits after a teleport, back on their own when it moves or the far field is done."""
+        if on and not self.boost_cpus:
+            log.debug("load boost (%s): no cores to lend (--pin / --load-boost off, or too few cores)", why)
+        on = bool(on) and bool(self.boost_cpus)
+        if on == self.boost_on:
+            return
+        cpus = self.boost_cpus if on else self.server_cpus
+        if not cpus:
+            return
+        try:
+            n = cpupin.pin_tree(cpus)
+        except OSError as e:
+            log.warning("load boost: %s", e)
+            return
+        self.boost_on = on
+        log.info("load boost %s (%s): %d threads on CPUs %s", "on" if on else "off", why, n,
+                 ",".join(map(str, sorted(cpus))))
+
     def build_far_bld_tile(self, aid, tx, ty):
         """buildings.far_tile: a far (render-only) building tile of anchor aid, or None. Worker threads."""
         anchor = self.anchors.get(aid)
@@ -1795,6 +1818,10 @@ class Server:
 
 
 # Per-anchor tile files (besides far_ / hm_) that prune() deletes with their anchor
+BOOST_MOVE_MS = 3.0         # the loading boost ends when the player moves faster than this (m/s) ...
+BOOST_MAX_S = 120.0         # ... or this long after the teleport
+BOOST_GRACE_S = 5.0         # (the car dropped into place moves a little at first)
+
 ANCHOR_TILE_FILES = ("roads", "road", "walks", "walkcol", "deck", "bld", "bldcol", "bldfar", "wire", "veg", "navgraph")
 
 
@@ -2279,12 +2306,16 @@ class Connection:
             self.shown = {k: farfield.transform_bbox(old.frame, anchor.frame, bb) for k, bb in self.shown.items()}
             fx, fy, _ = anchor.frame.ecef_to_enu(*old.frame.enu_to_ecef(*self.focus, 0.0))
             self.focus = (float(fx), float(fy))
+            log.debug("commit anchor %d: player at (%.0f, %.0f) in its frame, first terrain %s", aid, fx, fy,
+                      anchor.first_terrain)
             if anchor.first_terrain is not None:
                 bx0, by0, bx1, by1 = self.s.layout.block_at(*anchor.first_terrain).bbox
                 if not (bx0 <= fx <= bx1 and by0 <= fy <= by1):
                     # Not a rebase but a teleport: the mod places the player on the new
                     # anchor's first terrain, and its next pose may come only after that.
                     self.focus, self.vel = (float(anchor.first_terrain[0]), float(anchor.first_terrain[1])), (0.0, 0.0)
+                    self.boost_t0 = time.monotonic()
+                    self.s.load_boost(True, "teleport")
         else:
             self.shown = {k: bb for k, bb in self.shown.items() if k[0] in self.s.anchors}
             # No previous frame to map the player from (first anchor, or a resync after a server
@@ -2358,6 +2389,11 @@ class Connection:
         else:
             return
         self.vel = (vx, vy)
+        if self.s.boost_on:
+            since = time.monotonic() - getattr(self, "boost_t0", 0.0)
+            moving = math.hypot(vx, vy) > BOOST_MOVE_MS and since > BOOST_GRACE_S     # (the car settling: not moving)
+            if moving or since > BOOST_MAX_S:
+                self.s.load_boost(False, "moving" if moving else "timeout")
         if isinstance(msg.get("cam"), dict):
             self.cam = msg["cam"]
         if self.s.horizon:
@@ -2789,6 +2825,7 @@ class Connection:
                 self.dirty = False
                 n = sum(1 for k in self.desired if (anchor.id, k) in self.shown)
                 self.send({"type": "far_done", "anchorId": anchor.id, "count": n})
+                self.s.load_boost(False, "far field done")
                 self.status(f"Far field ready ({n} tiles)")
                 bs = sorted(self.s.build_stats)
                 log.info("anchor %d far field done: %d tiles (%d sent, %d swaps in %.2f s; build median %.1f ms)",
@@ -2929,6 +2966,9 @@ async def main_async(args):
                     vegetation=(vegetationmod.Vegetation(mapdata, args.cache_dir) if args.trees == "on" else None))
 
     server.game_cpus = getattr(args, "game_cpus", None)    # (cpupin.py: the game pinned at each hello)
+    server.server_cpus = getattr(args, "server_cpus", None)
+    server.boost_cpus = (cpupin.boosted(server.server_cpus, server.game_cpus)
+                         if getattr(args, "load_boost", "on") == "on" else None)
 
     async def net_log():
         while True:
@@ -3064,6 +3104,10 @@ def main():
     ap.add_argument("--pin", choices=("on", "off"), default="on",
                     help="Linux: the server on the last quarter of the physical cores and the game on the rest "
                          "(cpupin.py; default on)")
+    ap.add_argument("--load-boost", choices=("on", "off"), default="on",
+                    help="Linux with --pin on: after a teleport, while the player waits for the world, the server may "
+                         "also use half of the game's cores (at idle priority) until the far field is done or the "
+                         "player moves (cpupin.boosted; default on)")
     ap.add_argument("--sched", choices=("idle", "normal"), default="idle",
                     help="Linux: idle scheduling (the server runs only on CPU time the game leaves; default) or normal")
     ap.add_argument("--imagery", type=imagerymod.parse_chain, default=imagerymod.DEFAULT_CHAIN,
@@ -3223,7 +3267,7 @@ def main():
             os.sched_setscheduler(0, os.SCHED_IDLE, os.sched_param(0))
         except OSError as e:
             log.warning("could not set idle scheduling: %s", e)
-    game_cpus = None
+    game_cpus = server_cpus = None
     if args.pin == "on" and sys.platform.startswith("linux"):
         try:
             server_cpus, game_cpus = cpupin.split()
@@ -3235,6 +3279,7 @@ def main():
             log.warning("could not split the cores: %s", e)
             game_cpus = None
     args.game_cpus = game_cpus
+    args.server_cpus = server_cpus if game_cpus else None
     try:
         asyncio.run(main_async(args))
     except KeyboardInterrupt:
