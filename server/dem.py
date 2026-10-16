@@ -107,9 +107,9 @@ class Dem:
     def _path(self, src, z, x, y):
         return os.path.join(self.cache_dir, src["name"], str(z), str(x), f"{y}.{src['ext']}")
 
-    def _download(self, src, z, x, y):
+    def _download(self, src, z, x, y, kind="demand"):
         """Raw tile bytes from disk cache or network; None for a (cached) 404. Raises
-        netfetch.FetchError when the host cannot deliver."""
+        netfetch.FetchError when the host cannot deliver (netfetch.Deferred for a refused prefetch)."""
         path = self._path(src, z, x, y)
         miss = os.path.join(self.cache_dir, src["name"], str(z), str(x), f"{y}.404")
         data = self.disk.read(path)         # None: not cached (or evicted a moment ago)
@@ -121,7 +121,7 @@ class Dem:
             return None
         os.makedirs(os.path.dirname(path), exist_ok=True)
         try:
-            data = self.fetcher.get(url).body
+            data = self.fetcher.get(url, kind=kind).body
         except netfetch.NotFound:
             open(miss, "wb").close()        # (re)written: its mtime starts the marker's TTL
             self.disk.wrote(miss, 0)
@@ -140,6 +140,43 @@ class Dem:
             self.disk.forget(miss)
         self._count(src["name"] + ":net")
         return data
+
+    def prefetch(self, keys):
+        """Download the Mapterhorn tiles (z, x, y) that are not on disk yet into the disk cache, at netfetch
+        "prefetch" priority (only spare tokens of the host: the blocks being built keep theirs), without
+        decoding them. Returns (downloaded, deferred): deferred when the host refused one (no spare tokens
+        now): the rest waits for the next call. Errors skip the tile (asked again on demand)."""
+        got = 0
+        for z, x, y in keys:
+            if os.path.exists(self._path(MAPTERHORN, z, x, y)):
+                continue
+            try:
+                if self._download(MAPTERHORN, z, x, y, kind="prefetch") is not None:
+                    got += 1
+            except netfetch.Deferred:
+                return got, True
+            except netfetch.FetchError:
+                continue
+        return got, False
+
+    def keys_around(self, lat, lon, radius_m, zoom):
+        """The tile keys (z, x, y) of zoom covering radius_m around lat/lon, nearest first; with the ground
+        filter also their z12 parents (a z15 tile without lidar is made from z12 ground)."""
+        import mapcells
+        dlat = radius_m / 111320.0
+        dlon = radius_m / (111320.0 * max(0.05, math.cos(math.radians(lat))))
+        x0, y0 = mapcells.tile_xy(lat + dlat, lon - dlon, zoom)
+        x1, y1 = mapcells.tile_xy(lat - dlat, lon + dlon, zoom)
+        cx, cy = mapcells.tile_xy(lat, lon, zoom)
+        n = 2 ** zoom
+        keys = [(zoom, x % n, y) for y in range(max(0, int(y0)), min(n - 1, int(y1)) + 1)
+                for x in range(int(math.floor(x0)), int(math.floor(x1)) + 1)]
+        keys.sort(key=lambda k: (k[1] + 0.5 - cx) ** 2 + (k[2] + 0.5 - cy) ** 2)
+        if self.ground_filter and zoom > GLOBAL_ZOOM:
+            sh = zoom - GLOBAL_ZOOM
+            parents = list(dict.fromkeys((GLOBAL_ZOOM, x >> sh, y >> sh) for _, x, y in keys))
+            keys = parents + keys
+        return keys
 
     def _decode(self, src, z, x, y, data):
         """decode_terrarium of a source tile; a body that is no image (empty, or cut short where the
