@@ -1099,7 +1099,14 @@ def encode_dds(rgb):
     img = Image.fromarray(np.ascontiguousarray(rgb), "RGB")
     w, h = img.size
     blobs = []
-    for lv in mip_chain(img):
+    if _ef is not None and hasattr(_ef, "bc1_encode"):
+        # the Rust BC1 encoder: endpoints on each block's principal axis, refined, nearest-colour indices (2026-10-16:
+        # RMSE 3.39 -> 2.86 on 60 imagery tiles against Pillow's min / max 565 endpoints), without the GIL
+        for lv in mip_arrays(np.asarray(rgb, np.uint8)):
+            data = _ef.bc1_encode(np.ascontiguousarray(lv))
+            assert len(data) == dxt1_size(lv.shape[1], lv.shape[0]), (lv.shape, len(data))
+            blobs.append(data)
+    for lv in ([] if blobs else mip_chain(img)):
         b = io.BytesIO()
         lv.save(b, "DDS", pixel_format="DXT1")      # one level, Pillow's BC1 encoder
         data = b.getvalue()[DDS_HEADER:]
