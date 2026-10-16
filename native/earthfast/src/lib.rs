@@ -506,6 +506,77 @@ fn bc7_encode<'py>(py: Python<'py>, img: PyReadonlyArray3<'py, u8>) -> Bound<'py
     PyBytes::new(py, &out)
 }
 
+/// roads.cut_outside's test: which points (n, 2) lie within half width hw[j] of a segment of blocker j. segs (m, 4)
+/// ax ay bx by of all blockers one after another, starts (B + 1,) where each blocker's begin, hw (B,).
+#[pyfunction]
+fn inside_blockers<'py>(py: Python<'py>, pts: PyReadonlyArray2<'py, f64>, segs: PyReadonlyArray2<'py, f64>,
+                        starts: PyReadonlyArray1<'py, i64>, hw: PyReadonlyArray1<'py, f64>)
+                        -> Bound<'py, PyArray1<bool>> {
+    let p = pts.as_array();
+    let sg = segs.as_array();
+    let st = starts.as_array();
+    let h = hw.as_array();
+    let n = p.nrows();
+    let nb = h.len();
+    let mut boxes = Vec::with_capacity(nb);
+    for b in 0..nb {
+        let (s0, s1) = (st[b] as usize, st[b + 1] as usize);
+        let (mut x0, mut y0, mut x1, mut y1) = (f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY);
+        for k in s0..s1 {
+            x0 = x0.min(sg[[k, 0]]).min(sg[[k, 2]]);
+            x1 = x1.max(sg[[k, 0]]).max(sg[[k, 2]]);
+            y0 = y0.min(sg[[k, 1]]).min(sg[[k, 3]]);
+            y1 = y1.max(sg[[k, 1]]).max(sg[[k, 3]]);
+        }
+        boxes.push((x0 - h[b], y0 - h[b], x1 + h[b], y1 + h[b]));
+    }
+    let mut out = vec![false; n];
+    for i in 0..n {
+        let (x, y) = (p[[i, 0]], p[[i, 1]]);
+        'blk: for b in 0..nb {
+            let (bx0, by0, bx1, by1) = boxes[b];
+            if x < bx0 || x > bx1 || y < by0 || y > by1 {
+                continue;
+            }
+            for k in (st[b] as usize)..(st[b + 1] as usize) {
+                let (ax, ay) = (sg[[k, 0]], sg[[k, 1]]);
+                let (dx, dy) = (sg[[k, 2]] - ax, sg[[k, 3]] - ay);
+                let l2 = (dx * dx + dy * dy).max(1e-12);
+                let t = (((x - ax) * dx + (y - ay) * dy) / l2).clamp(0.0, 1.0);
+                if (x - (ax + t * dx)).hypot(y - (ay + t * dy)) < h[b] {
+                    out[i] = true;
+                    break 'blk;
+                }
+            }
+        }
+    }
+    out.into_pyarray(py)
+}
+
+/// roads.densify: nodes added so no two are more than spacing apart in xy (columns beyond x, y interpolated too).
+#[pyfunction]
+fn densify<'py>(py: Python<'py>, pts: PyReadonlyArray2<'py, f64>, spacing: f64) -> Bound<'py, PyArray2<f64>> {
+    let p = pts.as_array();
+    let (k, c) = (p.nrows(), p.ncols());
+    let mut out: Vec<f64> = Vec::with_capacity(k * c * 2);
+    if k > 0 {
+        out.extend(p.row(0).iter());
+    }
+    for i in 0..k.saturating_sub(1) {
+        let (a, b) = (p.row(i), p.row(i + 1));
+        let n = ((b[0] - a[0]).hypot(b[1] - a[1]) / spacing).ceil() as i64;
+        for s in 1..n {
+            let f = s as f64 / n as f64;
+            for j in 0..c {
+                out.push(a[j] + (b[j] - a[j]) * f);
+            }
+        }
+        out.extend(b.iter());
+    }
+    let rows = out.len() / c.max(1);
+    numpy::ndarray::Array2::from_shape_vec((rows, c), out).unwrap().into_pyarray(py)
+}
+
 #[pymodule]
 fn earthfast(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(island_ring_rays, m)?)?;
@@ -517,6 +588,8 @@ fn earthfast(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(point_inside, m)?)?;
     m.add_function(wrap_pyfunction!(geodetic_to_enu, m)?)?;
     m.add_function(wrap_pyfunction!(bc7_encode, m)?)?;
-    m.add("VERSION", 6)?;
+    m.add_function(wrap_pyfunction!(inside_blockers, m)?)?;
+    m.add_function(wrap_pyfunction!(densify, m)?)?;
+    m.add("VERSION", 8)?;
     Ok(())
 }

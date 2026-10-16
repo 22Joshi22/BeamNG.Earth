@@ -127,6 +127,14 @@ def level_ranges(feats, i):
     length, from its flags (is_bridge / is_tunnel) and level (> 0 bridge, < 0 tunnel) rules. Overture
     puts most bridges on a range of a longer segment (2026-10-11: a street with a few metres of bridge
     was taken whole as a bridge and dropped). Pure."""
+    memo = feats.__dict__.setdefault("_level_ranges", {})
+    got = memo.get(i)
+    if got is None:
+        got = memo[i] = _level_ranges(feats, i)
+    return list(got)
+
+
+def _level_ranges(feats, i):
     out = []
     for name in ("flags", "level"):
         t = feats.rules.get(name)
@@ -175,6 +183,14 @@ MIN_PART = 1e-3     # parts shorter than this share of a segment are dropped
 
 
 def _parts_by_level(feats, i, want):
+    memo = feats.__dict__.setdefault("_parts_by_level", {})      # remembered: cells stay decoded (mapdata)
+    got = memo.get((i, want))
+    if got is None:
+        got = memo[(i, want)] = _parts_by_level_new(feats, i, want)
+    return list(got)
+
+
+def _parts_by_level_new(feats, i, want):
     rngs = level_ranges(feats, i)
     if want == "ground":
         pieces, at = [], 0.0
@@ -822,6 +838,11 @@ def cut_outside(pts, blockers, spacing=2.0):
     if not blockers:
         return [pts]
     d = densify(np.asarray(pts, np.float64), spacing)
+    import fast
+    if fast.AVAILABLE:          # the Rust test (the same distances; 712 calls a tile set, ~1 s of numpy)
+        segs, starts, hws = _blocker_segments(blockers)
+        inside = np.asarray(fast._ef.inside_blockers(np.ascontiguousarray(d[:, :2]), segs, starts, hws))
+        return _runs_outside(d, inside)
     inside = np.zeros(len(d), bool)
     for line, hw in blockers:
         if len(line) < 2:
@@ -833,6 +854,34 @@ def cut_outside(pts, blockers, spacing=2.0):
         idx = np.nonzero(near)[0]
         dist = _seg_dist(d[idx, :2], line[:-1], line[1:]).min(axis=1)
         inside[idx[dist < hw]] = True
+    return _runs_outside(d, inside)
+
+
+_BLOCKERS = (None, None)        # (the last blockers list, its segment arrays): a tile passes one list to many calls
+
+
+def _blocker_segments(blockers):
+    """(segs (m, 4), starts (B + 1,), half widths (B,)) of [(centreline (k, 2), half width)] (lines of < 2
+    points left out)."""
+    global _BLOCKERS
+    last, arr = _BLOCKERS               # one read: another thread may replace it meanwhile
+    if last is blockers and arr[3] == len(blockers):
+        return arr[:3]
+    segs, starts, hws = [], [0], []
+    for line, hw in blockers:
+        line = np.asarray(line, np.float64)
+        if len(line) < 2:
+            continue
+        segs.append(np.hstack([line[:-1, :2], line[1:, :2]]))
+        starts.append(starts[-1] + len(line) - 1)
+        hws.append(float(hw))
+    arr = (np.ascontiguousarray(np.vstack(segs)) if segs else np.zeros((0, 4)), np.array(starts, np.int64),
+           np.array(hws, np.float64), len(blockers))
+    _BLOCKERS = (blockers, arr)
+    return arr[:3]
+
+
+def _runs_outside(d, inside):
     out, start = [], None
     for k in range(len(d) + 1):
         if k < len(d) and not inside[k]:
@@ -1093,6 +1142,10 @@ def simplify(pts, tol=SIMPLIFY_M):
 
 def densify(pts, spacing=MAX_SPACING):
     """Nodes added so no two are more than `spacing` m apart (xy). Pure."""
+    import fast
+    if (fast.AVAILABLE and isinstance(pts, np.ndarray) and pts.dtype == np.float64 and pts.ndim == 2
+            and pts.shape[1] >= 2 and len(pts)):
+        return fast._ef.densify(pts, float(spacing))     # the Rust loop (the same nodes)
     out = [pts[0]]
     for a, b in zip(pts[:-1], pts[1:]):
         n = int(math.ceil(math.hypot(b[0] - a[0], b[1] - a[1]) / spacing))
