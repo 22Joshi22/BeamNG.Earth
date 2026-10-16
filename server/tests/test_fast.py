@@ -427,6 +427,32 @@ class FastTest(unittest.TestCase):
             self.assertEqual(got.dtype, want.dtype)
             np.testing.assert_array_equal(got, want)
 
+    def test_seam_pass_matches_python(self):
+        import colormatch
+        rng = np.random.default_rng(43)
+        h, wd = 90, 110
+        yy, xx = np.mgrid[0:h, 0:wd]
+        L = rng.normal(0, 0.05, (h, wd, 6)).astype(np.float32)
+        L[..., :3] += (xx > 0.6 * wd + 0.2 * yy)[..., None] * np.float32(0.3)      # a USGS-only seam
+        w = rng.random((h, wd)).astype(np.float32)
+        w[20:40, 30:70] = 0
+        Lw = L * w[..., None]
+        for seg, depth in ((16, 3), (6, 2)):
+            offs = [int(round((k - (colormatch.NSEG - 1) / 2) * seg)) for k in range(colormatch.NSEG)]
+            for deg in (0.0, 35.0, 120.0):
+                arrs = [colormatch._rot(w, deg)] + [colormatch._rot(Lw[..., c], deg) for c in range(6)]
+                got, gD = colormatch._seam_pass(arrs, seg // 2, depth, offs, colormatch.NSEG, colormatch.GATE)
+                saved = fast._ef
+                fast._ef = None
+                try:
+                    want, wD = colormatch._seam_pass(arrs, seg // 2, depth, offs, colormatch.NSEG, colormatch.GATE)
+                finally:
+                    fast._ef = saved
+                self.assertGreater(int((want > 0).sum()), 0)
+                np.testing.assert_array_equal(got, want, err_msg=f"score {seg} {deg}")
+                for c in range(3):
+                    np.testing.assert_array_equal(gD[c], wD[c], err_msg=f"Dm {c} {seg} {deg}")
+
     def test_vmedian_matches_python(self):
         import colormatch
         rng = np.random.default_rng(41)

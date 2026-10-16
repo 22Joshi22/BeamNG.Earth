@@ -313,6 +313,58 @@ def _shift(a, o):
     return out
 
 
+def _seam_pass(arrs, half, depth, offs, nseg, gate):
+    """detect_seams' step test for one rotation: arrs = rotated [w, w*L_0 .. w*L_5] (float32 [H, W]); returns
+    (score [H, W] float32, [Dm_0, Dm_1, Dm_2]). Rust (earthfast.seam_pass, bit for bit) when built."""
+    full = 0.3 * depth * (2 * half + 1)
+    if fast._ef is not None and hasattr(fast._ef, "seam_pass"):
+        score, Dm = fast._ef.seam_pass(np.ascontiguousarray(np.stack(arrs), np.float32), half, depth,
+                                       [int(o) for o in offs], full, gate, AGREE, max(2, nseg - 2))
+        return score, list(Dm)
+    return _seam_pass_np(arrs, half, depth, offs, nseg, gate)
+
+
+def _seam_pass_np(arrs, half, depth, offs, nseg, gate):
+    wr = arrs[0]
+    H, W = wr.shape
+    i, j = np.arange(W), np.arange(H)
+    hi_x, lo_x = np.clip(i + half + 1, 0, W), np.clip(i - half, 0, W)
+    b1, b0 = np.clip(j + depth + 1, 0, H), np.clip(j + 1, 0, H)
+    a1, a0 = np.clip(j, 0, H), np.clip(j - depth, 0, H)
+    sums = []
+    for arr in arrs:
+        pacer.pace()
+        c = np.zeros((H, W + 1))
+        np.cumsum(arr, 1, out=c[:, 1:])
+        s = c[:, hi_x] - c[:, lo_x]
+        cy = np.zeros((H + 1, W))
+        np.cumsum(s, 0, out=cy[1:])
+        sums.append((cy[b1] - cy[b0], cy[a1] - cy[a0]))
+    wb, wa = sums[0]
+    ib, ia = 1 / np.maximum(wb, 1e-3), 1 / np.maximum(wa, 1e-3)
+    Dseg = [((b * ib) - (a * ia)).astype(np.float32) for b, a in sums[1:]]     # per channel, segment at x
+    full = 0.3 * depth * (2 * half + 1)
+    ok = (wb > full) & (wa > full)
+    pacer.pace()
+    oks = np.stack([_shift(ok, o) for o in offs], 0)        # [K, H, W]
+    DL = [np.stack([_shift(Dseg[c] - Dseg[c + 3], o) for o in offs], 0) for c in range(3)]
+    nvalid = oks.sum(0)
+    pacer.pace()
+    Dm = [_vmedian(DL[c], oks, nvalid) for c in range(3)]
+    pacer.pace()
+    Dsm = [_vmedian(np.stack([_shift(Dseg[c + 3], o) for o in offs], 0), oks, nvalid) for c in range(3)]
+    pacer.pace()
+    nm = _norm3(*Dm)
+    nk = _norm3(*DL)
+    cos = (DL[0] * Dm[0] + DL[1] * Dm[1] + DL[2] * Dm[2]) / np.maximum(nk * nm, 1e-6)
+    agree = ((cos > 0.7) & (nk > 0.5 * nm) & oks).sum(0)
+    cons = (nvalid >= max(2, nseg - 2)) & (agree >= AGREE * nvalid)
+    # a natural edge with a different contrast in the two images: |D_usgs - D_s2| <= |b - 1| |D_s2|;
+    # a survey seam has |D_usgs - D_s2| >> |D_s2| (S2 only has texture noise there)
+    g = np.clip(1 - np.maximum(_norm3(*Dsm) - 0.03, 0) / (gate * nm + 1e-3), 0, 1)
+    return (nm * cons * g).astype(np.float32), Dm
+
+
 def detect_seams(Lu, Ls, w, seg=16, nseg=NSEG, depth=3, n_ang=N_ANG, thr=THR, gate=GATE, min_len=100):
     """Long, consistent steps of the log ratio that S2 does not explain. Lu, Ls: log linear USGS /
     S2 [h, w, 3] on the detection grid; w: cell weights. The step is measured on nseg consecutive
@@ -331,45 +383,14 @@ def detect_seams(Lu, Ls, w, seg=16, nseg=NSEG, depth=3, n_ang=N_ANG, thr=THR, ga
     for k in range(n_ang):
         pacer.pace()
         deg = 180.0 * k / n_ang
-        wr = _rot(w, deg)
-        H, W = wr.shape
-        i, j = np.arange(W), np.arange(H)
-        hi_x, lo_x = np.clip(i + half + 1, 0, W), np.clip(i - half, 0, W)
-        b1, b0 = np.clip(j + depth + 1, 0, H), np.clip(j + 1, 0, H)
-        a1, a0 = np.clip(j, 0, H), np.clip(j - depth, 0, H)
-        sums = []
-        for arr in [wr] + [_rot(Lw[..., c], deg) for c in range(6)]:
+        arrs = [_rot(w, deg)]
+        for c in range(6):
             pacer.pace()
-            c = np.zeros((H, W + 1))
-            np.cumsum(arr, 1, out=c[:, 1:])
-            s = c[:, hi_x] - c[:, lo_x]
-            cy = np.zeros((H + 1, W))
-            np.cumsum(s, 0, out=cy[1:])
-            sums.append((cy[b1] - cy[b0], cy[a1] - cy[a0]))
-        wb, wa = sums[0]
-        ib, ia = 1 / np.maximum(wb, 1e-3), 1 / np.maximum(wa, 1e-3)
-        Dseg = [((b * ib) - (a * ia)).astype(np.float32) for b, a in sums[1:]]     # per channel, segment at x
-        full = 0.3 * depth * (2 * half + 1)
-        ok = (wb > full) & (wa > full)
+            arrs.append(_rot(Lw[..., c], deg))
         pacer.pace()
-        oks = np.stack([_shift(ok, o) for o in offs], 0)        # [K, H, W]
-        DL = [np.stack([_shift(Dseg[c] - Dseg[c + 3], o) for o in offs], 0) for c in range(3)]
-        nvalid = oks.sum(0)
+        score_r, Dm = _seam_pass(arrs, half, depth, offs, nseg, gate)
         pacer.pace()
-        Dm = [_vmedian(DL[c], oks, nvalid) for c in range(3)]
-        pacer.pace()
-        Dsm = [_vmedian(np.stack([_shift(Dseg[c + 3], o) for o in offs], 0), oks, nvalid) for c in range(3)]
-        pacer.pace()
-        nm = _norm3(*Dm)
-        nk = _norm3(*DL)
-        cos = (DL[0] * Dm[0] + DL[1] * Dm[1] + DL[2] * Dm[2]) / np.maximum(nk * nm, 1e-6)
-        agree = ((cos > 0.7) & (nk > 0.5 * nm) & oks).sum(0)
-        cons = (nvalid >= max(2, nseg - 2)) & (agree >= AGREE * nvalid)
-        # a natural edge with a different contrast in the two images: |D_usgs - D_s2| <= |b - 1| |D_s2|;
-        # a survey seam has |D_usgs - D_s2| >> |D_s2| (S2 only has texture noise there)
-        g = np.clip(1 - np.maximum(_norm3(*Dsm) - 0.03, 0) / (gate * nm + 1e-3), 0, 1)
-        pacer.pace()
-        score_o = _unrot((nm * cons * g).astype(np.float32), deg, (h, wd))
+        score_o = _unrot(score_r, deg, (h, wd))
         m = score_o > best
         if m.any():
             best[m] = score_o[m]
