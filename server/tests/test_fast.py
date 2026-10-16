@@ -1,6 +1,7 @@
 """fast: the Rust kernels give what the Python code gives."""
 import math
 import sys
+import types
 import unittest
 from pathlib import Path
 
@@ -183,6 +184,26 @@ class FastTest(unittest.TestCase):
             self.assertEqual(got is None, want is None, trial)
             if got is not None:
                 self.assertAlmostEqual(got, want, places=9)
+
+    def test_grade_points_matches_python(self):
+        import grading
+        rng = np.random.default_rng(12)
+        for trial in range(20):
+            px, py = rng.uniform(-200, 200, 3000), rng.uniform(-200, 200, 3000)
+            base = rng.normal(100, 5, 3000)
+            plans = []
+            for _ in range(int(rng.integers(0, 6))):
+                k = int(rng.integers(2, 12))
+                xy = np.cumsum(rng.normal(0, 30, (k, 2)), 0) + rng.uniform(-150, 150, 2)
+                plans.append(types.SimpleNamespace(xy=xy, z=rng.normal(100, 3, k), half=float(rng.uniform(2, 8)),
+                                                   bbox=(*xy.min(0), *xy.max(0))))
+            got = grading.grade_points(px, py, base, plans, 0.1)
+            fast.AVAILABLE = False
+            try:
+                want = grading.grade_points(px, py, base, plans, 0.1)
+            finally:
+                fast.AVAILABLE = True
+            self.assertTrue(np.allclose(got, want, rtol=0, atol=1e-9), trial)
 
     def test_points_and_distances(self):
         sq = np.array([[0, 0], [10, 0], [10, 10], [0, 10]], float)

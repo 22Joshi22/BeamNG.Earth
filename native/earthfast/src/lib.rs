@@ -720,6 +720,84 @@ fn measure_row(line: PyReadonlyArray2<f64>, keys: PyReadonlyArray1<i64>, first: 
     Some(med)
 }
 
+/// grading.grade_points: base heights at the points (px, py) graded under the plans' segments a-b (heights za-zb,
+/// core half width h): the weights, the inverse-distance blend and the max weight as the numpy code, the (segment,
+/// point) pairs in its order (segments, bucket rows, points sorted by bucket).
+#[pyfunction]
+#[allow(clippy::too_many_arguments)]
+fn grade_points<'py>(py: Python<'py>, px: PyReadonlyArray1<'py, f64>, pyy: PyReadonlyArray1<'py, f64>,
+                     base: PyReadonlyArray1<'py, f64>, a: PyReadonlyArray2<'py, f64>, b: PyReadonlyArray2<'py, f64>,
+                     za: PyReadonlyArray1<'py, f64>, zb: PyReadonlyArray1<'py, f64>, h: PyReadonlyArray1<'py, f64>,
+                     lift: f64, slope_run: f64, t_min: f64, t_max: f64, blend_r: f64, bucket: f64)
+                     -> Bound<'py, PyArray1<f64>> {
+    let (px, pyy, base) = (px.as_array(), pyy.as_array(), base.as_array());
+    let (a, b, za, zb, h) = (a.as_array(), b.as_array(), za.as_array(), zb.as_array(), h.as_array());
+    let n = px.len();
+    let mut out: Vec<f64> = base.iter().copied().collect();
+    if n == 0 {
+        return out.into_pyarray(py);
+    }
+    let (mut x0, mut y0, mut x1, mut y1) = (f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY);
+    for i in 0..n {
+        x0 = x0.min(px[i]); x1 = x1.max(px[i]);
+        y0 = y0.min(pyy[i]); y1 = y1.max(pyy[i]);
+    }
+    let bxs: Vec<i64> = (0..n).map(|i| ((px[i] - x0) / bucket).floor() as i64).collect();
+    let bys: Vec<i64> = (0..n).map(|i| ((pyy[i] - y0) / bucket).floor() as i64).collect();
+    let nbx = bxs.iter().copied().max().unwrap() + 1;
+    let keys: Vec<i64> = (0..n).map(|i| bys[i] * nbx + bxs[i]).collect();
+    let mut order: Vec<usize> = (0..n).collect();
+    order.sort_by_key(|&i| keys[i]);                    // stable, as argsort(kind="stable")
+    let sk: Vec<i64> = order.iter().map(|&i| keys[i]).collect();
+    let mut num = vec![0.0f64; n];
+    let mut den = vec![0.0f64; n];
+    let mut wmax = vec![0.0f64; n];
+    for s in 0..h.len() {
+        let reach = h[s] + t_max;
+        let (ax, ay, bx, by) = (a[[s, 0]], a[[s, 1]], b[[s, 0]], b[[s, 1]]);
+        let (lo_x, hi_x) = (ax.min(bx) - reach, ax.max(bx) + reach);
+        let (lo_y, hi_y) = (ay.min(by) - reach, ay.max(by) + reach);
+        if hi_x < x0 || lo_x > x1 || hi_y < y0 || lo_y > y1 {
+            continue;
+        }
+        let cx0 = 0i64.max(((lo_x - x0) / bucket).floor() as i64);
+        let cx1 = (nbx - 1).min(((hi_x - x0) / bucket).floor() as i64);
+        let cy0 = 0i64.max(((lo_y - y0) / bucket).floor() as i64);
+        let cy1 = ((hi_y - y0) / bucket).floor() as i64;
+        let (abx, aby) = (bx - ax, by - ay);
+        let l2 = abx * abx + aby * aby;
+        for row in cy0..=cy1 {
+            let i0 = sk.partition_point(|&k| k < row * nbx + cx0);
+            let i1 = sk.partition_point(|&k| k <= row * nbx + cx1);
+            for j in i0..i1.max(i0) {
+                let idx = order[j];
+                let (qx, qy) = (px[idx] - ax, pyy[idx] - ay);
+                let t = if l2 > 1e-12 { ((qx * abx + qy * aby) / l2).clamp(0.0, 1.0) } else { 0.0 };
+                let d = (qx - t * abx).hypot(qy - t * aby);
+                let target = za[s] + (zb[s] - za[s]) * t;
+                let tt = (slope_run * (target - base[idx]).abs()).clamp(t_min, t_max);
+                let u = ((d - h[s]) / tt).clamp(0.0, 1.0);
+                let w = 1.0 - u * u * (3.0 - 2.0 * u);
+                if w > 0.0 {
+                    let r = d / blend_r;
+                    let wb = w / (1.0 + r * r);
+                    num[idx] += wb * target;
+                    den[idx] += wb;
+                    if w > wmax[idx] {
+                        wmax[idx] = w;
+                    }
+                }
+            }
+        }
+    }
+    for i in 0..n {
+        if den[i] > 0.0 {
+            out[i] = base[i] + wmax[i] * (num[i] / den[i] - base[i] + lift);
+        }
+    }
+    out.into_pyarray(py)
+}
+
 #[pymodule]
 fn earthfast(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(island_ring_rays, m)?)?;
@@ -734,6 +812,7 @@ fn earthfast(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(inside_blockers, m)?)?;
     m.add_function(wrap_pyfunction!(densify, m)?)?;
     m.add_function(wrap_pyfunction!(measure_row, m)?)?;
-    m.add("VERSION", 9)?;
+    m.add_function(wrap_pyfunction!(grade_points, m)?)?;
+    m.add("VERSION", 10)?;
     Ok(())
 }
