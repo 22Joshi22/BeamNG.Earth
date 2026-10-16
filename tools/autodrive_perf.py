@@ -8,9 +8,8 @@ traffic, physics and the GPS all run as in play, and the same route gives the sa
   python3 tools/autodrive_perf.py --from 39.2834,-76.5934 --to 39.2634,-76.5797 --minutes 5 --out /tmp/ad --obs
 
 --from teleports there first and waits for the world around it. --obs records the screen with OBS Studio (the
-Flatpak, its saved scene) and writes <out>/drive.mp4 without its audio track (the microphone is in it); only when
-OBS is not already open (the user's own OBS is never touched: a second instance only shows "already running", and
-stopping "obs" by name once closed theirs).
+Flatpak, its saved scene) through its websocket (tools/obsctl.py; OBS is started in the tray when needed and left
+open) and writes <out>/drive.mp4 without its audio track (the microphone is in it).
 
 Checks (the user, 2026-10-14: "add a check to see if the car crashes or stops"): a crash (the car's damage jumps by
 CRASH_DAMAGE between polls), a stop (slower than STALL_MS for STOP_S while the destination is still ahead) and
@@ -20,7 +19,6 @@ Writes <out>/samples.jsonl (one poll per line) and <out>/summary.json; prints th
 must be on (Options > Advanced) and the companion server running.
 """
 import argparse
-import glob
 import json
 import math
 import os
@@ -32,6 +30,7 @@ import time
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import mcp  # noqa: E402
+import obsctl  # noqa: E402
 
 POLL_S = 1.0
 STALL_MS = 0.5          # slower than this (m/s) counts as standing
@@ -39,8 +38,6 @@ STOP_S = 45.0           # standing this long, not arrived: a stop (longer than a
 CRASH_DAMAGE = 1500.0   # the damage rising this much between two polls: a crash (a curb scrape is a few hundred)
 OFF_ROUTE_M = 25.0
 ARRIVED_M = 60.0
-OBS_APP = "com.obsproject.Studio"
-OBS_VIDEOS = os.path.expanduser("~/Videos")
 
 LUA_POLL = r'''
 if not beamngEarth_perfmon then extensions.load('beamngEarth_perfmon') end
@@ -149,27 +146,14 @@ def latlon(text):
     return a, b
 
 
-def obs_pids():
-    r = subprocess.run(["pgrep", "-x", "obs"], capture_output=True, text=True)
-    return {int(x) for x in r.stdout.split()}
-
-
 def obs_start():
-    """Launch OBS recording; (files before, our OBS pids) or None when OBS is open already or did not record."""
-    if obs_pids():
-        print("OBS is already open: not recording (close it to let the drive be recorded)", file=sys.stderr)
+    """Start recording through OBS's websocket (tools/obsctl.py: OBS stays open in the tray); True, or None."""
+    try:
+        obsctl.start()
+        return True
+    except (OSError, obsctl.ObsError) as e:
+        print(f"OBS did not start recording: {e}", file=sys.stderr)
         return None
-    before = set(glob.glob(os.path.join(OBS_VIDEOS, "*")))
-    subprocess.Popen(["flatpak", "run", OBS_APP, "--startrecording", "--minimize-to-tray", "--disable-shutdown-check"],
-                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    for _ in range(20):
-        time.sleep(1)
-        if set(glob.glob(os.path.join(OBS_VIDEOS, "*"))) - before:
-            return before, obs_pids()
-    print("OBS did not start recording", file=sys.stderr)
-    for pid in obs_pids():
-        os.kill(pid, 9)
-    return None
 
 
 SHARE_MB = 29.0         # the small copy for sending (a chat upload limit of 30 MB)
@@ -188,22 +172,16 @@ def share_copy(video):
 
 
 def obs_stop(started, out_path):
-    """Stop the OBS we launched (SIGTERM: it ends the recording and quits) and write its file without audio."""
-    before, pids = started
-    for pid in pids:
-        try:
-            os.kill(pid, 15)
-        except ProcessLookupError:
-            pass
-    for _ in range(30):
-        if not (obs_pids() & pids):
-            break
-        time.sleep(1)
-    new = sorted(set(glob.glob(os.path.join(OBS_VIDEOS, "*"))) - before, key=os.path.getmtime)
-    if not new:
+    """Stop the recording (OBS stays open) and write its file without audio."""
+    try:
+        rec = obsctl.stop()
+    except (OSError, obsctl.ObsError) as e:
+        print(f"OBS did not stop recording: {e}", file=sys.stderr)
         return None
-    subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", new[-1], "-map", "0:v", "-c", "copy", out_path], check=True)
-    os.remove(new[-1])
+    if not rec or not os.path.exists(rec):
+        return None
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", rec, "-map", "0:v", "-c", "copy", out_path], check=True)
+    os.remove(rec)
     return out_path
 
 
