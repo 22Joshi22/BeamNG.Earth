@@ -46,6 +46,10 @@ roads, water, navigation, traffic, cities).
 **Driving and traffic**
 - Drive anywhere: the physics ground follows the car at 100+ mph, the world origin moves with you
   (floating origin), and the world streams ahead of you; you never fall out of the world.
+- Buildings, sidewalks, curbs and bridge decks are solid (lean collision meshes near the car keep the
+  physics' collision rebuilds cheap).
+- Fast teleports: right after a teleport, while you wait, the world server may borrow some of the game's
+  CPU cores (at idle priority) to build the world faster (Linux; `--load-boost off` turns it off).
 - **AI support**: the mod builds BeamNG's road graph (the AI's map) from the real roads around you, with
   lanes, one-way streets, speed limits (mapped, or the country's defaults), the country's driving side and
   road rules, and traffic signals at real junctions. The stock AI, traffic, police and the AI modes in the
@@ -54,8 +58,9 @@ roads, water, navigation, traffic, cities).
   parking lots (stock BeamNG parking).
 
 **Map and navigation**
-- World map (**M**): pan and zoom the globe, borders and place names, search for addresses and
-  places as you type, teleport anywhere.
+- World map (**M**): pan and zoom the globe, satellite or street map (EOX) with a roads & labels overlay,
+  borders and place names (the **Layers** button), search for addresses and places as you type, teleport
+  anywhere.
 - GPS routes to any destination (OSRM on OpenStreetMap), with the stock route arrows on the road.
 - **Autodrive**: the car drives itself along the GPS route (in lane, legal speed, minding traffic).
 - Saved places and recent places.
