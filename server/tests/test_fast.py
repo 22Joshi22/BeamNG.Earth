@@ -462,6 +462,27 @@ class FastTest(unittest.TestCase):
                 fast._ef = saved
             np.testing.assert_array_equal(got, want, err_msg=str(trial))
 
+    def test_mesh_warp_matches_pillow(self):
+        from PIL import Image
+        rng = np.random.default_rng(47)
+        for t in range(12):
+            H, W = int(rng.integers(256, 700)), int(rng.integers(256, 700))
+            img = rng.integers(0, 256, (H, W, 4), dtype=np.uint8)
+            if t % 2:
+                img[..., 3] = rng.choice(np.array([0, 254, 255], np.uint8), (H, W))
+            px = int(rng.choice([64, 128, 256])); cells = min(16, px); cw = px // cells
+            k = np.arange(cells + 1) / cells
+            X, Y = np.meshgrid(k, k)
+            qx = X * W * rng.uniform(0.3, 1.2) + rng.uniform(-50, 200) + 20 * np.sin(Y * 3)
+            qy = Y * H * rng.uniform(0.3, 1.2) + rng.uniform(-50, 200) + 15 * np.cos(X * 2)
+            mesh = [((c * cw, r * cw, (c + 1) * cw, (r + 1) * cw),
+                     (qx[r, c], qy[r, c], qx[r + 1, c], qy[r + 1, c], qx[r + 1, c + 1], qy[r + 1, c + 1],
+                      qx[r, c + 1], qy[r, c + 1])) for r in range(cells) for c in range(cells)]
+            want = np.asarray(Image.fromarray(img, "RGBA").transform((px, px), Image.MESH, mesh,
+                                                                     resample=Image.BILINEAR))
+            got = fast._ef.mesh_warp(img, np.ascontiguousarray(qx), np.ascontiguousarray(qy), cells, cw, px)
+            np.testing.assert_array_equal(got, want, err_msg=str(t))
+
     def test_points_and_distances(self):
         sq = np.array([[0, 0], [10, 0], [10, 10], [0, 10]], float)
         pts = np.array([[5, 5], [15, 5], [-1, -1], [9.9, 0.1]], float)
