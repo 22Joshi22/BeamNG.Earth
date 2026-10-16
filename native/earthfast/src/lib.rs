@@ -869,6 +869,88 @@ fn smooth_profile<'py>(py: Python<'py>, z: PyReadonlyArray1<'py, f64>, step: f64
     out.into_pyarray(py)
 }
 
+/// roads._seg_dist_min: the distance from (px, py) to the polyline line (k, >= 2).
+#[pyfunction]
+fn seg_dist_min(line: PyReadonlyArray2<f64>, px: f64, py: f64) -> f64 {
+    let l = line.as_array();
+    let mut best = f64::INFINITY;
+    for i in 0..l.nrows().saturating_sub(1) {
+        let (ax, ay) = (l[[i, 0]], l[[i, 1]]);
+        let (dx, dy) = (l[[i + 1, 0]] - ax, l[[i + 1, 1]] - ay);
+        let l2 = (dx * dx + dy * dy).max(1e-12);
+        let t = (((px - ax) * dx + (py - ay) * dy) / l2).clamp(0.0, 1.0);
+        let d = (ax + dx * t - px).hypot(ay + dy * t - py);
+        if d < best {
+            best = d;
+        }
+    }
+    best
+}
+
+/// polygon.contains_points: which points (m, 2) lie inside the ring (n, 2) (even-odd crossings of a ray toward +x:
+/// an edge counts when lo <= y < hi and it crosses y right of the point), with its horizontal bands.
+#[pyfunction]
+fn contains_points<'py>(py: Python<'py>, ring: PyReadonlyArray2<'py, f64>, pts: PyReadonlyArray2<'py, f64>)
+                        -> Bound<'py, PyArray1<bool>> {
+    let r = ring.as_array();
+    let p = pts.as_array();
+    let (n, m) = (r.nrows(), p.nrows());
+    let mut out = vec![false; m];
+    if n < 3 || m == 0 {
+        return out.into_pyarray(py);
+    }
+    let (mut ex0, mut ey0, mut elo, mut ehi, mut esl) = (vec![], vec![], vec![], vec![], vec![]);
+    for i in 0..n {
+        let (x0, y0) = (r[[i, 0]], r[[i, 1]]);
+        let (x1, y1) = (r[[(i + 1) % n, 0]], r[[(i + 1) % n, 1]]);
+        if y0 == y1 {
+            continue;
+        }
+        ex0.push(x0);
+        ey0.push(y0);
+        elo.push(y0.min(y1));
+        ehi.push(y0.max(y1));
+        esl.push((x1 - x0) / (y1 - y0));
+    }
+    let ne = ex0.len();
+    if ne == 0 {
+        return out.into_pyarray(py);
+    }
+    let (mut bx0, mut bx1, mut by0, mut by1) = (f64::INFINITY, f64::NEG_INFINITY, f64::INFINITY, f64::NEG_INFINITY);
+    for i in 0..n {
+        bx0 = bx0.min(r[[i, 0]]); bx1 = bx1.max(r[[i, 0]]);
+        by0 = by0.min(r[[i, 1]]); by1 = by1.max(r[[i, 1]]);
+    }
+    let nb = 512usize.min(1usize.max(ne / 4));
+    let mut h = (by1 - by0) / nb as f64;
+    if h == 0.0 {
+        h = 1.0;
+    }
+    let clip = |v: f64| -> usize { (v as i64).clamp(0, nb as i64 - 1) as usize };
+    let mut bands: Vec<Vec<usize>> = vec![Vec::new(); nb];
+    for e in 0..ne {
+        let (b0, b1) = (clip((elo[e] - by0) / h), clip((ehi[e] - by0) / h));
+        for b in b0..=b1 {
+            bands[b].push(e);
+        }
+    }
+    for j in 0..m {
+        let (x, y) = (p[[j, 0]], p[[j, 1]]);
+        if !(x >= bx0 && x <= bx1 && y >= by0 && y <= by1) {
+            continue;
+        }
+        let b = (((y - by0) / h) as i64).min(nb as i64 - 1) as usize;
+        let mut c = 0u32;
+        for &e in &bands[b] {
+            if y >= elo[e] && y < ehi[e] && ex0[e] + (y - ey0[e]) * esl[e] > x {
+                c += 1;
+            }
+        }
+        out[j] = c & 1 == 1;
+    }
+    out.into_pyarray(py)
+}
+
 #[pymodule]
 fn earthfast(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(island_ring_rays, m)?)?;
@@ -886,6 +968,8 @@ fn earthfast(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(grade_points, m)?)?;
     m.add_function(wrap_pyfunction!(resample, m)?)?;
     m.add_function(wrap_pyfunction!(smooth_profile, m)?)?;
-    m.add("VERSION", 11)?;
+    m.add_function(wrap_pyfunction!(seg_dist_min, m)?)?;
+    m.add_function(wrap_pyfunction!(contains_points, m)?)?;
+    m.add("VERSION", 12)?;
     Ok(())
 }
