@@ -658,17 +658,22 @@ class Tracker:
     """Per connection: which tiles of a kind the mod has (as roads.Tracker): vegetation tiles by default
     (messages veg_tile / veg_drop); the far buildings use one too (buildings.FAR_*)."""
 
-    def __init__(self, send_m=SEND_M, drop_m=DROP_M, per_pose=BUILD_PER_POSE, kind="veg"):
+    def __init__(self, send_m=SEND_M, drop_m=DROP_M, per_pose=BUILD_PER_POSE, kind="veg", skip_m=None):
         self.aid = None
         self.sent = set()
         self.building = set()
         self.send_m, self.drop_m, self.per_pose, self.kind = send_m, drop_m, per_pose, kind
+        # skip_m: tiles within this (Chebyshev, as roads.tiles_near) are not built: the far buildings under the road
+        # tiles, which carry the full buildings (the mod would hide them at once; ~36 of a teleport's ~196 tiles)
+        self.skip_m = skip_m
 
     def on_pose(self, conn, aid, x, y, loop, build):
         import roads as roadsmod
         if aid != self.aid:
             self.aid, self.sent, self.building = aid, set(), set()
-        want = [k for k in roadsmod.tiles_near(x, y, self.send_m) if k not in self.sent and k not in self.building]
+        skip = set(roadsmod.tiles_near(x, y, self.skip_m)) if self.skip_m else ()
+        want = [k for k in roadsmod.tiles_near(x, y, self.send_m)
+                if k not in self.sent and k not in self.building and k not in skip]
         want.sort(key=lambda k: roadsmod.tile_distance(k[0], k[1], x, y))
         # at most per_pose in flight: each waits in a thread of the loop's shared executor, and a teleport's
         # hundreds (one per pose, uncapped) held every thread while the road tiles under the car waited for one

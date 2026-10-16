@@ -468,6 +468,24 @@ class TrackerTest(unittest.TestCase):
         self.assertEqual(keys, want)
         self.assertEqual(len(built), len(want), "each tile built once")
 
+    def test_far_buildings_skip_the_road_tiles(self):
+        import vegetation
+        import buildings
+        conn = FakeConn()
+        tr = vegetation.Tracker(buildings.FAR_SEND_M, buildings.FAR_DROP_M, buildings.FAR_PER_POSE, "bldfar",
+                                skip_m=roads.SEND_M)
+
+        async def go():
+            loop = asyncio.get_running_loop()
+            for _ in range(200):
+                tr.on_pose(conn, 1, 0.0, 0.0, loop, lambda aid, tx, ty: (f"/p/{tx}_{ty}", 1))
+                await asyncio.sleep(0.005)
+        asyncio.run(go())
+        keys = {tuple(map(int, m["key"].split("_"))) for m in conn.sent if m["type"] == "bldfar_tile"}
+        near = set(roads.tiles_near(0, 0, roads.SEND_M))
+        self.assertEqual(keys, set(roads.tiles_near(0, 0, buildings.FAR_SEND_M)) - near)
+        self.assertTrue(near and not (keys & near))
+
     def test_drops_far_and_resends_on_anchor_change(self):
         conn, tr, built = self.run_poses([(1, 0.0, 0.0), (1, 3000.0, 0.0), (2, 3000.0, 0.0)])
         drops = [m for m in conn.sent if m["type"] == "roads_drop"]
