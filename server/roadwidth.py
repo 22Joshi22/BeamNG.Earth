@@ -114,6 +114,15 @@ class Walls:
 def measure_row(centreline, walls):
     """The right-of-way (m) of a street (centreline (k, 2), metres) between the building walls, or None
     where it is not walled on both sides consistently. Pure."""
+    import fast
+    if fast.AVAILABLE and len(walls.keys):     # the Rust loop (the same result; ~3000 streets a 9-tile set)
+        k = walls.__dict__.get("_rs")
+        if k is None:
+            k = walls._rs = tuple(np.ascontiguousarray(a, t) for a, t in
+                                  ((walls.keys, np.int64), (walls.first, np.int64), (walls.counts, np.int64),
+                                   (walls.seg_of, np.int64), (walls.segs, np.float64)))
+        return fast._ef.measure_row(np.ascontiguousarray(np.asarray(centreline, np.float64)[:, :2]), *k, BUCKET,
+                                    STEP, END_SKIP, REACH, MIN_SAMPLES, WALLED, AGREE)
     xy = np.asarray(centreline, np.float64)[:, :2]
     seg = np.hypot(*np.diff(xy, axis=0).T)
     s = np.r_[0.0, np.cumsum(seg)]

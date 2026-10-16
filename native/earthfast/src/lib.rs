@@ -577,6 +577,149 @@ fn densify<'py>(py: Python<'py>, pts: PyReadonlyArray2<'py, f64>, spacing: f64) 
     numpy::ndarray::Array2::from_shape_vec((rows, c), out).unwrap().into_pyarray(py)
 }
 
+/// roadwidth.Walls.rays for one ray: the distance to the first wall from (px, py) along unit (dx, dy) within
+/// reach, or NaN. keys / first / counts / seg_of: the Walls bucket index, segs (m, 4).
+fn wall_ray(keys: &[i64], first: &[i64], counts: &[i64], seg_of: &[i64], segs: &numpy::ndarray::ArrayView2<f64>,
+            bucket: f64, px: f64, py: f64, dx: f64, dy: f64, reach: f64) -> f64 {
+    let (qx, qy) = (px + dx * reach, py + dy * reach);
+    let bx0 = (px.min(qx) / bucket).floor() as i64;
+    let bx1 = (px.max(qx) / bucket).floor() as i64;
+    let by0 = (py.min(qy) / bucket).floor() as i64;
+    let by1 = (py.max(qy) / bucket).floor() as i64;
+    let mut best = f64::INFINITY;
+    for by in by0..=by1 {
+        for bx in bx0..=bx1 {
+            let key = (bx + (1i64 << 30)) * (1i64 << 31) + (by + (1i64 << 30));
+            let Ok(i) = keys.binary_search(&key) else { continue };
+            for j in first[i]..first[i] + counts[i] {
+                let sgi = seg_of[j as usize] as usize;
+                let (ax, ay) = (segs[[sgi, 0]], segs[[sgi, 1]]);
+                let (ex, ey) = (segs[[sgi, 2]] - ax, segs[[sgi, 3]] - ay);
+                let den = dx * ey - dy * ex;
+                if den.abs() <= 1e-12 {
+                    continue;
+                }
+                let (wx, wy) = (ax - px, ay - py);
+                let t = (wx * ey - wy * ex) / den;
+                let u = (wx * dy - wy * dx) / den;
+                if t > 0.0 && t <= reach && u >= 0.0 && u <= 1.0 && t < best {
+                    best = t;
+                }
+            }
+        }
+    }
+    if best.is_finite() { best } else { f64::NAN }
+}
+
+/// numpy.interp at x of the increasing xp, fp.
+fn np_interp(x: f64, xp: &[f64], fp: &[f64]) -> f64 {
+    let n = xp.len();
+    if x <= xp[0] {
+        return fp[0];
+    }
+    if x >= xp[n - 1] {
+        return fp[n - 1];
+    }
+    // the last j with xp[j] <= x
+    let j = match xp.binary_search_by(|v| v.partial_cmp(&x).unwrap()) {
+        Ok(mut k) => {
+            while k + 1 < n && xp[k + 1] <= x {
+                k += 1;
+            }
+            k
+        }
+        Err(k) => k - 1,
+    };
+    if j + 1 >= n {
+        return fp[n - 1];
+    }
+    let slope = (fp[j + 1] - fp[j]) / (xp[j + 1] - xp[j]);
+    let mut r = slope * (x - xp[j]) + fp[j];
+    if r.is_nan() {
+        r = slope * (x - xp[j + 1]) + fp[j + 1];
+        if r.is_nan() && fp[j] == fp[j + 1] {
+            r = fp[j];
+        }
+    }
+    r
+}
+
+/// numpy.percentile (linear) of sorted v at q (0..100).
+fn np_percentile(v: &[f64], q: f64) -> f64 {
+    let n = v.len();
+    let idx = q / 100.0 * (n as f64 - 1.0);
+    let lo = idx.floor() as usize;
+    let hi = (lo + 1).min(n - 1);
+    let g = idx - lo as f64;
+    // numpy's _lerp: a + (b - a) * t, and b - (b - a) * (1 - t) where t >= 0.5
+    let (a, b) = (v[lo], v[hi]);
+    let d = b - a;
+    if g >= 0.5 { b - d * (1.0 - g) } else { a + d * g }
+}
+
+/// roadwidth.measure_row: the right-of-way between the building walls of a street (centreline (k, >=2)), or None.
+#[pyfunction]
+#[allow(clippy::too_many_arguments)]
+fn measure_row(line: PyReadonlyArray2<f64>, keys: PyReadonlyArray1<i64>, first: PyReadonlyArray1<i64>,
+               counts: PyReadonlyArray1<i64>, seg_of: PyReadonlyArray1<i64>, segs: PyReadonlyArray2<f64>,
+               bucket: f64, step: f64, end_skip: f64, reach: f64, min_samples: usize, walled: f64, agree: f64)
+               -> Option<f64> {
+    let l = line.as_array();
+    let k = l.nrows();
+    if k < 2 {
+        return None;
+    }
+    let xs: Vec<f64> = (0..k).map(|i| l[[i, 0]]).collect();
+    let ys: Vec<f64> = (0..k).map(|i| l[[i, 1]]).collect();
+    let mut s = vec![0.0f64; k];
+    for i in 1..k {
+        s[i] = s[i - 1] + (xs[i] - xs[i - 1]).hypot(ys[i] - ys[i - 1]);
+    }
+    let total = s[k - 1];
+    if total < 2.0 * end_skip + step {
+        return None;
+    }
+    // numpy.arange(end_skip, total - end_skip + 1e-9, step)
+    let stop = total - end_skip + 1e-9;
+    let count = ((stop - end_skip) / step).ceil().max(0.0) as usize;
+    let (keys, first, counts, seg_of) = (keys.as_slice().unwrap(), first.as_slice().unwrap(),
+                                         counts.as_slice().unwrap(), seg_of.as_slice().unwrap());
+    let sg = segs.as_array();
+    let mut w = Vec::with_capacity(count);
+    let mut n = 0usize;
+    for i in 0..count {
+        let dd = end_skip + i as f64 * step;
+        // searchsorted(s, dd) (left), clipped to 1..k-1
+        let mut j = s.partition_point(|&v| v < dd);
+        j = j.clamp(1, k - 1);
+        let (tx, ty) = (xs[j] - xs[j - 1], ys[j] - ys[j - 1]);
+        let len = tx.hypot(ty);
+        if !(len >= 1e-6) {
+            continue;
+        }
+        n += 1;
+        let (nx, ny) = (-ty / len, tx / len);
+        let (cx, cy) = (np_interp(dd, &s, &xs), np_interp(dd, &s, &ys));
+        let a = wall_ray(keys, first, counts, seg_of, &sg, bucket, cx, cy, nx, ny, reach);
+        let b = wall_ray(keys, first, counts, seg_of, &sg, bucket, cx, cy, -nx, -ny, reach);
+        let v = a + b;
+        if !v.is_nan() {
+            w.push(v);
+        }
+    }
+    if n == 0 || w.len() < min_samples || (w.len() as f64) / (n as f64) < walled {
+        return None;
+    }
+    w.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    let m = w.len();
+    let med = if m % 2 == 1 { w[m / 2] } else { (w[m / 2 - 1] + w[m / 2]) / 2.0 };
+    let (q1, q3) = (np_percentile(&w, 25.0), np_percentile(&w, 75.0));
+    if (q3 - q1) / med > agree {
+        return None;
+    }
+    Some(med)
+}
+
 #[pymodule]
 fn earthfast(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(island_ring_rays, m)?)?;
@@ -590,6 +733,7 @@ fn earthfast(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(bc7_encode, m)?)?;
     m.add_function(wrap_pyfunction!(inside_blockers, m)?)?;
     m.add_function(wrap_pyfunction!(densify, m)?)?;
-    m.add("VERSION", 8)?;
+    m.add_function(wrap_pyfunction!(measure_row, m)?)?;
+    m.add("VERSION", 9)?;
     Ok(())
 }
