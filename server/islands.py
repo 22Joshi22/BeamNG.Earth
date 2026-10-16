@@ -192,6 +192,9 @@ def _crosses(poly, pts):
     """Does road pts (k, 3) run through the inside of loop poly (k, 2) (points every ~2 m, those within CROSS_MARGIN_M
     of the loop's line not counted: roads joining at its corners)?"""
     xy = np.asarray(pts, np.float64)[:, :2]
+    if fast._ef is not None and hasattr(fast._ef, "loop_crossed"):        # the Rust loop (the same samples)
+        return fast._ef.loop_crossed(np.ascontiguousarray(poly, np.float64), np.ascontiguousarray(xy),
+                                     float(CROSS_MARGIN_M))
     lo, hi = poly.min(0) - 1.0, poly.max(0) + 1.0
     if (xy.max(0) < lo).any() or (xy.min(0) > hi).any():
         return False

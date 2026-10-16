@@ -1218,6 +1218,75 @@ fn mip_levels<'py>(py: Python<'py>, rgb: PyReadonlyArray3<'py, u8>, lut: PyReado
     out
 }
 
+fn polyline_min_dist(l: &numpy::ndarray::ArrayView2<f64>, px: f64, py: f64) -> f64 {
+    let mut best = f64::INFINITY;
+    for i in 0..l.nrows().saturating_sub(1) {
+        let (ax, ay) = (l[[i, 0]], l[[i, 1]]);
+        let (dx, dy) = (l[[i + 1, 0]] - ax, l[[i + 1, 1]] - ay);
+        let l2 = (dx * dx + dy * dy).max(1e-12);
+        let t = (((px - ax) * dx + (py - ay) * dy) / l2).clamp(0.0, 1.0);
+        let d = (ax + dx * t - px).hypot(ay + dy * t - py);
+        if d < best {
+            best = d;
+        }
+    }
+    best
+}
+
+/// islands._crosses: whether road pts (k, >= 2) runs through the inside of the loop poly (n, 2): its samples every
+/// ~2 m inside the loop (even-odd) and farther than margin from the loop's closed line.
+#[pyfunction]
+fn loop_crossed(poly: PyReadonlyArray2<f64>, pts: PyReadonlyArray2<f64>, margin: f64) -> bool {
+    let pl = poly.as_array();
+    let p = pts.as_array();
+    let n = pl.nrows();
+    if n == 0 || p.nrows() == 0 {
+        return false;
+    }
+    let (mut lx, mut ly, mut hx, mut hy) = (f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY);
+    for i in 0..n {
+        lx = lx.min(pl[[i, 0]]); hx = hx.max(pl[[i, 0]]);
+        ly = ly.min(pl[[i, 1]]); hy = hy.max(pl[[i, 1]]);
+    }
+    let (lx, ly, hx, hy) = (lx - 1.0, ly - 1.0, hx + 1.0, hy + 1.0);
+    let (mut mx, mut my, mut nx, mut ny) = (f64::NEG_INFINITY, f64::NEG_INFINITY, f64::INFINITY, f64::INFINITY);
+    for i in 0..p.nrows() {
+        mx = mx.max(p[[i, 0]]); nx = nx.min(p[[i, 0]]);
+        my = my.max(p[[i, 1]]); ny = ny.min(p[[i, 1]]);
+    }
+    if mx < lx || my < ly || nx > hx || ny > hy {
+        return false;
+    }
+    let px: Vec<f64> = (0..n).map(|i| pl[[i, 0]]).collect();
+    let pys: Vec<f64> = (0..n).map(|i| pl[[i, 1]]).collect();
+    let mut ring = numpy::ndarray::Array2::<f64>::zeros((n + 1, 2));
+    for i in 0..=n {
+        ring[[i, 0]] = pl[[i % n, 0]];
+        ring[[i, 1]] = pl[[i % n, 1]];
+    }
+    let rv = ring.view();
+    for i in 0..p.nrows() - 1 {
+        let (ax, ay, bx, by) = (p[[i, 0]], p[[i, 1]], p[[i + 1, 0]], p[[i + 1, 1]]);
+        let k = 1usize.max(((bx - ax).hypot(by - ay) / 2.0) as usize);
+        for s in 0..k {
+            let t = (s as f64 + 0.5) / k as f64;
+            let (qx, qy) = (ax + (bx - ax) * t, ay + (by - ay) * t);
+            if inside(&px, &pys, qx, qy) && polyline_min_dist(&rv, qx, qy) > margin {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// junctions._on_carriageway's test: whether any point (m, 2) lies closer than h to the polyline (k, >= 2).
+#[pyfunction]
+fn any_within(pts: PyReadonlyArray2<f64>, line: PyReadonlyArray2<f64>, h: f64) -> bool {
+    let p = pts.as_array();
+    let l = line.as_array();
+    (0..p.nrows()).any(|i| polyline_min_dist(&l, p[[i, 0]], p[[i, 1]]) < h)
+}
+
 #[pymodule]
 fn earthfast(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(island_ring_rays, m)?)?;
@@ -1240,6 +1309,8 @@ fn earthfast(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(rock, m)?)?;
     m.add_function(wrap_pyfunction!(mip_levels, m)?)?;
     m.add_function(wrap_pyfunction!(srgb_monotonic, m)?)?;
-    m.add("VERSION", 15)?;
+    m.add_function(wrap_pyfunction!(loop_crossed, m)?)?;
+    m.add_function(wrap_pyfunction!(any_within, m)?)?;
+    m.add("VERSION", 16)?;
     Ok(())
 }
