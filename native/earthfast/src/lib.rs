@@ -1899,6 +1899,31 @@ fn horizon_steps<'py>(py: Python<'py>, hpad: PyReadonlyArray2<'py, f32>, mut bes
     });
 }
 
+/// riverlines._confluences' test: for each point p (m, 2), is any segment a -> b (s, 2) nearer than its hw (s)? float64
+/// as numpy's broadcast (squared length sum, clipped projection, np.hypot), bit for bit.
+#[pyfunction]
+fn points_near_segments<'py>(py: Python<'py>, p: PyReadonlyArray2<'py, f64>, a: PyReadonlyArray2<'py, f64>,
+                             b: PyReadonlyArray2<'py, f64>, hw: PyReadonlyArray1<'py, f64>) -> Bound<'py, PyArray1<bool>> {
+    let (pv, av, bv, hv) = (p.as_array(), a.as_array(), b.as_array(), hw.as_array());
+    let out: Vec<bool> = py.allow_threads(|| {
+        let ns = av.shape()[0];
+        let seg: Vec<[f64; 6]> = (0..ns).map(|k| {
+            let (a0, a1) = (av[[k, 0]], av[[k, 1]]);
+            let (ab0, ab1) = (bv[[k, 0]] - a0, bv[[k, 1]] - a1);
+            [a0, a1, ab0, ab1, (ab0 * ab0 + ab1 * ab1).max(1e-9), hv[k]]
+        }).collect();
+        (0..pv.shape()[0]).map(|i| {
+            let (p0, p1) = (pv[[i, 0]], pv[[i, 1]]);
+            seg.iter().any(|g| {
+                let t = (((p0 - g[0]) * g[2] + (p1 - g[1]) * g[3]) / g[4]).clamp(0.0, 1.0);
+                let d = (p0 - (g[0] + t * g[2])).hypot(p1 - (g[1] + t * g[3]));
+                d < g[5]
+            })
+        }).collect()
+    });
+    numpy::ndarray::Array1::from(out).into_pyarray(py)
+}
+
 fn bc1_565(c: [f64; 3]) -> u16 {
     let r = (c[0].clamp(0.0, 255.0) * 31.0 / 255.0).round() as u16;
     let g = (c[1].clamp(0.0, 255.0) * 63.0 / 255.0).round() as u16;
@@ -2181,6 +2206,7 @@ fn earthfast(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(view_distances, m)?)?;
     m.add_function(wrap_pyfunction!(road_corridors, m)?)?;
     m.add_function(wrap_pyfunction!(horizon_steps, m)?)?;
+    m.add_function(wrap_pyfunction!(points_near_segments, m)?)?;
     m.add("VERSION", 24)?;
     Ok(())
 }

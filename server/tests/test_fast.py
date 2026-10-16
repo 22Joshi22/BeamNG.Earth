@@ -516,6 +516,34 @@ class FastTest(unittest.TestCase):
                 fast._ef = saved
             np.testing.assert_array_equal(got, want, err_msg=f"az {az}")
 
+    def test_confluences_match_python(self):
+        import riverlines
+        rng = np.random.default_rng(61)
+
+        def rivers():
+            out = []
+            for k in range(12):
+                n = int(rng.integers(1, 30))
+                c = np.cumsum(rng.normal(0, 30, (n, 2)), 0) + rng.uniform(-300, 300, 2)
+                out.append({"kind": ("river", "canal", "stream")[k % 3], "centre": c,
+                            "width": rng.uniform(2, 60, n), "ids": f"r{k}", "into": np.zeros(n, bool)})
+            out[3]["centre"][1:] = out[3]["centre"][0]          # a zero-length piece
+            return out
+        state = rng.bit_generator.state
+        got = rivers()
+        riverlines._confluences(got)
+        rng.bit_generator.state = state
+        want = rivers()
+        saved = fast._ef
+        fast._ef = None
+        try:
+            riverlines._confluences(want)
+        finally:
+            fast._ef = saved
+        self.assertGreater(sum(int(r["into"].sum()) for r in want), 5)
+        for g, w in zip(got, want):
+            np.testing.assert_array_equal(g["into"], w["into"])
+
     def test_vmedian_matches_python(self):
         import colormatch
         rng = np.random.default_rng(41)
