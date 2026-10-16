@@ -69,6 +69,7 @@ from collections import OrderedDict
 
 import numpy as np
 
+import fast
 import pacer
 from PIL import Image
 
@@ -134,6 +135,12 @@ _LUT16 = to_srgb(np.arange(65536) / 65535.0)     # linear (16 bit) -> sRGB
 def _rf_pass(X, cut_prev, a):
     """In place recursive filter along axis 1 of X [rows, cols, ch], forward and backward;
     cut_prev[r, c] True = no link between c - 1 and c."""
+    if fast._ef is not None and hasattr(fast._ef, "rf_pass") and X.dtype == np.float32 and X.flags.c_contiguous \
+            and X.flags.writeable and X.ndim == 3:
+        pacer.pace()
+        fast._ef.rf_pass(X, np.ascontiguousarray(cut_prev, bool), float(a))   # the same float32 steps (Rust)
+        pacer.pace()
+        return
     n = X.shape[1]
     f = np.where(cut_prev, 0.0, a).astype(np.float32)[..., None]
     for c in range(1, n):
@@ -271,6 +278,11 @@ _NET5 = ((0, 1), (3, 4), (2, 4), (2, 3), (0, 3), (0, 2), (1, 4), (1, 3), (1, 2))
 def _vmedian(X, ok, n):
     """Lower median over axis 0 of X [K, h, w] of the entries with ok, 0 where there are none
     (K = 5: a sorting network of element-wise min / max instead of np.sort along a short axis)."""
+    if fast._ef is not None and hasattr(fast._ef, "vmedian") and np.ndim(X) == 3:
+        X = np.ascontiguousarray(X, np.float32)
+        okb = np.ascontiguousarray(np.broadcast_to(ok, X.shape), bool)
+        nn = np.ascontiguousarray(np.broadcast_to(np.asarray(n, np.int64), X.shape[1:]))
+        return fast._ef.vmedian(X, okb, nn)
     Y = np.where(ok, X, np.float32(np.inf))
     if len(Y) == 5:
         s = list(Y)

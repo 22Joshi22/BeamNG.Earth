@@ -427,6 +427,41 @@ class FastTest(unittest.TestCase):
             self.assertEqual(got.dtype, want.dtype)
             np.testing.assert_array_equal(got, want)
 
+    def test_vmedian_matches_python(self):
+        import colormatch
+        rng = np.random.default_rng(41)
+        for trial in range(6):
+            h, w = int(rng.integers(5, 60)), int(rng.integers(5, 60))
+            for K in (5, 3, 7):
+                V = rng.normal(0, 1, (K, h, w)).astype(np.float32)
+                ok = rng.random((K, h, w)) < 0.7
+                nv = ok.sum(0)
+                gm = colormatch._vmedian(V, ok, nv)
+                saved = fast._ef
+                fast._ef = None
+                try:
+                    wm = colormatch._vmedian(V, ok, nv)
+                finally:
+                    fast._ef = saved
+                np.testing.assert_array_equal(gm, wm, err_msg=f"vmedian {trial} {K}")
+
+    def test_dt_blur_matches_python(self):
+        import colormatch
+        rng = np.random.default_rng(43)
+        for trial in range(8):
+            h, w = int(rng.integers(5, 70)), int(rng.integers(5, 70))
+            X = rng.random((h, w, int(rng.choice([3, 6, 7])))).astype(np.float32)
+            cut = (rng.random((h, w)) < 0.1) if trial % 2 else None
+            sigma = float(rng.uniform(1, 20))
+            got = colormatch.dt_blur(X, sigma, cut)
+            saved = fast._ef
+            fast._ef = None
+            try:
+                want = colormatch.dt_blur(X, sigma, cut)
+            finally:
+                fast._ef = saved
+            np.testing.assert_array_equal(got, want, err_msg=str(trial))
+
     def test_points_and_distances(self):
         sq = np.array([[0, 0], [10, 0], [10, 10], [0, 10]], float)
         pts = np.array([[5, 5], [15, 5], [-1, -1], [9.9, 0.1]], float)
