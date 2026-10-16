@@ -95,6 +95,12 @@
                 <div class="option-reset"></div>
               </div>
 
+              <!-- Feedback: the report window or the profiler (the menu closes first: settings.lua M.feedback) -->
+              <div v-if="item.type === 'feedback'" class="inline-controls">
+                <BngButton :accent="ACCENTS.outlined" @click="openFeedback(item.what)">{{ item.label }}</BngButton>
+                <div class="option-reset"></div>
+              </div>
+
               <!-- Inline Switch for dev tools (session only, not saved) -->
               <div v-if="item.type === 'dev'" class="inline-controls">
                 <BngSwitch
@@ -232,12 +238,6 @@ const settingsSchema = [
     ],
   },
   {
-    name: "Places",
-    items: [
-      { id: "placesMoved", type: "text", name: "Places are on the world map", desc: "Saving where you are, going to a latitude, longitude, the saved places (go, rename, delete) and the recent places are in the world map's Places panel: press M (the game's map key) or open Map in the pause menu." },
-    ],
-  },
-  {
     name: "World",
     items: [
       { id: "rebaseDistance", type: "float", min: 2000, max: 16000, step: 100, default: 15000, name: "Rebase distance (m)", desc: "How far from the anchor origin the world moves under the player (origin rebase). 15 km keeps float precision at ~1 mm; beyond 16 km precision halves." },
@@ -302,8 +302,8 @@ const settingsSchema = [
   {
     name: "Feedback",
     items: [
-      { id: "reportKey", type: "text", name: "Report an issue or idea", desc: "Takes a screenshot, the location, the frame rate and your hardware and graphics settings, then opens a window to pick the kind (map issue, performance issue, bug, idea), give a title and describe it. Saves a ready-to-post GitHub issue (issue.md) in the report folder." },
-      { id: "profilerKey", type: "text", name: "Performance profiler", desc: "Records 30 s of frame times while you drive (every hitch with its place), then opens the same window as a performance issue." },
+      { id: "reportOpen", type: "feedback", what: "report", label: "Report", name: "Report an issue or idea", desc: "Closes this menu, takes a screenshot, the location, the frame rate and your hardware and graphics settings, then opens a window to pick the kind (map issue, performance issue, bug, idea), give a title and describe it. Saves a ready-to-post GitHub issue (issue.md) in the report folder. Also Ctrl+Shift+E while driving." },
+      { id: "profilerOpen", type: "feedback", what: "profiler", label: "Start profiler", name: "Performance profiler", desc: "Closes this menu and records 30 s of frame times while you drive (every hitch with its place), then opens the same window as a performance issue. Also Ctrl+Shift+Y while driving." },
       { id: "reportPost", type: "text", name: "Posting it", desc: "After saving, the window shows the folder and opens the GitHub new-issue page; or run python3 tools/reports.py issue in the mod's folder. Edit issue.md and drag screenshot.jpg into the issue." },
     ],
   },
@@ -363,9 +363,6 @@ function infoValue(item) {
   if (item.id === "player") return (typeof s.playerLat === "number") ? `${fmt(s.playerLat, 5)}, ${fmt(s.playerLon, 5)}  (${fmt(s.dist / 1000, 1)} km from origin)` : "-"
   if (item.id === "attribution") return s.attribution || "-"
   if (item.id === "credits") return s.credits || "-"
-  if (item.id === "placesMoved") return "M"
-  if (item.id === "reportKey") return "Ctrl+Shift+E"
-  if (item.id === "profilerKey") return "Ctrl+Shift+Y"
   if (item.id === "reportPost") return "github.com/TecnaGamer/BeamNG.Earth/issues"
   if (item.id === "weather") return s.weather || "-"
   if (item.id === "gravity") return s.gravity || "-"
@@ -392,6 +389,11 @@ function luaValue(val) {
 
 function showWelcome() {
   engineLua("if beamngEarth_settings and beamngEarth_settings.showWelcome then beamngEarth_settings.showWelcome() end")
+}
+
+// Feedback buttons: settings.lua closes the menu, then opens the report window or starts the profiler
+function openFeedback(what) {
+  engineLua(`if beamngEarth_settings and beamngEarth_settings.feedback then beamngEarth_settings.feedback(${JSON.stringify(what)}) end`)
 }
 
 function engineLua(script, cb) {

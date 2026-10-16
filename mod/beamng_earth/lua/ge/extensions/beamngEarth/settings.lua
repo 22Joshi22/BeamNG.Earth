@@ -606,7 +606,28 @@ end
 -- player still gets it on their next start.
 M.welcomeSuppressed = false
 
+-- The settings page's Feedback buttons ('report': the report window, Ctrl+Shift+E; 'profiler': Ctrl+Shift+Y): the pause
+-- menu closes first, and the report runs FEEDBACK_FRAMES frames later, so its screenshot is the world, not the menu.
+M.FEEDBACK_FRAMES = 6
+local feedbackQ = nil      -- { what, frames } waiting for the menu to go
+
+function M.feedback(what)
+  if what ~= 'report' and what ~= 'profiler' then return { error = 'unknown' } end
+  local gh = rawget(_G, 'guihooks')
+  if gh then gh.trigger('ChangeState', { state = 'play' }) end
+  feedbackQ = { what = what, frames = M.FEEDBACK_FRAMES }
+  return { ok = true }
+end
+
 function M.onUpdate()
+  if feedbackQ then
+    feedbackQ.frames = feedbackQ.frames - 1
+    if feedbackQ.frames <= 0 then
+      local what, rep = feedbackQ.what, ext('beamngEarth_report')
+      feedbackQ = nil
+      if rep then if what == 'report' then rep.note() else rep.profiler() end end
+    end
+  end
   if welcomeAt and os.clock() >= welcomeAt then
     welcomeAt = nil
     if not M.welcomeSuppressed then M.showWelcome() end
