@@ -426,7 +426,7 @@ class DriveBase(unittest.TestCase):
         script = SERVER_DIR / self.launcher if self.launcher == "earthd.py" else Path(__file__).parent / self.launcher
         self.proc = subprocess.Popen(
             [sys.executable, str(script), "--port", "0", "--user-dir", self.user, "--cache-dir", CACHE,
-             "--weather", "off", "--gravity", "off",  # no network: own tests
+             "--weather", "off", "--gravity", "off", "--update-check", "off",  # no network: own tests
              # roads (and the grading under them) wait on Overture road data per block: own tests
              "--roads", "off", *self.server_args],
             stdout=subprocess.PIPE, stderr=self.errlog, text=True)
@@ -521,15 +521,16 @@ class DriveBase(unittest.TestCase):
             elif mesh:                      # nothing is covered or sunk in mesh mode
                 ok = ok and "sink" not in m
             # imagery: the offline source never fails, so every mesh-mode tile is textured
-            want_mat = f"bngEarthSat_{m['anchorId']}_{m['key'].replace('-', 'm')}" if mesh else None
-            ok = ok and m.get("material") == want_mat and ("texture" in m) == mesh and ("detail" in m) == mesh
+            want_mat = m.get("material") if mesh else None      # a pooled name (matslots.py)
+            ok = (ok and (want_mat is None or re.fullmatch(r"bngEarthFar_[0-9a-f]{4}_\d{5}", want_mat) is not None)
+                  and m.get("material") == want_mat and ("texture" in m) == mesh and ("detail" in m) == mesh)
             # M1: the texture size rides on FORMAT 4 tiles only (the mod's governor kind)
             ok = ok and m.get("tex") == (lay.tex_size(t.level) if mesh and lay.format >= 4 else None)
             if mesh and ok:
                 tex = self.fs(m["texture"])
                 textures[want_mat] = tex
                 ok = (m["detail"] is True and os.path.exists(tex)
-                      and os.path.splitext(m["texture"])[0] == os.path.splitext(m["shape"])[0])
+                      and os.path.basename(m["shape"]) == f"slot_{want_mat.rsplit('_', 1)[1]}.cdae")
                 if ok and stats["tiles"] % CDAE_SAMPLE == 1:
                     with open(tex, "rb") as f:
                         w, h, mips, fourcc, sizes = imagery.read_dds_info(f.read(imagery.DDS_HEADER))
@@ -718,7 +719,9 @@ class DriveBase(unittest.TestCase):
             # a running crossover's outgoing tiles are in none of those
             insts = list({id(i): i for i in insts + [r for g in far.groups for r in g.rems]}.values())
             gone = [i.path for i in insts if i.loaded and not os.path.exists(i.path)]
-            gone += [textures[n] for n in far.mats if not os.path.exists(textures[n])]
+            # the texture each material in use shows (an unused pooled one keeps a deleted tile's name: harmless)
+            gone += [far.mat_tex[n] for n, r in far.mats.items()
+                     if r and far.mat_tex.get(n) and not os.path.exists(self.fs(far.mat_tex[n]))]
             stats["files_checked"] = stats.get("files_checked", 0) + len(insts) + len(far.mats)
             if gone:
                 stats.setdefault("vanished", []).append((round(clock["sim"], 2), gone[:3]))
@@ -726,7 +729,7 @@ class DriveBase(unittest.TestCase):
             for i in insts:
                 if i.mat is not None:
                     refs[i.mat] = refs.get(i.mat, 0) + 1
-            unused = {n for n, r in far.mats.items() if r == 0}
+            unused = {n for n, r in far.mats.items() if r == 0 and not modsim.pooled(n)}
             if ({n: r for n, r in far.mats.items() if r} != refs or not unused <= set(far.mat_del)
                     or any(not i.material for i in insts if i.mat)):
                 stats["mat_bad"].append((round(clock["sim"], 2), len(far.mats), len(refs), len(unused)))
@@ -835,8 +838,12 @@ class DriveBase(unittest.TestCase):
             vx, vy = player["v"]
             lat, lon, _ = frames[st["anchor"]].enu_to_geodetic(x, y, z)
             sp = math.hypot(vx, vy)
-            c.send({"type": "pose", "anchorId": st["anchor"], "x": x, "y": y, "z": z, "vx": vx, "vy": vy,
-                    "lat": float(lat), "lon": float(lon), "speed": sp, "cam": camera()})
+            pose = {"type": "pose", "anchorId": st["anchor"], "x": x, "y": y, "z": z, "vx": vx, "vy": vy,
+                    "lat": float(lat), "lon": float(lon), "speed": sp, "cam": camera()}
+            gone = far.take_slots_gone()
+            if gone:                    # pooled far-tile slots let go (matslots.py)
+                pose["slotsGone"] = gone
+            c.send(pose)
 
         def camera():
             """An orbit camera 8 m behind and 3 m above the car, looking along the heading."""
@@ -1074,7 +1081,7 @@ class DriveBase(unittest.TestCase):
         # (g) deletions of files the mod had loaded: the most in any 1 s (wall)
         dl = sorted(t for t, loaded in files["deleted"] if loaded)
         burst = max((int(np.searchsorted(dl, t + 1.0) - i) for i, t in enumerate(dl)), default=0)
-        mat_left = {n: r for n, r in far.mats.items()}
+        mat_left = {n: r for n, r in far.mats.items() if r or not modsim.pooled(n)}   # pooled ones stay
         late = far.counters["late_tiles"]
         mat_used = {i.mat for i in far.live.values() if i.mat}
 
@@ -1231,11 +1238,13 @@ class DriveBase(unittest.TestCase):
                             sorted({ff.tile_of(k).level for k in close}))
         # (g)
         self.assertFalse(stats["mat_bad"], stats["mat_bad"][:3])
+        self.assertFalse(far.mat_conflicts, far.mat_conflicts[:3])     # a pooled name never on two tiles at once
         self.assertEqual(set(mat_left), mat_used)               # nothing left over, nothing missing
         self.assertTrue(all(r > 0 for r in mat_left.values()))
         self.assertTrue(dl, "no prune of the previous anchor's files was observed")
-        if mesh:
-            self.assertGreater(far.counters["mat_deletes"], 0)
+        if mesh:        # pooled names: Materials re-used, never deleted, fewer made than tiles shown over the run
+            self.assertEqual(far.counters["mat_deletes"], 0)
+            self.assertLess(far.counters["materials"], stats["tiles"])
         else:
             self.assertEqual((far.counters["materials"], len(mat_left)), (0, 0))
         self.assertLessEqual(burst, DELETES_PER_S[self.near_visual])

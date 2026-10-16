@@ -399,7 +399,8 @@ class RestartDriveTest(unittest.TestCase):
         def check_files():
             insts = list(far.live.values()) + list(far.old.values()) + list(far.pending.values()) + far.doomed
             gone = [i.shape for i in insts if i.loaded and not os.path.exists(fs(i.shape))]
-            gone += [t for t in far.mat_tex.values() if t and not os.path.exists(fs(t))]
+            # materials in use (an unused pooled one keeps a deleted tile's texture name: harmless)
+            gone += [t for n, t in far.mat_tex.items() if t and far.mats.get(n) and not os.path.exists(fs(t))]
             if gone:
                 stats["vanished"].append((round(st["clock"], 2), st["phase"], gone[:3]))
 

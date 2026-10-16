@@ -40,6 +40,8 @@ class Conn:
     def __init__(self, aid, focus=(0.0, 0.0)):
         self.active, self.focus = aid, focus
         self.shown, self.sent, self.msgs = {}, {}, []
+        self.desired, self.inflight, self.retired, self.held = {}, {}, {}, set()    # Server.in_use reads these
+        self.slot_holds = {}            # Server.slot_held
         self.credits = types.SimpleNamespace(poke=lambda c: None)
 
     def send(self, m):
@@ -81,7 +83,7 @@ class SchedulerTest(unittest.TestCase):
 
     def add(self, key, regions=(R,), shown=True, sent=False, rev=0):
         ck = (1, key)
-        self.s.tiles[ck] = earthd.TileInfo([0, 0, 0], 0.0, None, 0.0, None, 0, 0.0, earthd.sat_material(1, key),
+        self.s.tiles[ck] = earthd.TileInfo([0, 0, 0], 0.0, None, 0.0, None, 0, 0.0, self.s.matslots.take(ck),
                                            self.s.texture_name(1, key, rev), cm_pending=frozenset(regions), rev=rev)
         for rk in regions:
             self.s.cm_waiting.setdefault(rk, set()).add(ck)

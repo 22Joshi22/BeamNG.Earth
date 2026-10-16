@@ -198,10 +198,12 @@ class ServerHarness(unittest.TestCase):
                 keys.add("sink")
             if self.with_imagery:
                 keys |= {"material", "texture", "detail"}
+                if self.far_format == "cdae":           # a pooled shape file's send serial (matslots.py)
+                    keys.add("slotSerial")
                 if self.layout.format >= 4:             # M1: the texture size (the mod's unit kind)
                     keys.add("tex")
                     self.assertEqual(m["tex"], self.server.tex_size(m["level"]))    # M1h: 256/128 px from L8
-                self.assertEqual(m["material"], earthd.sat_material(aid, m["key"]))
+                self.assertTrue(self.server.matslots.owns((aid, m["key"]), m["material"]), m)     # its pooled name
                 self.assertEqual(m["texture"], f"/temp/beamngEarth/{self.server.sid}/far_{aid}_{m['key']}.dds")
                 self.assertIs(m["detail"], True)
                 self.assertTrue(os.path.exists(self.fs(m["texture"])))
@@ -210,7 +212,10 @@ class ServerHarness(unittest.TestCase):
             self.assertEqual(m["level"], t.level)
             self.assertEqual(m["pos"][:2], list(t.bbox[:2]))
             self.assertEqual(m["state"], "group")
-            self.assertEqual(m["shape"], f"/temp/beamngEarth/{self.server.sid}/far_{aid}_{m['key']}.{self.far_format}")
+            own = f"far_{aid}_{m['key']}.{self.far_format}"        # a textured cdae tile: its pooled file (matslots.py)
+            if "material" in m and self.far_format == "cdae":
+                own = f"slot_{m['material'].rsplit('_', 1)[1]}.cdae"
+            self.assertEqual(m["shape"], f"/temp/beamngEarth/{self.server.sid}/{own}")
             self.assertGreaterEqual(m["err"], 0)
             self.assertGreaterEqual(m["skirt"], ff.skirt_depth(t.size, m["err"]) - 0.01)
             if "sink" in m:

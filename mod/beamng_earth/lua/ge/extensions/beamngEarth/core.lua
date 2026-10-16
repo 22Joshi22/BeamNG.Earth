@@ -539,8 +539,10 @@ local function onMessage(msg)
   local t = msg.type
   if t == '_connected' then
     -- sessions: the session folders our far tiles still use (a restarted server keeps them)
+    -- slotsHeld: the pooled far-tile slots our objects hold, if the server is the one that sent them (a reconnect)
     net.send({ type = 'hello', protocol = PROTOCOL, format = FORMAT, modVersion = MOD_VERSION,
-      sessions = farfield.heldSessions() })
+      sessions = farfield.heldSessions(), slotSession = farfield.session(),
+      slotsHeld = farfield.session() and farfield.slotsHeld(farfield.session()) or nil })
     setStatus('Connected to companion server')
   elseif t == '_disconnected' then
     st.pending, st.sessionId, st.terrainPending = nil, nil, nil
@@ -819,6 +821,7 @@ local function updateWorld(dt)
       lat = pl.lat, lon = pl.lon, speed = pl.speed, follow = not st.followHeld,
       held = (farfield.session() == st.sessionId) and farfield.heldAnchors() or {},
       sessions = farfield.heldSessions(),
+      slotsGone = farfield.takeSlotsGone(st.sessionId), -- pooled far-tile slots let go (server/matslots.py)
       cam = c and { x = c.x, y = c.y, z = c.z, fx = c.fx, fy = c.fy, fz = c.fz, fovDeg = c.fovDeg } or nil })
   end
 

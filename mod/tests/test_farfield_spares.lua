@@ -84,4 +84,41 @@ local n = farfield.stats().spares
 farfield.switchAnchor(2, true, { cx = 0, cy = 0 }, 's1')
 T.check(n >= 1 and farfield.stats().spares == 0, 'spares dropped at an anchor switch')
 
+-- pooled shape files (server/matslots.py): a spare still holding a slot path is deleted before another
+-- tile loads that path (the engine would share its cached shape)
+settle()
+local function slotTile(a, l, i, j, n, serial)
+  local t = tile(a, l, i, j)
+  t.shape = '/temp/beamngEarth/s1/slot_' .. string.format('%05d', n) .. '.cdae'
+  t.slotSerial = serial
+  return t
+end
+farfield.takeSlotsGone('s1') -- nothing pooled before this point
+T.check(farfield.pooledShape('/temp/beamngEarth/s1/slot_00007.cdae') and not farfield.pooledShape(tile(2, 0, 0, 0).shape),
+  'pooled shape paths recognised')
+local A, B = key(0, 30, 30), key(0, 31, 30)
+farfield.onTile(slotTile(2, 0, 30, 30, 7, 11)); step()
+farfield.onSwap(swap(2, 7, { A })); settle()
+local aid = farfield._tile(A).id
+farfield.onRemove({ type = 'far_remove', anchorId = 2, key = A }); step()
+T.check(S.objects[aid] ~= nil and farfield.stats().spares >= 1, 'the slot tile is a spare')
+T.check(farfield.takeSlotsGone('s1') == nil, 'a spare still holds its slot: nothing reported')
+local held = farfield.slotsHeld('s1')
+T.check(#held == 1 and held[1][1] == 7 and held[1][2] == 11, 'held slots listed (hello after a reconnect)')
+farfield.onTile(slotTile(2, 0, 31, 30, 7, 12)); step()      -- the server gave slot 7 to another tile
+T.check(S.objects[aid] == nil, 'the spare holding the path was deleted first')
+T.check(farfield._pending(B) and farfield._pending(B).loaded and farfield._pending(B).id ~= aid, 'the new tile loaded the path')
+T.check((farfield.counters().slotFreed or 0) == 1 and (farfield.counters().slotBusy or 0) == 0, 'counted')
+local gone = farfield.takeSlotsGone('s1')
+T.check(gone and #gone == 1 and gone[1][1] == 7 and gone[1][2] == 11, 'the deleted spare reported its send gone')
+T.check(farfield.takeSlotsGone('other') == nil, 'reports are taken once')
+-- a pooled tile withdrawn before it ever spawned is reported too
+farfield.onTile(slotTile(2, 0, 32, 30, 9, 13))
+farfield.onRemove({ type = 'far_remove', anchorId = 2, key = key(0, 32, 30) }); settle()
+gone = farfield.takeSlotsGone('s1') or {}
+local found = false
+for _, g in ipairs(gone) do if g[1] == 9 and g[2] == 13 then found = true end end
+T.check(found, 'a never-spawned instance reports its slot gone')
+settle()
+
 T.done('test_farfield_spares')
