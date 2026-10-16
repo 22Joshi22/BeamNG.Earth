@@ -25,6 +25,8 @@ from collections import OrderedDict
 from dataclasses import dataclass
 
 import numpy as np
+
+import fast
 from polygon import Path
 
 import mapcells
@@ -555,6 +557,8 @@ def _mask_roads(f, mask, chm, push=None):
         return
     n_r, n_c = mask.shape
     cls = f.attrs.get("class", np.full(len(f.kind), "", object))
+    rust = fast._ef is not None and hasattr(fast._ef, "road_corridors")
+    segs, hws = [], []                  # (Rust) every segment in order: one call at the end
     for i in np.flatnonzero(f.kind == 2):
         hw_m = ROAD_HALF_WIDTH_M.get(str(cls[i]), ROAD_HALF_DEFAULT_M) + ROAD_CLEAR_M
         for part in f.parts(i):
@@ -566,6 +570,10 @@ def _mask_roads(f, mask, chm, push=None):
                 q = np.stack([c, r], -1)
                 if (q[:, 0].max() < -hw or q[:, 1].max() < -hw or q[:, 0].min() > n_c + hw
                         or q[:, 1].min() > n_r + hw):
+                    continue
+                if rust:
+                    segs.append(np.concatenate([q[:-1], q[1:]], 1))
+                    hws.append(np.full(len(q) - 1, hw))
                     continue
                 for a, b in zip(q[:-1], q[1:]):
                     c0, r0 = max(int(min(a[0], b[0]) - hw), 0), max(int(min(a[1], b[1]) - hw), 0)
@@ -592,6 +600,9 @@ def _mask_roads(f, mask, chm, push=None):
                             win[0][closer] = (ux * go)[closer]
                             win[1][closer] = (uy * go)[closer]
                             win[2][closer] = d[closer]
+    if rust and segs:                   # the same, without the GIL and the per-segment numpy calls
+        fast._ef.road_corridors(mask, push, np.ascontiguousarray(np.concatenate(segs), np.float64),
+                                np.ascontiguousarray(np.concatenate(hws), np.float64))
 
 
 # --- tiles for the mod --------------------------------------------------------------------------------
