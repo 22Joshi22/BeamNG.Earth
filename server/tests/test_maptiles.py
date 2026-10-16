@@ -3,9 +3,13 @@ coverage fall-through, overzoom, errors, and the HTTP server on 127.0.0.1. Also 
 tile math test (test_mapmath.mjs) when node is installed."""
 import asyncio
 import io
+import os
 import shutil
 import subprocess
 import sys
+import tempfile
+import threading
+import time
 import unittest
 from pathlib import Path
 
@@ -44,6 +48,25 @@ class FakeImagery:
                 a[..., 1] = np.arange(256, dtype=np.uint8)[:, None]      # rows 0..255: a gradient north to south
             out[k] = imagery.as_tile(a)
         return out
+
+    def raw(self, src, z, x, y, kind="demand"):
+        """The map layers' source tiles (Imagery.raw): terrain-light a JPEG with a north-south gradient, the overlay
+        a PNG with alpha (transparent but for an opaque top-left quarter)."""
+        self.calls.append((src.name, z, x, y, kind))
+        if src.name in self.fail:
+            raise imagery.ImageryError("down")
+        if src.name in self.missing:
+            return None
+        buf = io.BytesIO()
+        if src.name == "eoxlabels":
+            a = np.zeros((256, 256, 4), np.uint8)
+            a[:128, :128] = (250, 250, 250, 255)
+            Image.fromarray(a, "RGBA").save(buf, "PNG")
+        else:
+            a = np.zeros((256, 256, 3), np.uint8)
+            a[..., 1] = np.arange(256, dtype=np.uint8)[:, None]
+            Image.fromarray(a).save(buf, "JPEG")
+        return buf.getvalue()
 
     def attribution(self):
         return "Imagery: fake"
@@ -144,6 +167,224 @@ class MapTilesTest(unittest.TestCase):
         self.assertEqual(body[:2], b"\xff\xd8")
         self.assertTrue(bad.startswith(b"HTTP/1.1 404"))
         self.assertTrue(junk.startswith(b"HTTP/1.1 400"))
+
+
+class LayersTest(unittest.TestCase):
+    def test_paths(self):
+        root = os.path.join("r", "maptiles")
+        self.assertEqual(maptiles.tile_path(root, "sat", 3, 2, 1), os.path.join(root, "3", "2", "1.jpg"))
+        self.assertEqual(maptiles.tile_path(root, "map", 3, 2, 1), os.path.join(root, "map", "3", "2", "1.jpg"))
+        self.assertEqual(maptiles.tile_path(root, "labels", 3, 2, 1), os.path.join(root, "labels", "3", "2", "1.png"))
+        with self.assertRaises(KeyError):
+            maptiles.tile_path(root, "osm", 3, 2, 1)
+
+    def test_eox_layers_not_imagery_choices(self):
+        for src in maptiles.LAYER_SOURCES.values():
+            self.assertNotIn(src.name, imagery.SOURCES)
+            self.assertTrue(src.url.startswith("https://tiles.maps.eox.at/"))
+            self.assertIn("OpenStreetMap", src.attribution)
+
+    def test_map_layer_native_and_overzoomed(self):
+        img = FakeImagery()
+        t = maptiles.MapTiles(img)
+        jpeg = t.layer_tile("map", 12, 1176, 1561)
+        self.assertEqual(img.calls[-1], ("eoxmap", 12, 1176, 1561, maptiles.FETCH_KIND))
+        self.assertEqual(jpeg[:2], b"\xff\xd8")
+        # z16 from the z14 tile: the bottom row of its 4 x 4 children has rows 192..255 of the gradient
+        a = decode(t.layer_tile("map", 16, (100 << 2) + 1, (200 << 2) + 3))
+        self.assertEqual(img.calls[-1][:4], ("eoxmap", 14, 100, 200))
+        self.assertEqual(a.shape, (256, 256, 3))
+        self.assertTrue(185 <= a[:, :, 1].mean() <= 230, a[:, :, 1].mean())
+
+    def test_labels_keep_transparency(self):
+        img = FakeImagery()
+        t = maptiles.MapTiles(img)
+        png = t.layer_tile("labels", 10, 5, 7)
+        self.assertEqual(png[:4], b"\x89PNG")
+        a = np.asarray(Image.open(io.BytesIO(png)).convert("RGBA"))
+        self.assertEqual(a[10, 10, 3], 255)
+        self.assertEqual(a[200, 200, 3], 0)
+        # overzoomed: the top-left child of the opaque quarter is all opaque, the bottom-right one all clear
+        tl = np.asarray(Image.open(io.BytesIO(t.layer_tile("labels", 15, 100 << 1, 200 << 1))).convert("RGBA"))
+        self.assertEqual(img.calls[-1][:4], ("eoxlabels", 14, 100, 200))
+        self.assertTrue((tl[8:-8, 8:-8, 3] == 255).all())
+        br = np.asarray(Image.open(io.BytesIO(t.layer_tile("labels", 15, (100 << 1) + 1, (200 << 1) + 1))).convert("RGBA"))
+        self.assertTrue((br[..., 3] == 0).all())
+
+    def test_missing_and_failing_layers(self):
+        self.assertIsNone(maptiles.MapTiles(FakeImagery(missing=("eoxmap",))).layer_tile("map", 5, 1, 1))
+        with self.assertRaises(imagery.ImageryError):
+            maptiles.MapTiles(FakeImagery(fail=("eoxlabels",))).layer_tile("labels", 5, 1, 1)
+        self.assertEqual(maptiles.MapTiles(FakeImagery()).layer_tile("sat", 12, 1170, 1566)[:2], b"\xff\xd8")
+
+
+class FakeLayers:
+    """MapTiles.layer_tile with a delay per tile, a gate the first build waits on, and tiles with nothing."""
+
+    def __init__(self, delay=0.0, gate=None, missing=(), fail=()):
+        self.delay, self.gate = delay, gate
+        self.missing, self.fail = set(missing), set(fail)
+        self.calls = []
+        self.lock = threading.Lock()
+
+    def layer_tile(self, layer, z, x, y):
+        with self.lock:
+            self.calls.append((layer, z, x, y))
+        if self.gate is not None:
+            self.gate.wait(5)
+        time.sleep(self.delay)
+        if (layer, z, x, y) in self.fail:
+            raise imagery.ImageryError("down")
+        if (layer, z, x, y) in self.missing:
+            return None
+        return b"tile"
+
+
+class TileFilesTest(unittest.TestCase):
+    def setUp(self):
+        self.root = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.root, True)
+        self.done = []
+        self.cv = threading.Condition()
+
+    def ready(self, key, ok):
+        with self.cv:
+            self.done.append((key, ok, time.monotonic()))
+            self.cv.notify_all()
+
+    def wait_for(self, n, timeout=5):
+        with self.cv:
+            self.assertTrue(self.cv.wait_for(lambda: len(self.done) >= n, timeout), self.done)
+
+    def test_concurrent_and_each_said_at_once(self):
+        # 12 tiles taking 0.2 s each: one by one (the old map_tiles) the first was said after all 12, 2.4 s
+        fake = FakeLayers(delay=0.2)
+        tf = maptiles.TileFiles(fake, self.root, self.ready, workers=6)
+        self.addCleanup(tf.close)
+        keys = [("sat", 12, x, 1561) for x in range(1170, 1182)]
+        t0 = time.monotonic()
+        tf.request(keys)
+        self.wait_for(12)
+        first, last = self.done[0][2] - t0, self.done[-1][2] - t0
+        self.assertLess(first, 0.35, f"first tile after {first:.2f} s")
+        self.assertLess(last, 1.0, f"all 12 after {last:.2f} s")
+        self.assertTrue(all(ok for _, ok, _ in self.done))
+        for k in keys:
+            with open(maptiles.tile_path(self.root, *k), "rb") as f:
+                self.assertEqual(f.read(), b"tile")
+        self.assertEqual(tf.pending(), (0, 0))
+        print(f"\nTileFiles: 12 tiles of 0.2 s, first said after {first:.2f} s, all after {last:.2f} s "
+              f"(one by one: 2.4 s, said at the end)")
+
+    def test_newest_request_first_older_dropped(self):
+        gate = threading.Event()
+        fake = FakeLayers(gate=gate)
+        tf = maptiles.TileFiles(fake, self.root, self.ready, workers=1)
+        self.addCleanup(tf.close)
+        old = [("sat", 10, x, 5) for x in range(5)]
+        tf.request(old)
+        for _ in range(100):                    # the first one is being built (waiting on the gate)
+            if fake.calls:
+                break
+            time.sleep(0.01)
+        new = [("map", 11, 3, 3), ("labels", 11, 3, 3), ("sat", 10, 3, 5)]
+        tf.request(new)
+        gate.set()
+        self.wait_for(4)
+        self.assertEqual([k for k, _, _ in self.done], [old[0]] + new)
+        self.assertEqual(fake.calls, [old[0]] + new)     # old 1, 2, 4 never started
+        self.assertEqual(tf.stats["dropped"], 3)
+        self.assertTrue(os.path.exists(maptiles.tile_path(self.root, "labels", 11, 3, 3)))
+        # an empty request cancels what is queued
+        fake.gate = threading.Event()
+        tf.request([("sat", 9, 1, 1), ("sat", 9, 2, 1)])
+        for _ in range(100):                    # 9/1/1 is being built
+            if len(fake.calls) == 5:
+                break
+            time.sleep(0.01)
+        tf.request([])
+        fake.gate.set()
+        self.wait_for(5)
+        time.sleep(0.05)
+        self.assertEqual(len(self.done), 5)
+
+    def test_files_there_are_not_built_again(self):
+        fake = FakeLayers()
+        k = ("map", 8, 1, 2)
+        p = maptiles.tile_path(self.root, *k)
+        os.makedirs(os.path.dirname(p))
+        with open(p, "wb") as f:
+            f.write(b"old")
+        tf = maptiles.TileFiles(fake, self.root, self.ready, workers=2)
+        self.addCleanup(tf.close)
+        tf.request([k])
+        self.wait_for(1)
+        self.assertEqual(self.done[0][:2], (k, True))
+        self.assertEqual(fake.calls, [])
+
+    def test_failed_and_missing_wait_before_asked_again(self):
+        now = [100.0]
+        bad, none = ("sat", 12, 1, 1), ("map", 12, 2, 2)
+        fake = FakeLayers(missing=(none,), fail=(bad,))
+        tf = maptiles.TileFiles(fake, self.root, self.ready, workers=2, retry_s=4.0, clock=lambda: now[0])
+        self.addCleanup(tf.close)
+        tf.request([bad, none])
+        self.wait_for(2)
+        self.assertEqual({(k, ok) for k, ok, _ in self.done}, {(bad, False), (none, False)})
+        tf.request([bad, none])                 # within retry_s: not asked
+        time.sleep(0.1)
+        self.assertEqual(len(fake.calls), 2)
+        now[0] += 5
+        tf.request([bad, none])
+        self.wait_for(4)
+        self.assertEqual(len(fake.calls), 4)
+        self.assertFalse(os.path.exists(maptiles.tile_path(self.root, *bad)))
+
+    def test_callback_errors_do_not_stop_workers(self):
+        def boom(key, ok):
+            raise RuntimeError("Event loop is closed")
+        tf = maptiles.TileFiles(FakeLayers(), self.root, boom, workers=1)
+        self.addCleanup(tf.close)
+        tf.request([("sat", 3, 1, 1), ("sat", 3, 2, 1)])
+        tf.on_ready = self.ready
+        tf.request([("sat", 3, 3, 1)])
+        with self.cv:
+            self.assertTrue(self.cv.wait_for(lambda: any(k == ("sat", 3, 3, 1) for k, _, _ in self.done), 5))
+        self.assertTrue(os.path.exists(maptiles.tile_path(self.root, "sat", 3, 3, 1)))
+
+
+class MapTilesMessageTest(unittest.TestCase):
+    """earthd's map_tiles message: parsed (layers, bad entries), built as files, each said on the event loop."""
+
+    def test_message(self):
+        import types
+        import earthd
+        root = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, root, True)
+        s = types.SimpleNamespace(map_tiles=maptiles.MapTiles(FakeImagery()), map_files=None, root=root)
+
+        async def run():
+            got = []
+            done = asyncio.Event()
+
+            def send(m):
+                got.append(m)
+                if len(got) == 3:
+                    done.set()
+            conn = types.SimpleNamespace(s=s, loop=asyncio.get_running_loop(), send=send)
+            await earthd.Connection.map_tiles(conn, {"tiles": [
+                [12, 1170, 1566], [12, 1170, 1566, "map"], [12, 1170, 1566, "labels"], [12, 1170, 1566, "osm"],
+                [12, 1170, 1566, ["x"]], [40, 0, 0], "junk", [1, 2]]})
+            await asyncio.wait_for(done.wait(), 5)
+            await earthd.Connection.map_tiles(conn, {"tiles": {}})     # an empty Lua table: cancels, no error
+            return got
+        got = asyncio.run(run())
+        s.map_files.close()
+        self.assertTrue(all(m["type"] == "map_tiles_ready" and len(m["tiles"]) == 1 for m in got))
+        self.assertEqual(sorted(m["tiles"][0][4] for m in got), ["labels", "map", "sat"])
+        self.assertTrue(all(m["tiles"][0][3] is True for m in got))
+        for layer in ("sat", "map", "labels"):
+            self.assertTrue(os.path.exists(maptiles.tile_path(os.path.join(root, "maptiles"), layer, 12, 1170, 1566)))
 
 
 @unittest.skipUnless(shutil.which("node"), "node not installed")

@@ -506,6 +506,16 @@ class Imagery:
             self._count(src.name + ":net")
             return out
 
+    def raw(self, src, z, x, y, kind="demand"):
+        """A source tile's bytes as served (disk cache, else the network; in the calling thread), None where the
+        source has none (404). Also for sources outside the chain (the world map's EOX map / labels layers,
+        maptiles.LAYER_SOURCES). Raises ImageryError when the fetch failed."""
+        self._local.kind = kind
+        try:
+            return self._download(src, z, x, y)
+        finally:
+            self._local.kind = "demand"
+
     def _on_disk(self, key):
         src, z, x, y = key
         return os.path.exists(self._paths(src, z, x, y)[0])
