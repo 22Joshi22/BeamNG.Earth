@@ -1377,7 +1377,8 @@ def tile_buildings(frame, x0, y0, x1, y1, layers, elev, water=None, part_layers=
             if len(outer) < 4:
                 continue
             e, n = mapgeom.enu_xy(f, frame, outer)
-            cx, cy = float(np.mean(e[:-1])), float(np.mean(n[:-1]))
+            k = len(e) - 1             # the same reduction as np.mean, without its wrapper (36k calls a tile set)
+            cx, cy = float(e[:-1].sum() / k), float(n[:-1].sum() / k)
             if not (x0 <= cx < x1 and y0 <= cy < y1):
                 continue
             at = {k: (a[k][i] if k in a else None) for k in
@@ -1744,7 +1745,7 @@ def far_tile(frame, tx, ty, md, ground, out_dir, vfs_dir, aid):
     name = f"bldfar_{aid}_{tx}_{ty}.json"
     path = os.path.join(out_dir, name)
     with open(path + ".tmp", "w") as f:
-        json.dump(data, f)
+        f.write(json.dumps(data))       # (json.dump to a file: the pure-Python encoder)
     os.replace(path + ".tmp", path)
     return f"{vfs_dir}/{name}", len(items)
 
