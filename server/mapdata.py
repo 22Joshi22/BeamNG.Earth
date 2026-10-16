@@ -53,6 +53,7 @@ import os
 import sys
 import threading
 import time
+from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -136,6 +137,18 @@ def digest_arrays(arrays):
     return h.hexdigest()
 
 
+MEM_MB = 64         # decoded cell layers kept in memory per process (a road tile reads its ~4 cells, each read by
+                    # its neighbours too: ~8 ms of decompression and a coordinate transform each time, 2026-10-15)
+
+
+def _nbytes(arrays):
+    """Memory of a layer's arrays (its decoded form is about this, plus the local coordinates)."""
+    n = 0
+    for v in arrays.values():
+        n += getattr(v, "nbytes", 0)
+    return int(n * 1.5) + 1024
+
+
 @dataclass
 class CellData:
     key: mapcells.CellKey
@@ -201,6 +214,9 @@ class MapData:
         self._locks = {}
         self._lock = threading.Lock()
         self.pool = ThreadPoolExecutor(LAYER_THREADS, thread_name_prefix="mapdata-layer")
+        self._mem = OrderedDict()           # (cell, layer) -> (decoded layer, provenance, bytes): cell()'s LRU
+        self._mem_bytes = 0
+        self._mem_lock = threading.Lock()
 
     def close(self):
         self.pool.shutdown(wait=False)
@@ -316,7 +332,14 @@ class MapData:
             t0 = time.perf_counter()
             arrays, hit = self.layer_arrays(key, layer, kind)
             return arrays, hit, time.perf_counter() - t0
-        futs = [(layer, self.pool.submit(timed, layer)) for layer in layers]
+        mem = {}
+        with self._mem_lock:
+            for layer in layers:
+                got = self._mem.get((str(key), layer))
+                if got is not None:
+                    self._mem.move_to_end((str(key), layer))
+                    mem[layer] = got
+        futs = [(layer, self.pool.submit(timed, layer)) for layer in layers if layer not in mem]
         results = {}
         err = None
         for layer, fut in futs:             # all finish before an error is raised (no stray fetches)
@@ -327,16 +350,21 @@ class MapData:
         if err is not None:
             raise err
         for layer in layers:                # assembled in the caller's order, whatever finished first
-            arrays, hit, dt = results[layer]
-            arrays = dict(arrays)
-            prov = json.loads(str(arrays.pop("provenance")))
-            if layer in VECTOR_LAYERS:
-                f = mapgeom.Features.from_arrays(layer, arrays, "")
-                cd.layers[layer] = f.localize(frame)
-            elif "missing" in arrays:
-                cd.layers[layer] = None
+            if layer in mem:                # decoded before: shared (cell layers are never changed after loading)
+                cd.layers[layer], prov, _ = mem[layer]
+                dt, hit = 0.0, True
             else:
-                cd.layers[layer] = _raster_from(arrays)
+                arrays, hit, dt = results[layer]
+                arrays = dict(arrays)
+                prov = json.loads(str(arrays.pop("provenance")))
+                if layer in VECTOR_LAYERS:
+                    f = mapgeom.Features.from_arrays(layer, arrays, "")
+                    cd.layers[layer] = f.localize(frame)
+                elif "missing" in arrays:
+                    cd.layers[layer] = None
+                else:
+                    cd.layers[layer] = _raster_from(arrays)
+                self._remember((str(key), layer), (cd.layers[layer], prov, _nbytes(arrays)))
             if prov:
                 pid = prov["id"]
                 if pid in provs:            # roads + connectors: one transportation record
@@ -351,6 +379,18 @@ class MapData:
             cd.stats[layer] = {"s": dt, "hit": hit}
         cd.provenance = [provs[k] for k in sorted(provs)]
         return cd
+
+    def _remember(self, k, entry):
+        """Keep a decoded layer for the next cell() of it (at most MEM_MB in all, least recently used out)."""
+        with self._mem_lock:
+            old = self._mem.pop(k, None)
+            if old is not None:
+                self._mem_bytes -= old[2]
+            self._mem[k] = entry
+            self._mem_bytes += entry[2]
+            while self._mem_bytes > MEM_MB * 1e6 and len(self._mem) > 1:
+                _, (_, _, n) = self._mem.popitem(last=False)
+                self._mem_bytes -= n
 
     def cell_at(self, lat, lon, layers=LAYERS, kind="demand"):
         return self.cell(mapcells.cell_of(lat, lon), layers, kind)
