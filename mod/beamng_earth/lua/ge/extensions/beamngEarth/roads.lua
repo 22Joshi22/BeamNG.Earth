@@ -122,11 +122,79 @@ end
 
 local function tileKey(aid, k) return tostring(aid) .. ':' .. tostring(k) end
 
+-- Pooled shape files (server/matslots.py, 2026-10-16: the engine's frame cost grows with every distinct shape file it
+-- ever loaded): roads_tile / bldfar_tile carry `slots` {what = {path, serial}}, shape files the server re-uses for
+-- later tiles once we report [slot, serial] gone (core.lua pose.slotsGone). A slot goes when its tile is dropped AND
+-- its last object is deleted (a collider deleted and made again while the tile lives keeps it).
+local session = nil        -- the server session the slots belong to (setSession)
+local objSlot = {}         -- object id -> slot number of the pooled file it loaded
+local slotLive = {}        -- slot number -> objects alive with it
+local slotDropped = {}     -- slot number -> { serial, session } of a dropped tile's slot, reported at its last delete
+local slotsGone = {}       -- { n, serial, session } to report
+local function slotOf(path) return tonumber(type(path) == 'string' and path:match('/slot_(%d+)%.cdae$') or nil) end
+
+function M.setSession(s) session = s end
+
+-- An object with a pooled shape was made / is deleted.
+local function slotMade(id, path)
+  local n = slotOf(path)
+  if not n then return end
+  objSlot[id] = n
+  slotLive[n] = (slotLive[n] or 0) + 1
+end
+local function slotObjGone(id)
+  local n = objSlot[id]
+  if not n then return end
+  objSlot[id] = nil
+  slotLive[n] = (slotLive[n] or 1) - 1
+  if slotLive[n] <= 0 then
+    slotLive[n] = nil
+    local d = slotDropped[n]
+    if d then slotDropped[n] = nil; slotsGone[#slotsGone + 1] = { n, d[1], d[2] } end
+  end
+end
+-- A tile's slot { n, serial, session } is let go: at once if no object has it, else at its last delete.
+local function slotDrop(sl)
+  if not sl then return end
+  if (slotLive[sl[1]] or 0) > 0 then slotDropped[sl[1]] = { sl[2], sl[3] }
+  else slotsGone[#slotsGone + 1] = { sl[1], sl[2], sl[3] } end
+end
+-- The slots of msg.slots[what] as { n, serial, session } (nil: not pooled).
+local function msgSlot(msg, what)
+  local e = type(msg.slots) == 'table' and msg.slots[what]
+  if type(e) ~= 'table' then return nil end
+  local n, serial = slotOf(e[1]), tonumber(e[2])
+  if not n or not serial then return nil end
+  return { n, serial, session, path = e[1] }
+end
+
+-- The [slot, serial] pairs gone since the last call, for server session `sess`.
+function M.takeSlotsGone(sess)
+  if #slotsGone == 0 then return {} end
+  local out = {}
+  for _, g in ipairs(slotsGone) do if g[3] ~= nil and g[3] == sess then out[#out + 1] = { g[1], g[2] } end end
+  slotsGone = {}
+  return out
+end
+
+-- Every [slot, serial] held for session `sess` (hello after a reconnect): live tiles' slots and dropped ones whose
+-- objects are not deleted yet.
+function M.slotsHeld(sess)
+  local out = {}
+  for _, t in pairs(tiles) do
+    for _, sl in pairs(t.slots or {}) do if sl[3] == sess then out[#out + 1] = { sl[1], sl[2] } end end
+  end
+  for _, f in pairs(far) do if f.slot and f.slot[3] == sess then out[#out + 1] = { f.slot[1], f.slot[2] } end end
+  for n, d in pairs(slotDropped) do if d[2] == sess then out[#out + 1] = { n, d[1] } end end
+  return out
+end
+
 local function now() return os.clock() * 1000 end
 
 local function dropTile(key)
   local t = tiles[key]
   if not t then return end
+  for _, sl in pairs(t.slots or {}) do slotDrop(sl) end
   for _, id in ipairs(t.objs) do deleteQ[#deleteQ + 1] = id end
   if t.walk then deleteQ[#deleteQ + 1] = t.walk end
   if t.road then deleteQ[#deleteQ + 1] = t.road end
@@ -151,6 +219,7 @@ local function switchAnchor(aid)
   for key, f in pairs(far) do
     if f.anchor ~= aid then
       if f.id then deleteQ[#deleteQ + 1] = f.id end
+      slotDrop(f.slot)
       far[key] = nil
     end
   end
@@ -254,9 +323,22 @@ function M.onTile(msg, currentAnchor)
     lastError = 'unreadable road tile ' .. tostring(msg.path)
     return false
   end
+  -- pooled shape files: the server's slot paths instead of the tile's own files
+  local slots = {}
+  for _, what in ipairs({ 'road', 'deck', 'walk', 'walkcol', 'bld', 'bld2', 'bld3', 'bld4', 'bldcol', 'wire' }) do
+    local sl = msgSlot(msg, what)
+    if sl then
+      if type(data[what]) == 'table' and type(data[what].pos) == 'table' then
+        data[what] = { shape = sl.path, pos = data[what].pos }
+        slots[what] = sl
+      else
+        slotDrop(sl)                -- nothing will load it
+      end
+    end
+  end
   local road = type(data.road) == 'table' and data.road.shape and type(data.road.pos) == 'table' and data.road
   tiles[key] = { anchor = msg.anchorId, objs = {}, queued = road and 0 or #data.chunks,
-    colliders = type(data.colliders) == 'table' and data.colliders or {} }
+    colliders = type(data.colliders) == 'table' and data.colliders or {}, slots = slots }
   sinceChange = stopwatch.new()
   if road then                -- the tile's road mesh replaces its DecalRoads (server/roadmesh.py)
     walkQ[#walkQ + 1] = { key = key, walk = road, what = 'road' }
@@ -304,10 +386,14 @@ function M.onFarTile(msg, currentAnchor)
   local key = tileKey(msg.anchorId, msg.key)
   local old = far[key]
   if old and old.id then deleteQ[#deleteQ + 1] = old.id end
+  if old then slotDrop(old.slot) end
   far[key] = nil
+  local sl = msgSlot(msg, 'shape')
   if data.shape and type(data.pos) == 'table' then
-    far[key] = { anchor = msg.anchorId, shape = data.shape, pos = data.pos }
+    far[key] = { anchor = msg.anchorId, shape = sl and sl.path or data.shape, pos = data.pos, slot = sl }
     farQ[#farQ + 1] = key
+  else
+    slotDrop(sl)
   end
   return true
 end
@@ -317,6 +403,7 @@ function M.onFarDrop(msg)
   local key = tileKey(msg.anchorId, msg.key)
   local f = far[key]
   if f and f.id then deleteQ[#deleteQ + 1] = f.id end
+  if f then slotDrop(f.slot) end
   far[key] = nil
 end
 
@@ -339,7 +426,7 @@ local function updateFar(gov)
       local t0 = now()
       loadMaterials()
       local ok, id = pcall(createWalk, { shape = f.shape, pos = f.pos }, false)
-      if ok then f.id = id else lastError = tostring(id) end
+      if ok then f.id = id; slotMade(id, f.shape) else lastError = tostring(id) end
       gov:charge('roadWalk', now() - t0)
     end
   end
@@ -356,13 +443,15 @@ function M.update(gov, currentAnchor)
   if currentAnchor then switchAnchor(currentAnchor) end
   while #deleteQ > 0 and gov:try('roadDelete') do
     local t0 = now()
-    local o = scenetree.findObjectById(table.remove(deleteQ))
+    local did = table.remove(deleteQ)
+    local o = scenetree.findObjectById(did)
     if o then
       if isCollider(o) then
         if M.nearPlayer(o:getPosition(), M.DELETE_NEAR_M) then collisionDirty = true else deletesDirty = true end
       end
       o:delete()
     end
+    slotObjGone(did)
     gov:charge('roadDelete', now() - t0)
     sinceChange = stopwatch.new()
   end
@@ -394,6 +483,7 @@ function M.update(gov, currentAnchor)
       local isRoad = q.what == 'road' or q.what == 'wire' or q.renderOnly   -- render-only meshes
       -- the buildings' and sidewalks' lean meshes are a collision detail (server cdae collision_only): never drawn
       local ok, id = pcall(createWalk, q.walk, (q.what == 'bldcol' or q.what == 'walkcol') and 'Collision Mesh' or not isRoad)
+      if ok then slotMade(id, q.walk.shape) end
       if ok then
         if not isRoad then t.cq = t.cq or {}; t.cq[q.what] = q end
         if isRoad then t[q.what] = id else t[q.what] = id; collisionDirty = true; newColliders[#newColliders + 1] = { id, q } end
@@ -492,7 +582,10 @@ end
 -- Every road removed now (setting off, mod unload).
 function M.clear()
   for key in pairs(tiles) do dropTile(key) end
-  for _, f in pairs(far) do if f.id then deleteQ[#deleteQ + 1] = f.id end end
+  for _, f in pairs(far) do
+    if f.id then deleteQ[#deleteQ + 1] = f.id end
+    slotDrop(f.slot)
+  end
   far, farQ = {}, {}
   createQ, held, newColliders = {}, {}, {}
   for _, id in ipairs(deleteQ) do
@@ -501,6 +594,7 @@ function M.clear()
       if isCollider(o) then collisionDirty = true end
       o:delete()
     end
+    slotObjGone(id)
   end
   deleteQ = {}
   walkQ, parked = {}, {}
@@ -509,6 +603,11 @@ end
 
 -- The level ended: its objects are gone with it.
 function M.reset()
+  -- (the level took the objects: every slot goes)
+  for _, t in pairs(tiles) do for _, sl in pairs(t.slots or {}) do slotsGone[#slotsGone + 1] = { sl[1], sl[2], sl[3] } end end
+  for _, f in pairs(far) do if f.slot then slotsGone[#slotsGone + 1] = { f.slot[1], f.slot[2], f.slot[3] } end end
+  for n, d in pairs(slotDropped) do slotsGone[#slotsGone + 1] = { n, d[1], d[2] } end
+  objSlot, slotLive, slotDropped = {}, {}, {}
   tiles, createQ, deleteQ, walkQ, anchorId, loadedMaterials = {}, {}, {}, {}, nil, false
   far, farQ = {}, {}
   collisionDirty, deletesDirty = false, false

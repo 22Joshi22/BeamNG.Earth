@@ -93,6 +93,7 @@ local satmat = require('beamngEarth/satmat')
 local governor = require('beamngEarth/governor')
 
 local floor, min, max, abs, huge, ln = math.floor, math.min, math.max, math.abs, math.huge, math.log
+local sqrt, deg, rad, atan, tan = math.sqrt, math.deg, math.rad, math.atan, math.tan
 
 M.MATERIAL = 'bngEarthFar_v3' -- the material name inside the server's shapes (design 6.2)
 M.MATERIALS_FILE = '/levels/beamng_earth/art/shapes/beamngEarth/main.materials.json'
@@ -104,6 +105,9 @@ M.DELETE_PRESSURE = 64  -- deletes wait for the import queue unless this many ob
 -- revived when the server sends the same tile (key and shape file) again instead of importing it again.
 -- An out-and-back flight imported 3-4x as many tiles per second on the way back as on the way out (the
 -- server answered from its cache; the import is the mod's cost), at ~13 fps less. 0: delete at once.
+M.VIEW_PENALTY = 3      -- import order: outside the camera's view cone a tile counts this many times as far
+M.VIEW_MARGIN_DEG = 15  -- the cone: half the horizontal field of view plus this ...
+M.VIEW_MAX_DEG = 80     -- ... at most this far off the camera's heading
 M.SPARE_MAX = 400
 M.SPARE_S = 120
 M.MAX_DT = 0.1          -- s; longest step of the transition clock per frame
@@ -332,6 +336,14 @@ local function revive(inst)
   counters.revived = counters.revived + 1
   if watcher then watcher.onAdd(inst) end
   return true
+end
+
+-- A set's instances in arrival order (seq): deletions in a deterministic order, not pairs()' hash order.
+local function bySeq(set)
+  local t = {}
+  for _, inst in pairs(set) do t[#t + 1] = inst end
+  table.sort(t, function(a, b) return a.seq < b.seq end)
+  return t
 end
 
 local freeSlot -- (path, id): the object still holding a pooled shape path let go of it (defined with the spares)
@@ -986,7 +998,7 @@ switchAnchor = function(newAnchorId, keepOld, blk, newSession)
       end
     end
     local dropped = false
-    for _, inst in pairs(pending) do
+    for _, inst in ipairs(bySeq(pending)) do
       if not inst.prefetch then dropped = true end
       doom(inst, true)
     end
@@ -997,7 +1009,7 @@ switchAnchor = function(newAnchorId, keepOld, blk, newSession)
     end
   else
     for _, set in ipairs({ live, old, pending }) do
-      for _, inst in pairs(set) do doom(inst, true) end
+      for _, inst in ipairs(bySeq(set)) do doom(inst, true) end
     end
     old, oldCount, lossy, oldFrames = {}, 0, {}, {}
   end
@@ -1035,6 +1047,17 @@ local function peekImport(cam)
   end
   if mH <= mT then
     if not meshLayout() or not cam then return mainQ[mH], true end
+    -- nearest the camera first; outside its view cone a tile counts VIEW_PENALTY times as far (squared here), so
+    -- what is on screen fills first (server/farfield.py view_distance, the same cone)
+    local fx, fy = cam.fx or 0, cam.fy or 0
+    local fn = sqrt(fx * fx + fy * fy)
+    local cosmax
+    if fn > 0.2 then
+      fx, fy = fx / fn, fy / fn
+      local half = deg(atan(tan(rad(cam.fovDeg or 60) / 2) * 16 / 9)) + M.VIEW_MARGIN_DEG
+      cosmax = math.cos(rad(min(half, M.VIEW_MAX_DEG)))
+    end
+    local pen2 = M.VIEW_PENALTY * M.VIEW_PENALTY
     local best, bd = nil, huge
     for i = mH, mT do
       local inst = mainQ[i]
@@ -1042,6 +1065,11 @@ local function peekImport(cam)
         local dx = max(inst.x0 - cam.x, 0, cam.x - inst.x1)
         local dy = max(inst.y0 - cam.y, 0, cam.y - inst.y1)
         local d = dx * dx + dy * dy
+        if cosmax and d > 0 then
+          local cx, cy = (inst.x0 + inst.x1) / 2 - cam.x, (inst.y0 + inst.y1) / 2 - cam.y
+          local r = sqrt(cx * cx + cy * cy)
+          if r > inst.x1 - inst.x0 and (cx * fx + cy * fy) / r < cosmax then d = d * pen2 end
+        end
         if d < bd then best, bd = inst, d end
       end
     end

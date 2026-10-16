@@ -66,6 +66,7 @@ from PIL import Image
 import cdae
 import dae
 import dem as demmod
+import fast
 import heightmap
 import imagery
 
@@ -306,9 +307,43 @@ def overlaps(a, b):
     return a[0] < b[2] and b[0] < a[2] and a[1] < b[3] and b[1] < a[3]
 
 
+class View:
+    """The camera for screen-space LOD (select's `view`, 2026-10-16): position (cx, cy) in the anchor frame and height
+    above the ground under the player (dz), pixels per radian of the screen (ppr = height px / (2 tan(vfov / 2))),
+    the pop size allowed (tau px) and err(node) -> the built tile's geometric error (m: how far its surface moves
+    when it splits into its children, farfield.build_tile) or None when not known."""
+
+    def __init__(self, cx, cy, dz, ppr, err, tau=None, reach=None, h=None, cells=64, cap=None):
+        self.cx, self.cy, self.dz, self.ppr, self.err, self.cells = cx, cy, max(0.0, dz), ppr, err, cells
+        self.cap = SSE_SPACING_CAP if cap is None else cap
+        self.tau = SSE_TAU_PX if tau is None else tau
+        self.reach = SSE_REACH if reach is None else reach
+        self.h = SSE_HYSTERESIS if h is None else h
+
+    def pixels(self, node, x0, y0, x1, y1):
+        """The node's split pop on screen (px), or None (error not known). On steep ground the vertical error is
+        mostly a sideways shift of about one grid spacing (a cliff's 300 m "error" is its face moving a few
+        metres), so it counts at most SSE_SPACING_CAP spacings."""
+        e = self.err(node)
+        if e is None:
+            return None
+        e = min(e, self.cap * (x1 - x0) / self.cells)
+        dxy = math.hypot(max(x0 - self.cx, 0.0, self.cx - x1), max(y0 - self.cy, 0.0, self.cy - y1))
+        return e * self.ppr / max(math.hypot(dxy, self.dz), 1.0)
+
+
+# Screen-space LOD (View): a node also splits while its tile's split would pop more than SSE_TAU_PX on screen, within
+# SSE_REACH times its distance-rule switch distance (at most ~2 levels finer than the distance rule: a cliff 30 km
+# away must not pull in thousands of tiles); a split node merges back once the pop is under SSE_TAU_PX / (1 + h).
+SSE_TAU_PX = 0.0       # off by default: in Yosemite 4 px cost 17 % fps and +36 % tiles for 25 % smaller pops (2026-10-16)
+SSE_REACH = 4.0
+SSE_HYSTERESIS = 0.5
+SSE_SPACING_CAP = 2.0
+
+
 def select(px, py, forced=(), prev_refined=frozenset(), kfun=None, h=HYSTERESIS,
            radius=RADIUS, max_level=MAX_LEVEL, hold=frozenset(), min_level=0, radii=None, layout=V131,
-           disc=False, horizon=None, forced_level=0):
+           disc=False, horizon=None, forced_level=0, view=None):
     """Desired tiles for a player at (px, py).
 
     forced: bboxes (terrain blocks) under which everything is refined to `forced_level` (terrain mode:
@@ -321,6 +356,8 @@ def select(px, py, forced=(), prev_refined=frozenset(), kfun=None, h=HYSTERESIS,
     disc (horizon mode): keep the nodes whose nearest point is closer than `radius` (a disc, not
     the square). horizon: a Horizon; beyond HORIZON_MIN it drops every node past the line-of-sight
     horizon, with its subtree (the server passes it with disc=True and max_level HORIZON_MAX_LEVEL).
+    view: a View (screen-space LOD): nodes whose known geometric error would pop more than view.tau px on
+    screen split too (within view.reach x the switch distance), distances from the camera.
     Returns ({key: Tile}, set of refined nodes)."""
     kfun = kfun or layout.k
     radii = NEAR_RADII[layout.cells] if radii is None else radii
@@ -352,6 +389,10 @@ def select(px, py, forced=(), prev_refined=frozenset(), kfun=None, h=HYSTERESIS,
                     d = math.hypot(max(x0 - px, 0.0, px - x1), max(y0 - py, 0.0, py - y1))
                 lim = switch_distance(lvl, kfun, radii, min_level)
                 split = d < lim or (node in prev_refined and d < (1.0 + h) * lim)
+                if not split and view is not None and d < view.reach * lim:
+                    px_ = view.pixels(node, x0, y0, x1, y1)
+                    if px_ is not None:
+                        split = px_ > view.tau or (node in prev_refined and px_ > view.tau / (1.0 + view.h))
             if split:
                 refined.add(node)
                 i2, j2 = 2 * i, 2 * j
@@ -360,6 +401,53 @@ def select(px, py, forced=(), prev_refined=frozenset(), kfun=None, h=HYSTERESIS,
         t = Tile(lvl, i, j)
         out[t.key] = t
     return out, refined
+
+
+# Load order (2026-10-16): tiles outside the camera's view cone count as VIEW_PENALTY times as far, so what is on
+# screen fills first after a teleport; the cone is half the horizontal field of view plus VIEW_MARGIN_DEG (at most
+# VIEW_MAX_DEG off the camera's heading).
+VIEW_PENALTY = float(os.environ.get("BNGE_VIEW_PENALTY", "3.0"))     # (env: experiments)
+VIEW_MARGIN_DEG = 15.0
+VIEW_MAX_DEG = 80.0
+ASPECT = 16 / 9
+
+
+def view_cone(cam):
+    """(x, y, unit forward fx, fy, cos of the cone's half angle) from a pose.cam dict, or None (no usable heading)."""
+    try:
+        x, y, fx, fy = float(cam["x"]), float(cam["y"]), float(cam["fx"]), float(cam["fy"])
+        fov = float(cam.get("fovDeg") or 60)
+    except (KeyError, TypeError, ValueError):
+        return None
+    n = math.hypot(fx, fy)
+    if not (n > 0.2 and all(map(math.isfinite, (x, y, fx, fy, fov)))):
+        return None                     # looking straight down / up: every direction counts
+    half = math.degrees(math.atan(math.tan(math.radians(fov) / 2) * ASPECT)) + VIEW_MARGIN_DEG
+    return x, y, fx / n, fy / n, math.cos(math.radians(min(half, VIEW_MAX_DEG)))
+
+
+def view_distance(t, cone, x, y):
+    """Distance of tile t from (x, y) for the load order: VIEW_PENALTY times as far outside the view cone."""
+    d = t.distance(x, y)
+    if cone is None or d <= 0:
+        return d
+    cx, cy, fx, fy, cosmax = cone
+    x0, y0, x1, y1 = t.bbox
+    dx, dy = (x0 + x1) / 2 - cx, (y0 + y1) / 2 - cy
+    r = math.hypot(dx, dy)
+    if r <= (x1 - x0):                  # around the camera: always in view
+        return d
+    return d if (dx * fx + dy * fy) / r >= cosmax else d * VIEW_PENALTY
+
+
+def view_distances(tiles, cone, x, y):
+    """view_distance of every tile (a list), in Rust (earthfast.view_distances) when built."""
+    if cone is None:                    # no camera: exactly the distances (and tie order) of before
+        return [t.distance(x, y) for t in tiles]
+    if fast._ef is not None and hasattr(fast._ef, "view_distances") and tiles:
+        bb = np.array([t.bbox for t in tiles], np.float64)
+        return fast._ef.view_distances(bb, float(x), float(y), list(cone) if cone else [], float(VIEW_PENALTY)).tolist()
+    return [view_distance(t, cone, x, y) for t in tiles]
 
 
 def nearest_first(tiles, x, y):

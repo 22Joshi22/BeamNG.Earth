@@ -880,6 +880,19 @@ three days of testing: dem 741 MB / 7.5k files, imagery 1.4 GB / 35k, deshadow 7
   it still holds in `hello.slotsHeld` after a reconnect, and the server hands a slot to another tile only when no
   connection holds it. The mod keeps pooled Materials (satmat.lua) and deletes a spare or doomed object still
   holding a pooled path before loading it again (farfield.lua freeSlot).
+  Load order and teleports (2026-10-16): the server's build queue and the mod's imports take the far tiles
+  nearest the camera first, a tile outside the camera's view cone (half the horizontal field of view + 15 deg)
+  counting 3x as far (farfield.view_distance; earthfast.view_distances; farfield.lua peekImport), so what is
+  on screen fills first. The anchor's first terrain block loads its elevation tiles through an urgent lane
+  (dem.Dem.urgent: its own fetch threads, ahead of the shared queue the far field, road plans and ground-ahead
+  fill): on a first visit the car waited 38-54 s, then 18 s. Screen-space LOD (farfield.View, --lod-px, pose
+  cam.h): tiles also split while their split would pop more than N px on screen; off by default (Yosemite: 4 px
+  cost 17 % fps and +36 % tiles for ~25 % smaller pops; cliffs' "errors" are mostly sideways shifts).
+  A teleport (prepare_anchor > 20 km from the player) pauses the old place's work on that connection (its far
+  tiles, road / tree / building tiles, prefetch, ground-ahead) until the new anchor commits, fails or 120 s pass:
+  right after a level load the first block waited ~30 s for the CPU, then 7 s. Road, building and far-building tile
+  meshes are pooled shape files too (`roads_tile` / `bldfar_tile` `slots` {what: [path, serial]}; roads.lua reports
+  a slot once its tile is dropped and its last object deleted).
 - **Tests**: `server/tests/test_restart.py` (the fault-injection drive: a 64-cell / 512² session
   killed mid-drive and restarted in the same folder; 4127 coverage checks within 512 m without a hole,
   no vanished file, the guard warned and held the car 15 m inside the edge during the 25 s gap and

@@ -141,6 +141,23 @@ class ServerTest(unittest.TestCase):
         earthd.Connection.slots_gone(c, [[n, 5]])
         self.assertEqual(self.s.matslots.stats(), {"made": 1, "owned": 0, "free": 1, "waiting": 0})
 
+    def test_road_shapes_pooled_and_held(self):
+        c = Conn()
+        c.s = self.s
+        self.s.connections.add(c)
+        with open(os.path.join(self.s.out_dir, "road_1_0_0.cdae"), "wb") as fh:
+            fh.write(b"road")
+        slots = self.s.pool_shapes(c, {"road": "road_1_0_0.cdae", "deck": "deck_1_0_0.cdae"})   # no deck file
+        self.assertEqual(list(slots), ["road"])
+        path, serial = slots["road"]
+        n = int(path.rsplit("_", 1)[1].split(".")[0])
+        with open(os.path.join(self.s.out_dir, f"slot_{n:05d}.cdae"), "rb") as fh:
+            self.assertEqual(fh.read(), b"road")
+        self.assertEqual(c.slot_holds, {n: serial})
+        self.assertEqual(self.s.matslots.stats()["waiting"], 1)      # nobody owns it; the game holds it
+        earthd.Connection.slots_gone(c, [[n, serial]])
+        self.assertEqual(self.s.matslots.stats()["free"], 1)
+
     def test_eviction_and_prune_free_names(self):
         ck, name = self.add("0_0_0")
         self.s._evict_tile(ck)

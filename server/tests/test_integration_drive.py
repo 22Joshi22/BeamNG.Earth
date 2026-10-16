@@ -625,7 +625,13 @@ class DriveBase(unittest.TestCase):
                     events.append((clock["sim"], t, m["add"] + m["remove"]))
                     if (m["add"] and m["remove"] and cells(m["add"]) != cells(m["remove"])
                             and not radius_edge_group(m["add"], m["remove"], player["p"][:2])):
-                        stats.setdefault("bad_swaps", []).append(m)
+                        # adds reaching past the removes are fine over ground no tile of this anchor shows (a
+                        # previous anchor's, after a rebase: the mod drops those once covered); a hole (removes past
+                        # the adds) or an overlap with a tile of this anchor that stays is a bug
+                        ca, cr = cells(m["add"]), cells(m["remove"])
+                        stays = cells([k for k in far.live if k not in m["remove"]]) if aid == far.anchor_id else set()
+                        if (cr - ca) or ((ca - cr) & stays):
+                            stats.setdefault("bad_swaps", []).append(m)
                 getattr(far, {"far_tile": "on_tile", "far_swap": "on_swap", "far_remove": "on_remove",
                               "far_done": "on_done"}[t])(m)
                 if t == "far_done" and aid == st["anchor"]:

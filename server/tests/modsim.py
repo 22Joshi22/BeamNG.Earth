@@ -1062,7 +1062,7 @@ class FarField:
                 if seq < due and not inst.doomed:
                     keep.append((inst, 0, okey or (self.session, self.anchor_id, inst.key)))
             dropped = False
-            for inst in self.pending.values():
+            for inst in sorted(self.pending.values(), key=lambda i: i.seq):     # farfield.lua bySeq
                 if not inst.prefetch:
                     dropped = True
                 self.doom(inst)
@@ -1072,7 +1072,7 @@ class FarField:
                 self.old[(self.session, self.anchor_id, key)] = inst
         else:
             for d in (self.live, self.old, self.pending):
-                for inst in d.values():
+                for inst in sorted(d.values(), key=lambda i: i.seq):
                     self.doom(inst)
             self.old, self.lossy = {}, set()
         self.pending, self.live = {}, {}
@@ -1102,12 +1102,27 @@ class FarField:
         if q:
             if self.near_visual != "mesh" or cam is None:
                 return q[0]
+            # outside the camera's view cone a tile counts VIEW_PENALTY times as far (squared)
+            fx, fy = cam.get("fx") or 0.0, cam.get("fy") or 0.0
+            fn = math.sqrt(fx * fx + fy * fy)
+            cosmax = None
+            if fn > 0.2:
+                fx, fy = fx / fn, fy / fn
+                half = math.degrees(math.atan(math.tan(math.radians(cam.get("fovDeg") or 60) / 2) * 16 / 9)) \
+                    + FAR["VIEW_MARGIN_DEG"]
+                cosmax = math.cos(math.radians(min(half, FAR["VIEW_MAX_DEG"])))
+            pen2 = FAR["VIEW_PENALTY"] * FAR["VIEW_PENALTY"]
             best, bd = None, math.inf
             for inst in q:
                 if self.pending.get(inst.key) is inst and inst.queued:
                     dx = max(inst.x0 - cam["x"], 0.0, cam["x"] - inst.x1)
                     dy = max(inst.y0 - cam["y"], 0.0, cam["y"] - inst.y1)
                     d = dx * dx + dy * dy
+                    if cosmax is not None and d > 0:
+                        cx, cy = (inst.x0 + inst.x1) / 2 - cam["x"], (inst.y0 + inst.y1) / 2 - cam["y"]
+                        r = math.sqrt(cx * cx + cy * cy)
+                        if r > inst.x1 - inst.x0 and (cx * fx + cy * fy) / r < cosmax:
+                            d = d * pen2
                     if d < bd:
                         best, bd = inst, d
             return best
