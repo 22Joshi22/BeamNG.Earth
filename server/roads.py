@@ -396,7 +396,17 @@ def dual_carriageways(feats, specs, left_hand=False):
 def road_specs(feats, urban_fn=None, widths=None, left_hand=False):
     """Per feature: None (left out) or (width m, surface kind). urban_fn(lat, lon) -> bool array (built-up
     land cover), None = rural everywhere; called once for every candidate's points (its cost is per
-    call: 2026-10-11, one call per road made 4.4 of a physics block's 6 s). Pure given urban_fn."""
+    call: 2026-10-11, one call per road made 4.4 of a physics block's 6 s). Pure given urban_fn.
+    Remembered on feats (mapdata keeps decoded cells in memory: every tile of a cell asked again)."""
+    memo = feats.__dict__.setdefault("_road_specs", {})
+    k = (urban_fn, widths, bool(left_hand))     # a bound method equals another of the same object and function
+    got = memo.get(k)
+    if got is None:
+        got = memo[k] = _road_specs(feats, urban_fn, widths, left_hand)
+    return list(got)
+
+
+def _road_specs(feats, urban_fn, widths, left_hand):
     out = []
     rules = feats.rules
     ask = []                                    # (index in out, cls, kind, rule_w, coordinate range)

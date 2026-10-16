@@ -25,6 +25,7 @@ def main():
     ap.add_argument("--cache-dir", default=os.path.expanduser("~/.cache/beamng-earth"))
     ap.add_argument("--out", default=None, help="write the full stats here too")
     ap.add_argument("--top", type=int, default=35)
+    ap.add_argument("--no-profile", action="store_true", help="times only (cProfile's overhead off)")
     ap.add_argument("--dump", default=None, help="save the raw profile here (pstats, e.g. for print_callers)")
     a = ap.parse_args()
     lat, lon = (float(v) for v in a.at.split(","))
@@ -38,11 +39,14 @@ def main():
     os.makedirs(out_dir, exist_ok=True)
     zoom = demmod.zoom_for(lat, 2.5)
     times = {}
+    cpu = {}
     prof = cProfile.Profile()
 
     def timed(name, fn, *args, **kw):
         t0 = time.perf_counter()
-        prof.enable()
+        c0 = time.process_time()
+        if not a.no_profile:
+            prof.enable()
         try:
             fn(*args, **kw)
         except Exception as e:      # a missing cell offline: reported, the rest goes on
@@ -50,6 +54,7 @@ def main():
         finally:
             prof.disable()
         times.setdefault(name.split("(")[0], []).append(time.perf_counter() - t0)
+        cpu.setdefault(name.split("(")[0], []).append(time.process_time() - c0)
 
     # road tiles (with buildings, sidewalks, furniture)
     n = a.tiles
@@ -70,7 +75,11 @@ def main():
 
     print("job wall times:")
     for k, v in times.items():
-        print(f"  {k}: {len(v)} x, avg {sum(v) / len(v):.2f} s, total {sum(v):.1f} s")
+        c = cpu[k]
+        print(f"  {k}: {len(v)} x, avg {sum(v) / len(v):.2f} s, total {sum(v):.1f} s; CPU (all threads) avg "
+              f"{sum(c) / len(c):.2f} s, total {sum(c):.1f} s")
+    if a.no_profile:
+        return
     st = pstats.Stats(prof)
     print("\nby own time (tottime):")
     st.sort_stats("tottime").print_stats(a.top)
