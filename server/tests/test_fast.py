@@ -501,6 +501,21 @@ class FastTest(unittest.TestCase):
         np.testing.assert_array_equal(out[0][0], out[1][0])
         np.testing.assert_array_equal(out[0][1], out[1][1])
 
+    def test_horizon_tan_matches_python(self):
+        import deshadow
+        rng = np.random.default_rng(59)
+        n, pad = 96, 40
+        hpad = (np.cumsum(np.cumsum(rng.normal(0, 2, (n + 2 * pad, n + 2 * pad)), 0), 1) / 10).astype(np.float32)
+        for az, dmax in ((37.0, None), (190.0, 300.0), (281.5, None)):
+            got = deshadow.horizon_tan(hpad, 10.0, pad, n, az, dmax=dmax)
+            saved = fast._ef
+            fast._ef = None
+            try:
+                want = deshadow.horizon_tan(hpad, 10.0, pad, n, az, dmax=dmax)
+            finally:
+                fast._ef = saved
+            np.testing.assert_array_equal(got, want, err_msg=f"az {az}")
+
     def test_vmedian_matches_python(self):
         import colormatch
         rng = np.random.default_rng(41)

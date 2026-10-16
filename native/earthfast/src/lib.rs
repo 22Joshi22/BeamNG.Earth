@@ -1860,6 +1860,45 @@ fn road_corridors<'py>(py: Python<'py>, mut mask: numpy::PyReadwriteArray2<'py, 
     });
 }
 
+/// deshadow.horizon_tan's march for a batch of steps: best (n, n) float32 = max(best, (h(step) - h0) / d), h(step) the
+/// bilinear sample of hpad (float32) at (pad + iy + fy, pad + ix + fx) as numpy's slices compute it (weights cast to
+/// float32 as numpy does with a Python float). steps (k, 5): [iy, ix, fy, fx, d].
+#[pyfunction]
+fn horizon_steps<'py>(py: Python<'py>, hpad: PyReadonlyArray2<'py, f32>, mut best: numpy::PyReadwriteArray2<'py, f32>,
+                      pad: i64, steps: PyReadonlyArray2<'py, f64>) {
+    let view = hpad.as_array();
+    let w = view.shape()[1];
+    let hp = hpad.as_slice().expect("contiguous");
+    let st = steps.as_array();
+    let n = best.as_array().shape()[0];
+    let b = best.as_slice_mut().expect("contiguous");
+    let p = pad as usize;
+    py.allow_threads(|| {
+        for k in 0..st.shape()[0] {
+            let (iy, ix, fy, fx, d) = (st[[k, 0]] as i64, st[[k, 1]] as i64, st[[k, 2]], st[[k, 3]], st[[k, 4]]);
+            let (wx0, wx1, wy0, wy1) = ((1.0 - fx) as f32, fx as f32, (1.0 - fy) as f32, fy as f32);
+            let df = d as f32;
+            let r0 = (pad + iy) as usize;
+            let c0 = (pad + ix) as usize;
+            for r in 0..n {
+                let top_row = &hp[(r0 + r) * w + c0..(r0 + r) * w + c0 + n + 1];
+                let bot_row = &hp[(r0 + r + 1) * w + c0..(r0 + r + 1) * w + c0 + n + 1];
+                let h0_row = &hp[(p + r) * w + p..(p + r) * w + p + n];
+                let b_row = &mut b[r * n..(r + 1) * n];
+                for c in 0..n {
+                    let top = top_row[c] * wx0 + top_row[c + 1] * wx1;
+                    let bot = bot_row[c] * wx0 + bot_row[c + 1] * wx1;
+                    let hs = top * wy0 + bot * wy1;
+                    let v = (hs - h0_row[c]) / df;
+                    if v > b_row[c] {
+                        b_row[c] = v;
+                    }
+                }
+            }
+        }
+    });
+}
+
 fn bc1_565(c: [f64; 3]) -> u16 {
     let r = (c[0].clamp(0.0, 255.0) * 31.0 / 255.0).round() as u16;
     let g = (c[1].clamp(0.0, 255.0) * 63.0 / 255.0).round() as u16;
@@ -2141,6 +2180,7 @@ fn earthfast(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(seam_pass, m)?)?;
     m.add_function(wrap_pyfunction!(view_distances, m)?)?;
     m.add_function(wrap_pyfunction!(road_corridors, m)?)?;
+    m.add_function(wrap_pyfunction!(horizon_steps, m)?)?;
     m.add("VERSION", 24)?;
     Ok(())
 }
