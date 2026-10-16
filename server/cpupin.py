@@ -14,9 +14,10 @@ EXE = "BeamNG.drive.x64"
 SERVER_SHARE = 0.25         # of the physical cores, at least one, never more than half
 
 
-def _siblings():
-    """[(core key, [cpu ids])] of the usable CPUs grouped by physical core, in core order."""
-    usable = sorted(os.sched_getaffinity(0)) if hasattr(os, "sched_getaffinity") else []
+def _siblings(usable=None):
+    """[(core key, [cpu ids])] of the usable CPUs (default: this process's) grouped by physical core, in core order."""
+    if usable is None:
+        usable = sorted(os.sched_getaffinity(0)) if hasattr(os, "sched_getaffinity") else []
     groups = {}
     for cpu in usable:
         base = f"/sys/devices/system/cpu/cpu{cpu}/topology/"
@@ -73,6 +74,63 @@ def pin_game(cpus):
         return 0
     n = 0
     for pid in game_pids():
+        try:
+            tids = os.listdir(f"/proc/{pid}/task")
+        except OSError:
+            continue
+        for tid in tids:
+            try:
+                os.sched_setaffinity(int(tid), cpus)
+                n += 1
+            except OSError:
+                pass
+    return n
+
+
+# --- the loading boost ------------------------------------------------------------------------------------------------
+# Right after a teleport the player stands and waits for the world (2026-10-16: ~30 s in Fells Point, the server's
+# four CPUs busy throughout while the game's twelve mostly idled). Until the far field is done or the car moves, the
+# server's processes may also run on half of the game's cores (the last ones); they keep their idle scheduling, so a
+# game thread that wants a CPU still gets it. Then they go back to their own cores.
+LEND_SHARE = 0.5            # of the game's physical cores
+
+
+def boosted(server_cpus, game_cpus, share=LEND_SHARE):
+    """The server's CPU set while loading: its own plus the last `share` of the game's physical cores (with their
+    hyperthread siblings); None when there is nothing to lend."""
+    if not server_cpus or not game_cpus:
+        return None
+    # (every CPU of the split: the server process itself is pinned to its own by now)
+    cores = [cpus for _, cpus in _siblings(sorted(set(server_cpus) | set(game_cpus))) if set(cpus) <= set(game_cpus)]
+    k = int(len(cores) * share)
+    if k <= 0:
+        return None
+    return set(server_cpus) | {c for cpus in cores[-k:] for c in cpus}
+
+
+def _children():
+    kids = {}
+    for d in os.listdir("/proc"):
+        if not d.isdigit():
+            continue
+        try:
+            with open(f"/proc/{d}/stat") as f:
+                ppid = int(f.read().rsplit(")", 1)[1].split()[1])
+        except (OSError, ValueError, IndexError):
+            continue
+        kids.setdefault(ppid, []).append(int(d))
+    return kids
+
+
+def pin_tree(cpus, root=None):
+    """Every thread of this process (or root) and of its descendants on cpus; the number of threads set."""
+    if not cpus or not hasattr(os, "sched_setaffinity"):
+        return 0
+    kids = _children()
+    todo, n = [root or os.getpid()], 0
+    while todo:
+        pid = todo.pop()
+        todo += kids.get(pid, [])
         try:
             tids = os.listdir(f"/proc/{pid}/task")
         except OSError:
