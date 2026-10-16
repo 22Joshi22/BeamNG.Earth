@@ -408,6 +408,25 @@ class FastTest(unittest.TestCase):
             self.assertEqual(got.dtype, want.dtype)
             np.testing.assert_array_equal(got, want)
 
+    def test_terrarium_heights_match_python(self):
+        import io
+        import dem
+        from PIL import Image
+        rng = np.random.default_rng(37)
+        for mode in ("RGB", "RGBA"):
+            a = rng.integers(0, 256, (512, 512, 4 if mode == "RGBA" else 3), dtype=np.uint8)
+            buf = io.BytesIO()
+            Image.fromarray(a, mode).save(buf, "PNG")
+            got = dem.decode_terrarium(buf.getvalue(), 512)
+            saved = fast._ef
+            fast._ef = None
+            try:
+                want = dem.decode_terrarium(buf.getvalue(), 512)
+            finally:
+                fast._ef = saved
+            self.assertEqual(got.dtype, want.dtype)
+            np.testing.assert_array_equal(got, want)
+
     def test_points_and_distances(self):
         sq = np.array([[0, 0], [10, 0], [10, 10], [0, 10]], float)
         pts = np.array([[5, 5], [15, 5], [-1, -1], [9.9, 0.1]], float)
