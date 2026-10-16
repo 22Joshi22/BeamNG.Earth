@@ -360,10 +360,12 @@ def tangents(V, UV, N, I):
     np.divide(1.0, den, out=r, where=np.abs(den) > 0)
     sdir = (e1 * d2[:, 1:2] - e2 * d1[:, 1:2]) * r[:, None]
     tdir = (e2 * d1[:, 0:1] - e1 * d2[:, 0:1]) * r[:, None]
-    t1, t2 = np.zeros_like(V), np.zeros_like(V)
-    for k in range(3):
-        np.add.at(t1, I[:, k], sdir)
-        np.add.at(t2, I[:, k], tdir)
+    # every corner's contribution summed per vertex: one bincount over the three corner columns in the order
+    # np.add.at took them (corner 0 of every triangle, then 1, then 2), so the same sums; add.at was ~10x slower
+    idx = np.concatenate([I[:, 0], I[:, 1], I[:, 2]])
+    n = len(V)
+    t1 = np.stack([np.bincount(idx, np.tile(sdir[:, c], 3), n) for c in range(3)], 1)
+    t2 = np.stack([np.bincount(idx, np.tile(tdir[:, c], 3), n) for c in range(3)], 1)
     t = t1 - N * np.einsum("ij,ij->i", N, t1)[:, None]
     tl = np.linalg.norm(t, axis=1)
     # No UV gradient (e.g. skirt vertices, whose quads have a constant uv): any unit vector
