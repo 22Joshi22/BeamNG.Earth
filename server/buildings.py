@@ -19,6 +19,7 @@ import math
 import numpy as np
 
 import fast
+import mapgeom
 
 FLOOR_M = 3.0               # m per storey (residential)
 GROUND_FLOOR_SHOP_M = 4.2   # m, a shop's ground floor
@@ -1300,7 +1301,7 @@ def road_lines(frame, road_layers, x0, y0, margin=50.0, size=256.0):
             ll = f.lonlat[a:b]
             if len(ll) < 2:
                 continue
-            e, n, _ = frame.geodetic_to_enu(ll[:, 1], ll[:, 0], np.zeros(len(ll)))
+            e, n = mapgeom.enu_xy(f, frame, ll)
             xy = np.stack([e - x0, n - y0], 1)
             if xy[:, 0].max() < -margin or xy[:, 0].min() > size + margin or xy[:, 1].max() < -margin \
                     or xy[:, 1].min() > size + margin:
@@ -1351,7 +1352,7 @@ def tile_buildings(frame, x0, y0, x1, y1, layers, elev, water=None, part_layers=
             outer = np.asarray(pp[0][0], np.float64)
             if len(outer) < 4:
                 continue
-            e, n, _ = frame.geodetic_to_enu(outer[:, 1], outer[:, 0], np.zeros(len(outer)))
+            e, n = mapgeom.enu_xy(f, frame, outer)
             parts_of.setdefault(bid, []).append((np.stack([e, n], 1), _part_heights(a, i)))
     seen = set()
     rings, attrs, looks, mins = [], [], [], []
@@ -1375,7 +1376,7 @@ def tile_buildings(frame, x0, y0, x1, y1, layers, elev, water=None, part_layers=
             outer = np.asarray(parts[0][0], np.float64)
             if len(outer) < 4:
                 continue
-            e, n, _ = frame.geodetic_to_enu(outer[:, 1], outer[:, 0], np.zeros(len(outer)))
+            e, n = mapgeom.enu_xy(f, frame, outer)
             cx, cy = float(np.mean(e[:-1])), float(np.mean(n[:-1]))
             if not (x0 <= cx < x1 and y0 <= cy < y1):
                 continue
@@ -1784,7 +1785,7 @@ def photo_mask(frame, x0, y0, size, px, md):
             if not parts or not parts[0]:
                 continue
             ring = np.asarray(parts[0][0], np.float64)
-            e, nn, _ = frame.geodetic_to_enu(ring[:, 1], ring[:, 0], np.zeros(len(ring)))
+            e, nn = mapgeom.enu_xy(f, frame, ring)
             if e.max() < x0 or e.min() > x0 + size or nn.max() < y0 or nn.min() > y0 + size:
                 continue
             h = float(hs[i]) if hs is not None and np.isfinite(hs[i]) else 8.0

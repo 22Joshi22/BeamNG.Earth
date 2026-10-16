@@ -108,6 +108,23 @@ class Features:
         k = int(np.searchsorted(self.ids, fid))
         return k if k < len(self.ids) and self.ids[k] == fid else -1
 
+    def xy_in(self, frame):
+        """(N, 2) east / north of every coordinate in frame (an EnuFrame), converted once per frame and kept (the
+        cells stay decoded in memory: ~60k one-ring conversions a 9-tile set before, 2026-10-15)."""
+        key = (frame.lat0, frame.lon0, frame.h0)
+        memo = self.__dict__.setdefault("_xy_in", {})
+        got = memo.get(key)
+        if got is None:
+            if len(self.lonlat):
+                e, n, _ = frame.geodetic_to_enu(self.lonlat[:, 1], self.lonlat[:, 0], 0.0)
+                got = np.stack([e, n], axis=1)
+            else:
+                got = np.zeros((0, 2), np.float64)
+            if len(memo) >= 2:                  # an anchor or two at a time
+                memo.pop(next(iter(memo)))
+            memo[key] = got
+        return got
+
     def localize(self, frame):
         """Fill `en` from `lonlat` with an EnuFrame (the cell's)."""
         if len(self.lonlat):
@@ -348,3 +365,18 @@ def clip_polygon_parts(parts, bounds):
                 new.append(c)
         out.append(new)
     return out, changed
+
+
+def enu_xy(feats, frame, ring):
+    """(e, n) of a lon/lat ring in frame: sliced from feats.xy_in(frame) when the ring is a view of feats.lonlat
+    (feats.parts' rings), else converted. Point by point the same numbers either way."""
+    L = feats.lonlat if feats is not None else None
+    if (L is not None and isinstance(ring, np.ndarray) and ring.ndim == 2 and len(ring) and L.ndim == 2
+            and ring.dtype == L.dtype and ring.strides == L.strides and ring.shape[1] == L.shape[1]):
+        off, rem = divmod(ring.__array_interface__["data"][0] - L.__array_interface__["data"][0], L.strides[0])
+        if rem == 0 and 0 <= off and off + len(ring) <= len(L):
+            xy = feats.xy_in(frame)[off:off + len(ring)]
+            return xy[:, 0], xy[:, 1]
+    e, n, _ = frame.geodetic_to_enu(ring[:, 1], ring[:, 0], 0.0)
+    return e, n
+

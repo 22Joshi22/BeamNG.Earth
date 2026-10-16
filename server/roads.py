@@ -30,6 +30,7 @@ import numpy as np
 
 import junctions
 import mapcells
+import mapgeom
 
 log = logging.getLogger("earthd.roads")
 
@@ -1291,13 +1292,13 @@ class BridgeProfiles:
                 lvls = bridge_levels(feats, i)
                 for j, ring in enumerate(bridge_parts(feats, i)):
                     if (fid, j) not in pool:
-                        e, n, _ = self.frame.geodetic_to_enu(ring[:, 1], ring[:, 0], 0.0)
+                        e, n = mapgeom.enu_xy(feats, self.frame, ring)
                         pool[(fid, j)] = (bs[i], densify(_dedupe(np.stack([e, n], axis=1)), DECK_STEP),
                                           float(np.mean(ring[:, 0])), lvls[j] if j < len(lvls) else 1.0)
             if rs[i] is not None and (fid, "g") not in ground:
                 ground[(fid, "g")] = []
                 for ring in ground_parts(feats, i):
-                    e, n, _ = self.frame.geodetic_to_enu(ring[:, 1], ring[:, 0], 0.0)
+                    e, n = mapgeom.enu_xy(feats, self.frame, ring)
                     ground[(fid, "g")].append(np.stack([e, n], axis=1))
 
     def _resolve(self, start, pool, ground, loaded):
@@ -1357,7 +1358,7 @@ class BridgeProfiles:
                     continue
                 fid = str(feats.ids[i])
                 for j, ring in enumerate(bridge_parts(feats, i)):
-                    e, n, _ = self.frame.geodetic_to_enu(ring[:, 1], ring[:, 0], 0.0)
+                    e, n = mapgeom.enu_xy(feats, self.frame, ring)
                     if e.max() < x0 - NEAR_M or e.min() > x1 + NEAR_M or n.max() < y0 - NEAR_M or n.min() > y1 + NEAR_M:
                         continue
                     todo.append(((fid, j), feats, i))
@@ -1407,7 +1408,7 @@ def _bridge_chunks(frame, bseen, elev, exact, bridges=None, cells=None):
         feats, i, spec = bseen[fid]
         for ring in bridge_parts(feats, i):
             if len(ring) >= 2:
-                e, n, _ = frame.geodetic_to_enu(ring[:, 1], ring[:, 0], 0.0)
+                e, n = mapgeom.enu_xy(feats, frame, ring)
                 parts.append((fid, spec, densify(np.stack([e, n], axis=1), DECK_STEP),
                               float(np.mean(ring[:, 0]))))
 
@@ -1519,7 +1520,7 @@ def build_tile(frame, tx, ty, cells, elev, urban_fn=None, walks=None, bridges=No
     for fid in sorted(seen):
         feats, i, spec = seen[fid]
         for ring in ground_parts(feats, i):
-            e, n, _ = frame.geodetic_to_enu(ring[:, 1], ring[:, 0], 0.0)
+            e, n = mapgeom.enu_xy(feats, frame, ring)
             if (e.max() < near[0] or e.min() > near[2] or n.max() < near[1] or n.min() > near[3]):
                 continue
             rings.append((fid, spec, ring))
