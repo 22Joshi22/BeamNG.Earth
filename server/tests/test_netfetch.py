@@ -612,8 +612,9 @@ class PolicyTest(unittest.TestCase):
         self.assertLessEqual(nf.DEFAULT_POLICY.rate, 2.0)
 
     def test_policies_match_the_plan(self):
-        """docs/research/2026-10-10-rate-limits.md §5.2 for the hosts in use."""
-        want = {USGS: (15, 60, 6, 60000), EOX: (6, 30, 4, 20000), MT: (20, 80, 8, 30000),
+        """docs/research/2026-10-10-rate-limits.md §5.2 for the hosts in use, raised 2026-10-16
+        (docs/research/2026-10-16-rate-limits-raised.md)."""
+        want = {USGS: (50, 150, 12, 150000), EOX: (10, 40, 6, 30000), MT: (50, 200, 16, 80000),
                 "s3.amazonaws.com": (50, 100, 8, None), "api.open-meteo.com": (0.1, 2, 1, 500),
                 "downloads.sourceforge.net": (1, 1, 1, None)}
         for h, (rate, burst, conc, soft) in want.items():
@@ -659,7 +660,7 @@ class BudgetTest(unittest.TestCase):
             with open(os.path.join(d, f"{day}.json")) as fh:
                 saved = json.load(fh)
             self.assertEqual(saved["hosts"][USGS]["requests"], 3)
-            self.assertEqual(saved["hosts"][USGS]["budget_left"], 60000 - 3)
+            self.assertEqual(saved["hosts"][USGS]["budget_left"], nf.POLICIES[USGS].daily_budget - 3)
             # a restart the same day goes on counting
             f2 = nf.Fetcher(clock=clock, sleep=sleep, transport=tr, wall=clock, stats_dir=d)
             self.assertEqual(f2.snapshot()[MT]["requests"], 1)    # loaded, not used yet: kept

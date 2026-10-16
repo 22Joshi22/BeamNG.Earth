@@ -40,7 +40,7 @@ import netfetch
 log = logging.getLogger("earthd.dem")
 
 TILE = 512                  # sampling grid tile size (Mapterhorn)
-URGENT_WORKERS = 4          # Dem.urgent(): its own fetch threads
+URGENT_WORKERS = 8          # Dem.urgent(): its own fetch threads (with the 8 shared: Mapterhorn's 16 at once)
 MAX_ZOOM = 15               # AWS stops at z15; nothing in v1 needs more
 GLOBAL_ZOOM = 12            # Mapterhorn is complete on land up to here
 GROUND_MARGIN = 96          # px of the neighbouring z12 tiles the ground filter sees around a tile
@@ -355,6 +355,9 @@ class Dem:
         out, futs, new = {}, {}, []
         urgent = getattr(self._local, "urgent", False)
         pool = self.urgent_pool if urgent else self.pool
+        if urgent and len(keys) >= 16 and log.isEnabledFor(logging.DEBUG):
+            zs = Counter(k[0] for k in keys)
+            log.debug("dem urgent: %d tiles %s", len(keys), dict(zs))
         with self._lock:
             for k in keys:
                 if k in self._lru:

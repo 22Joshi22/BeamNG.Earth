@@ -56,7 +56,7 @@ log = logging.getLogger("earthd.imagery")
 TILE = 256
 MAX_LAT = demmod.MAX_LAT
 EARTH_CIRC = 40075016.686          # m, equatorial circumference (Web-Mercator scale)
-FETCH_WORKERS = 6
+FETCH_WORKERS = 12      # (the photo hosts allow 12 / 6 at once, 2026-10-16)
 MEM_TILES = 512                    # decoded 256² RGB tiles kept in memory (~100 MB)
 # Attempts, retry delays, timeouts and the "source unreachable" backoff are the host's netfetch
 # policy now: once its circuit is open, its tiles fail at once instead of each paying the attempts
