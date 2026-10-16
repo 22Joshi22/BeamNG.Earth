@@ -54,12 +54,25 @@ def _graph(roads_list):
     """(edges [(fid, spec, pts, a, b, length)], adjacency {node: [edge index]}) of roads_list: road ends closer than
     JOIN_M are one node."""
     nodes = []                       # node xy
+    grid = {}                        # (cell x, cell y) of JOIN_M -> node indices there, ascending
+
     def node_of(p):
-        for i, q in enumerate(nodes):
-            if math.hypot(p[0] - q[0], p[1] - q[1]) < JOIN_M:
-                return i
+        # the first node within JOIN_M, as a scan of every node would find it (they were ~7 s of a teleport's event
+        # loop in Fells Point, 2026-10-16): only the 3 x 3 cells around p can hold one
+        cx, cy = math.floor(p[0] / JOIN_M), math.floor(p[1] / JOIN_M)
+        best = None
+        for gx in (cx - 1, cx, cx + 1):
+            for gy in (cy - 1, cy, cy + 1):
+                for i in grid.get((gx, gy), ()):
+                    if (best is None or i < best) and math.hypot(p[0] - nodes[i][0], p[1] - nodes[i][1]) < JOIN_M:
+                        best = i
+                        break               # ascending: the cell's first hit is its lowest
+        if best is not None:
+            return best
         nodes.append((float(p[0]), float(p[1])))
-        return len(nodes) - 1
+        k = len(nodes) - 1
+        grid.setdefault((math.floor(nodes[k][0] / JOIN_M), math.floor(nodes[k][1] / JOIN_M)), []).append(k)
+        return k
     edges = []
     for fid, spec, pts, _ in roads_list:
         if len(pts) < 2:

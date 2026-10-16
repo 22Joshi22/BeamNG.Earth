@@ -340,6 +340,31 @@ class FastTest(unittest.TestCase):
             self.assertEqual(got.tolist(), want.tolist(), trial)
             self.assertGreater(want.sum(), 0)
 
+    def test_season_grade_matches_python(self):
+        import season
+        rng = np.random.default_rng(23)
+        for trial in range(24):
+            px = int(rng.choice([64, 128, 256]))
+            rgb = rng.integers(0, 256, (px, px, 3), dtype=np.uint8)
+            green = rng.random((px, px)) < 0.7
+            rgb[green, 1] = np.maximum(rgb[green, 1], np.maximum(rgb[green, 0], rgb[green, 2]))
+            rgb[:4, :4] = rgb[0, 0]                       # ties: r == g, g == b
+            rgb[5, :8, 0] = rgb[5, :8, 1]
+            span = float(rng.choice([100.0, 3000.0]))     # fine texels (canopy texture) and far ones
+            xs = np.linspace(0, span, px, dtype=np.float32) + np.float32(rng.uniform(-1e6, 1e6))
+            ys = np.linspace(span, 0, px, dtype=np.float32) + np.float32(rng.uniform(-1e6, 1e6))
+            xm, ym = np.meshgrid(xs, ys)
+            amounts = [{"fall": 1.0}, {"fall": 0.4, "winter": 0.6}, {"spring": 0.7}, {"fall": 0.2, "spring": 0.3},
+                       {"winter": 1.0}][trial % 5]
+            got = season.grade_full(rgb, xm, ym, amounts)
+            saved = fast._ef
+            fast._ef = None
+            try:
+                want = season.grade_full(rgb, xm, ym, amounts)
+            finally:
+                fast._ef = saved
+            np.testing.assert_array_equal(got, want, err_msg=str(trial))
+
     def test_points_and_distances(self):
         sq = np.array([[0, 0], [10, 0], [10, 10], [0, 10]], float)
         pts = np.array([[5, 5], [15, 5], [-1, -1], [9.9, 0.1]], float)

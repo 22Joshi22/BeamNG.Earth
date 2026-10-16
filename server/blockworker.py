@@ -288,3 +288,37 @@ def far_geometry(aid, lat, lon, tile, zoom, q, ref_zoom, with_sink, layout):
     src = gradingmod.GradedDem(base, g) if (g is not None and tile.level <= 0) else base
     return farfield.build_tile(frame, src, tile, zoom, q, ref_zoom, with_sink=with_sink,
                                layout=layout)
+
+
+# --- CPU accounting ---------------------------------------------------------------------------------------------------
+# Each job's CPU seconds by kind, logged by the process every CPU_LOG_S at debug level ("worker <pid> cpu: ..."), so a
+# recorded session says which pool (road tiles, far buildings, far geometry, terrain blocks) the server's CPU went to.
+CPU_LOG_S = 30.0
+_cpu = {}
+_cpu_logged = [time.monotonic()]
+
+
+def _accounted(fn):
+    import functools
+
+    @functools.wraps(fn)
+    def run(*a, **kw):
+        c0 = time.process_time()
+        try:
+            return fn(*a, **kw)
+        finally:
+            n, t = _cpu.get(fn.__name__, (0, 0.0))
+            _cpu[fn.__name__] = (n + 1, t + time.process_time() - c0)
+            now = time.monotonic()
+            if now - _cpu_logged[0] >= CPU_LOG_S:
+                _cpu_logged[0] = now
+                log.debug("worker %d cpu: %s", os.getpid(),
+                          ", ".join(f"{k} {v[0]} jobs {v[1]:.1f} s" for k, v in sorted(_cpu.items())))
+    return run
+
+
+build = _accounted(build)
+roads_tile = _accounted(roads_tile)
+far_buildings_tile = _accounted(far_buildings_tile)
+base_entry = _accounted(base_entry)
+far_geometry = _accounted(far_geometry)

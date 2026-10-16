@@ -217,7 +217,13 @@ def mercator_px(lat, lon, z):
 
 
 def is_uniform(a):
-    """True for a one-colour (blank) tile: every channel varies by at most BLANK_RANGE."""
+    """True for a one-colour (blank) tile: every channel varies by at most BLANK_RANGE. A sparse sample first: its
+    range is at most the tile's, so a photo is told apart without reducing every pixel (~9 s of a teleport's
+    fetch threads in Fells Point, 2026-10-16); only a sample that looks blank checks them all."""
+    if a.ndim == 3 and a.shape[0] >= 32 and a.shape[1] >= 32:
+        sm = a[::16, ::16]
+        if int((sm.max(axis=(0, 1)).astype(int) - sm.min(axis=(0, 1))).max()) > BLANK_RANGE:
+            return False
     return int((a.max(axis=(0, 1)).astype(int) - a.min(axis=(0, 1))).max()) <= BLANK_RANGE
 
 
