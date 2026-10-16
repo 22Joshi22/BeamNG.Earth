@@ -535,14 +535,25 @@ end
 local geocodeResults = {}       -- the world map's address search answers: id -> { results, error }
 local routeResults = {}         -- the GPS's planned routes: id -> { points, dist, dur, error }
 
+-- The pooled shape slots (far tiles, road / building tiles) let go since the last pose, for this server; nil if none.
+local function slotsGoneNow()
+  local out = farfield.takeSlotsGone(st.sessionId) or {}
+  for _, g in ipairs(roads.takeSlotsGone(st.sessionId)) do out[#out + 1] = g end
+  return #out > 0 and out or nil
+end
+
 local function onMessage(msg)
   local t = msg.type
   if t == '_connected' then
     -- sessions: the session folders our far tiles still use (a restarted server keeps them)
-    -- slotsHeld: the pooled far-tile slots our objects hold, if the server is the one that sent them (a reconnect)
+    -- slotsHeld: the pooled shape slots our objects hold, if the server is the one that sent them (a reconnect)
+    local held
+    if farfield.session() then
+      held = farfield.slotsHeld(farfield.session())
+      for _, h in ipairs(roads.slotsHeld(farfield.session())) do held[#held + 1] = h end
+    end
     net.send({ type = 'hello', protocol = PROTOCOL, format = FORMAT, modVersion = MOD_VERSION,
-      sessions = farfield.heldSessions(), slotSession = farfield.session(),
-      slotsHeld = farfield.session() and farfield.slotsHeld(farfield.session()) or nil })
+      sessions = farfield.heldSessions(), slotSession = farfield.session(), slotsHeld = held })
     setStatus('Connected to companion server')
   elseif t == '_disconnected' then
     st.pending, st.sessionId, st.terrainPending = nil, nil, nil
@@ -555,6 +566,7 @@ local function onMessage(msg)
     setStatus('Disconnected from companion server: ' .. tostring(msg.error))
   elseif t == 'hello' then
     st.sessionId = msg.sessionId
+    roads.setSession(msg.sessionId)   -- the road / building tiles' pooled shape files belong to this server
     lastHello = {}           -- the server's version and options, for the reports' hardware.json
     for k, v in pairs(msg) do if k ~= 'attribution' and type(v) ~= 'table' then lastHello[k] = v end end
     -- road tiles belong to the session that sent them: a restarted server (anchor ids start again
@@ -748,8 +760,21 @@ end
 ------------------------------------------------------------------------------------------
 -- per frame
 
+-- The screen's height in pixels (GFXDevice.getVideoMode, looked up every 2 s): the server's screen-space LOD.
+local screenH, screenAt = nil, -math.huge
+local function screenHeight()
+  local t = os.clock()
+  if t - screenAt > 2 then
+    screenAt = t
+    local ok, vm = pcall(function() return GFXDevice.getVideoMode() end)
+    screenH = ok and type(vm) == 'table' and tonumber(vm.height) or screenH
+  end
+  return screenH
+end
+
 -- The rendering camera (core_camera, core/camera.lua:1927-1937: getPositionXYZ, getForwardXYZ,
--- getFovDeg), for the server's view-angle priority and the off-screen swap test. nil if unavailable.
+-- getFovDeg), for the server's view-angle priority and the off-screen swap test, and the screen's height (h)
+-- for its screen-space LOD. nil if unavailable.
 local function cameraState()
   local cam = rawget(_G, 'core_camera')
   if not cam or not cam.getPositionXYZ then return nil end
@@ -758,7 +783,8 @@ local function cameraState()
   local okF, fx, fy, fz = pcall(cam.getForwardXYZ)
   if not okF or type(fx) ~= 'number' then return nil end
   local okV, fov = pcall(cam.getFovDeg)
-  return { x = x, y = y, z = z, fx = fx, fy = fy, fz = fz, fovDeg = (okV and type(fov) == 'number') and fov or 60 }
+  return { x = x, y = y, z = z, fx = fx, fy = fy, fz = fz, fovDeg = (okV and type(fov) == 'number') and fov or 60,
+    h = screenHeight() }
 end
 
 local function updatePlayer(dt)
@@ -821,8 +847,8 @@ local function updateWorld(dt)
       lat = pl.lat, lon = pl.lon, speed = pl.speed, follow = not st.followHeld,
       held = (farfield.session() == st.sessionId) and farfield.heldAnchors() or {},
       sessions = farfield.heldSessions(),
-      slotsGone = farfield.takeSlotsGone(st.sessionId), -- pooled far-tile slots let go (server/matslots.py)
-      cam = c and { x = c.x, y = c.y, z = c.z, fx = c.fx, fy = c.fy, fz = c.fz, fovDeg = c.fovDeg } or nil })
+      slotsGone = slotsGoneNow(), -- pooled shape slots let go (server/matslots.py)
+      cam = c and { x = c.x, y = c.y, z = c.z, fx = c.fx, fy = c.fy, fz = c.fz, fovDeg = c.fovDeg, h = c.h } or nil })
   end
 
   -- a resync the server could not build (anchor_error: offline, never visited) is asked again

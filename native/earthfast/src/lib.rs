@@ -1780,6 +1780,31 @@ fn seam_pass<'py>(py: Python<'py>, arrs: PyReadonlyArray3<'py, f32>, half: i64, 
     (score.into_pyarray(py), dm.into_pyarray(py))
 }
 
+/// farfield.view_distance for many tiles: bboxes (n, 4) [x0, y0, x1, y1]; the horizontal distance from (px, py) to
+/// each footprint, times `penalty` when the tile's centre is outside the view cone (cone = [cx, cy, fx, fy, cosmax]
+/// with a unit forward; empty: no cone) and farther from the camera than its own width. The build queue's order.
+#[pyfunction]
+fn view_distances<'py>(py: Python<'py>, bboxes: PyReadonlyArray2<'py, f64>, px: f64, py_: f64, cone: Vec<f64>,
+                       penalty: f64) -> Bound<'py, PyArray1<f64>> {
+    let b = bboxes.as_array();
+    let n = b.shape()[0];
+    let out: Vec<f64> = py.allow_threads(|| {
+        (0..n).map(|k| {
+            let (x0, y0, x1, y1) = (b[[k, 0]], b[[k, 1]], b[[k, 2]], b[[k, 3]]);
+            let dx = (x0 - px).max(0.0).max(px - x1);
+            let dy = (y0 - py_).max(0.0).max(py_ - y1);
+            let d = dx.hypot(dy);
+            if cone.len() != 5 || d <= 0.0 {
+                return d;
+            }
+            let (cx, cy) = ((x0 + x1) / 2.0 - cone[0], (y0 + y1) / 2.0 - cone[1]);
+            let r = cx.hypot(cy);
+            if r <= x1 - x0 || (cx * cone[2] + cy * cone[3]) / r >= cone[4] { d } else { d * penalty }
+        }).collect()
+    });
+    numpy::ndarray::Array1::from(out).into_pyarray(py)
+}
+
 fn bc1_565(c: [f64; 3]) -> u16 {
     let r = (c[0].clamp(0.0, 255.0) * 31.0 / 255.0).round() as u16;
     let g = (c[1].clamp(0.0, 255.0) * 63.0 / 255.0).round() as u16;
@@ -2059,6 +2084,7 @@ fn earthfast(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(bc1_encode, m)?)?;
     m.add_function(wrap_pyfunction!(mesh_warp, m)?)?;
     m.add_function(wrap_pyfunction!(seam_pass, m)?)?;
+    m.add_function(wrap_pyfunction!(view_distances, m)?)?;
     m.add("VERSION", 24)?;
     Ok(())
 }

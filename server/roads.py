@@ -1727,10 +1727,27 @@ class Tracker:
             return
         path, n = res
         self.sent.add(key)
-        conn.send({"type": "roads_tile", "anchorId": aid, "key": f"{key[0]}_{key[1]}", "path": path, "n": n})
+        m = {"type": "roads_tile", "anchorId": aid, "key": f"{key[0]}_{key[1]}", "path": path, "n": n}
+        pool = getattr(getattr(conn, "s", None), "pool_shapes", None)
+        if pool is not None:                # its meshes at pooled shape paths (matslots.py)
+            slots = pool(conn, shape_files(aid, *key))
+            if slots:
+                m["slots"] = slots
+        conn.send(m)
 
 
 BLD_PARTS_MAX = 4               # building meshes per road tile ("bld", "bld2".."bld4": the mod's list)
+
+
+def shape_files(aid, tx, ty):
+    """The shape files write_tile may write for a tile, by the field naming them in the tile ({what: file name})."""
+    out = {"road": f"road_{aid}_{tx}_{ty}.cdae", "deck": f"deck_{aid}_{tx}_{ty}.cdae",
+           "walk": f"walks_{aid}_{tx}_{ty}.cdae", "walkcol": f"walkcol_{aid}_{tx}_{ty}.cdae",
+           "bldcol": f"bldcol_{aid}_{tx}_{ty}.cdae", "wire": f"wire_{aid}_{tx}_{ty}.cdae",
+           "bld": f"bld_{aid}_{tx}_{ty}.cdae"}
+    for k in range(2, BLD_PARTS_MAX + 1):
+        out[f"bld{k}"] = f"bld_{aid}_{tx}_{ty}_{k}.cdae"
+    return out
 
 
 def write_tile(out_dir, vfs_dir, aid, tx, ty, chunks, walks=None, road_mesh=None, deck_mesh=None, bld=None,

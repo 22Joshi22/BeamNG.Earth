@@ -125,6 +125,32 @@ roads.onDrop({ anchorId = 2, key = '6_6' })
 roads.update(gov, 2)
 T.check(#statics() == 0, 'walkcol dropped with its tile')
 
+-- pooled shape files (server/matslots.py): the slot paths replace the tile's own files; a slot is reported gone once
+-- its tile is dropped and its object deleted (one the tile cannot use: at once)
+gov.allow, gov.tries = nil, 0
+roads.setSession('sA')
+roads.takeSlotsGone('sA')
+roads.onTile({ anchorId = 2, key = '6_7', path = '/t/wc.json', n = 0, slots = {
+  walk = { '/temp/beamngEarth/sA/slot_00012.cdae', 40 }, walkcol = { '/temp/beamngEarth/sA/slot_00013.cdae', 41 },
+  deck = { '/temp/beamngEarth/sA/slot_00014.cdae', 42 } } }, 2)
+roads.update(gov, 2)
+local shapes = {}
+for _, o in ipairs(statics()) do shapes[o.fields.shapeName] = true end
+T.check(shapes['/temp/beamngEarth/sA/slot_00012.cdae'] and shapes['/temp/beamngEarth/sA/slot_00013.cdae']
+  and not shapes['/t/walks_2_6_6.cdae'], 'the slot paths are loaded instead of the tile files')
+local gone = roads.takeSlotsGone('sA')
+T.check(#gone == 1 and gone[1][1] == 14 and gone[1][2] == 42, 'a slot the tile has no mesh for: reported at once')
+local held = roads.slotsHeld('sA')
+T.check(#held == 2, 'held: the two loaded slots')
+roads.onDrop({ anchorId = 2, key = '6_7' })
+T.check(#roads.takeSlotsGone('sA') == 0, 'dropped but its objects not deleted yet: still held')
+roads.update(gov, 2)
+gone = roads.takeSlotsGone('sA')
+local got = {}
+for _, g in ipairs(gone) do got[g[1]] = g[2] end
+T.check(#gone == 2 and got[12] == 40 and got[13] == 41, 'objects deleted: both slots reported with their serials')
+T.check(#roads.takeSlotsGone('other') == 0, 'reports are per server session')
+
 -- a sidewalk mesh never turns solid around the player's car: held while the car is in its boxes
 files['/t/h.json'] = '{ chunks = { }, walk = { shape = "/t/walks_2_7_7.cdae", pos = { 0, 0, 0 } }, ' ..
   'colliders = { walk = { { 100, 100, 0, 120, 110, 1 } } } }'

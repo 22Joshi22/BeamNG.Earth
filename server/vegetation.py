@@ -699,4 +699,10 @@ class Tracker:
             return
         path, n = res
         self.sent.add(key)
-        conn.send({"type": f"{self.kind}_tile", "anchorId": aid, "key": f"{key[0]}_{key[1]}", "path": path, "n": n})
+        m = {"type": f"{self.kind}_tile", "anchorId": aid, "key": f"{key[0]}_{key[1]}", "path": path, "n": n}
+        pool = getattr(getattr(conn, "s", None), "pool_shapes", None)
+        if self.kind == "bldfar" and pool is not None:      # its mesh at a pooled shape path (matslots.py)
+            slots = pool(conn, {"shape": f"bldfar_{aid}_{key[0]}_{key[1]}.cdae"})
+            if slots:
+                m["slots"] = slots
+        conn.send(m)

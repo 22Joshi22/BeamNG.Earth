@@ -20,6 +20,7 @@ Mapterhorn cannot be asked (circuit open, rate limited, failing) the same tile c
 (failover); if AWS fails too, DemUnavailable. 404s are remembered as <y>.404 markers that expire
 after the host's miss_ttl (Mapterhorn 90 days: it adds lidar areas; AWS never).
 """
+import contextlib
 import io
 import logging
 import math
@@ -39,6 +40,7 @@ import netfetch
 log = logging.getLogger("earthd.dem")
 
 TILE = 512                  # sampling grid tile size (Mapterhorn)
+URGENT_WORKERS = 4          # Dem.urgent(): its own fetch threads
 MAX_ZOOM = 15               # AWS stops at z15; nothing in v1 needs more
 GLOBAL_ZOOM = 12            # Mapterhorn is complete on land up to here
 GROUND_MARGIN = 96          # px of the neighbouring z12 tiles the ground filter sees around a tile
@@ -93,6 +95,10 @@ class Dem:
         self.fetcher = fetcher if fetcher is not None else netfetch.Fetcher()
         self.fetcher.register_chain("dem", (MAPTERHORN["url"], AWS["url"]))
         self.pool = ThreadPoolExecutor(fetch_workers, thread_name_prefix="dem-fetch")
+        # The urgent lane (urgent()): the anchor's first block after a teleport needs ~10 tiles and waited ~33 s
+        # behind hundreds queued by the far field, the road plans and the ground ahead (2026-10-16; alone 0.9 s).
+        self.urgent_pool = ThreadPoolExecutor(URGENT_WORKERS, thread_name_prefix="dem-urgent")
+        self._local = threading.local()
         self.mem_tiles = mem_tiles
         self._lru = OrderedDict()       # (z, x, y) -> float32 [TILE, TILE]
         self._inflight = {}             # (z, x, y) -> Future
@@ -332,19 +338,33 @@ class Dem:
         a11 = anc[np.ix_(v0 + 1, u0 + 1)]
         return ((a00 * (1 - fu) + a01 * fu) * (1 - fv) + (a10 * (1 - fu) + a11 * fu) * fv).astype(np.float32)
 
+    @contextlib.contextmanager
+    def urgent(self):
+        """Tiles this thread asks for meanwhile skip the queue: their own small pool, and a tile already queued (not
+        started) is loaded again there instead of waited for."""
+        prev = getattr(self._local, "urgent", False)
+        self._local.urgent = True
+        try:
+            yield
+        finally:
+            self._local.urgent = prev
+
     def tiles(self, keys, progress=None):
         """Fetch many tiles concurrently (deduplicated across callers)."""
         keys = list(dict.fromkeys(keys))
         out, futs, new = {}, {}, []
+        urgent = getattr(self._local, "urgent", False)
+        pool = self.urgent_pool if urgent else self.pool
         with self._lock:
             for k in keys:
                 if k in self._lru:
                     self._lru.move_to_end(k)
                     out[k] = self._lru[k]
-                elif k in self._inflight:
+                elif k in self._inflight and not (urgent and not self._inflight[k].running()
+                                                  and not self._inflight[k].done()):
                     futs[k] = self._inflight[k]
                 else:
-                    futs[k] = self._inflight[k] = self.pool.submit(self._load_tile, k)
+                    futs[k] = self._inflight[k] = pool.submit(self._load_tile, k)
                     new.append(k)
         # Outside the lock: the callback runs at once if the future is already done.
         for k in new:

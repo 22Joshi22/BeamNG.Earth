@@ -3,6 +3,8 @@
 All functions take scalars or numpy arrays (degrees for lat/lon, metres for the
 rest) and broadcast like numpy ufuncs.
 """
+import math
+
 import numpy as np
 
 try:
@@ -108,3 +110,11 @@ class EnuFrame:
         lat, lon, _ = self.enu_to_geodetic(e, n, 0.0)
         elev = elev_fn(lat, lon)
         return (lat, lon, elev) + self.geodetic_to_enu(lat, lon, elev)
+
+
+def haversine_m(lat1, lon1, lat2, lon2):
+    """Great-circle distance (m) on the WGS84 mean sphere between two points in degrees."""
+    p1, p2 = math.radians(lat1), math.radians(lat2)
+    dp, dl = p2 - p1, math.radians(lon2 - lon1)
+    a = math.sin(dp / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dl / 2) ** 2
+    return 2 * 6371008.8 * math.asin(min(1.0, math.sqrt(a)))

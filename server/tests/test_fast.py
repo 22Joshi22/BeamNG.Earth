@@ -453,6 +453,17 @@ class FastTest(unittest.TestCase):
                 for c in range(3):
                     np.testing.assert_array_equal(gD[c], wD[c], err_msg=f"Dm {c} {seg} {deg}")
 
+    def test_view_distances_match_python(self):
+        import farfield as ff
+        rng = np.random.default_rng(47)
+        tiles = [ff.Tile(int(rng.integers(-2, 7)), int(rng.integers(-40, 40)), int(rng.integers(-40, 40)))
+                 for _ in range(400)]
+        for cam in ({"x": 100, "y": -50, "fx": 0.6, "fy": 0.8, "fovDeg": 65}, {"x": 0, "y": 0, "fx": 0, "fy": 0}):
+            cone = ff.view_cone(cam)
+            got = ff.view_distances(tiles, cone, 30.0, -20.0)
+            want = [ff.view_distance(t, cone, 30.0, -20.0) for t in tiles]
+            np.testing.assert_allclose(got, want, rtol=1e-12, atol=1e-9)
+
     def test_vmedian_matches_python(self):
         import colormatch
         rng = np.random.default_rng(41)

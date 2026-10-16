@@ -116,7 +116,7 @@ MOD_TO_SERVER = {
               "bearing": F(NUM, OPT)},   # the GPS (routing.py); bearing: the car's heading, the route starts that way
     "where": {"id": F(int), "lat": F(NUM), "lon": F(NUM), "online": F(bool)},   # the status bar (geocode.py)
 }
-CAM = {"x", "y", "z", "fx", "fy", "fz", "fovDeg"}
+CAM = {"x", "y", "z", "fx", "fy", "fz", "fovDeg", "h"}     # h: the screen height px (screen-space LOD)
 TERRAIN = {"cx": F(NUM), "cy": F(NUM), "heightmap": F(str), "size": F(int), "squareSize": F(NUM),
            "zBase": F(NUM), "maxHeight": F(NUM), "q": F(NUM),
            "layers": F(list, OPT), "materials": F(list, OPT),     # --surface on (surface.py)
@@ -182,13 +182,15 @@ SERVER_TO_MOD = {
     # data credits for the tiles around the player (credits.py; additive, protocol 4, --credits on)
     "credits": {"v": F(int), "near": F(str), "far": F(str), "ids": F(list), "farIds": F(list)},
     # road tiles near the player (roads.py; additive, with map data only): a JSON file of DecalRoad chunks
-    "roads_tile": {"anchorId": F(int), "key": F(str), "path": F(str), "n": F(int)},
+    "roads_tile": {"anchorId": F(int), "key": F(str), "path": F(str), "n": F(int),
+                   "slots": F(dict, OPT)},     # {what: [pooled shape path, serial]} (matslots.py; pose.slotsGone)
     "roads_drop": {"anchorId": F(int), "key": F(str)},
     # trees, bushes and rocks of a tile (vegetation.py, --trees on): a JSON file of items
     "veg_tile": {"anchorId": F(int), "key": F(str), "path": F(str), "n": F(int)},
     "veg_drop": {"anchorId": F(int), "key": F(str)},
     # far buildings (buildings.far_tile, --buildings on): a JSON file naming a render-only mesh
-    "bldfar_tile": {"anchorId": F(int), "key": F(str), "path": F(str), "n": F(int)},
+    "bldfar_tile": {"anchorId": F(int), "key": F(str), "path": F(str), "n": F(int),
+                    "slots": F(dict, OPT)},    # {"shape": [pooled shape path, serial]}
     "bldfar_drop": {"anchorId": F(int), "key": F(str)},
     # the AI road graph around the player (navgraph.py, --traffic on): a JSON file of nodes and edges
     "navgraph": {"anchorId": F(int), "path": F(str), "cx": F(NUM), "cy": F(NUM), "nodes": F(int), "edges": F(int),

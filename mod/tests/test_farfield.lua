@@ -562,6 +562,15 @@ do
   end
   T.check(order('mesh') == '2,9,40', 'mesh: nearest queued tile imported first (' .. order('mesh') .. ')')
   T.check(order('terrain') == '40,2,9', 'terrain: server order (' .. order('terrain') .. ')')
+  -- ... and what is on screen first: behind the camera a tile counts VIEW_PENALTY times as far
+  farfield.setNearVisual('mesh')
+  farfield.switchAnchor(51, false, { cx = 100000, cy = 0 })
+  farfield.onTile(tile(51, -2, 0, -3))  -- 128 m behind (south)
+  farfield.onTile(tile(51, -2, 0, 5))   -- 320 m ahead (north)
+  oneImport.n = 0
+  farfield.update(oneImport, DT, { x = 0, y = 0, z = 100, fx = 0, fy = 1, fz = 0, fovDeg = 60 })
+  T.check(farfield._pending(key(-2, 0, 5)).loaded and not farfield._pending(key(-2, 0, -3)).loaded,
+    'mesh: the tile ahead (on screen) imported before the nearer one behind')
   -- terrain mode: unchanged (old tiles wait for their far_remove or far_done)
   setup(40, 'terrain')
   for _, k in ipairs(quarter) do

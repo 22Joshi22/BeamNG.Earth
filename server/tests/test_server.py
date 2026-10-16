@@ -299,7 +299,9 @@ class ServerTest(ServerHarness):
         # 64, ahead of the 1024 m ring outside the block (a flaky failure under CPU load when
         # this took tiles[64:]).
         under_keys = {m["key"] for m in under}
-        rest = [want[m["key"]].distance(0, 0) for m in tiles if m["key"] not in under_keys]
+        # (view-weighted, 2026-10-16: the poses' camera looks north from 8 m behind the player)
+        cone = ff.view_cone({"x": 0, "y": -8, "fx": 0, "fy": 1, "fovDeg": 60})
+        rest = [ff.view_distance(want[m["key"]], cone, 0, 0) for m in tiles if m["key"] not in under_keys]
         ds = sorted(rest)
         slack = self.server.tile_workers
         late = [i for i in range(len(rest)) if rest[i] > ds[min(i + slack, len(ds) - 1)]]
@@ -711,8 +713,13 @@ class MeshServerTest(ServerHarness):
         self.check_swaps(seen, aid)
         self.check_cover(far, aid, 0, 0, [])
         self.assertFalse([m for m in tiles if "sink" in m])
-        # nearest first: the exact tiles around the player come first
-        self.assertTrue(all(m["level"] == ex for m in tiles[:8]))
+        # nearest first (view-weighted: the poses' camera looks north from 8 m behind the player), up to the
+        # builds' completion-order jitter
+        cone = ff.view_cone({"x": 0, "y": -8, "fx": 0, "fy": 1, "fovDeg": 60})
+        vd = sorted(ff.view_distance(ff.tile_of(k), cone, 0, 0) for k in want)
+        slack = self.server.tile_workers
+        self.assertTrue(all(ff.view_distance(ff.tile_of(m["key"]), cone, 0, 0) <= vd[8 + slack] for m in tiles[:8]))
+        self.assertEqual(tiles[0]["level"], ex)
         # textures: DXT1 with mips, the layout's size per level (32 cells: TEX_NEAR for the two
         # finest levels, TEX_FAR beyond; 64: 256 px to L1, 512 from L2); shapes name the material
         # and have the layout's triangle count (8704 with 64 cells)

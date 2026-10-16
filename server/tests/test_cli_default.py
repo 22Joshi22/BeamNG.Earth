@@ -134,9 +134,10 @@ def compute(server_dir):
                     clock.now += POSE_DT
                     x, y = x + vx * POSE_DT, y + vy * POSE_DT
                     n0 = len(w.msgs)
+                    # no camera: since 2026-10-16 it orders the build queue (what is on screen first; test_sse_lod),
+                    # which M1's fixture predates
                     c.on_pose({"type": "pose", "anchorId": a.id, "x": x, "y": y, "z": 1500.0, "speed": speed,
-                               "vx": vx, "vy": vy, "lat": LAT0, "lon": LON0,
-                               "cam": {"x": x, "y": y - 8, "z": 1503.0, "fx": 0, "fy": 1, "fz": 0, "fovDeg": 60}})
+                               "vx": vx, "vy": vy, "lat": LAT0, "lon": LON0})
                     # the mod's 1024² rule: prepare the predicted block, commit it 450 m past the centre
                     b = c.block
                     if c.pending_block is None and c.predicted_block is not None:

@@ -474,6 +474,7 @@ class Server:
         self.matslots = matslotsmod.MatSlots(self.sid[-4:], held=self.slot_held)    # pooled names and shape files
         self.reslot_serial = itertools.count(1)
         self.slot_serial = itertools.count(1)      # far_tile slotSerial (matslots.py)
+        self.lod_px = farfield.SSE_TAU_PX   # screen-space LOD: the largest split pop allowed on screen (px; 0: off)
         self.update_check = False       # ask GitHub for a newer version after a hello (main_async turns it on; tests
                                         # never reach GitHub: its small daily budget ran out over a day of test runs)
         os.makedirs(self.out_dir, exist_ok=True)
@@ -1146,6 +1147,12 @@ class Server:
                 self.layout.block, self.out_dir, self.hm_name((anchor.id, cx, cy)),
                 self.ter_name((anchor.id, cx, cy))).result()
             return self._finish_heightmap(anchor, cx, cy, info, t0, pool)
+        urgent = getattr(self.dem, "urgent", None)     # (test DEMs have no lane)
+        with urgent() if urgent is not None else contextlib.nullcontext():     # the player waits for it (teleport,
+            # resync): ahead of every other download
+            return self._make_heightmap_here(anchor, cx, cy, progress, t0, q)
+
+    def _make_heightmap_here(self, anchor, cx, cy, progress, t0, q):
         keep = {}
         g = self.grader_for(anchor)
 
@@ -1675,6 +1682,33 @@ class Server:
         n = self.matslots.reclaim(itertools.chain(lost, idle))
         log.debug("material names: %d reclaimed, %s", n, self.matslots.stats())
 
+    def pool_shapes(self, conn, files):
+        """Event loop: the road / building tile's shape files ({what: file name in the session folder}) as pooled ones
+        (matslots.py; the far tiles' slots): each a hard link at a slot path, held by conn until the mod reports it
+        gone (pose.slotsGone). Returns {what: [vfs path, serial]} for the message's `slots` (files that do not exist
+        are left out; a slot that cannot be placed too: the mod then loads the tile's own file)."""
+        out = {}
+        if self.far_format != "cdae":
+            return out
+        for what, fname in files.items():
+            src = os.path.join(self.out_dir, fname)
+            if not os.path.exists(src):
+                continue
+            owner = ("shape", next(self.slot_serial))
+            name = self.matslots.take(owner)
+            slot = matslotsmod.MatSlots.file(name)
+            try:
+                matslotsmod.place(src, os.path.join(self.out_dir, slot))
+            except OSError as e:
+                log.debug("pooled shape %s: %s", fname, e)
+                self.matslots.release(owner)
+                continue
+            serial = next(self.slot_serial)
+            conn.slot_holds[matslotsmod.MatSlots.number(name)] = serial
+            self.matslots.release(owner)        # no tile owns it: free again once the mod lets go
+            out[what] = [f"{self.vfs_dir}/{slot}", serial]
+        return out
+
     def reslot(self, ck, info):
         """Event loop: a cached tile whose material name went to another tile meanwhile (reclaim_names) is
         sent again: a copy of its shape with the new name in the new name's pooled file (slot_<n>; DAE tiles: a file
@@ -1887,6 +1921,8 @@ class Server:
 
 
 # Per-anchor tile files (besides far_ / hm_) that prune() deletes with their anchor
+TELEPORT_PAUSE_M = 20000.0  # an anchor asked this far from the player is a teleport: the old place's work pauses
+TELEPORT_PAUSE_MAX_S = 120.0  # ... at most this long (the mod may never commit it)
 BOOST_MOVE_MS = 3.0         # the loading boost ends when the player moves faster than this (m/s) ...
 BOOST_MAX_S = 120.0         # ... or this long after the teleport
 BOOST_GRACE_S = 5.0         # (the car dropped into place moves a little at first)
@@ -1947,6 +1983,10 @@ class Connection:
         self.retired = {}               # (anchorId, key) -> monotonic time it left shown / sent
         self.held = set()               # pose.held: previous anchors whose tile objects the mod still has
         self.slot_holds = {}            # pooled slot -> serial of its latest far_tile the mod has not reported gone
+        # a teleport's anchor is being built (prepare_anchor > TELEPORT_PAUSE_M away): no new work for the old place
+        # (its far tiles, road / tree / building tiles, prefetch) until it commits or fails (2026-10-16: the anchor's
+        # first block waited 30 s for the CPU after a level load, 3.6 s alone)
+        self.teleport_pending = False
         self.sessions = set()           # hello / pose `sessions`: earlier runs' folders the mod still uses
         self.groups = []                # [(adds, removes)] still to emit
         # their swap deltas, computed off the event loop: (adds, removes) as tuples -> Future of (dIn, dOut)
@@ -2308,6 +2348,12 @@ class Connection:
             self.send({"type": "anchor_error", "requestId": req, "error": "invalid lat/lon/cx/cy"})
             return
         lon = (lon + 180.0) % 360.0 - 180.0
+        old = self.s.anchors.get(self.active)
+        if old is not None:
+            la, lo, _ = old.frame.enu_to_geodetic(*self.focus, 0.0)
+            if geodesy.haversine_m(float(la), float(lo), lat, lon) > TELEPORT_PAUSE_M:
+                self.teleport_pending, self.teleport_t0 = True, time.monotonic()
+                log.debug("teleport to %.5f, %.5f: the old place's work paused", lat, lon)
         anchor = self.s.new_anchor(lat, lon)
         self.status(f"Building terrain at {lat:.5f}, {lon:.5f}...")
         t0 = time.perf_counter()
@@ -2323,6 +2369,8 @@ class Connection:
             info = await self.s.terrain(anchor, cx, cy, self._progress())
         except Exception as e:
             log.exception("terrain for anchor request %s failed", req)
+            self.teleport_pending = False
+            self.wake.set()
             self.send({"type": "anchor_error", "requestId": req, "error": f"{type(e).__name__}: {e}"})
             return
         key = (anchor.id, cx, cy)
@@ -2375,6 +2423,9 @@ class Connection:
     def commit_anchor(self, aid):
         if aid == self.active:
             return
+        if self.teleport_pending:
+            self.teleport_pending = False
+            self.wake.set()
         anchor = self.s.anchors.get(aid)
         if anchor is None:
             log.warning("commit of unknown anchor %r ignored", aid)
@@ -2481,6 +2532,7 @@ class Connection:
         vx, vy = _num(msg, "vx", 0.0), _num(msg, "vy", 0.0)
         if aid == self.active:
             self.focus = (x, y)
+            self.pz = _num(msg, "z", 0.0)
         elif aid in self.s.anchors and self.active in self.s.anchors:
             # A late pose of the previous anchor: move it into the active frame.
             src, dst = self.s.anchors[aid].frame, self.s.anchors[self.active].frame
@@ -2495,7 +2547,7 @@ class Connection:
             if moving or since > BOOST_MAX_S:
                 self.s.load_boost(False, "moving" if moving else "timeout")
         if isinstance(msg.get("cam"), dict):
-            self.cam = msg["cam"]
+            self.cam, self.cam_aid = msg["cam"], aid
         if self.s.horizon:
             self.update_eye(self.s.anchors[aid].frame, x, y, msg)
         self.gravity.on_pose(self, self.s.anchors[aid].frame, x, y, _num(msg, "z", 0.0))
@@ -2521,6 +2573,12 @@ class Connection:
                 if c != (base.cx, base.cy) and self.s.layout.block_at(*c) != self.block:
                     self.predicted_block = self.s.layout.block_at(*c)
         self.update_far()
+        if self.teleport_pending and time.monotonic() - self.teleport_t0 > TELEPORT_PAUSE_MAX_S:
+            self.teleport_pending = False   # the mod never committed it (it stayed): the old place's work goes on
+            self.wake.set()
+        if self.teleport_pending:           # the old place's work waits: the new place has the CPU and the network
+            self.refresh_status()
+            return
         self.maybe_prefetch()
         if aid == self.active and self.following:
             self.s.warm_roads(self.s.anchors[aid], *self.focus, *self.vel)
@@ -2756,7 +2814,7 @@ class Connection:
         new, refined = farfield.select(*self.focus, self.forced(), self.refined, self.s.kfun,
                                        self.s.hysteresis, radius, hold=set(self.node_changed),
                                        min_level=self.s.min_level, radii=self.s.near_radii, layout=self.s.layout,
-                                       forced_level=self.s.forced_level, **extra)
+                                       forced_level=self.s.forced_level, view=self.view(), **extra)
         if self.desired:                # the first selection of an anchor is not a change
             for n in refined ^ self.refined:
                 self.node_changed[n] = now
@@ -2768,6 +2826,33 @@ class Connection:
             self.dirty = True
             self.batch = [time.perf_counter(), 0, 0]
         self.wake.set()
+
+    def view(self):
+        """The camera for screen-space LOD (farfield.View) from pose.cam (x, y, z, fovDeg, h: the screen's height px),
+        or None: no camera yet, an older mod without h, a camera of another anchor's frame, or --lod-px 0. The
+        tile errors are the built tiles' (a node never built splits by the distance rule only)."""
+        c = self.cam
+        if not isinstance(c, dict) or self.s.lod_px <= 0 or getattr(self, "cam_aid", None) != self.active:
+            return None
+        try:
+            cx, cy, cz = float(c["x"]), float(c["y"]), float(c["z"])
+            h, fov = float(c.get("h") or 0), float(c.get("fovDeg") or 60)
+        except (KeyError, TypeError, ValueError):
+            return None
+        if not (h > 0 and 1 < fov < 170 and math.isfinite(cx) and math.isfinite(cy) and math.isfinite(cz)):
+            return None
+        ppr = h / (2 * math.tan(math.radians(fov) / 2))     # BeamNG's fov: vertical
+        aid, tiles = self.active, self.s.tiles
+
+        def err(node):
+            info = tiles.get((aid, farfield.Tile(*node).key))
+            return None if info is None else info.err
+        reach, cap = farfield.SSE_REACH, farfield.SSE_SPACING_CAP
+        tune = os.environ.get("BNGE_LOD")      # experiments: "reach,cap"
+        if tune:
+            reach, cap = (float(v) for v in tune.split(","))
+        return farfield.View(cx, cy, cz - getattr(self, "pz", cz), ppr, err, tau=self.s.lod_px, reach=reach,
+                             cells=self.s.layout.cells, cap=cap)
 
     def _regroup(self):
         aid = self.active
@@ -2786,14 +2871,19 @@ class Connection:
         fx, fy = self.focus
         todo = [self.desired[k] for k in needed if k not in self.sent]
 
-        def prio(t):
+        cone = (farfield.view_cone(self.cam)
+                if isinstance(self.cam, dict) and getattr(self, "cam_aid", None) == aid else None)
+        dist = farfield.view_distances(todo, cone, fx, fy)
+
+        def prio(k):
+            t = todo[k]
             cls = 2
             if t.level in (0, self.s.forced_level) and any(farfield.overlaps(t.bbox, b) for b in gate):
                 cls = 0
             elif t.key in started:
                 cls = 1
-            return (cls, t.distance(fx, fy), t.level, t.key)
-        self.queue = sorted(todo, key=prio)
+            return (cls, dist[k], t.level, t.key)
+        self.queue = [todo[k] for k in sorted(range(len(todo)), key=prio)]
         self.qi = 0
         self.failed.clear()
 
@@ -2849,6 +2939,11 @@ class Connection:
             self.next_group += 1
             self.send({"type": "far_swap", "anchorId": aid, "id": gid, "add": adds, "remove": removes,
                        "dIn": round(d_in, 2), "dOut": round(d_out, 2)})
+            if log.isEnabledFor(logging.DEBUG) and adds and removes:   # the pop's size on screen: amplitude / distance
+                dist = min(farfield.tile_of(k).distance(*self.focus) for k in adds + removes)
+                log.debug("far_swap %d L%d->L%d dIn %.1f dOut %.1f at %.0f m (%.2f mrad)", gid,
+                          farfield.tile_of(removes[0]).level, farfield.tile_of(adds[0]).level, d_in, d_out, dist,
+                          1000 * max(d_in, d_out) / max(dist, 1.0))
             for k in removes:
                 self.shown.pop((aid, k), None)
             self._retire((aid, k) for k in removes)
@@ -2908,12 +3003,12 @@ class Connection:
             # three far workers made a block build 3-10x slower (landcover 1.4 s vs 0.1 s), too slow to
             # follow a car at 58 m/s (2026-10-12). The far tile finishing next refills the workers.
             workers = HM_BUSY_TILE_WORKERS if self.s.hm_inflight else self.s.tile_workers
-            while anchor is not None and len(self.inflight) < workers:
+            while anchor is not None and not self.teleport_pending and len(self.inflight) < workers:
                 t = self._next_tile()
                 if t is None:
                     break
                 self.inflight[(anchor.id, t.key)] = (self.s.tile(anchor, t), t)
-            if anchor is not None and self.s.imagery is not None:
+            if anchor is not None and self.s.imagery is not None and not self.teleport_pending:
                 for t in self.queue[self.qi:self.qi + IMAGERY_PREFETCH]:
                     if (anchor.id, t.key) not in self.s.tiles:
                         self.s.prefetch_imagery(anchor, t)
@@ -3070,6 +3165,7 @@ async def main_async(args):
                     sea=seacarvemod.SeaCarver(mapdata, args.cache_dir) if args.sea == "on" else None,
                     vegetation=(vegetationmod.Vegetation(mapdata, args.cache_dir) if args.trees == "on" else None))
     server.update_check = args.update_check == "on"
+    server.lod_px = args.lod_px
 
     server.game_cpus = getattr(args, "game_cpus", None)    # (cpupin.py: the game pinned at each hello)
     server.server_cpus = getattr(args, "server_cpus", None)
@@ -3272,6 +3368,9 @@ def main():
     ap.add_argument("--status-interval", type=float, default=STATUS_INTERVAL,
                     help="re-send the last status with the current far-tile backlog at most every S seconds "
                          "while it changes (0 = status on events only, as v1.3.1; tools/drive.py runs use 1)")
+    ap.add_argument("--lod-px", type=float, default=farfield.SSE_TAU_PX,
+                    help="screen-space LOD: far tiles also split while their split would pop more than this many "
+                         "pixels on the player's screen (camera, field of view, resolution; 0: distance rule only)")
     ap.add_argument("--update-check", choices=("on", "off"), default="on",
                     help="ask GitHub for a newer version after a game connects (updates.py; off: tests)")
     ap.add_argument("--weather", choices=("on", "off"), default="on",
