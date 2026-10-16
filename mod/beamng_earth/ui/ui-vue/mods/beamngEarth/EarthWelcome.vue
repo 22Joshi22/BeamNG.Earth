@@ -52,7 +52,7 @@
           <p class="small">Imagery, elevation and map data from open sources: USGS, USDA NAIP, state and national
             mapping agencies, EOX Sentinel-2 cloudless, Overture Maps / OpenStreetMap contributors, Mapterhorn.
             The sources in use are credited on screen while you drive.</p>
-          <p class="small preview">An early preview: expect rough edges. Thanks for trying it!</p>
+          <p class="small preview">A beta: expect some rough edges. Thanks for trying it!</p>
         </div>
       </div>
 
