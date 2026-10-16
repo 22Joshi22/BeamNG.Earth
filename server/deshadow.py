@@ -64,6 +64,8 @@ from dataclasses import dataclass
 
 import numpy as np
 
+import fast
+
 import pacer
 from PIL import Image
 
@@ -199,6 +201,9 @@ def lambert(nrm, az, el):
     return np.maximum(0.0, (nrm[0] * math.sin(a) + nrm[1] * math.cos(a)) * math.cos(e) + nrm[2] * math.sin(e))
 
 
+HORIZON_BATCH = 16          # horizon_tan steps per Rust call (pacer.pace between them)
+
+
 def horizon_tan(hpad, res, pad, n, az, max_dist=PAD_M, dmax=None, growth=1.04):
     """Max tangent of the terrain's elevation angle toward azimuth az, for the n x n window at
     (pad, pad) of the padded grid hpad. Steps grow geometrically from one cell; the march stops
@@ -209,6 +214,20 @@ def horizon_tan(hpad, res, pad, n, az, max_dist=PAD_M, dmax=None, growth=1.04):
     s, c = math.sin(math.radians(az)), math.cos(math.radians(az))
     stop = min(max_dist, (pad - 1.5) * res, max_dist if dmax is None else dmax)
     d = res
+    if (fast._ef is not None and hasattr(fast._ef, "horizon_steps") and isinstance(hpad, np.ndarray)
+            and hpad.dtype == np.float32):
+        # Rust (earthfast.horizon_steps): the same steps, no full-grid temporaries; paced between batches
+        hp = np.ascontiguousarray(hpad)
+        steps = []
+        while d <= stop:
+            dy, dx = -c * d / res, s * d / res
+            iy, ix = math.floor(dy), math.floor(dx)
+            steps.append((iy, ix, dy - iy, dx - ix, d))
+            d = max(d + res, d * growth)
+        for i in range(0, len(steps), HORIZON_BATCH):
+            pacer.pace()
+            fast._ef.horizon_steps(hp, best, pad, np.asarray(steps[i:i + HORIZON_BATCH], np.float64))
+        return best
     while d <= stop:
         pacer.pace()
         dy, dx = -c * d / res, s * d / res
