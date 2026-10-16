@@ -1776,6 +1776,102 @@ fn bc1_encode<'py>(py: Python<'py>, img: PyReadonlyArray3<'py, u8>) -> Bound<'py
     PyBytes::new(py, &out)
 }
 
+/// Pillow's Image.transform(MESH, BILINEAR) of an RGBA image (H, W, 4) onto a px x px output, exactly (Pillow warps
+/// RGBA premultiplied: RGBA -> RGBa (MULDIV255), the warp, RGBa -> RGBA (255 c / a, clipped)): the mesh is
+/// cells x cells boxes of cw px, cell (r, c) the quad nw (qx[r, c], qy[r, c]), sw [r + 1, c], se [r + 1, c + 1],
+/// ne [r, c + 1]; Pillow's QUAD coefficients (Image.__transformer), quad_transform at pixel centres and
+/// bilinear_filter32RGB (taps clipped to the image, 0 outside it, the value truncated to uint8).
+#[pyfunction]
+fn mesh_warp<'py>(py: Python<'py>, img: PyReadonlyArray3<'py, u8>, qx: PyReadonlyArray2<'py, f64>,
+                  qy: PyReadonlyArray2<'py, f64>, cells: usize, cw: usize, px: usize)
+                  -> Bound<'py, numpy::PyArray3<u8>> {
+    let (a, qx, qy) = (img.as_array(), qx.as_array(), qy.as_array());
+    let out = py.allow_threads(|| {
+        let (ih, iw, bands) = (a.shape()[0] as i64, a.shape()[1] as i64, a.shape()[2]);
+        let mut out = numpy::ndarray::Array3::<u8>::zeros((px, px, bands));
+        let clipx = |x: i64| -> usize { (if x < 0 { 0 } else if x < iw { x } else { iw - 1 }) as usize };
+        let clipy = |y: i64| -> usize { (if y < 0 { 0 } else if y < ih { y } else { ih - 1 }) as usize };
+        for r in 0..cells {
+            for c in 0..cells {
+                let (bx0, by0) = (c * cw, r * cw);
+                let (bx1, by1) = (((c + 1) * cw).min(px), ((r + 1) * cw).min(px));
+                let (w, h) = ((c + 1) * cw - c * cw, (r + 1) * cw - r * cw);
+                let (nwx, nwy) = (qx[[r, c]], qy[[r, c]]);
+                let (swx, swy) = (qx[[r + 1, c]], qy[[r + 1, c]]);
+                let (sex, sey) = (qx[[r + 1, c + 1]], qy[[r + 1, c + 1]]);
+                let (nex, ney) = (qx[[r, c + 1]], qy[[r, c + 1]]);
+                let as_ = 1.0 / w as f64;
+                let at = 1.0 / h as f64;
+                let a0 = nwx;
+                let a1 = (nex - nwx) * as_;
+                let a2 = (swx - nwx) * at;
+                let a3 = (sex - swx - nex + nwx) * as_ * at;
+                let a4 = nwy;
+                let a5 = (ney - nwy) * as_;
+                let a6 = (swy - nwy) * at;
+                let a7 = (sey - swy - ney + nwy) * as_ * at;
+                for y in by0..by1 {
+                    for x in bx0..bx1 {
+                        let xin = (x - bx0) as f64 + 0.5;
+                        let yin = (y - by0) as f64 + 0.5;
+                        let mut xx = a0 + a1 * xin + a2 * yin + a3 * xin * yin;
+                        let mut yy = a4 + a5 * xin + a6 * yin + a7 * xin * yin;
+                        if xx < 0.0 || xx >= iw as f64 || yy < 0.0 || yy >= ih as f64 {
+                            continue;                       // fill: 0
+                        }
+                        xx -= 0.5;
+                        yy -= 0.5;
+                        let xi = if xx < 0.0 { xx.floor() as i64 } else { xx as i64 };
+                        let yi = if yy < 0.0 { yy.floor() as i64 } else { yy as i64 };
+                        let dx = xx - xi as f64;
+                        let dy = yy - yi as f64;
+                        let (x0, x1) = (clipx(xi), clipx(xi + 1));
+                        let row0 = clipy(yi);
+                        let has1 = yi + 1 >= 0 && yi + 1 < ih;
+                        // the premultiplied source value (Pillow's rgbA2rgba: MULDIV255 for colour, alpha as is)
+                        let pm = |row: usize, col: usize, b: usize| -> f64 {
+                            let v = a[[row, col, b]] as u32;
+                            if b == 3 || bands < 4 {
+                                return v as f64;
+                            }
+                            let t = v * a[[row, col, 3]] as u32 + 128;
+                            (((t >> 8) + t) >> 8) as f64
+                        };
+                        let mut px_ = [0u8; 4];
+                        for b in 0..bands {
+                            let p0 = pm(row0, x0, b);
+                            let p1 = pm(row0, x1, b);
+                            let v1 = p0 + (p1 - p0) * dx;
+                            let v2 = if has1 {
+                                let q0 = pm((yi + 1) as usize, x0, b);
+                                let q1 = pm((yi + 1) as usize, x1, b);
+                                q0 + (q1 - q0) * dx
+                            } else {
+                                v1
+                            };
+                            px_[b] = (v1 + (v2 - v1) * dy) as u8;
+                        }
+                        // back from premultiplied (Pillow's rgba2rgbA)
+                        if bands == 4 {
+                            let al = px_[3] as i32;
+                            if al != 255 && al != 0 {
+                                for b in 0..3 {
+                                    px_[b] = ((255 * px_[b] as i32) / al).clamp(0, 255) as u8;
+                                }
+                            }
+                        }
+                        for b in 0..bands {
+                            out[[y, x, b]] = px_[b];
+                        }
+                    }
+                }
+            }
+        }
+        out
+    });
+    out.into_pyarray(py)
+}
+
 #[pymodule]
 fn earthfast(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(island_ring_rays, m)?)?;
@@ -1808,6 +1904,7 @@ fn earthfast(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(rf_pass, m)?)?;
     m.add_function(wrap_pyfunction!(vmedian, m)?)?;
     m.add_function(wrap_pyfunction!(bc1_encode, m)?)?;
-    m.add("VERSION", 23)?;
+    m.add_function(wrap_pyfunction!(mesh_warp, m)?)?;
+    m.add("VERSION", 24)?;
     Ok(())
 }

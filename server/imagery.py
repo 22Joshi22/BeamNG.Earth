@@ -855,7 +855,7 @@ class Imagery:
             mosaic[r:r + TILE, c:c + TILE, :3] = rgb
             mosaic[r:r + TILE, c:c + TILE, 3] = 255 if relit is None else 254
             any_data = True
-        return Image.fromarray(mosaic, "RGBA"), tx0 * TILE, ty0 * TILE, any_data
+        return mosaic, tx0 * TILE, ty0 * TILE, any_data
 
     def _colormatched(self, key, rgb, relit, pending):
         """The colour-seam corrected RGB of a source tile (raw or relit: raw -> de-shadow -> colour
@@ -967,25 +967,31 @@ class Imagery:
                 z -= 1                      # footprint too large for the zoom: coarser
             if not m:
                 continue
-            im, ox, oy, any_data = m
+            mos, ox, oy, any_data = m
             if not any_data:
                 continue
             qx, qy = fx - ox, fy - oy
-            mesh = [((c * cw, r * cw, (c + 1) * cw, (r + 1) * cw),
-                     (qx[r, c], qy[r, c], qx[r + 1, c], qy[r + 1, c],
-                      qx[r + 1, c + 1], qy[r + 1, c + 1], qx[r, c + 1], qy[r, c + 1]))
-                    for r in range(cells) for c in range(cells)]
-            res = im.transform((px, px), Image.MESH, mesh, resample=Image.BILINEAR)
-            alpha = np.asarray(res.getchannel("A"))
+            if _ef is not None and hasattr(_ef, "mesh_warp"):
+                # Pillow's MESH / BILINEAR warp of the RGBA mosaic, byte for byte, in Rust (no GIL, no per-cell calls)
+                res = _ef.mesh_warp(mos, np.ascontiguousarray(qx, np.float64), np.ascontiguousarray(qy, np.float64),
+                                    cells, cw, px)
+            else:
+                mesh = [((c * cw, r * cw, (c + 1) * cw, (r + 1) * cw),
+                         (qx[r, c], qy[r, c], qx[r + 1, c], qy[r + 1, c],
+                          qx[r + 1, c + 1], qy[r + 1, c + 1], qx[r, c + 1], qy[r, c + 1]))
+                        for r in range(cells) for c in range(cells)]
+                res = np.asarray(Image.fromarray(mos, "RGBA").transform((px, px), Image.MESH, mesh,
+                                                                        resample=Image.BILINEAR))
+            alpha = res[..., 3]
             hit = alpha == 255 if relit is None else alpha >= 254
             if not used and hit.all():      # the usual case: one source covers the texture
-                out[:] = np.asarray(res.convert("RGB"))
+                out[:] = res[..., :3]
                 filled[:] = True
                 if relit is not None:
                     relit[:] = alpha == 254
             else:
                 hit &= ~filled
-                np.copyto(out, np.asarray(res)[..., :3], where=hit[..., None])
+                np.copyto(out, res[..., :3], where=hit[..., None])
                 filled |= hit
                 if relit is not None:
                     relit |= hit & (alpha == 254)
