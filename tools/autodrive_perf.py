@@ -185,10 +185,12 @@ def obs_stop(started, out_path):
     return out_path
 
 
-def shot(out_dir, name):
-    """A screenshot of the game into out_dir/name (best effort)."""
+def shot(out_dir, name, quiet=True):
+    """A screenshot of the game into out_dir/name (best effort). quiet: our welcome page closed first (automated
+    runs); False leaves the UI as it is (a player's game: a menu they have open stays open)."""
     try:
-        mcp.quiet_ui()
+        if quiet:
+            mcp.quiet_ui()
         p = mcp.call("screenshot", {"jpg": True}).strip()
         for _ in range(20):
             time.sleep(0.25)
