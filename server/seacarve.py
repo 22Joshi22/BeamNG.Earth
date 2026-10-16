@@ -173,6 +173,28 @@ def _lonlat(mx, my, z=PX_ZOOM):
     return lat, lon
 
 
+def _cells_of(cx, cy):
+    """The distinct (cx, cy) of the points, sorted by cx then cy (np.unique's order). A terrain block's ~260k
+    points lie in a few cells: their range is walked (np.unique(axis=0) sorted every point: ~0.8 s a 9-tile
+    profile, 2026-10-15)."""
+    if cx.size == 0:
+        return []
+    x0, x1, y0, y1 = int(cx.min()), int(cx.max()), int(cy.min()), int(cy.max())
+    if (x1 - x0 + 1) * (y1 - y0 + 1) > 64:      # spread-out points: one sort of a combined key
+        k = np.unique((cx.ravel() - x0) * (y1 - y0 + 1) + (cy.ravel() - y0))
+        return [(int(v // (y1 - y0 + 1)) + x0, int(v % (y1 - y0 + 1)) + y0) for v in k]
+    out = []
+    for kx in range(x0, x1 + 1):
+        mx = cx == kx
+        if not mx.any():
+            continue
+        cyk = cy[mx]
+        for ky in range(y0, y1 + 1):
+            if (cyk == ky).any():
+                out.append((kx, ky))
+    return out
+
+
 class SeaCarver:
     """The water of the map-data cells near the player: the sea (level SEA_E) and lakes (each at its own
     level, measured from the DEM), with their floors carved from the shore."""
@@ -675,18 +697,17 @@ class SeaCarver:
         mx, my = _merc(lat, lon)
         cx = np.floor(mx / CELL_PX).astype(np.int64)
         cy = np.floor(my / CELL_PX).astype(np.int64)
-        keys = np.unique(np.stack([cx.ravel(), cy.ravel()], -1), axis=0)
         later = []
-        for kx, ky in keys:
+        for kx, ky in _cells_of(cx, cy):
+            sel = (cx == kx) & (cy == ky)
             if not wait and not self.ready(int(kx), int(ky)):
                 later.append((int(kx), int(ky)))
-                known[(cx == kx) & (cy == ky)] = False
+                known[sel] = False
                 continue
             r = self.raster(int(kx), int(ky))
             if r is None:
                 continue
             rd, rl = r[0], r[1]
-            sel = (cx == kx) & (cy == ky)
             fx = mx[sel] - kx * CELL_PX + 0.5      # raster coords: pixel centres at i + 0.5 - 1
             fy = my[sel] - ky * CELL_PX + 0.5
             i0 = np.clip(np.floor(fx).astype(np.int64), 0, rd.shape[1] - 2)
@@ -734,8 +755,7 @@ class SeaCarver:
         cx = np.floor(mx / CELL_PX).astype(np.int64)
         cy = np.floor(my / CELL_PX).astype(np.int64)
         later = []
-        for kx, ky in np.unique(np.stack([cx.ravel(), cy.ravel()], -1), axis=0):
-            kx, ky = int(kx), int(ky)
+        for kx, ky in _cells_of(cx, cy):
             if not self.ready(kx, ky):
                 later.append((kx, ky))
                 continue
