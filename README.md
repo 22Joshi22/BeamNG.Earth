@@ -89,9 +89,15 @@ internet connection (the map is downloaded while you play).
    - **Windows:** `BeamNG.Earth-<version>.exe`. Windows may warn about an unknown app: **More info > Run anyway**.
    - **Linux:** `BeamNG.Earth-<version>-x86_64.AppImage`. Make it executable (right-click > Properties >
      "Allow executing", or `chmod +x`).
-2. **Run it** (with Steam running). It copies the mod into the game, starts the world server and starts
-   BeamNG.drive. On Linux it starts the native game with the grass patch (`tools/gcpatch`) already applied, so no
-   Steam launch options are needed. Closing the game stops the server.
+2. **Run it** (with Steam running). A console window opens (like BeamMP's launcher); it copies the mod into the
+   game, starts the world server and starts BeamNG.drive. Closing the game stops the server.
+   - **Linux, native game:** started with the grass patch (`tools/gcpatch`) already applied, no Steam launch
+     options needed.
+   - **Linux, Windows build under Proton:** the AppImage sees the Proton setting and starts that build through
+     Steam (the server runs natively). The `.exe` also works inside the game's Proton prefix (for example with
+     protontricks' launcher).
+   - The Windows build starts with DirectX 11, skipping BeamNG's renderer dialog (`--gfx vk` / `--gfx dx12` to
+     change it).
 3. **Play:** in the game, go to **Freeroam** and pick the **BeamNG.Earth** level. A welcome page explains the
    basics the first time. Press **M** for the world map: search a place or an address, right-click to teleport,
    left-click to set a GPS route, and **Autodrive** to let the car drive it.

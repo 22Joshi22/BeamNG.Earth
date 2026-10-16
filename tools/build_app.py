@@ -92,7 +92,7 @@ def main():
     a = ap.parse_args()
     work = os.path.join(ROOT, "build", "app")
     shutil.rmtree(work, ignore_errors=True)
-    os.makedirs(work)
+    os.makedirs(work, exist_ok=True)
     os.makedirs(a.out, exist_ok=True)
     png, ico = make_icons(work)
     ver = version()

@@ -6,13 +6,19 @@ python launcher.py).
   2. starts the world server (server/earthd.py) with the recommended options,
   3. starts BeamNG.drive unless it already runs. Linux: the native game directly, with tools/gcpatch preloaded
      (keeps the grass when the physics block moves; it checks the game build and does nothing on another), so no
-     Steam launch options are needed; through Steam when that is not possible (Steam not running, the Windows
-     build under Proton). Windows: through Steam.
+     Steam launch options are needed; through Steam when that is not possible (Steam not running) and for the
+     Windows build under Proton (found from Steam's compatibility setting, else from the user folder the game
+     wrote last). Windows: through Steam. Under Wine / Proton (the .exe started with protontricks) it cannot start
+     the game: it asks you to press Play in Steam.
   4. stops the server when the game closes (or on Ctrl+C / closing the window).
+
+It runs in a console window, like BeamMP's launcher: the .exe opens one when it has none, the AppImage opens a
+terminal when started from a file manager (else it logs to ~/.cache/beamng-earth/logs).
 
     launcher.py                  everything
     launcher.py --no-game        only the server (start the game yourself)
     launcher.py --no-gcpatch     the game without the grass patch
+    launcher.py --proton / --native   Linux: which build of the game to start (default: found)
     launcher.py -- --verbose     anything after -- goes to the server
 """
 
@@ -70,7 +76,10 @@ def start_server(user_dir, extra, log_path):
     else:
         kw["start_new_session"] = True          # its worker processes with it: stopped as one group
     out = None
-    if not (sys.stdout and sys.stdout.isatty()):  # no terminal (the AppImage from a file manager): a log file
+    if IS_WIN and sys.stdout and sys.stdout.isatty():
+        # the console (one we may have opened: our standard handles still pointed elsewhere) to the server too
+        kw.update(stdout=sys.stdout, stderr=sys.stdout)
+    elif not (sys.stdout and sys.stdout.isatty()):  # no terminal (the AppImage from a file manager): a log file
         os.makedirs(os.path.dirname(log_path), exist_ok=True)
         out = open(log_path, "w", encoding="utf-8")
         kw.update(stdout=out, stderr=subprocess.STDOUT)
@@ -169,18 +178,93 @@ def clean_env():
     return env
 
 
-def steam_launch():
+def steam_launch(game_args=()):
+    """Through Steam, with game_args for the game (the Windows build's launcher skips its renderer dialog when
+    given -gfx)."""
     if IS_WIN:
-        os.startfile(f"steam://rungameid/{APP_ID}")
+        os.startfile(f"steam://run/{APP_ID}//{' '.join(game_args)}/")
     else:
         steam = shutil.which("steam")
-        cmd = [steam, "-applaunch", APP_ID] if steam else ["xdg-open", f"steam://rungameid/{APP_ID}"]
+        cmd = [steam, "-applaunch", APP_ID, *game_args] if steam else \
+            ["xdg-open", f"steam://run/{APP_ID}//{' '.join(game_args)}/"]
         subprocess.Popen(cmd, env=clean_env(), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                          start_new_session=True)
 
 
-def start_game(use_gcpatch):
+def _ini(path):
+    """key = value lines of an ini file (BeamNG's own, with a BOM)."""
+    out = {}
+    try:
+        with open(path, encoding="utf-8-sig", errors="replace") as f:
+            for line in f:
+                if "=" in line and not line.lstrip().startswith((";", "#", "[")):
+                    k, v = line.split("=", 1)
+                    out[k.strip()] = os.path.expandvars(v.strip())
+    except OSError:
+        pass
+    return out
+
+
+def windows_beamng_ini():
+    base = os.environ.get("LOCALAPPDATA") or os.path.join(os.path.expanduser("~"), "AppData", "Local")
+    return _ini(os.path.join(base, "BeamNG", "BeamNG.drive.ini"))
+
+
+def windows_game_dir():
+    """The game's folder on Windows (also inside a Proton prefix), as BeamMP's launcher finds it: installPath in
+    %LOCALAPPDATA%\\BeamNG\\BeamNG.drive.ini, else the game's registry key, else Steam's libraries."""
+    ok = lambda d: d and os.path.isfile(os.path.join(d, "BeamNG.drive.exe"))
+    d = windows_beamng_ini().get("installPath")
+    if ok(d):
+        return d
+    try:
+        import winreg
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\BeamNG\BeamNG.drive") as k:
+            i = 0
+            while True:
+                try:
+                    _, v, _ = winreg.EnumValue(k, i)
+                except OSError:
+                    break
+                if isinstance(v, str) and ok(v):
+                    return v
+                i += 1
+    except OSError:
+        pass
+    try:
+        import winreg
+        import re
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Valve\Steam") as k:
+            steam = winreg.QueryValueEx(k, "SteamPath")[0]
+        libs = [steam]
+        with open(os.path.join(steam, "steamapps", "libraryfolders.vdf"), encoding="utf-8", errors="replace") as f:
+            libs += [p.replace("\\\\", "\\") for p in re.findall(r'"path"\s+"([^"]+)"', f.read())]
+        for lib in libs:
+            d = os.path.join(lib, "steamapps", "common", "BeamNG.drive")
+            if ok(d):
+                return d
+    except OSError:
+        pass
+    return None
+
+
+def start_game(use_gcpatch, build="native", gfx="dx11"):
     """Start the game; returns a Popen when this process started it directly, else None (through Steam)."""
+    win_args = ["-gfx", gfx] if gfx else []
+    if IS_WIN:
+        # as BeamMP's launcher: the game's own launcher (BeamNG.drive.exe) in its folder, waited on. Works under
+        # Wine / Proton too (the .exe started with protontricks), where Steam's links do not reach Steam
+        d = windows_game_dir()
+        if d:
+            say(f"starting BeamNG.drive ({d})")
+            try:
+                return subprocess.Popen([os.path.join(d, "BeamNG.drive.exe")] + win_args, cwd=d)
+            except OSError as e:
+                say(f"could not start it ({e}); asking Steam")
+    elif build == "proton":
+        say("starting BeamNG.drive (the Windows build, Proton) through Steam")
+        steam_launch(win_args)
+        return None
     if not IS_WIN:
         exe = linux_game_exe()
         if exe and steam_running():
@@ -203,7 +287,7 @@ def start_game(use_gcpatch):
         elif exe:
             say("Steam is not running: starting the game through Steam (without the grass patch)")
     say("starting BeamNG.drive through Steam")
-    steam_launch()
+    steam_launch(win_args if IS_WIN else ())
     return None
 
 
@@ -211,6 +295,8 @@ def wait_for_game(proc):
     """Until the game closes."""
     if proc is not None:
         proc.wait()
+        while game_pids():          # the Windows build's launcher may end before the game
+            time.sleep(3)
         return
     t0 = time.time()
     while not game_pids():
@@ -223,10 +309,150 @@ def wait_for_game(proc):
         time.sleep(3)
 
 
+# --- the console window ---------------------------------------------------------------------------
+
+TERMINALS = [("konsole", ["-e"]), ("kgx", ["--"]), ("gnome-terminal", ["--"]), ("xfce4-terminal", ["-x"]),
+             ("mate-terminal", ["-x"]), ("tilix", ["-e"]), ("alacritty", ["-e"]), ("kitty", []), ("foot", []),
+             ("wezterm", ["start", "--"]), ("x-terminal-emulator", ["-e"]), ("xterm", ["-e"])]
+
+
+def open_terminal():
+    """Linux, started without a terminal (a file manager): run this again in a terminal window. True when one
+    opened (this process then ends)."""
+    if os.environ.get("BNGEARTH_TERMINAL") or not (os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")):
+        return False
+    me = [os.environ["APPIMAGE"]] if os.environ.get("APPIMAGE") else \
+        [sys.executable] + ([] if FROZEN else [os.path.abspath(__file__)])
+    desk = os.environ.get("XDG_CURRENT_DESKTOP", "").upper()
+    order = sorted(TERMINALS, key=lambda t: 0 if (("KDE" in desk and t[0] == "konsole") or
+                                                  ("GNOME" in desk and t[0] in ("kgx", "gnome-terminal"))) else 1)
+    term = os.environ.get("TERMINAL")
+    if term and shutil.which(term):
+        order.insert(0, (term, ["-e"]))
+    env = clean_env()
+    env["BNGEARTH_TERMINAL"] = "1"
+    for name, flag in order:
+        exe = shutil.which(name)
+        if not exe:
+            continue
+        try:
+            subprocess.Popen([exe] + flag + me + sys.argv[1:], env=env, start_new_session=True,
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            return True
+        except OSError:
+            continue
+    return False
+
+
+def windows_console():
+    """Windows: a console window of our own when there is none (Wine / Proton started us without one)."""
+    try:
+        import ctypes
+        k32 = ctypes.windll.kernel32
+        if not k32.GetConsoleWindow():
+            k32.FreeConsole()
+            if k32.AllocConsole():
+                sys.stdout = sys.stderr = open("CONOUT$", "w", buffering=1, encoding="utf-8", errors="replace")
+                sys.stdin = open("CONIN$", "r", encoding="utf-8", errors="replace")
+        k32.SetConsoleTitleW("BeamNG.Earth")
+    except (OSError, AttributeError):
+        pass
+
+
+def own_window():
+    """Whether this console window closes with us (opened for us): then wait before closing on an error."""
+    if os.environ.get("BNGEARTH_TERMINAL"):
+        return True
+    if IS_WIN:
+        try:
+            import ctypes
+            arr = (ctypes.c_uint * 8)()
+            return ctypes.windll.kernel32.GetConsoleProcessList(arr, 8) <= 2
+        except (OSError, AttributeError):
+            return False
+    return False
+
+
+def pause(msg):
+    say(msg)
+    try:
+        input()
+    except (EOFError, OSError):
+        time.sleep(30)
+
+
 # --- main -----------------------------------------------------------------------------------------
+
+def under_wine():
+    if not IS_WIN:
+        return False
+    try:
+        import ctypes
+        return hasattr(ctypes.WinDLL("ntdll"), "wine_get_version")
+    except (OSError, AttributeError):
+        return False
+
+
+def steam_compat_tool():
+    """Linux: the compatibility tool Steam is set to use for the game (a Proton's name), "" for none, None when
+    Steam's config does not say (it writes the setting when it exits)."""
+    import install
+    import re
+    for root in install._steam_roots():
+        try:
+            with open(os.path.join(root, "config", "config.vdf"), encoding="utf-8", errors="replace") as f:
+                text = f.read()
+        except OSError:
+            continue
+        m = re.search(r'"CompatToolMapping"\s*\{(.*?)\n\t{4}\}', text, re.S)
+        if not m:
+            continue
+        e = re.search(r'"%s"\s*\{[^}]*?"name"\s*"([^"]*)"' % APP_ID, m.group(1))
+        return e.group(1) if e else ""
+    return None
+
+
+def last_written(user_dir):
+    """When the game last wrote its log in this user folder (0: never)."""
+    import glob
+    t = [os.path.getmtime(p) for p in glob.glob(os.path.join(user_dir, "beamng*.log"))]
+    return max(t) if t else 0.0
+
+
+def linux_build(force=None):
+    """("native" | "proton", the BeamNG.drive user folder of that build) on Linux."""
+    import install
+    native = os.path.join(os.path.expanduser("~"), ".local", "share", "BeamNG", "BeamNG.drive", "current")
+    dirs = install.candidate_user_dirs()
+    proton_dirs = [d for d in dirs if os.path.realpath(d) != os.path.realpath(native)]
+    mode = force
+    if mode is None:
+        tool = steam_compat_tool()
+        if tool:
+            mode = "proton"
+        elif not proton_dirs:
+            mode = "native"
+        elif tool is None or not os.path.isdir(native):
+            # Steam has not saved the setting: the build that ran last
+            mode = "proton" if max(map(last_written, proton_dirs)) > last_written(native) else "native"
+        else:
+            mode = "native"
+    if mode == "proton":
+        d = max(proton_dirs, key=last_written) if proton_dirs else None
+        if d is None:
+            say("no Proton user folder of BeamNG.drive yet: start the game once from Steam, then run this again")
+            d = native
+        return "proton", d
+    os.makedirs(native, exist_ok=True)
+    return "native", native
+
 
 def user_folder():
     import install
+    if IS_WIN:
+        uf = windows_beamng_ini().get("userFolder")       # a user folder moved in the game's launcher
+        if uf and os.path.isdir(uf):
+            return os.path.join(uf, "current") if os.path.isdir(os.path.join(uf, "current")) else uf
     found = install.candidate_user_dirs()
     if found:
         return found[0]
@@ -249,16 +475,52 @@ def main():
     ap.add_argument("--no-gcpatch", action="store_true", help="Linux: start the game without the grass patch")
     ap.add_argument("--keep-mod", action="store_true", help="leave the game's copy of the mod as it is")
     ap.add_argument("--user-dir", help="BeamNG.drive user folder (default: found)")
+    ap.add_argument("--proton", dest="build", action="store_const", const="proton",
+                    help="Linux: the game is the Windows build under Proton")
+    ap.add_argument("--native", dest="build", action="store_const", const="native",
+                    help="Linux: the game is the native Linux build")
+    ap.add_argument("--gfx", default="dx11", choices=["dx11", "dx12", "vk", ""],
+                    help="the Windows build's renderer (skips its launcher's dialog; \"\" shows it)")
+    ap.add_argument("--no-terminal", action="store_true", help="Linux: no terminal window (log to a file)")
     ap.add_argument("extra", nargs=argparse.REMAINDER, help="after --: more options for the server")
     args = ap.parse_args()
-    if not (sys.stdout and sys.stdout.isatty()) and not IS_WIN:    # no terminal (from a file manager): a log
-        log = os.path.join(data_dir(), "logs", "launcher.log")
+    if IS_WIN:
+        windows_console()
+    elif not (sys.stdout and sys.stdout.isatty()):
+        if not args.no_terminal and open_terminal():
+            return
+        log = os.path.join(data_dir(), "logs", "launcher.log")     # no terminal at all: a log
         os.makedirs(os.path.dirname(log), exist_ok=True)
         sys.stdout = sys.stderr = open(log, "w", encoding="utf-8")
+    try:
+        run(args)
+    except KeyboardInterrupt:
+        pass
+    except SystemExit as e:
+        if e.code not in (None, 0) and own_window():
+            pause("Press Enter to close this window.")
+        raise
+    except Exception:
+        import traceback
+        traceback.print_exc()
+        if own_window():
+            pause("BeamNG.Earth stopped with an error (above). Press Enter to close this window.")
+        sys.exit(1)
+
+
+def run(args):
     import install
     say(f"BeamNG.Earth {install.version()}")
-    user_dir = args.user_dir or user_folder()
-    say(f"BeamNG.drive user folder: {user_dir}")
+    wine = under_wine()
+    build = "native"
+    if args.user_dir:
+        user_dir = args.user_dir
+        build = args.build or "native"
+    elif not IS_WIN:
+        build, user_dir = linux_build(args.build)
+    else:
+        user_dir = user_folder()
+    say(f"BeamNG.drive user folder: {user_dir}" + (" (the Windows build, Proton)" if build == "proton" else ""))
     running = bool(game_pids())
     if not args.keep_mod:
         if running:
@@ -276,12 +538,12 @@ def main():
             say("BeamNG.drive is already running")
             proc = None
         else:
-            proc = start_game(not args.no_gcpatch)
+            if wine:
+                say("(under Wine / Proton: on Linux the AppImage runs the server natively, faster)")
+            proc = start_game(not args.no_gcpatch, build, args.gfx)
         say("In the game: Freeroam > 'BeamNG.Earth'. The server stops when the game closes.")
         wait_for_game(proc)
         say("the game closed")
-    except KeyboardInterrupt:
-        pass
     finally:
         stop_server(server)
 
