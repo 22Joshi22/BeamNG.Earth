@@ -26,6 +26,8 @@ from dataclasses import dataclass
 
 import numpy as np
 
+import fast
+
 import mapcells
 
 SUBTYPES = ("river", "stream", "canal")
@@ -253,6 +255,10 @@ def _confluences(rivers):
                 continue
             a, b = big["centre"][:-1], big["centre"][1:]
             hw = (big["width"][:-1] + big["width"][1:]) / 4.0
+            if fast._ef is not None and hasattr(fast._ef, "points_near_segments") and len(rv["centre"]):
+                f64 = lambda x: np.ascontiguousarray(x, np.float64)     # noqa: E731
+                rv["into"] |= fast._ef.points_near_segments(f64(rv["centre"]), f64(a), f64(b), f64(hw))
+                continue
             p = rv["centre"][:, None, :]
             ab = (b - a)[None, :, :]
             L2 = np.maximum((ab ** 2).sum(-1), 1e-9)
