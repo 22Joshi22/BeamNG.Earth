@@ -105,6 +105,47 @@ STRIPS = ((0, 1, 0, V_BAND_LOW, V_LIGHT_LOW), (1, 2, 0, V_LIGHT_LOW, V_BAND_TOP 
 CURB_STRIPS = STRIPS[:3]
 
 
+# The lean collision mesh (Builder(collision=True), written as the tile's "walkcol"): the drawn mesh's 8-point profile
+# and 0.5 m ramp steps cost the game's collision rebuild ~7 ms of ~12 in Fells Point (2026-10-16: 31 tiles, 245k
+# triangles). Physics gets the face, the curb top to the ramp run, the slab and the back (profile points LEAN) at the
+# points that matter: a run's points within LEAN_TOL_M of the line between their neighbours kept (Douglas-Peucker,
+# the curb height counted too, so ramps keep their shape).
+LEAN = (0, 2, 5, 6, 7)
+LEAN_STRIPS = tuple((i, i + 1, 0, 0.0, 0.0) for i in range(len(LEAN) - 1))
+LEAN_TOL_M = 0.03
+
+
+def simplify(pts, tol=LEAN_TOL_M):
+    """Indices of the points (k, d) Douglas-Peucker keeps at tolerance tol (both ends always). Pure."""
+    pts = np.asarray(pts, np.float64)
+    k = len(pts)
+    if k <= 2:
+        return np.arange(k)
+    keep = np.zeros(k, bool)
+    keep[0] = keep[-1] = True
+    stack = [(0, k - 1)]
+    while stack:
+        a, b = stack.pop()
+        if b - a < 2:
+            continue
+        seg = pts[b] - pts[a]
+        rel = pts[a + 1:b] - pts[a]
+        L2 = float(seg @ seg)
+        if L2 > 0:
+            t = np.clip(rel @ seg / L2, 0.0, 1.0)
+            d = rel - t[:, None] * seg
+        else:
+            d = rel
+        d2 = (d * d).sum(1)
+        i = int(np.argmax(d2))
+        if d2[i] > tol * tol:
+            m = a + 1 + i
+            keep[m] = True
+            stack.append((a, m))
+            stack.append((m, b))
+    return np.nonzero(keep)[0]
+
+
 def curb_heights(s, ramps, h=CURB_H):
     """The curb height at arc lengths s along a run with curb ramps [(s0, s1)]: RAMP_H inside, sloping
     back to h over RAMP_FLARE either side. Pure."""
@@ -127,10 +168,18 @@ def refine(s, ramps, step=0.5, margin=1.0):
 class Builder:
     """Accumulates sidewalk runs and corners into one mesh (positions relative to `origin`)."""
 
-    def __init__(self, origin):
+    def __init__(self, origin, collision=False):
         self.origin = np.asarray(origin, np.float64)
         self.P, self.UV, self.T, self.M = [], [], [], []
         self.n = 0
+        self.col = Builder._lean(origin) if collision else None   # the lean collision mesh beside it
+        self.lean = False
+
+    @classmethod
+    def _lean(cls, origin):
+        b = cls(origin)
+        b.lean = True
+        return b
 
     def _add(self, P, UV):
         k = self.n
@@ -186,18 +235,27 @@ class Builder:
         toward_out = np.asarray(toward_out, np.float64)
         if len(curb) < 2:
             return
+        if self.col is not None:
+            self.col.add_run(curb, toward_out, w, h, caps, ramps)
         s = np.r_[0.0, np.cumsum(np.hypot(*np.diff(curb[:, :2], axis=0).T))]
         if ramps:
             s2 = refine(s, ramps)
             curb = np.stack([np.interp(s2, s, curb[:, c]) for c in range(3)], axis=1)
             toward_out = np.stack([np.interp(s2, s, toward_out[:, c]) for c in range(2)], axis=1)
             s = s2
-        k = len(curb)
         hr = curb_heights(s, ramps, h)
+        if self.lean:                           # the collision mesh: fewer points, the lean profile
+            keep = simplify(np.c_[curb, hr])
+            curb, toward_out, s, hr = curb[keep], toward_out[keep], s[keep], hr[keep]
+        k = len(curb)
         ring, prof = self._sections(curb, toward_out, w, h, hr)
-        low = hr < h - 1e-6
-        tactile = (low[:-1] | low[1:]) if low.any() else None
-        self._strips(ring, prof, toward_out, s, STRIPS, tactile, slab)
+        if self.lean:
+            ring, prof = ring[:, LEAN], prof[:, LEAN]
+            self._strips(ring, prof, toward_out, s, LEAN_STRIPS)
+        else:
+            low = hr < h - 1e-6
+            tactile = (low[:-1] | low[1:]) if low.any() else None
+            self._strips(ring, prof, toward_out, s, STRIPS, tactile, slab)
         for end, sgn, cap in ((0, -1, caps[0]), (k - 1, 1, caps[1])):   # end caps: a fan over the profile
             if not cap:
                 continue
@@ -220,6 +278,8 @@ class Builder:
         where the curb is lowered (the slab then slopes up from it toward the outer corner)."""
         arc = np.asarray(arc, np.float64)
         inward = np.asarray(inward, np.float64)
+        if self.col is not None:
+            self.col.add_corner(arc, inward, outer, h, ramps)
         s = np.r_[0.0, np.cumsum(np.hypot(*np.diff(arc[:, :2], axis=0).T))]
         if ramps:
             s2 = refine(s, ramps)
@@ -227,10 +287,13 @@ class Builder:
             inward = np.stack([np.interp(s2, s, inward[:, c]) for c in range(2)], axis=1)
             inward /= np.maximum(np.hypot(*inward.T), 1e-9)[:, None]
             s = s2
-        k = len(arc)
         hr = curb_heights(s, ramps, h)
+        if self.lean:                           # the collision mesh: fewer points, the curb as one face
+            keep = simplify(np.c_[arc, hr])
+            arc, inward, s, hr = arc[keep], inward[keep], s[keep], hr[keep]
+        k = len(arc)
         ring, prof = self._sections(arc, inward, 2.5, h, hr)
-        self._strips(ring, prof, inward, s, CURB_STRIPS)
+        self._strips(ring, prof, inward, s, ((0, 3, 0, 0.0, 0.0),) if self.lean else CURB_STRIPS)
         inner = ring[:, 3]                                  # the curb top's inner edge, at h
         out = np.asarray(outer, np.float64) - self.origin
         out[:, 2] = out[:, 2] + h + 2.5 * CROSS_SLOPE
@@ -269,6 +332,11 @@ class Builder:
     def write(self, path):
         P, T, UV, M = self.arrays()
         return cdae.write(path, P, T, uvs=UV, material=list(MATERIALS), tri_materials=M, object_name="walk")
+
+    def write_collision(self, path):
+        """The lean collision mesh (Builder(collision=True)) as a never-drawn collision shape."""
+        P, T, UV, M = self.col.arrays()
+        return cdae.write(path, P, T, uvs=UV, material=MATERIALS[0], collision_only=True)
 
 
 def run_geometry(walk_line, side, w):

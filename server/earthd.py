@@ -1794,7 +1794,7 @@ class Server:
 
 
 # Per-anchor tile files (besides far_ / hm_) that prune() deletes with their anchor
-ANCHOR_TILE_FILES = ("roads", "road", "walks", "deck", "bld", "bldcol", "bldfar", "wire", "veg", "navgraph")
+ANCHOR_TILE_FILES = ("roads", "road", "walks", "walkcol", "deck", "bld", "bldcol", "bldfar", "wire", "veg", "navgraph")
 
 
 class _BoundedLru:
