@@ -1627,6 +1627,155 @@ fn vmedian<'py>(py: Python<'py>, x: PyReadonlyArray3<'py, f32>, ok: PyReadonlyAr
     out.into_pyarray(py)
 }
 
+fn bc1_565(c: [f64; 3]) -> u16 {
+    let r = (c[0].clamp(0.0, 255.0) * 31.0 / 255.0).round() as u16;
+    let g = (c[1].clamp(0.0, 255.0) * 63.0 / 255.0).round() as u16;
+    let b = (c[2].clamp(0.0, 255.0) * 31.0 / 255.0).round() as u16;
+    (r << 11) | (g << 5) | b
+}
+
+fn bc1_rgb(x: u16) -> [i32; 3] {
+    let r = ((x >> 11) & 31) as i32;
+    let g = ((x >> 5) & 63) as i32;
+    let b = (x & 31) as i32;
+    [(r << 3) | (r >> 2), (g << 2) | (g >> 4), (b << 3) | (b >> 2)]
+}
+
+/// One BC1 block (4-colour mode) of 16 RGB texels: endpoints along the block's principal axis (power iteration on
+/// the covariance), refined once by least squares on the chosen indices, each texel the nearest of the 4 colours.
+fn bc1_block(t: &[[i32; 3]; 16]) -> [u8; 8] {
+    let mut mean = [0f64; 3];
+    for k in 0..16 {
+        for c in 0..3 {
+            mean[c] += t[k][c] as f64 / 16.0;
+        }
+    }
+    let mut cov = [[0f64; 3]; 3];
+    for k in 0..16 {
+        let d = [t[k][0] as f64 - mean[0], t[k][1] as f64 - mean[1], t[k][2] as f64 - mean[2]];
+        for i in 0..3 {
+            for j in 0..3 {
+                cov[i][j] += d[i] * d[j];
+            }
+        }
+    }
+    let mut v = [0.577f64, 0.577, 0.577];
+    for _ in 0..6 {
+        let w = [cov[0][0] * v[0] + cov[0][1] * v[1] + cov[0][2] * v[2],
+                 cov[1][0] * v[0] + cov[1][1] * v[1] + cov[1][2] * v[2],
+                 cov[2][0] * v[0] + cov[2][1] * v[1] + cov[2][2] * v[2]];
+        let n = (w[0] * w[0] + w[1] * w[1] + w[2] * w[2]).sqrt();
+        if n < 1e-9 {
+            break;
+        }
+        v = [w[0] / n, w[1] / n, w[2] / n];
+    }
+    let (mut pmin, mut pmax) = (f64::INFINITY, f64::NEG_INFINITY);
+    for k in 0..16 {
+        let p = (t[k][0] as f64 - mean[0]) * v[0] + (t[k][1] as f64 - mean[1]) * v[1] + (t[k][2] as f64 - mean[2]) * v[2];
+        pmin = pmin.min(p);
+        pmax = pmax.max(p);
+    }
+    let mut e0 = [mean[0] + v[0] * pmax, mean[1] + v[1] * pmax, mean[2] + v[2] * pmax];
+    let mut e1 = [mean[0] + v[0] * pmin, mean[1] + v[1] * pmin, mean[2] + v[2] * pmin];
+    let mut best: Option<(u64, u16, u16, u32)> = None;
+    for pass in 0..2 {
+        let (mut c0, mut c1) = (bc1_565(e0), bc1_565(e1));
+        if c0 < c1 {
+            std::mem::swap(&mut c0, &mut c1);
+        }
+        let (a, b) = (bc1_rgb(c0), bc1_rgb(c1));
+        let pal: [[i32; 3]; 4] = if c0 == c1 {
+            [a, a, a, a]
+        } else {
+            [a, b, [(2 * a[0] + b[0]) / 3, (2 * a[1] + b[1]) / 3, (2 * a[2] + b[2]) / 3],
+             [(a[0] + 2 * b[0]) / 3, (a[1] + 2 * b[1]) / 3, (a[2] + 2 * b[2]) / 3]]
+        };
+        let mut idx = 0u32;
+        let mut err = 0u64;
+        let mut sel = [0usize; 16];
+        for k in 0..16 {
+            let mut bi = 0usize;
+            let mut be = i32::MAX;
+            for (pi, p) in pal.iter().enumerate() {
+                let d = (t[k][0] - p[0]).pow(2) + (t[k][1] - p[1]).pow(2) + (t[k][2] - p[2]).pow(2);
+                if d < be {
+                    be = d;
+                    bi = pi;
+                }
+            }
+            sel[k] = bi;
+            err += be as u64;
+            idx |= (bi as u32) << (2 * k);
+        }
+        if best.map_or(true, |b| err < b.0) {
+            best = Some((err, c0, c1, idx));
+        }
+        if pass == 1 || c0 == c1 {
+            break;
+        }
+        // least squares on the chosen weights (w of e0: 1, 0, 2/3, 1/3)
+        const W: [f64; 4] = [1.0, 0.0, 2.0 / 3.0, 1.0 / 3.0];
+        let (mut aa, mut bb, mut ab) = (0f64, 0f64, 0f64);
+        let mut ax = [0f64; 3];
+        let mut bx = [0f64; 3];
+        for k in 0..16 {
+            let wa = W[sel[k]];
+            let wb = 1.0 - wa;
+            aa += wa * wa;
+            bb += wb * wb;
+            ab += wa * wb;
+            for c in 0..3 {
+                ax[c] += wa * t[k][c] as f64;
+                bx[c] += wb * t[k][c] as f64;
+            }
+        }
+        let det = aa * bb - ab * ab;
+        if det.abs() < 1e-9 {
+            break;
+        }
+        for c in 0..3 {
+            e0[c] = (bb * ax[c] - ab * bx[c]) / det;
+            e1[c] = (aa * bx[c] - ab * ax[c]) / det;
+        }
+    }
+    let (_, c0, c1, idx) = best.unwrap();
+    let mut out = [0u8; 8];
+    out[0..2].copy_from_slice(&c0.to_le_bytes());
+    out[2..4].copy_from_slice(&c1.to_le_bytes());
+    out[4..8].copy_from_slice(&idx.to_le_bytes());
+    out
+}
+
+/// BC1 (DXT1, 4-colour) blocks of an (h, w, 3) uint8 image, row-major, edges padded by repetition.
+#[pyfunction]
+fn bc1_encode<'py>(py: Python<'py>, img: PyReadonlyArray3<'py, u8>) -> Bound<'py, PyBytes> {
+    let a = img.as_array();
+    let out = py.allow_threads(|| {
+        let (h, w) = (a.shape()[0], a.shape()[1]);
+        let (nby, nbx) = ((h + 3) / 4, (w + 3) / 4);
+        let mut out = vec![0u8; nby * nbx * 8];
+        let mut t = [[0i32; 3]; 16];
+        for by in 0..nby {
+            for bx in 0..nbx {
+                for yy in 0..4 {
+                    let y = (by * 4 + yy).min(h - 1);
+                    for xx in 0..4 {
+                        let x = (bx * 4 + xx).min(w - 1);
+                        for c in 0..3 {
+                            t[yy * 4 + xx][c] = a[[y, x, c]] as i32;
+                        }
+                    }
+                }
+                let o = (by * nbx + bx) * 8;
+                out[o..o + 8].copy_from_slice(&bc1_block(&t));
+            }
+        }
+        out
+    });
+    PyBytes::new(py, &out)
+}
+
 #[pymodule]
 fn earthfast(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(island_ring_rays, m)?)?;
@@ -1658,6 +1807,7 @@ fn earthfast(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(terrarium_heights, m)?)?;
     m.add_function(wrap_pyfunction!(rf_pass, m)?)?;
     m.add_function(wrap_pyfunction!(vmedian, m)?)?;
-    m.add("VERSION", 22)?;
+    m.add_function(wrap_pyfunction!(bc1_encode, m)?)?;
+    m.add("VERSION", 23)?;
     Ok(())
 }
