@@ -1627,6 +1627,159 @@ fn vmedian<'py>(py: Python<'py>, x: PyReadonlyArray3<'py, f32>, ok: PyReadonlyAr
     out.into_pyarray(py)
 }
 
+/// The lower median of `v[..k]` entries with `ok`, as colormatch._vmedian (idx = (n - 1) // 2 among the sorted
+/// ok values, 0 when there are none).
+fn lower_median(v: &[f32], ok: &[bool], n: i64, buf: &mut [f32]) -> f32 {
+    let k = v.len();
+    // a stable insertion sort (k is 5): the order sort_by gives
+    for i in 0..k {
+        let x = if ok[i] { v[i] } else { f32::INFINITY };
+        let mut j = i;
+        while j > 0 && buf[j - 1] > x {
+            buf[j] = buf[j - 1];
+            j -= 1;
+        }
+        buf[j] = x;
+    }
+    let idx = ((n - 1).div_euclid(2)).max(0) as usize;
+    let mut m = buf[0];
+    for kk in 1..=(k - 1) / 2 {
+        if idx == kk {
+            m = buf[kk];
+        }
+    }
+    if m.is_finite() { m } else { 0.0 }
+}
+
+/// colormatch.detect_seams, one rotation's step test on the rotated weights and weighted log channels
+/// (arrs [7, H, W] float32: w, then USGS r g b, then S2 r g b, each times w): the band sums each side of every
+/// candidate line (float64 cumulative sums as numpy's), the per-segment steps, their lower medians over the
+/// `offs` segments, the agreement and the S2 gate. Returns (score [H, W], Dm [3, H, W]) as the numpy code, bit
+/// for bit, without its ~40 full-size temporaries.
+#[pyfunction]
+#[allow(clippy::too_many_arguments)]
+fn seam_pass<'py>(py: Python<'py>, arrs: PyReadonlyArray3<'py, f32>, half: i64, depth: i64, offs: Vec<i64>,
+                  full: f64, gate: f32, agree_frac: f64, min_valid: i64)
+                  -> (Bound<'py, PyArray2<f32>>, Bound<'py, numpy::PyArray3<f32>>) {
+    let view = arrs.as_array();
+    let (nch, h, w) = (view.shape()[0], view.shape()[1], view.shape()[2]);
+    assert!(nch == 7);
+    let a = arrs.as_slice().expect("contiguous");
+    let (score, dm) = py.allow_threads(|| {
+        let clip = |v: i64, hi: usize| v.clamp(0, hi as i64) as usize;
+        let hi_x: Vec<usize> = (0..w as i64).map(|i| clip(i + half + 1, w)).collect();
+        let lo_x: Vec<usize> = (0..w as i64).map(|i| clip(i - half, w)).collect();
+        let b1: Vec<usize> = (0..h as i64).map(|j| clip(j + depth + 1, h)).collect();
+        let b0: Vec<usize> = (0..h as i64).map(|j| clip(j + 1, h)).collect();
+        let a1: Vec<usize> = (0..h as i64).map(|j| clip(j, h)).collect();
+        let a0: Vec<usize> = (0..h as i64).map(|j| clip(j - depth, h)).collect();
+        // per channel: the band sums below (b) and above (a) each line, as numpy's cumsum differences
+        let mut c = vec![0f64; w + 1];
+        let mut cy = vec![0f64; (h + 1) * w];
+        let mut band = |ch: usize, b: &mut [f64], at: &mut [f64]| {
+            for y in 0..h {
+                let row = &a[(ch * h + y) * w..(ch * h + y + 1) * w];
+                c[0] = 0.0;
+                for x in 0..w {
+                    c[x + 1] = c[x] + row[x] as f64;
+                }
+                for i in 0..w {
+                    let s = c[hi_x[i]] - c[lo_x[i]];
+                    cy[(y + 1) * w + i] = cy[y * w + i] + s;
+                }
+            }
+            for j in 0..h {
+                for i in 0..w {
+                    b[j * w + i] = cy[b1[j] * w + i] - cy[b0[j] * w + i];
+                    at[j * w + i] = cy[a1[j] * w + i] - cy[a0[j] * w + i];
+                }
+            }
+        };
+        let mut wb = vec![0f64; h * w];
+        let mut wa = vec![0f64; h * w];
+        band(0, &mut wb, &mut wa);
+        // the per-segment steps (float32) and the segments with enough weight both sides
+        let mut ok = vec![false; h * w];
+        for p in 0..h * w {
+            ok[p] = wb[p] > full && wa[p] > full;
+            wb[p] = 1.0 / wb[p].max(1e-3);
+            wa[p] = 1.0 / wa[p].max(1e-3);
+        }
+        let mut dseg = vec![0f32; 6 * h * w];
+        let mut bs = vec![0f64; h * w];
+        let mut as_ = vec![0f64; h * w];
+        for ch in 0..6 {
+            band(ch + 1, &mut bs, &mut as_);
+            let d = &mut dseg[ch * h * w..(ch + 1) * h * w];
+            for p in 0..h * w {
+                d[p] = ((bs[p] * wb[p]) - (as_[p] * wa[p])) as f32;
+            }
+        }
+        let k = offs.len();
+        let mut score = numpy::ndarray::Array2::<f32>::zeros((h, w));
+        let mut dm = numpy::ndarray::Array3::<f32>::zeros((3, h, w));
+        let mut oks = vec![false; k];
+        let mut dl = vec![[0f32; 3]; k];
+        let mut ds = vec![[0f32; 3]; k];
+        let mut col = vec![0f32; k];
+        let mut buf = vec![0f32; k];
+        for y in 0..h {
+            for x in 0..w {
+                let mut nvalid = 0i64;
+                for (kk, &o) in offs.iter().enumerate() {
+                    let xs = x as i64 + o;
+                    if xs >= 0 && (xs as usize) < w {
+                        let p = y * w + xs as usize;
+                        oks[kk] = ok[p];
+                        for ch in 0..3 {
+                            dl[kk][ch] = dseg[ch * h * w + p] - dseg[(ch + 3) * h * w + p];
+                            ds[kk][ch] = dseg[(ch + 3) * h * w + p];
+                        }
+                    } else {
+                        oks[kk] = false;
+                        dl[kk] = [0.0; 3];
+                        ds[kk] = [0.0; 3];
+                    }
+                    if oks[kk] {
+                        nvalid += 1;
+                    }
+                }
+                let mut m = [0f32; 3];
+                let mut msm = [0f32; 3];
+                for ch in 0..3 {
+                    for kk in 0..k {
+                        col[kk] = dl[kk][ch];
+                    }
+                    m[ch] = lower_median(&col, &oks, nvalid, &mut buf);
+                    for kk in 0..k {
+                        col[kk] = ds[kk][ch];
+                    }
+                    msm[ch] = lower_median(&col, &oks, nvalid, &mut buf);
+                }
+                let nm = (m[0] * m[0] + m[1] * m[1] + m[2] * m[2]).sqrt();
+                let mut agree = 0i64;
+                for kk in 0..k {
+                    let d = dl[kk];
+                    let nk = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
+                    let cos = (d[0] * m[0] + d[1] * m[1] + d[2] * m[2]) / (nk * nm).max(1e-6f32);
+                    if cos > 0.7f32 && nk > 0.5f32 * nm && oks[kk] {
+                        agree += 1;
+                    }
+                }
+                let cons = nvalid >= min_valid && (agree as f64) >= agree_frac * nvalid as f64;
+                let nsm = (msm[0] * msm[0] + msm[1] * msm[1] + msm[2] * msm[2]).sqrt();
+                let g = (1.0f32 - (nsm - 0.03f32).max(0.0) / (gate * nm + 1e-3f32)).clamp(0.0, 1.0);
+                score[[y, x]] = nm * (if cons { 1.0f32 } else { 0.0 }) * g;
+                for ch in 0..3 {
+                    dm[[ch, y, x]] = m[ch];
+                }
+            }
+        }
+        (score, dm)
+    });
+    (score.into_pyarray(py), dm.into_pyarray(py))
+}
+
 fn bc1_565(c: [f64; 3]) -> u16 {
     let r = (c[0].clamp(0.0, 255.0) * 31.0 / 255.0).round() as u16;
     let g = (c[1].clamp(0.0, 255.0) * 63.0 / 255.0).round() as u16;
@@ -1905,6 +2058,7 @@ fn earthfast(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(vmedian, m)?)?;
     m.add_function(wrap_pyfunction!(bc1_encode, m)?)?;
     m.add_function(wrap_pyfunction!(mesh_warp, m)?)?;
+    m.add_function(wrap_pyfunction!(seam_pass, m)?)?;
     m.add("VERSION", 24)?;
     Ok(())
 }
