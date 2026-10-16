@@ -1337,6 +1337,9 @@ def road_through(ring, lines, step=2.0):
     return total
 
 
+CENTRE_PREFILTER_M = 1.0       # m of slack for Features.outer_centres (cumulative sums: within ~1e-5 m of the exact mean)
+
+
 def tile_buildings(frame, x0, y0, x1, y1, layers, elev, water=None, part_layers=(), west_town=False, roads_xy=None):
     """[(Spec, gmin, gmax)] of the buildings whose footprint centroid is in the tile [x0, x1) x [y0, y1)
     (anchor frame), rings relative to (x0, y0). layers: mapgeom.Features of buildings (one per map cell; a
@@ -1372,7 +1375,12 @@ def tile_buildings(frame, x0, y0, x1, y1, layers, elev, water=None, part_layers=
             continue
         a = f.attrs
         ids = getattr(f, "ids", None)
-        for i in range(len(f.kind)):
+        rows = range(len(f.kind))
+        if isinstance(f, mapgeom.Features):     # only the buildings whose centre may be in the tile (the exact test below)
+            cx_, cy_ = f.outer_centres(frame)
+            m = CENTRE_PREFILTER_M
+            rows = np.flatnonzero((cx_ >= x0 - m) & (cx_ < x1 + m) & (cy_ >= y0 - m) & (cy_ < y1 + m)).tolist()
+        for i in rows:
             if a.get("is_underground") is not None and bool(a["is_underground"][i]):
                 continue
             lv = a["level"][i] if a.get("level") is not None else None
