@@ -865,16 +865,17 @@ def cut_outside(pts, blockers, spacing=2.0):
     return _runs_outside(d, inside)
 
 
-_BLOCKERS = (None, None)        # (the last blockers list, its segment arrays): a tile passes one list to many calls
+_BLOCKERS = ()                  # ((blockers list, its segment arrays), ...): the last few lists (a tile alternates
+                                # between its sidewalk and road blockers over many calls)
 
 
 def _blocker_segments(blockers):
     """(segs (m, 4), starts (B + 1,), half widths (B,)) of [(centreline (k, 2), half width)] (lines of < 2
     points left out)."""
     global _BLOCKERS
-    last, arr = _BLOCKERS               # one read: another thread may replace it meanwhile
-    if last is blockers and arr[3] == len(blockers):
-        return arr[:3]
+    for last, arr in _BLOCKERS:         # one read of the tuple: another thread may replace it meanwhile
+        if last is blockers and arr[3] == len(blockers):
+            return arr[:3]
     segs, starts, hws = [], [0], []
     for line, hw in blockers:
         line = np.asarray(line, np.float64)
@@ -885,7 +886,7 @@ def _blocker_segments(blockers):
         hws.append(float(hw))
     arr = (np.ascontiguousarray(np.vstack(segs)) if segs else np.zeros((0, 4)), np.array(starts, np.int64),
            np.array(hws, np.float64), len(blockers))
-    _BLOCKERS = (blockers, arr)
+    _BLOCKERS = ((blockers, arr),) + _BLOCKERS[:3]
     return arr[:3]
 
 
