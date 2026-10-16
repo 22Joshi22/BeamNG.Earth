@@ -131,7 +131,7 @@ local function dropTile(key)
   if t.walk then deleteQ[#deleteQ + 1] = t.walk end
   if t.road then deleteQ[#deleteQ + 1] = t.road end
   if t.deck then deleteQ[#deleteQ + 1] = t.deck end
-  for _, w in ipairs({ 'bld', 'bld2', 'bld3', 'bld4', 'bldcol' }) do if t[w] then deleteQ[#deleteQ + 1] = t[w] end end
+  for _, w in ipairs({ 'bld', 'bld2', 'bld3', 'bld4', 'bldcol', 'walkcol' }) do if t[w] then deleteQ[#deleteQ + 1] = t[w] end end
   if t.wire then deleteQ[#deleteQ + 1] = t.wire end
   local keep = {}
   for _, q in ipairs(parked) do if q.key ~= key then keep[#keep + 1] = q end end
@@ -279,11 +279,14 @@ function M.onTile(msg, currentAnchor)
   local tx, ty = tostring(msg.key):match('^(%-?%d+)_(%-?%d+)$')
   tiles[key].cx = tx and (tonumber(tx) + 0.5) * M.TILE_M or nil
   tiles[key].cy = ty and (tonumber(ty) + 0.5) * M.TILE_M or nil
+  -- a lean collision mesh ("bldcol", "walkcol": server cdae collision_only) makes the drawn ones render-only
   local lean = type(data.bldcol) == 'table' and data.bldcol.shape ~= nil
-  for _, what in ipairs({ 'walk', 'deck', 'bld', 'bld2', 'bld3', 'bld4', 'bldcol' }) do
+  local leanWalk = type(data.walkcol) == 'table' and data.walkcol.shape ~= nil
+  for _, what in ipairs({ 'walk', 'deck', 'bld', 'bld2', 'bld3', 'bld4', 'bldcol', 'walkcol' }) do
     local w = data[what]
     if type(w) == 'table' and w.shape and type(w.pos) == 'table' then
-      local q = { key = key, walk = w, what = what, renderOnly = lean and what:sub(1, 3) == 'bld' and what ~= 'bldcol' }
+      local q = { key = key, walk = w, what = what,
+        renderOnly = (lean and what:sub(1, 3) == 'bld' and what ~= 'bldcol') or (leanWalk and what == 'walk') }
       if q.renderOnly or M.collideNear(tiles[key]) then walkQ[#walkQ + 1] = q else parked[#parked + 1] = q end
     end
   end
@@ -389,8 +392,8 @@ function M.update(gov, currentAnchor)
       local t0 = now()
       loadMaterials()
       local isRoad = q.what == 'road' or q.what == 'wire' or q.renderOnly   -- render-only meshes
-      -- the buildings' lean mesh is a collision detail (server cdae collision_only): never drawn
-      local ok, id = pcall(createWalk, q.walk, q.what == 'bldcol' and 'Collision Mesh' or not isRoad)
+      -- the buildings' and sidewalks' lean meshes are a collision detail (server cdae collision_only): never drawn
+      local ok, id = pcall(createWalk, q.walk, (q.what == 'bldcol' or q.what == 'walkcol') and 'Collision Mesh' or not isRoad)
       if ok then
         if not isRoad then t.cq = t.cq or {}; t.cq[q.what] = q end
         if isRoad then t[q.what] = id else t[q.what] = id; collisionDirty = true; newColliders[#newColliders + 1] = { id, q } end
