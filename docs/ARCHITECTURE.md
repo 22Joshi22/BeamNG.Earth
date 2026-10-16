@@ -869,12 +869,17 @@ three days of testing: dem 741 MB / 7.5k files, imagery 1.4 GB / 35k, deshadow 7
   `test_restart.RestartDriveTest.test_kill_and_restart_anchor_1`). hello still names the folders.
   The server's sweep removes unclaimed orphans in a worker thread (`sweep_sessions_async`; a session
   is thousands of files), and a folder carrying the new session's own id is never an orphan.
-  Known limit: a material name (`bngEarthSat_<anchor>_<key>`) the new session repeats while the old
-  tile still uses it keeps the old texture (satmat: a material in use keeps its file); the new tile
-  then holds the old folder until that material goes (the usual case is the same anchor id for the
-  same origin, so the same imagery; only the deletion waits). A previous anchor's tile of the old
-  session whose id the new session reuses for another origin would lend its texture to the new tile
-  until it goes (rare: a restart within the seconds after a rebase).
+  Material names (2026-10-16) are pooled per server session (`bngEarthFar_<session>_<n>`, server/matslots.py),
+  so a new session never repeats an old session's name (the old limit: a repeated `bngEarthSat_<anchor>_<key>`
+  kept the old tile's texture).
+  Pooled slots (2026-10-16): the game's frame cost grows ~0.3 ms per 1000 distinct shape files it ever loaded
+  (shadows and reflections; a game restart clears it), and every far tile used to be a new file. Slot n is a
+  material name and a shape file `slot_<n>.cdae` (a hard link to the tile's own `far_<a>_<key>.cdae`, replaced
+  atomically for the slot's next tile). Each far_tile with one carries `slotSerial`; the mod reports
+  `[slot, serial]` in `pose.slotsGone` once that message's object (or never-spawned instance) is gone, lists what
+  it still holds in `hello.slotsHeld` after a reconnect, and the server hands a slot to another tile only when no
+  connection holds it. The mod keeps pooled Materials (satmat.lua) and deletes a spare or doomed object still
+  holding a pooled path before loading it again (farfield.lua freeSlot).
 - **Tests**: `server/tests/test_restart.py` (the fault-injection drive: a 64-cell / 512² session
   killed mid-drive and restarted in the same folder; 4127 coverage checks within 512 m without a hole,
   no vanished file, the guard warned and held the car 15 m inside the edge during the 25 s gap and

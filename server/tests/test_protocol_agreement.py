@@ -89,7 +89,9 @@ def F(types, *flags):
 MOD_TO_SERVER = {
     # sessions: the session folders whose files the mod's objects still use (farfield.heldSessions; a
     # restarted server keeps an earlier run's folder named here, docs/ROADMAP.md "Robustness" 3)
-    "hello": {"protocol": F(int), "format": F(int), "modVersion": F(str), "sessions": F((list, dict), OPT)},
+    "hello": {"protocol": F(int), "format": F(int), "modVersion": F(str), "sessions": F((list, dict), OPT),
+              # a reconnect: the pooled far-tile slots [[slot, serial], ...] the mod's objects hold for that session
+              "slotSession": F(str, OPT), "slotsHeld": F((list, dict), OPT)},
     "prepare_anchor": {"requestId": F(int), "lat": F(NUM), "lon": F(NUM), "cx": F(NUM, OPT), "cy": F(NUM, OPT)},
     "commit_anchor": {"anchorId": F(int)},
     "prepare_terrain": {"requestId": F(int), "anchorId": F(int), "cx": F(NUM), "cy": F(NUM)},
@@ -100,7 +102,9 @@ MOD_TO_SERVER = {
              # previous anchors whose tile objects the mod still has (an empty Lua table may encode as {})
              "held": F((list, dict), OPT),
              # the session folders in use, as in hello: an earlier run's one no longer named is released
-             "sessions": F((list, dict), OPT)},
+             "sessions": F((list, dict), OPT),
+             # pooled far-tile slots whose far_tile's object is gone: [[slot, serial], ...] (matslots.py)
+             "slotsGone": F((list, dict), OPT)},
     # the download cache (cache.py; additive): the page's size cap (GB, 0 = unlimited), a clear, or
     # neither (fresh usage numbers); always answered with a 'cache'
     "cache": {"capGb": F(NUM, OPT), "clear": F(bool, OPT)},
@@ -151,7 +155,8 @@ SERVER_TO_MOD = {
                  "err": F(NUM), "skirt": F(NUM), "sink": F(NUM, OPT), "state": F(str),   # sink: exactly on L0
                  # protocol 4, satellite imagery: the tile's own material (all three, or none)
                  "material": F(str, OPT), "texture": F(str, OPT), "detail": F(bool, OPT),
-                 "tex": F(int, OPT)},           # v1.4 M1: texture px (FORMAT 4, with the material)
+                 "tex": F(int, OPT),            # v1.4 M1: texture px (FORMAT 4, with the material)
+                 "slotSerial": F(int, OPT)},    # a pooled shape file's send serial (matslots.py; pose.slotsGone)
     "far_swap": {"anchorId": F(int), "id": F(int), "add": F(list), "remove": F(list), "dIn": F(NUM),
                  "dOut": F(NUM)},
     "far_remove": {"anchorId": F(int), "key": F(str)},
@@ -210,7 +215,8 @@ MOD_INTERNAL = {"_connected": set(), "_disconnected": {"error"}}
 
 LUA = modsim.MOD_DIR
 GRAVITY_FIXTURE = Path(__file__).resolve().parent / "fixtures" / "egm2008_n36.npz"     # degree 36 (test_gravity)
-SHAPE_RE = r"^/temp/beamngEarth/[^/]+/far_\d+_-?\d+_-?\d+_-?\d+\.cdae$"     # levels down to -2 (mesh mode)
+# levels down to -2 (mesh mode); a textured tile's shape is its material name's pooled file (matslots.py)
+SHAPE_RE = r"^/temp/beamngEarth/[^/]+/(far_\d+_-?\d+_-?\d+_-?\d+|slot_\d{5})\.cdae$"
 HM_RE = r"^/temp/beamngEarth/[^/]+/hm_\d+_-?\d+_-?\d+\.png$"
 
 
@@ -763,10 +769,11 @@ class ServerMessagesTest(test_server.ServerHarness):
         if kind == "far_tile" and "material" in m:
             self.assertTrue("texture" in m and "detail" in m, m)
             self.assertRegex(m["texture"], r"^/temp/beamngEarth/[^/]+/[^/]+\.dds$")
-            # the name the shape's material slot carries: a plain identifier, unique per anchor+key
-            self.assertEqual(m["material"], earthd.sat_material(m["anchorId"], m["key"]))
-            self.assertRegex(m["material"], r"^bngEarthSat_\d+_m?\d+_m?\d+_m?\d+$")
-            self.assertEqual(m["texture"], m["shape"].rsplit(".", 1)[0] + ".dds")      # next to the shape
+            # the name the shape's material slot carries: a pooled one (matslots.py; satmat.pooled)
+            self.assertRegex(m["material"], r"^bngEarthFar_[0-9a-f]{4}_\d{5}$")
+            # in the shape's folder; the shape is the name's pooled file (slot_<n>.cdae, matslots.py)
+            self.assertEqual(m["texture"].rsplit("/", 1)[0], m["shape"].rsplit("/", 1)[0])
+            self.assertEqual(m["shape"].rsplit("/", 1)[1], f"slot_{m['material'].rsplit('_', 1)[1]}.cdae")
             self.assertIs(m["detail"], True)
         if kind == "hello":
             self.assertIn(m["nearVisual"], ("mesh", "terrain"))

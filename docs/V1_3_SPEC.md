@@ -35,7 +35,9 @@ here stays as in v1.2. Written 2026-10-10 by the lead from user feedback and in-
   finest near levels 512², others 256². Write **DDS DXT1 with a full mip chain** (verify Pillow output; if
   Pillow writes no mips, write them yourself: DXT1 blocks per mip with a numpy BC1 encoder, or fall back to
   PNG and let the engine build mips — measure load cost in tests and document the choice).
-- Per-tile material name `bngEarthSat_<anchorId>_<key>` written into the .cdae; texture file next to the
+- Per-tile material name `bngEarthSat_<anchorId>_<key>` written into the .cdae (2026-10-16: a pooled name
+  `bngEarthFar_<session>_<n>` instead, server/matslots.py: the engine's frame cost grows with every Material ever
+  made, so the names and their Materials are re-used by later tiles); texture file next to the
   .cdae with a unique name. UV0 = 0..1 across the footprint (skirts/aprons reuse edge UVs). UV1 =
   world-locked detail UVs = (x, y)/DETAIL_M in the anchor frame (continuous across tiles) for the detail map.
 - Brightness/colour: imagery has baked shadows; apply a mild global tone curve (configurable) so it sits well

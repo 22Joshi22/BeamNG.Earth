@@ -343,4 +343,40 @@ T.check(obj(key(0, -1, -1)).hidden, 'terrain again: interior tile hidden')
 T.check(obj(key(-2, 0, 2)).hidden, 'terrain again: an L-2 tile inside the block has no sink: hidden')
 farfield.setNearVisual('mesh')
 
+------------------------------------------------------------------------------------------
+-- pooled names (server/matslots.py): never deleted; unused, the next tile's texture switches in
+do
+  local P = 'bngEarthFar_ab12_00007'
+  T.check(satmat.pooled(P) and not satmat.pooled('bngEarthSat_1_0_0_16'), 'pooled names recognised')
+  T.check(satmat.create(P, '/temp/beamngEarth/s/far_5_a.dds', true) and satmat.ref(P, '/temp/beamngEarth/s/far_5_a.dds'), 'pooled material created')
+  local m = matNamed(P)
+  local reloads = 0
+  m.flush = function() end
+  m.reload = function() reloads = reloads + 1 end
+  satmat.requestRetex(P, '/temp/beamngEarth/s/far_5_a_r1.dds') -- queued for the tile that has it now
+  satmat.unref(P)
+  T.check(not satmat.hasDeletes() and not satmat.deleteNext() and matNamed(P) == m, 'unused pooled material kept')
+  local function held(tex)
+    local n = 0
+    satmat.eachTexture(function(t) if t == tex then n = n + 1 end end)
+    return n
+  end
+  T.check(held('/temp/beamngEarth/s/far_5_a.dds') == 0 and held('/temp/beamngEarth/s/far_5_a_r1.dds') == 0,
+    'unused pooled material: no file held for it')
+  local before = S.calls.createObject_Material
+  T.check(satmat.create(P, '/temp/beamngEarth/s/far_5_b.dds', true) and satmat.ref(P, '/temp/beamngEarth/s/far_5_b.dds'),
+    'the name re-used by another tile')
+  T.check(S.calls.createObject_Material == before and m.fields.colorMap == '/temp/beamngEarth/s/far_5_b.dds' and reloads == 1,
+    're-used: no new Material, switched to the new tile\'s texture and reloaded')
+  T.check(not satmat.retexNext() and m.fields.colorMap == '/temp/beamngEarth/s/far_5_b.dds',
+    'the previous tile\'s queued retexture does not apply to the new one')
+  T.check(satmat.refs(P) == 1 and held('/temp/beamngEarth/s/far_5_b.dds') == 1, 'in use again: its file held')
+  -- given to a third tile while the second still shows it (its removal is late): switched, time-sliced
+  T.check(satmat.ref(P, '/temp/beamngEarth/s/far_9_c.dds') and satmat.refs(P) == 2
+    and m.fields.colorMap == '/temp/beamngEarth/s/far_5_b.dds' and satmat.hasRetex(), 'a name still in use: switch queued')
+  T.check(satmat.retexNext() and m.fields.colorMap == '/temp/beamngEarth/s/far_9_c.dds', 'switched to the newest tile')
+  satmat.unref(P)
+  satmat.unref(P)
+end
+
 T.done('test_imagery')

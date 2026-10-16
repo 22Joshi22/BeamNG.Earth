@@ -110,6 +110,7 @@ import riverlines as riverlinesmod  # noqa: E402
 import groundahead as groundaheadmod  # noqa: E402
 import heightmap  # noqa: E402
 import imagery as imagerymod  # noqa: E402
+import matslots as matslotsmod  # noqa: E402
 import maptiles as maptilesmod  # noqa: E402
 import geocode as geocodemod  # noqa: E402
 import routing as routingmod  # noqa: E402
@@ -382,6 +383,7 @@ class TileInfo:
     # whose status is ready: the loop guard, RETEX_REPEAT)
     retex_repeat: int = 0
     credits: frozenset = frozenset()    # data-credit source ids (credits.tile_sources; --credits on only)
+    shape: str | None = None    # its shape file when not tile_name(): a copy under a new material name (reslot)
 
 
 def predict_centre(px, py, vx, vy, lead, reach=FOLLOW_REACH, grid=heightmap.GRID):
@@ -435,12 +437,6 @@ def survey_q(frame, dem, block_m=BLOCK_SURVEY_M):
     return heightmap.choose_q(float((win.max(axis=(2, 3)) - win.min(axis=(2, 3))).max()))
 
 
-def sat_material(aid, key):
-    """Per-tile imagery material name (V1_3_SPEC §A): bngEarthSat_<anchorId>_<key>, with the
-    key's minus signs as 'm' so the name is a plain identifier (keys never contain an 'm')."""
-    return f"bngEarthSat_{aid}_{key.replace('-', 'm')}"
-
-
 class Server:
     def __init__(self, user_dir, cache_dir, tile_workers=3, kfun=None,
                  hysteresis=farfield.HYSTERESIS, radius=farfield.RADIUS, far_format="cdae",
@@ -475,6 +471,11 @@ class Server:
         self.user_dir = user_dir           # the game's user folder (detail mode fills its terrain texture cache)
         self.cdae_dir = os.path.join(user_dir, *CDAE_ROOT, self.sid.lower())
         self.vfs_dir = f"/temp/beamngEarth/{self.sid}"
+        self.matslots = matslotsmod.MatSlots(self.sid[-4:], held=self.slot_held)    # pooled names and shape files
+        self.reslot_serial = itertools.count(1)
+        self.slot_serial = itertools.count(1)      # far_tile slotSerial (matslots.py)
+        self.update_check = False       # ask GitHub for a newer version after a hello (main_async turns it on; tests
+                                        # never reach GitHub: its small daily budget ran out over a day of test runs)
         os.makedirs(self.out_dir, exist_ok=True)
         open(os.path.join(self.out_dir, SESSION_MARKER), "w").close()
         if far_format not in farfield.FORMATS:
@@ -1505,7 +1506,7 @@ class Server:
                 rgb = self.rock_faces(anchor, tile, px, rgb, built.grid)
                 texture = self.texture_name(anchor.id, tile.key, self.tex_rev.get((anchor.id, tile.key), 0))
                 tex_bytes = imagerymod.write_dds(os.path.join(self.out_dir, texture), rgb)
-                material = sat_material(anchor.id, tile.key)
+                material = self.matslots.take(ck)
                 self.degraded.discard(ck)
             except imagerymod.ImageryError as e:
                 # Network trouble: this tile keeps the palette look (the mod's static material).
@@ -1526,6 +1527,9 @@ class Server:
                                               used if material is not None else None)
         info = TileInfo(built.pos, built.err, built.sink, built.skirt, built.grid, size, dt,
                         material, texture, tex_bytes, t2 - t1, credits=sources)
+        if material is not None and self.far_format == "cdae":    # the pooled shape path (matslots.py)
+            info.shape = matslotsmod.MatSlots.file(material)
+            matslotsmod.place(path, os.path.join(self.out_dir, info.shape))
         if material is not None:
             info.rev = self.tex_rev.get((anchor.id, tile.key), 0)
             info.cm_pending = frozenset(pending or ())
@@ -1608,6 +1612,26 @@ class Server:
             out |= {ck for ck in self.tiles if ck[0] in held}
         return out
 
+    def names_in_use(self):
+        """(anchorId, key) of the tiles a connection is about to send or build (desired, sent, in flight): they
+        keep their names. Whether a game still draws a name is slot_held()."""
+        out = set()
+        for c in self.connections:
+            out |= {(c.active, k) for k in c.sent}
+            out |= {(c.active, k) for k in c.desired}
+            out |= set(c.inflight)
+        return out
+
+    def slot_held(self, n):
+        """Does some game still hold pooled slot n (a far_tile with it not reported gone)?"""
+        return any(n in c.slot_holds for c in self.connections)
+
+    def slots_let_go(self, slots):
+        """Event loop: these slots' holds ended (reported gone, or a connection closed)."""
+        for n in slots:
+            if not self.slot_held(n):
+                self.matslots.unheld(n)
+
     def held_anchors(self):
         """Previous anchors whose tile objects some mod still has (pose.held): their files stay."""
         out = set()
@@ -1633,20 +1657,63 @@ class Server:
             info.retex_repeat = before.retex_repeat + 1 if info.stale else 0
         if info.stale:
             self._retex_pump()
+        if self.matslots.short():
+            self.reclaim_names()
         if len(self.tiles) > self.tile_cache:
             used = self.in_use()
             for old in [k for k in self.tiles if k not in used][:len(self.tiles) - self.tile_cache]:
                 self._evict_tile(old)
 
+    def reclaim_names(self):
+        """Event loop: the pooled names (and shape files) of tiles about to be neither sent nor built back to the
+        pool (matslots; one a game still holds waits for its report): names left by builds that never finished
+        first, then idle cached tiles, least recently used first."""
+        used = self.names_in_use()
+        owners = self.matslots.holders()
+        lost = [ck for ck in owners if ck not in self.tiles and ck not in self.tile_inflight and ck not in used]
+        idle = (ck for ck in self.tiles if ck not in used and ck not in self.tile_inflight)
+        n = self.matslots.reclaim(itertools.chain(lost, idle))
+        log.debug("material names: %d reclaimed, %s", n, self.matslots.stats())
+
+    def reslot(self, ck, info):
+        """Event loop: a cached tile whose material name went to another tile meanwhile (reclaim_names) is
+        sent again: a copy of its shape with the new name in the new name's pooled file (slot_<n>; DAE tiles: a file
+        _s<serial>, the old copy deleted), even when it got its own name back (its pooled file may hold another
+        tile by now).
+        On failure the tile keeps its name (it may show another tile's texture)."""
+        new = self.matslots.take(ck)
+        src = os.path.join(self.out_dir, self.tile_name(*ck))
+        pooled = self.far_format == "cdae"
+        name = matslotsmod.MatSlots.file(new) if pooled else f"{os.path.splitext(self.tile_name(*ck))[0]}_s{next(self.reslot_serial)}.{self.far_format}"
+        try:
+            with open(src, "rb") as fh:
+                data = fh.read()
+            if new != info.material:
+                data = matslotsmod.restamp(data, info.material, new)
+            dst = os.path.join(self.out_dir, name)
+            with open(dst + ".tmp", "wb") as fh:
+                fh.write(data)
+            os.replace(dst + ".tmp", dst)
+        except (OSError, ValueError) as e:
+            log.warning("tile %s of anchor %d: material name not renewed (%s)", ck[1], ck[0], e)
+            return info
+        if not pooled and info.shape is not None:
+            self.queue_delete([os.path.join(self.out_dir, info.shape)])
+        info = self.tiles[ck] = replace(info, material=new, shape=name)
+        return info
+
     def _evict_tile(self, ck):
         info = self.tiles.pop(ck)
         self.degraded.discard(ck)
+        self.matslots.release(ck)
         # --colormatch: a later build must not reuse its texture's name (re-rendered, or rendered raw
         # for a region that may finish before the tile is built again: the listener misses it then)
         if info.stale or info.rev or info.cm_pending:
             self.tex_rev[ck] = info.rev + 1
         # through the rate-limited queue: the mod loaded most of these files once (P9)
         files = self.tile_files(self.tile_name(*ck), info.texture if info.rev else None, info.rev)
+        if info.shape is not None and not info.shape.startswith("slot_"):   # pooled files stay (re-used)
+            files.append(os.path.join(self.out_dir, info.shape))
         self.queue_delete((p for p in files if os.path.exists(p)), ck)
 
     def _cm_listener(self, rk, changed):
@@ -1786,6 +1853,8 @@ class Server:
             self.horizon_failed.pop(aid, None)
             for ck in [k for k in self.tiles if k[0] == aid]:
                 del self.tiles[ck]
+            for ck in [k for k in self.matslots.holders() if k[0] == aid]:
+                self.matslots.release(ck)
             for ck in [ck for ck in list(self.degraded) if ck[0] == aid]:     # list(): workers add meanwhile
                 self.degraded.discard(ck)
             for ck in [k for k in self.tex_rev if k[0] == aid]:
@@ -1877,6 +1946,7 @@ class Connection:
         self.sent = {}                  # key -> Tile (active anchor)
         self.retired = {}               # (anchorId, key) -> monotonic time it left shown / sent
         self.held = set()               # pose.held: previous anchors whose tile objects the mod still has
+        self.slot_holds = {}            # pooled slot -> serial of its latest far_tile the mod has not reported gone
         self.sessions = set()           # hello / pose `sessions`: earlier runs' folders the mod still uses
         self.groups = []                # [(adds, removes)] still to emit
         # their swap deltas, computed off the event loop: (adds, removes) as tuples -> Future of (dIn, dOut)
@@ -2084,6 +2154,8 @@ class Connection:
             log.warning("client %s: %s", self.peer, e)
         finally:
             self.s.connections.discard(self)
+            self.s.slots_let_go(list(self.slot_holds))
+            self.slot_holds = {}
             self.s.drop_claims(self)
             self.streamer.cancel()
             self.credits.close()
@@ -2129,6 +2201,11 @@ class Connection:
                 m["season"] = season_mode
             if self.s.map_port:                 # the world map's tiles (maptiles.py; --map-tiles on)
                 m["mapPort"] = self.s.map_port
+            # a mod reconnecting to this server: the pooled slots its objects still hold (matslots.py)
+            if msg.get("slotSession") == self.s.sid and isinstance(msg.get("slotsHeld"), list):
+                for g in msg["slotsHeld"]:
+                    if isinstance(g, list) and len(g) == 2 and isinstance(g[0], (int, float)):
+                        self.slot_holds[int(g[0])] = g[1]
             # a game that outlived its server: keep the session folders its tiles still use
             self.s.claim_sessions(self, msg.get("sessions"))
             self.send(m)
@@ -2142,7 +2219,8 @@ class Connection:
                 self.status(self.last_status)
             if self.s.cache is not None:            # the download cache's usage (the settings page)
                 self.send(self.s.cache.message())
-            self.spawn(self.check_update())         # a newer version on GitHub: the mod says so (updates.py)
+            if self.s.update_check:
+                self.spawn(self.check_update())     # a newer version on GitHub: the mod says so (updates.py)
             if getattr(self.s, "game_cpus", None):  # the game off the server's cores (cpupin.py)
                 n = cpupin.pin_game(self.s.game_cpus)
                 log.info("the game's %d threads on CPUs %s", n, ",".join(map(str, sorted(self.s.game_cpus))))
@@ -2364,7 +2442,27 @@ class Connection:
         self._set_block(aid, cx, cy)
         self.update_far()
 
+    def slots_gone(self, gone):
+        """pose.slotsGone [[slot, serial], ...]: the mod's objects (or never-spawned instances) of those far_tile
+        messages are gone; a slot whose latest send is among them is no longer held by this game."""
+        if isinstance(gone, dict):      # an empty Lua table may encode as {}
+            gone = list(gone.values())
+        if not isinstance(gone, list):
+            return
+        let_go = []
+        for g in gone:
+            if isinstance(g, dict):
+                g = [g.get("1"), g.get("2")]
+            if not isinstance(g, (list, tuple)) or len(g) != 2:
+                continue
+            n, serial = g
+            if isinstance(n, (int, float)) and self.slot_holds.get(int(n)) == serial:
+                del self.slot_holds[int(n)]
+                let_go.append(int(n))
+        self.s.slots_let_go(let_go)
+
     def on_pose(self, msg):
+        self.slots_gone(msg.get("slotsGone"))
         held = msg.get("held")
         if isinstance(held, dict):      # an empty Lua table may encode as {}
             held = list(held.values())
@@ -2860,16 +2958,21 @@ class Connection:
                     continue            # superseded meanwhile; the file stays cached
                 # the server's latest record: a live retexture may have finished since this build
                 info = self.s.tiles.get(ck, fut.result())
+                if info.material is not None and not self.s.matslots.owns(ck, info.material):
+                    info = self.s.reslot(ck, info)      # its material name went to another tile meanwhile
                 self.sent[t.key] = t
                 if info.stale:          # a region turned ready since: re-rendered live, then far_retex
                     self.s.retex_request(ck)
                 self.batch[1] += 1
                 m = {"type": "far_tile", "anchorId": ck[0], "key": t.key, "level": t.level,
-                     "shape": f"{self.s.vfs_dir}/{self.s.tile_name(*ck)}",
+                     "shape": f"{self.s.vfs_dir}/{info.shape or self.s.tile_name(*ck)}",
                      "pos": [round(v, 3) for v in info.pos], "err": round(info.err, 3),
                      "skirt": round(info.skirt, 2), "state": "group"}
                 if info.sink is not None:
                     m["sink"] = round(info.sink, 2)
+                if info.shape is not None and info.shape.startswith("slot_"):  # pooled (matslots.py)
+                    m["slotSerial"] = serial = next(self.s.slot_serial)
+                    self.slot_holds[matslotsmod.MatSlots.number(info.material)] = serial
                 if info.material is not None:   # protocol 4: the tile's own imagery material
                     m["material"] = info.material
                     m["texture"] = f"{self.s.vfs_dir}/{info.texture}"
@@ -2966,6 +3069,7 @@ async def main_async(args):
                     far_bld_pool=far_bld_pool,
                     sea=seacarvemod.SeaCarver(mapdata, args.cache_dir) if args.sea == "on" else None,
                     vegetation=(vegetationmod.Vegetation(mapdata, args.cache_dir) if args.trees == "on" else None))
+    server.update_check = args.update_check == "on"
 
     server.game_cpus = getattr(args, "game_cpus", None)    # (cpupin.py: the game pinned at each hello)
     server.server_cpus = getattr(args, "server_cpus", None)
@@ -3168,6 +3272,8 @@ def main():
     ap.add_argument("--status-interval", type=float, default=STATUS_INTERVAL,
                     help="re-send the last status with the current far-tile backlog at most every S seconds "
                          "while it changes (0 = status on events only, as v1.3.1; tools/drive.py runs use 1)")
+    ap.add_argument("--update-check", choices=("on", "off"), default="on",
+                    help="ask GitHub for a newer version after a game connects (updates.py; off: tests)")
     ap.add_argument("--weather", choices=("on", "off"), default="on",
                     help="real weather at the player from Open-Meteo.com (keyless; every 10 min or 25 km)")
     ap.add_argument("--gravity", choices=("on", "off"), default="on",

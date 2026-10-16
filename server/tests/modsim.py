@@ -570,6 +570,17 @@ def folder_of(path):
     return m.group(1) if m else None
 
 
+def slot_of(path):
+    """farfield.lua slotOf: the slot number of a pooled shape path (/slot_<n>.cdae), else None."""
+    m = re.search(r"/slot_(\d+)\.cdae$", path) if isinstance(path, str) else None
+    return int(m.group(1)) if m else None
+
+
+def pooled(name):
+    """satmat.pooled: a pooled material name (server/matslots.py), never deleted."""
+    return isinstance(name, str) and name.startswith("bngEarthFar_")
+
+
 class Inst:
     """One far tile instance (farfield.lua newInst). bbox0/aid: its footprint in its own
     anchor's frame (for exact coverage); x0..y1: the footprint in the current frame (AABB after
@@ -577,7 +588,7 @@ class Inst:
     __slots__ = ("key", "aid", "level", "bbox0", "x0", "y0", "x1", "y1", "z", "err", "sink", "seq",
                  "prefetch", "kind", "path", "queued", "loaded", "failed", "shown", "doomed", "removing",
                  "cover", "cover_hide", "anim_end", "grp", "material", "mat", "mat_failed", "session", "shape",
-                 "texture")
+                 "texture", "slot", "slot_serial")
 
     def __init__(self, msg, seq, path, cells=None):
         self.key, self.aid = str(msg["key"]), msg["anchorId"]
@@ -596,6 +607,8 @@ class Inst:
         self.mat, self.mat_failed = None, False                         # held reference
         self.shape = msg["shape"]
         self.texture = msg.get("texture") if isinstance(msg.get("texture"), str) else None
+        self.slot = slot_of(msg["shape"])               # a pooled shape file (matslots.py) ...
+        self.slot_serial = msg.get("slotSerial")        # ... and its send serial (farfield.lua objSlot)
         self.session = None             # the server session of its anchor (FarField.on_tile)
         if not msg["shape"].lower().endswith(".cdae"):
             self.kind = "dae"
@@ -662,6 +675,9 @@ class FarField:
         self.near_visual = "terrain"
         self.mats = {}                    # satmat.lua: material name -> references
         self.mat_tex = {}                 # ... and its texture (heldSessions)
+        self.mat_owner = {}               # name -> the (aid, key) using it (pooled names go to another tile)
+        self.slots_gone = []              # [slot, serial] to report in the next pose
+        self.mat_conflicts = []           # a name in use by two different tiles at once
         self.mat_del = []                 # names whose references reached 0 (FIFO)
         self.mat_queued = set()
         self.unknown_removes = []
@@ -778,7 +794,7 @@ class FarField:
         self.mats[name] -= 1
         if self.mats[name] <= 0:
             self.mats[name] = 0
-            if name not in self.mat_queued:
+            if name not in self.mat_queued and not pooled(name):    # pooled: kept for its next tile
                 self.mat_queued.add(name)
                 self.mat_del.append(name)
 
@@ -812,6 +828,17 @@ class FarField:
             self.doomed.append(inst)      # its material reference goes with the object's delete
         else:
             self.release_mat(inst)
+            self.slot_gone(inst)
+
+    def slot_gone(self, inst):
+        """farfield.lua: the instance's pooled slot reported gone (pose.slotsGone)."""
+        if inst.slot is not None and inst.slot_serial is not None:
+            self.slots_gone.append([inst.slot, inst.slot_serial])
+            inst.slot_serial = None
+
+    def take_slots_gone(self):
+        out, self.slots_gone = self.slots_gone, []
+        return out
 
     def in_view(self, insts, cam, delta):
         if cam is None:
@@ -963,6 +990,8 @@ class FarField:
         if msg.get("anchorId") != self.anchor_id:
             if msg.get("anchorId") is not None:
                 self.lossy.add(msg["anchorId"])
+            if slot_of(msg.get("shape")) is not None and msg.get("slotSerial") is not None:
+                self.slots_gone.append([slot_of(msg["shape"]), msg["slotSerial"]])     # never held
             self.counters["late_tiles"] += 1
             return
         key = str(msg["key"])
@@ -1183,6 +1212,11 @@ class FarField:
                 old_tex = self.mat_tex.get(inst.material)
                 if inst.texture and old_tex and inst.texture != old_tex and self.mats[inst.material] == 0:
                     self.mat_tex[inst.material] = inst.texture
+                owner = (inst.aid, inst.key)
+                if self.mats[inst.material] == 0:
+                    self.mat_owner[inst.material] = owner
+                elif self.mat_owner.get(inst.material) != owner:
+                    self.mat_conflicts.append((inst.material, self.mat_owner.get(inst.material), owner))
                 self.mats[inst.material] += 1
                 inst.mat = inst.material
                 continue
@@ -1210,7 +1244,9 @@ class FarField:
         # 6. deletes (not in a frame that imported a tile, unless under pressure)
         if (self.n_queued == 0 and not imported) or len(self.doomed) > FAR["DELETE_PRESSURE"]:
             while self.doomed and gov.try_("delete"):
-                self.release_mat(self.doomed.pop())
+                gone = self.doomed.pop()
+                self.release_mat(gone)
+                self.slot_gone(gone)
                 self.counters["deletes"] += 1
                 self._unit(gov, "delete", self.costs["delete"])
             while self.mat_has_deletes() and gov.try_("matDelete"):
@@ -1232,7 +1268,8 @@ class FarField:
         for d in (self.pending, self.live, self.old):
             out |= {folder_of(i.shape) for i in d.values() if i.loaded}
         out |= {folder_of(i.shape) for i in self.doomed}
-        out |= {folder_of(t) for t in self.mat_tex.values()}
+        # satmat.eachTexture: an unused pooled material needs no file
+        out |= {folder_of(t) for n, t in self.mat_tex.items() if self.mats.get(n) or not pooled(n)}
         return sorted(f for f in out if f)
 
     def eager_keys(self):

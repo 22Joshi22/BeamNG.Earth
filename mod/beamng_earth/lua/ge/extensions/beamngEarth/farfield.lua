@@ -130,6 +130,17 @@ local matOf = {}        -- doomed object id -> name of the per-tile material it 
 local doomedAnchor = {} -- doomed object id -> anchorId of its shape file (heldAnchors)
 local doomedSession = {} -- doomed object id -> session of its instance (heldAnchors) ...
 local doomedFolder = {}  -- ... and the session folder of its shape file (heldSessions)
+-- Pooled shape files (server/matslots.py, 2026-10-16): the engine's frame cost grows with every distinct shape
+-- file it ever loaded, so the server sends a fixed set of paths (<session>/slot_<n>.cdae) and puts each new tile's
+-- shape there. A path must not be loaded while another object still holds it (the engine's cached shape would
+-- be shared, or the file watcher would turn that object into the new tile): a spare or a doomed object holding
+-- it is deleted first.
+-- The server re-uses a slot once the mod reports the object (or never-spawned instance) of its latest far_tile with
+-- it gone: far_tile.slotSerial, pose.slotsGone [[slot, serial], ...] (core.lua), hello.slotsHeld on a reconnect.
+local slotHolder = {}  -- pooled shape path -> object id that loaded it
+local holderPath = {}  -- object id -> its pooled shape path
+local objSlot = {}     -- object id -> { n = slot, serial, session, key } of the message it shows
+local slotsGone = {}   -- { n, serial, session } to report (takeSlotsGone)
 local spares = {}       -- key .. '|' .. shape -> { id, mat, anchor, session, folder, t } (hidden objects)
 local spareQ, sH, sT = {}, 1, 0 -- spare keys, oldest first (entries already revived are skipped)
 local nSpares = 0
@@ -176,7 +187,56 @@ end
 local function deleteById(id)
   local o = scenetree.findObjectById(id)
   if o then o:delete() end
+  local p = holderPath[id]
+  if p then
+    holderPath[id] = nil
+    if slotHolder[p] == id then slotHolder[p] = nil end
+  end
+  local os_ = objSlot[id]
+  if os_ then
+    objSlot[id] = nil
+    slotsGone[#slotsGone + 1] = { os_.n, os_.serial, os_.session }
+  end
   if watcher then watcher.onRemove(id) end
+end
+
+-- Is the shape path a pooled one (re-used by later tiles)? Its slot number.
+function M.pooledShape(path) return type(path) == 'string' and path:find('/slot_%d+%.cdae$') ~= nil end
+local function slotOf(path) return tonumber(type(path) == 'string' and path:match('/slot_(%d+)%.cdae$') or nil) end
+
+-- An instance that never got an object is gone: its far_tile's slot is reported as such.
+local function instGone(inst)
+  local n = inst.slotSerial and slotOf(inst.shape)
+  if n then slotsGone[#slotsGone + 1] = { n, inst.slotSerial, inst.session } end
+  inst.slotSerial = nil
+end
+
+-- The [slot, serial] pairs gone since the last call, for the server session `sess` (others are dropped: another
+-- server's slots).
+function M.takeSlotsGone(sess)
+  if #slotsGone == 0 then return nil end
+  local out = {}
+  for _, g in ipairs(slotsGone) do
+    if g[3] ~= nil and g[3] == sess then out[#out + 1] = { g[1], g[2] } end
+  end
+  slotsGone = {}
+  return #out > 0 and out or nil
+end
+
+-- Every [slot, serial] the mod still holds for server session `sess` (hello after a reconnect): objects, and
+-- instances not spawned yet.
+function M.slotsHeld(sess)
+  local out = {}
+  for _, o in pairs(objSlot) do
+    if o.session == sess then out[#out + 1] = { o.n, o.serial } end
+  end
+  for _, set in ipairs({ pending, live, old }) do
+    for _, inst in pairs(set) do
+      local n = not inst.id and inst.slotSerial and slotOf(inst.shape)
+      if n and inst.session == sess then out[#out + 1] = { n, inst.slotSerial } end
+    end
+  end
+  return out
 end
 
 local function getObj(inst) return inst.id and scenetree.findObjectById(inst.id) end
@@ -223,6 +283,7 @@ local function newInst(msg, seq)
     texture = type(msg.texture) == 'string' and msg.texture or nil,
     detail = msg.detail == true,
     tex = tonumber(msg.tex), -- texture px (FORMAT 4); nil from a FORMAT 3 server
+    slotSerial = tonumber(msg.slotSerial), -- a pooled shape file's send serial (server/matslots.py)
     mat = nil, matFailed = false, -- mat: the material name this instance holds a reference to
     id = nil, queued = true, loaded = false, failed = false, shown = false, doomed = false,
     cover = 'none', coverOff = 0, coverHide = false, coverAnim = nil, -- cover state and its target
@@ -265,15 +326,20 @@ local function revive(inst)
   if not o then return false end
   if sp.mat then satmat.unref(sp.mat) end      -- the new instance holds its own reference
   inst.id, inst.loaded, inst.off, inst.hidden = sp.id, true, 0, true
+  if objSlot[sp.id] and inst.slotSerial then objSlot[sp.id].serial = inst.slotSerial end -- the newer send's
+  inst.slotSerial = nil
   writePos(o, inst, 0)
   counters.revived = counters.revived + 1
   if watcher then watcher.onAdd(inst) end
   return true
 end
 
+local freeSlot -- (path, id): the object still holding a pooled shape path let go of it (defined with the spares)
+
 local function spawn(inst)
   if revive(inst) then return end
   ensureMaterial()
+  if M.pooledShape(inst.shape) and slotHolder[inst.shape] then freeSlot(inst.shape, slotHolder[inst.shape], inst.key) end
   if not FS:fileExists(inst.shape) then
     log('W', 'beamngEarth', 'far tile shape missing: ' .. inst.shape)
     inst.failed = true
@@ -292,6 +358,13 @@ local function spawn(inst)
   o:registerObject('bngEarthFar_' .. serial .. '_' .. (inst.key:gsub('[^%w_]', '_')))
   scenetree.MissionGroup:addObject(o)
   inst.id, inst.loaded, inst.off, inst.hidden = o:getID(), true, 0, true
+  if M.pooledShape(inst.shape) then
+    slotHolder[inst.shape], holderPath[inst.id] = inst.id, inst.shape
+    if inst.slotSerial then
+      objSlot[inst.id] = { n = slotOf(inst.shape), serial = inst.slotSerial, session = inst.session, key = inst.key }
+      inst.slotSerial = nil -- the object reports it now
+    end
+  end
   counters.imports = counters.imports + 1
   if watcher then watcher.onAdd(inst) end
 end
@@ -362,6 +435,34 @@ local function dropSpare(k)
   if sp.mat then matOf[sp.id] = sp.mat end
 end
 
+-- The object holding a pooled shape path that a new tile is about to load: a spare is dropped and a doomed
+-- object deleted now (the delete queue skips it later and releases its material then); one still shown (the
+-- server re-used the path too early) is left, with a warning.
+freeSlot = function(path, id, key)
+  local os_ = objSlot[id]
+  if os_ and os_.key == key and not doomedAnchor[id] then
+    local spare = false
+    for _, sp in pairs(spares) do if sp.id == id then spare = true; break end end
+    if not spare then return end -- the same tile sent again while its object is shown: the same file
+  end
+  for k, sp in pairs(spares) do
+    if sp.id == id then
+      dropSpare(k)
+      break
+    end
+  end
+  if doomedAnchor[id] ~= nil then
+    deleteById(id)
+    counters.slotFreed = (counters.slotFreed or 0) + 1
+  elseif scenetree.findObjectById(id) then
+    counters.slotBusy = (counters.slotBusy or 0) + 1
+    log('W', 'beamngEarth', 'far tile shape ' .. path .. ' loaded again while another tile shows it')
+    holderPath[id], slotHolder[path] = nil, nil
+  else
+    holderPath[id], slotHolder[path] = nil, nil
+  end
+end
+
 local function dropAllSpares()
   for k in pairs(spares) do dropSpare(k) end
   spareQ, sH, sT = {}, 1, 0
@@ -406,6 +507,7 @@ local function doom(inst, hideNow)
     if inst.mat then matOf[inst.id], inst.mat = inst.mat, nil end -- released once the object is deleted
   else
     releaseMat(inst)
+    instGone(inst)
   end
 end
 
@@ -635,6 +737,8 @@ end
 function M.onTile(msg)
   if msg.anchorId ~= anchorId then -- late tile of a previous anchor (sent before our commit reached the server)
     if msg.anchorId ~= nil then lossy[msg.anchorId] = true end
+    local n = tonumber(msg.slotSerial) and slotOf(msg.shape)
+    if n then slotsGone[#slotsGone + 1] = { n, tonumber(msg.slotSerial), session } end -- never held
     return
   end
   if type(msg.pos) ~= 'table' or type(msg.shape) ~= 'string' or msg.key == nil then
@@ -1218,6 +1322,14 @@ end
 -- Forget object ids without touching the scene (the level already deleted them). Per-tile
 -- materials are not level objects: they are deleted here (no tile uses them any more).
 function M.forget()
+  for id in pairs(objSlot) do -- their objects went with the level
+    local o = objSlot[id]
+    slotsGone[#slotsGone + 1] = { o.n, o.serial, o.session }
+  end
+  for _, set in ipairs({ pending, live, old }) do
+    for _, inst in pairs(set) do if not inst.id then instGone(inst) end end
+  end
+  objSlot = {}
   pending, live, old, oldCount, lossy, doomed, moving = {}, {}, {}, 0, {}, {}, {}
   oldFrames, under.level, under.old, under.miss = {}, nil, false, false
   mainQ, mH, mT, preQ, pH, pT, nQueued = {}, 1, 0, {}, 1, 0, 0
@@ -1225,6 +1337,7 @@ function M.forget()
   anchorId, doneReceived, block, session = nil, false, nil, nil
   matOf, doomedAnchor, doomedSession, doomedFolder = {}, {}, {}, {}
   spares, spareQ, sH, sT, nSpares = {}, {}, 1, 0, 0
+  slotHolder, holderPath = {}, {}
   satmat.clearAll()
   materialChecked = false
   if watcher then watcher.onReset() end

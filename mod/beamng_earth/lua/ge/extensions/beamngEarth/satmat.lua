@@ -15,6 +15,11 @@
 --           'matDelete' AFTER the objects using it are gone (never delete a Material in use).
 -- Tiles without `material` (protocol 3, `--imagery off`) keep the static far-tile material and
 -- never come here.
+-- Pooled names (bngEarthFar_<session>_<n>, server/matslots.py, 2026-10-16): the server hands a name to
+-- another tile once no tile of ours uses it, so such a Material is never deleted; unused, it waits for
+-- its next tile and then switches to that tile's texture (ref). The engine's per-frame cost grows with
+-- every Material ever created, deleted ones included (2026-10-16: the far field's per-tile Materials
+-- slowed the game with every teleport).
 --
 -- Live retexture (server far_retex, --colormatch / --deshadow): the server rendered a shown tile's
 -- texture again under the next revision's name (far_<a>_<key>_r<n>.dds; the engine caches textures by
@@ -56,6 +61,9 @@ local retexWant = {}  -- name -> the texture to switch to (the newest asked for)
 local nRetex = 0      -- switches done
 local detailChecked, detailOk = false, false
 local warned = {}
+
+-- Is the name a pooled one (kept and re-used, never deleted)?
+function M.pooled(name) return type(name) == 'string' and name:find('^bngEarthFar_') ~= nil end
 
 local function warnOnce(key, text)
   if warned[key] then return end
@@ -138,6 +146,14 @@ end
 function M.ref(name, texture)
   local e = mats[name]
   if not e then return false end
+  if M.pooled(name) and texture and e.texture and texture ~= e.texture and e.refs > 0
+    and not M.isNewer(texture, e.texture) and not M.isNewer(e.texture, texture) then
+    -- a pooled name the server gave to another tile while ours still shows it (the swap that removes
+    -- it is late): the new tile's texture, time-sliced; the leaving one shows it until it goes
+    M.requestRetex(name, texture)
+    e.refs = e.refs + 1
+    return true
+  end
   if texture and e.texture and texture ~= e.texture and e.refs > 0 and M.isNewer(e.texture, texture)
     and FS:fileExists(e.texture) then
     M.requestRetex(name, texture)
@@ -149,10 +165,15 @@ function M.ref(name, texture)
     local m = (e.refs == 0 or gone) and scenetree.findObject(name)
     if m and FS:fileExists(texture) then
       m:setField('colorMap', 0, texture)
-      if gone and e.refs > 0 then
+      if e.fallback then -- created without its file: the fallback colour would tint the imagery
+        m:setField('diffuseColor', 0, '1 1 1 1')
+        e.fallback = false
+      end
+      if (gone and e.refs > 0) or M.pooled(name) then -- a pooled name shown before: another tile's now
         pcall(function() m:flush() end)
         pcall(function() m:reload() end)
       end
+      if e.refs == 0 then retexWant[name] = nil end -- a switch queued for the tile that had it is stale
       e.texture = texture
     else
       warnOnce('retex:' .. name, 'material ' .. name .. ' re-sent with another texture; keeping ' .. tostring(e.texture))
@@ -169,7 +190,8 @@ function M.unref(name)
   e.refs = e.refs - 1
   if e.refs <= 0 then
     e.refs = 0
-    if not queued[name] then
+    retexWant[name] = nil -- nobody shows it: a queued switch is dropped when it comes up
+    if not queued[name] and not M.pooled(name) then
       queued[name] = true
       delQ[#delQ + 1] = name
     end
@@ -284,7 +306,7 @@ function M.count() return nMats end
 -- the switch has run or been dropped (retexNext checks the file, then points the material at it).
 function M.eachTexture(fn)
   for name, e in pairs(mats) do
-    if e.texture then fn(e.texture) end
+    if e.texture and not (e.refs == 0 and M.pooled(name)) then fn(e.texture) end -- an unused pooled one needs no file
     local want = retexWant[name]
     if want and want ~= e.texture then fn(want) end
   end
