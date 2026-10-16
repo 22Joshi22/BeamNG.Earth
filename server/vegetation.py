@@ -649,7 +649,7 @@ def write_tile(out_dir, vfs_dir, aid, tx, ty, rows):
     path = os.path.join(out_dir, name)
     tmp = path + ".tmp"
     with open(tmp, "w") as f:
-        json.dump({"groups": list(GROUPS), "items": rows}, f, separators=(",", ":"))
+        f.write(json.dumps({"groups": list(GROUPS), "items": rows}, separators=(",", ":")))  # the C encoder
     os.replace(tmp, path)
     return f"{vfs_dir}/{name}", len(rows)
 

@@ -1797,7 +1797,7 @@ def write_tile(out_dir, vfs_dir, aid, tx, ty, chunks, walks=None, road_mesh=None
         data["park"] = park
     tmp = path + ".tmp"
     with open(tmp, "w") as f:
-        json.dump(data, f, separators=(",", ":"))
+        f.write(json.dumps(data, separators=(",", ":")))    # json.dump to a file streams through the pure-Python encoder
     os.replace(tmp, path)
     return f"{vfs_dir}/{name}", len(chunks)
 

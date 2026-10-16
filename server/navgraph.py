@@ -364,7 +364,7 @@ def write(out_dir, vfs_dir, aid, serial, graph):
     name = f"navgraph_{aid}_{serial}.json"
     path = os.path.join(out_dir, name)
     with open(path + ".tmp", "w") as f:
-        json.dump(graph, f, separators=(",", ":"))
+        f.write(json.dumps(graph, separators=(",", ":")))    # the C encoder (json.dump streams in Python)
     os.replace(path + ".tmp", path)
     return f"{vfs_dir}/{name}"
 
