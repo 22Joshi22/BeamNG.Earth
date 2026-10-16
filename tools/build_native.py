@@ -8,6 +8,14 @@ server/earthfast.abi3.so (Linux) or server/earthfast.pyd (Windows). One build wo
                                                # rustup target add x86_64-pc-windows-gnu
 """
 import glob
+
+
+def install(src, dst):
+    """Copy src to dst through a new file renamed into place: a server running with the old module keeps its
+    mapping (copying over a loaded .so rewrote it under the running server: a segfault, 2026-10-15)."""
+    tmp = dst + ".new"
+    shutil.copyfile(src, tmp)
+    os.replace(tmp, dst)
 import os
 import shutil
 import subprocess
@@ -31,7 +39,7 @@ def windows():
                 shutil.copyfile(os.path.join(d, "python3.dll.a"), os.path.join(d, "libpython3.a"))
         subprocess.run(cmd, cwd=CRATE, check=True)
     dst = os.path.join(ROOT, "server", "earthfast.pyd")
-    shutil.copyfile(os.path.join(CRATE, "target", WIN_TARGET, "release", "earthfast.dll"), dst)
+    install(os.path.join(CRATE, "target", WIN_TARGET, "release", "earthfast.dll"), dst)
     print("built", dst)
 
 
@@ -47,7 +55,7 @@ def main():
         src, dst = os.path.join(rel, "libearthfast.dylib"), os.path.join(ROOT, "server", "earthfast.abi3.so")
     else:
         src, dst = os.path.join(rel, "libearthfast.so"), os.path.join(ROOT, "server", "earthfast.abi3.so")
-    shutil.copyfile(src, dst)
+    install(src, dst)
     print("built", dst)
 
 

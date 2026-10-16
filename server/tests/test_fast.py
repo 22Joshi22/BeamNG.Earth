@@ -121,6 +121,41 @@ class FastTest(unittest.TestCase):
                     (rng.random((32, 48, 4)) * 255).astype(np.uint8), np.full((8, 8, 3), 255, np.uint8)):
             self.assertEqual(bc7.encode(img), bc7._encode_py(img), img.shape)
 
+    def test_cut_outside_matches_python(self):
+        import roads
+        rng = np.random.default_rng(8)
+        for trial in range(150):
+            k = int(rng.integers(2, 8))
+            pts = np.c_[np.cumsum(rng.normal(0, 15, (k, 2)), 0), np.full(k, rng.normal())]
+            blk = [(np.cumsum(rng.normal(0, 15, (int(rng.integers(1, 6)), 2)), 0) + rng.normal(0, 20, 2),
+                    rng.uniform(1, 8)) for _ in range(int(rng.integers(0, 5)))]
+            got = roads.cut_outside(pts, blk, 2.0)
+            fast.AVAILABLE = False
+            try:
+                want = roads.cut_outside(pts, blk, 2.0)
+            finally:
+                fast.AVAILABLE = True
+            self.assertEqual(len(got), len(want), trial)
+            for a, b in zip(got, want):
+                self.assertTrue(np.array_equal(a, b), trial)
+
+    def test_densify_matches_python(self):
+        import roads
+        rng = np.random.default_rng(2)
+        for trial in range(200):
+            k, c = int(rng.integers(1, 9)), int(rng.integers(2, 4))
+            pts = np.cumsum(rng.normal(0, 12, (k, c)), 0)
+            if trial % 7 == 0 and k > 1:
+                pts[1] = pts[0]                     # a zero-length segment
+            sp = float(rng.choice([0.5, 2.0, 4.0, 10.0]))
+            got = roads.densify(pts, sp)
+            fast.AVAILABLE = False
+            try:
+                want = roads.densify(pts, sp)
+            finally:
+                fast.AVAILABLE = True
+            self.assertTrue(np.array_equal(got, want), trial)
+
     def test_points_and_distances(self):
         sq = np.array([[0, 0], [10, 0], [10, 10], [0, 10]], float)
         pts = np.array([[5, 5], [15, 5], [-1, -1], [9.9, 0.1]], float)
