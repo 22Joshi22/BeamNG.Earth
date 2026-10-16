@@ -365,6 +365,47 @@ class FastTest(unittest.TestCase):
                 fast._ef = saved
             np.testing.assert_array_equal(got, want, err_msg=str(trial))
 
+    def test_tangents_match_python(self):
+        import math
+        import cdae
+        import dae
+        rng = np.random.default_rng(29)
+        for trial in range(30):
+            pos, uv, tri = dae.grid(int(rng.integers(2, 30)), float(rng.uniform(0.5, 50)),
+                                    zfun=lambda x, y: math.sin(x * 0.1) * math.cos(y * 0.07) * 20)
+            V = np.asarray(pos, float).reshape(-1, 3)
+            UV = np.asarray(uv, float).reshape(-1, 2) + (rng.normal(0, 0.01, (len(V), 2)) if trial % 3 == 0 else 0)
+            if trial % 5 == 0:
+                UV[:len(UV) // 3] = 0.25                   # constant UVs: the fallback axes
+            T = np.asarray(tri, np.int64).reshape(-1, 3)
+            I = np.ascontiguousarray(T[:, ::-1])
+            N = cdae.face_normal_sum(V, T)
+            N = N / np.maximum(np.linalg.norm(N, axis=1), 1e-12)[:, None]
+            got = cdae.tangents(V, UV, N, I)
+            saved = fast._ef
+            fast._ef = None
+            try:
+                want = cdae.tangents(V, UV, N, I)
+            finally:
+                fast._ef = saved
+            np.testing.assert_array_equal(got, want, err_msg=str(trial))
+
+    def test_season_noise_matches_python(self):
+        import season
+        rng = np.random.default_rng(31)
+        for t in range(20):
+            x = (rng.uniform(-5e5, 5e5, (48, 40)) + rng.normal(0, 30, (48, 40))).astype(np.float32) / np.float32(18.0)
+            y = rng.uniform(-5e5, 5e5, (48, 40)).astype(np.float32) / np.float32(25.0)
+            got = season._noise(x, y, t % 4)
+            saved = fast._ef
+            fast._ef = None
+            try:
+                want = season._noise(x, y, t % 4)
+            finally:
+                fast._ef = saved
+            self.assertEqual(got.dtype, want.dtype)
+            np.testing.assert_array_equal(got, want)
+
     def test_points_and_distances(self):
         sq = np.array([[0, 0], [10, 0], [10, 10], [0, 10]], float)
         pts = np.array([[5, 5], [15, 5], [-1, -1], [9.9, 0.1]], float)

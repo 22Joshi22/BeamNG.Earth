@@ -116,6 +116,9 @@ def _box(a, r):
 
 def _noise(x, y, seed):
     """Smooth value noise in [0, 1] on a unit lattice (x, y float arrays). Pure."""
+    if fast._ef is not None and hasattr(fast._ef, "season_noise") and getattr(x, "dtype", None) == np.float32 \
+            and getattr(y, "dtype", None) == np.float32 and x.ndim == 2 and x.shape == y.shape:
+        return fast._ef.season_noise(np.ascontiguousarray(x), np.ascontiguousarray(y), int(seed))   # the same values
     x0, y0 = np.floor(x), np.floor(y)
     fx, fy = x - x0, y - y0
     fx, fy = fx * fx * (3 - 2 * fx), fy * fy * (3 - 2 * fy)

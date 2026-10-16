@@ -1465,6 +1465,98 @@ fn season_grade<'py>(py: Python<'py>, rgb: PyReadonlyArray3<'py, u8>, n: PyReado
     res.map(|o| o.into_pyarray(py))
 }
 
+/// cdae.tangents: per-vertex tangents (xyz, w) by Lengyel's method, the numpy code's operations in its order (the
+/// corner sums in bincount's order: corner 0 of every triangle, then 1, then 2; 3-term dots left to right).
+#[pyfunction]
+fn tangents<'py>(py: Python<'py>, v: PyReadonlyArray2<'py, f64>, uv: PyReadonlyArray2<'py, f64>,
+                 nrm: PyReadonlyArray2<'py, f64>, idx: PyReadonlyArray2<'py, i64>) -> Bound<'py, PyArray2<f64>> {
+    let (v, uv, nr, ix) = (v.as_array(), uv.as_array(), nrm.as_array(), idx.as_array());
+    let out = py.allow_threads(|| {
+        let n = v.nrows();
+        let m = ix.nrows();
+        let mut sd = vec![[0f64; 3]; m];
+        let mut td = vec![[0f64; 3]; m];
+        for k in 0..m {
+            let (i0, i1, i2) = (ix[[k, 0]] as usize, ix[[k, 1]] as usize, ix[[k, 2]] as usize);
+            let e1 = [v[[i1, 0]] - v[[i0, 0]], v[[i1, 1]] - v[[i0, 1]], v[[i1, 2]] - v[[i0, 2]]];
+            let e2 = [v[[i2, 0]] - v[[i0, 0]], v[[i2, 1]] - v[[i0, 1]], v[[i2, 2]] - v[[i0, 2]]];
+            let d1 = [uv[[i1, 0]] - uv[[i0, 0]], uv[[i1, 1]] - uv[[i0, 1]]];
+            let d2 = [uv[[i2, 0]] - uv[[i0, 0]], uv[[i2, 1]] - uv[[i0, 1]]];
+            let den = d1[0] * d2[1] - d2[0] * d1[1];
+            let r = if den.abs() > 0.0 { 1.0 / den } else { 0.0 };
+            for c in 0..3 {
+                sd[k][c] = (e1[c] * d2[1] - e2[c] * d1[1]) * r;
+                td[k][c] = (e2[c] * d1[0] - e1[c] * d2[0]) * r;
+            }
+        }
+        let mut t1 = vec![[0f64; 3]; n];
+        let mut t2 = vec![[0f64; 3]; n];
+        for corner in 0..3 {
+            for k in 0..m {
+                let i = ix[[k, corner]] as usize;
+                for c in 0..3 {
+                    t1[i][c] += sd[k][c];
+                    t2[i][c] += td[k][c];
+                }
+            }
+        }
+        let mut out = numpy::ndarray::Array2::<f64>::zeros((n, 4));
+        for i in 0..n {
+            let nn = [nr[[i, 0]], nr[[i, 1]], nr[[i, 2]]];
+            let d = nn[0] * t1[i][0] + nn[1] * t1[i][1] + nn[2] * t1[i][2];
+            let mut t = [t1[i][0] - nn[0] * d, t1[i][1] - nn[1] * d, t1[i][2] - nn[2] * d];
+            let mut tl = (t[0] * t[0] + t[1] * t[1] + t[2] * t[2]).sqrt();
+            for axis in 0..2 {
+                if !(tl < 1e-12) {
+                    break;
+                }
+                let mut e = [0f64; 3];
+                e[axis] = 1.0;
+                t = [e[0] - nn[0] * nn[axis], e[1] - nn[1] * nn[axis], e[2] - nn[2] * nn[axis]];
+                tl = (t[0] * t[0] + t[1] * t[1] + t[2] * t[2]).sqrt();
+            }
+            let dv = if tl > 0.0 { tl } else { 1.0 };
+            for c in 0..3 {
+                t[c] /= dv;
+            }
+            let cr = [nn[1] * t[2] - nn[2] * t[1], nn[2] * t[0] - nn[0] * t[2], nn[0] * t[1] - nn[1] * t[0]];
+            let s = cr[0] * t2[i][0] + cr[1] * t2[i][1] + cr[2] * t2[i][2];
+            out[[i, 0]] = t[0];
+            out[[i, 1]] = t[1];
+            out[[i, 2]] = t[2];
+            out[[i, 3]] = if s < 0.0 { -1.0 } else { 1.0 };
+        }
+        out
+    });
+    out.into_pyarray(py)
+}
+
+/// season._noise: smooth value noise in [0, 1] (float32) on the unit lattice at x, y (float32 (h, w)); numpy's int64
+/// hash with its wrap-around products and arithmetic shifts, the float32 smoothstep and lerps in its order.
+#[pyfunction]
+fn season_noise<'py>(py: Python<'py>, x: PyReadonlyArray2<'py, f32>, y: PyReadonlyArray2<'py, f32>, seed: i64)
+                     -> Bound<'py, PyArray2<f32>> {
+    let (xa, ya) = (x.as_array(), y.as_array());
+    let out = py.allow_threads(|| {
+        let sd = seed.wrapping_mul(83492791);
+        let h = |ix: f32, iy: f32| -> f32 {
+            let mut v = (ix as i64).wrapping_mul(73856093) ^ (iy as i64).wrapping_mul(19349663) ^ sd;
+            v = (v ^ (v >> 13)).wrapping_mul(1274126177);
+            ((v ^ (v >> 16)) & 0xFFFF) as f32 / 65535.0f32
+        };
+        numpy::ndarray::Array2::from_shape_fn(xa.raw_dim(), |(i, j)| {
+            let (xv, yv) = (xa[[i, j]], ya[[i, j]]);
+            let (x0, y0) = (xv.floor(), yv.floor());
+            let (mut fx, mut fy) = (xv - x0, yv - y0);
+            fx = fx * fx * (3.0f32 - 2.0f32 * fx);
+            fy = fy * fy * (3.0f32 - 2.0f32 * fy);
+            let (a, b, c, d) = (h(x0, y0), h(x0 + 1.0, y0), h(x0, y0 + 1.0), h(x0 + 1.0, y0 + 1.0));
+            (a + (b - a) * fx) + ((c + (d - c) * fx) - (a + (b - a) * fx)) * fy
+        })
+    });
+    out.into_pyarray(py)
+}
+
 #[pymodule]
 fn earthfast(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(island_ring_rays, m)?)?;
@@ -1491,6 +1583,8 @@ fn earthfast(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(any_within, m)?)?;
     m.add_function(wrap_pyfunction!(shared_walls, m)?)?;
     m.add_function(wrap_pyfunction!(season_grade, m)?)?;
-    m.add("VERSION", 18)?;
+    m.add_function(wrap_pyfunction!(tangents, m)?)?;
+    m.add_function(wrap_pyfunction!(season_noise, m)?)?;
+    m.add("VERSION", 20)?;
     Ok(())
 }

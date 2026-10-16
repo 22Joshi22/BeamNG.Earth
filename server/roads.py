@@ -562,17 +562,24 @@ def _merge_overlaps(lines, zs, widths, levels, rounds=3):
         deg[b] += 1
     n = len(lines)
     pairs = []
-    for i in range(n):
-        for j in range(n):
-            if i == j:
-                continue
-            share = {edges[i][0], edges[i][1]} & {edges[j][0], edges[j][1]}
-            if not share and (levels is None or levels[i] != levels[j]):
-                continue
-            A, B = lines[i][:, :2], lines[j][:, :2]
-            if (A.max(0) < B.min(0) - 30).any() or (B.max(0) < A.min(0) - 30).any():
-                continue
-            pairs.append((i, j))
+    # the related pairs (i, j), i then j ascending, as a double loop testing each would find them, one line against
+    # all others at a time (that loop was ~4 s of a Fells Point teleport, on the event loop)
+    if n:
+        ea = np.array([e[0] for e in edges[:n]])
+        eb = np.array([e[1] for e in edges[:n]])
+        lo = np.array([np.asarray(ln)[:, :2].min(0) for ln in lines])
+        hi = np.array([np.asarray(ln)[:, :2].max(0) for ln in lines])
+        lv = None if levels is None else np.empty(n, object)
+        if lv is not None:
+            lv[:] = list(levels)[:n]
+        idx = np.arange(n)
+        for i in range(n):
+            ok = (ea[i] == ea) | (ea[i] == eb) | (eb[i] == ea) | (eb[i] == eb)
+            if lv is not None:
+                ok |= ~(lv != lv[i]).astype(bool)          # elementwise, the same != as levels[i] != levels[j]
+            ok &= ~(hi[i] < lo - 30).any(1) & ~(hi < lo[i] - 30).any(1)
+            ok &= idx != i
+            pairs.extend((i, int(j)) for j in np.flatnonzero(ok))
     if not pairs:
         return zs
     zs = [np.array(z, np.float64) for z in zs]

@@ -40,6 +40,8 @@ import struct
 
 import numpy as np
 
+import fast
+
 SHAPE_VERSION = 31
 EXPORTER_VERSION = 0x7C
 VERSION_WORD = (EXPORTER_VERSION << 16) | SHAPE_VERSION        # 0x007C001F
@@ -352,6 +354,9 @@ def face_normal_sum(positions, tris):
 def tangents(V, UV, N, I):
     """Per-vertex tangents (xyz, w) by Lengyel's method, as the engine computes them (matches
     engine output to 1e-7 for regular UVs). V, UV, N, I in the stored (engine) convention."""
+    if fast._ef is not None and hasattr(fast._ef, "tangents"):     # the Rust loop: the same numbers (parity test)
+        f64 = lambda a: np.ascontiguousarray(a, np.float64)        # noqa: E731
+        return fast._ef.tangents(f64(V), f64(UV), f64(N), np.ascontiguousarray(I, np.int64))
     i0, i1, i2 = I[:, 0], I[:, 1], I[:, 2]
     e1, e2 = V[i1] - V[i0], V[i2] - V[i0]
     d1, d2 = UV[i1] - UV[i0], UV[i2] - UV[i0]
