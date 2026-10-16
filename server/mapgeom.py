@@ -125,6 +125,37 @@ class Features:
             memo[key] = got
         return got
 
+    def outer_centres(self, frame):
+        """(cx, cy): per feature the mean of its first ring's points (the closing point left out) in frame, from
+        cumulative sums (within ~1e-6 m of the per-ring mean: a prefilter only); NaN without a ring of >= 4
+        coordinates. Kept per frame like xy_in."""
+        key = (frame.lat0, frame.lon0, frame.h0)
+        memo = self.__dict__.setdefault("_centres", {})
+        got = memo.get(key)
+        if got is None:
+            n = len(self.part_off) - 1
+            cx = np.full(n, np.nan)
+            cy = np.full(n, np.nan)
+            if n > 0 and len(self.lonlat):
+                p0 = self.part_off[:-1]
+                ok = self.part_off[1:] > p0
+                r0 = self.ring_off[np.minimum(p0, len(self.ring_off) - 2)]
+                ok &= self.ring_off[np.minimum(p0 + 1, len(self.ring_off) - 1)] > r0
+                c0 = self.coord_off[np.minimum(r0, len(self.coord_off) - 2)]
+                c1 = self.coord_off[np.minimum(r0 + 1, len(self.coord_off) - 1)]
+                ok &= (c1 - c0) >= 4
+                xy = self.xy_in(frame)
+                cs = np.vstack([np.zeros((1, 2)), np.cumsum(xy, axis=0)])
+                k = np.maximum(c1 - c0 - 1, 1)
+                sx = cs[np.where(ok, c1 - 1, 0), 0] - cs[np.where(ok, c0, 0), 0]
+                sy = cs[np.where(ok, c1 - 1, 0), 1] - cs[np.where(ok, c0, 0), 1]
+                cx = np.where(ok, sx / k, np.nan)
+                cy = np.where(ok, sy / k, np.nan)
+            if len(memo) >= 2:
+                memo.pop(next(iter(memo)))
+            got = memo[key] = (cx, cy)
+        return got
+
     def localize(self, frame):
         """Fill `en` from `lonlat` with an EnuFrame (the cell's)."""
         if len(self.lonlat):
