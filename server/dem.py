@@ -33,6 +33,7 @@ from PIL import Image
 
 import cache as cachemod
 import dsmground
+import fast
 import netfetch
 
 log = logging.getLogger("earthd.dem")
@@ -61,7 +62,13 @@ def zoom_for(lat, pixel_m, max_zoom=MAX_ZOOM):
 
 
 def decode_terrarium(data, size):
-    im = Image.open(io.BytesIO(data)).convert("RGB")
+    im = Image.open(io.BytesIO(data))
+    if fast._ef is not None and hasattr(fast._ef, "terrarium_heights") and im.mode in ("RGB", "RGBA") \
+            and im.size == (size, size):
+        # the same float32 heights from the decoded bytes (Rust): no RGB copy, no float temporaries (~2/3 of a
+        # tile's decode; the worker processes each decode the DEM tiles they read)
+        return fast._ef.terrarium_heights(np.asarray(im))
+    im = im.convert("RGB")
     if im.size != (size, size):
         log.warning("unexpected DEM tile size %s (expected %d), resampling", im.size, size)
         im = im.resize((size, size), Image.BILINEAR)

@@ -1557,6 +1557,19 @@ fn season_noise<'py>(py: Python<'py>, x: PyReadonlyArray2<'py, f32>, y: PyReadon
     out.into_pyarray(py)
 }
 
+/// dem.decode_terrarium's arithmetic on the decoded image (h, w, 3|4 uint8): R * 256 + G + B / 256 - 32768 in float32,
+/// in numpy's order, without the RGB conversion and float temporaries.
+#[pyfunction]
+fn terrarium_heights<'py>(py: Python<'py>, img: PyReadonlyArray3<'py, u8>) -> Bound<'py, PyArray2<f32>> {
+    let a = img.as_array();
+    let out = py.allow_threads(|| {
+        numpy::ndarray::Array2::from_shape_fn((a.shape()[0], a.shape()[1]), |(y, x)| {
+            a[[y, x, 0]] as f32 * 256.0f32 + a[[y, x, 1]] as f32 + a[[y, x, 2]] as f32 / 256.0f32 - 32768.0f32
+        })
+    });
+    out.into_pyarray(py)
+}
+
 #[pymodule]
 fn earthfast(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(island_ring_rays, m)?)?;
@@ -1585,6 +1598,7 @@ fn earthfast(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(season_grade, m)?)?;
     m.add_function(wrap_pyfunction!(tangents, m)?)?;
     m.add_function(wrap_pyfunction!(season_noise, m)?)?;
-    m.add("VERSION", 20)?;
+    m.add_function(wrap_pyfunction!(terrarium_heights, m)?)?;
+    m.add("VERSION", 21)?;
     Ok(())
 }
