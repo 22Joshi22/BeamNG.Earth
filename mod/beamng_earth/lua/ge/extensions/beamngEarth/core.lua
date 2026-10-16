@@ -714,7 +714,7 @@ local function onMessage(msg)
   elseif t == 'geocode_result' then
     if msg.id then geocodeResults[msg.id] = { results = msg.results or {}, error = msg.error } end
   elseif t == 'map_tiles_ready' then
-    -- the world map's tile files are written (settings.mapTiles: the map finds them on its next poll)
+    -- a world map tile file is written (settings.mapTiles: the map polls every 250 ms while it misses tiles)
   elseif t == 'navgraph' then
     -- the AI road graph around the player (server navgraph.py, --traffic on): map.reset (navgraph.lua)
     navgraph.onMessage(msg, st.anchorId)
@@ -1520,9 +1520,12 @@ function M.takeGeocode(id)
   return r
 end
 
--- The world map asks for basemap tiles as files (settings.mapTiles; {{z, x, y}, ...}).
+-- The world map asks for its tiles as files (settings.mapTiles; {{z, x, y, layer}, ...}, the most wanted first;
+-- an empty list cancels the last one). Whether it went out.
 function M.requestMapTiles(tiles)
-  if net.isConnected() then net.send({ type = 'map_tiles', tiles = tiles }) end
+  if not net.isConnected() then return false end
+  net.send({ type = 'map_tiles', tiles = tiles })
+  return true
 end
 
 function M._state() return st end -- read-only: the dev tools and the settings page

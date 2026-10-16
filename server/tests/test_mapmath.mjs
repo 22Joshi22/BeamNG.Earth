@@ -86,3 +86,47 @@ for (const [lat, lon] of [[39.2826, -76.5916], [-33.86, 151.21], [64.1, -21.9], 
 }
 assert.equal(m.fmtLatLon(39.28, -76.59), "39.28000°N, 76.59000°W")
 console.log("mapmath ok")
+
+// Natural Earth layers from normalised Mercator (normLines / normPoints): the very same strings and labels as
+// projecting every vertex, for views at every zoom, over the antimeridian and near the pole; and faster
+{
+  const data = (await import("../../mod/beamng_earth/ui/ui-vue/mods/beamngEarth/maplayers.js")).default
+  const boxes = m.lineBoxes(data.borders), norm = m.normLines(data.borders)
+  const sboxes = m.lineBoxes(data.states), snorm = m.normLines(data.states)
+  const places = data.places.map(p => [p[0], p[1], p[2], m.placeMinZoom(p[3], p[4]), p[4]])
+  const pnorm = m.normPoints(places)
+  const views = [[20, 0, 2.3], [39.28, -76.59, 5.5], [0, 179.9, 4], [-10, -179.5, 6.2], [60, 10, 8.7], [84, 0, 3],
+                 [46.9, 7.4, 12.4], [-33.9, 151.2, 10]]
+  for (const [lat, lon, z] of views) {
+    const a = m.visibleLines(data.borders, boxes, lat, lon, z, 2560, 1440)
+    const b = m.visibleLines(data.borders, boxes, lat, lon, z, 2560, 1440, 3000, norm)
+    assert.deepEqual(b, a, `borders at ${lat},${lon} z${z}`)
+    assert.deepEqual(m.visibleLines(data.states, sboxes, lat, lon, z, 1280, 720, 3000, snorm),
+                     m.visibleLines(data.states, sboxes, lat, lon, z, 1280, 720), `states at ${lat},${lon} z${z}`)
+    assert.deepEqual(m.visibleLabels(places, lat, lon, z, 2560, 1440, { max: 80, norm: pnorm }),
+                     m.visibleLabels(places, lat, lon, z, 2560, 1440, { max: 80 }), `places at ${lat},${lon} z${z}`)
+  }
+  const time = f => { f(); const t0 = performance.now(); for (let i = 0; i < 20; i++) f(); return (performance.now() - t0) / 20 }
+  const slow = time(() => m.visibleLines(data.borders, boxes, 20, 0, 2.3, 2560, 1440))
+  const fast = time(() => m.visibleLines(data.borders, boxes, 20, 0, 2.3, 2560, 1440, 3000, norm))
+  console.log(`mapmath layers from normalised Mercator: identical; world borders ${slow.toFixed(1)} -> ${fast.toFixed(1)} ms a frame`)
+}
+
+// tile layers: file paths (server maptiles.tile_path), centre-first order, the EOX credit
+{
+  assert.equal(m.tilePath("/t/", "sat", 3, 2, 1), "/t/3/2/1.jpg")
+  assert.equal(m.tilePath("/t/", "map", 3, 2, 1), "/t/map/3/2/1.jpg")
+  assert.equal(m.tilePath("/t/", "labels", 3, 2, 1), "/t/labels/3/2/1.png")
+  const tiles = m.visibleTiles(39.28, -76.59, 12.4, 1600, 900)
+  const cf = m.centreFirst(tiles, 1600, 900)
+  assert.equal(cf.length, tiles.length)
+  const dist = t => Math.hypot(t.left + t.size / 2 - 800, t.top + t.size / 2 - 450)
+  for (let i = 1; i < cf.length; i++) assert.ok(dist(cf[i - 1]) <= dist(cf[i]), "nearest the centre first")
+  assert.ok(cf[0].left <= 800 && cf[0].left + cf[0].size >= 800 && cf[0].top <= 450 && cf[0].top + cf[0].size >= 450,
+            "the first tile is under the centre")
+  assert.equal(m.layerCredits("sat", false), "")
+  assert.ok(m.layerCredits("map", false).startsWith("Map: Terrain Light by EOX IT Services GmbH"))
+  assert.ok(m.layerCredits("map", true).includes("Terrain Light and Overlay"))
+  assert.ok(m.layerCredits("sat", true).startsWith("Labels: Overlay by EOX") && m.layerCredits("sat", true).includes("OpenStreetMap"))
+  console.log("mapmath tile layers ok")
+}

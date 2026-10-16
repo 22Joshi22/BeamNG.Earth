@@ -324,6 +324,36 @@ do
   T.check(seen >= 10, 'page defaults compared (' .. seen .. ')')
 end
 
+------------------------------------------------------------------------------------------
+-- the world map's tile files (settings.mapTiles -> core.requestMapTiles -> server map_tiles)
+do
+  local sent = {}
+  local core0, fs0 = beamngEarth_core, FS
+  beamngEarth_core = { requestMapTiles = function(list) sent[#sent + 1] = list; return true end }
+  local have = {}
+  FS = { fileExists = function(_, p) return have[p] == true end }
+  T.check(settings.mapTilePath('sat', 3, 2, 1) == '/temp/beamngEarth/maptiles/3/2/1.jpg', 'sat tiles where they were')
+  T.check(settings.mapTilePath('map', 3, 2, 1) == '/temp/beamngEarth/maptiles/map/3/2/1.jpg', 'map layer path')
+  T.check(settings.mapTilePath('labels', 3, 2, 1) == '/temp/beamngEarth/maptiles/labels/3/2/1.png', 'labels layer path')
+  have[settings.mapTilePath('sat', 5, 1, 1)] = true
+  local list = { { 5, 1, 1 }, { 5, 2, 1, 'map' }, { 5, 2, 1, 'labels' }, { 5, 3, 1, 'osm' }, { 'x', 1, 1 } }
+  local ready = settings.mapTiles(list)
+  T.check(#ready == 1 and ready[1] == 'sat/5/1/1', 'ready keys carry the layer')
+  T.check(#sent == 1 and #sent[1] == 2 and sent[1][1][4] == 'map' and sent[1][2][4] == 'labels',
+    'the missing ones asked, in order, unknown layers and bad tiles left out')
+  settings.mapTiles(list)
+  T.check(#sent == 1, 'the same missing list is not sent again at once')
+  have[settings.mapTilePath('map', 5, 2, 1)] = true
+  ready = settings.mapTiles(list)
+  T.check(#ready == 2 and #sent == 2 and #sent[2] == 1 and sent[2][1][4] == 'labels', 'a changed list goes out at once')
+  have[settings.mapTilePath('labels', 5, 2, 1)] = true
+  settings.mapTiles(list)
+  T.check(#sent == 3 and #sent[3] == 0, 'nothing missing any more: an empty list cancels the last one')
+  settings.mapTiles(list)
+  T.check(#sent == 3, 'and only once')
+  beamngEarth_core, FS = core0, fs0
+end
+
 -- leave the shared modules as found
 rebase.distance, ui.visible, ui.compact, ui.hudHidden = dist0, vis0, compact0, false
 T.done('test_settings')

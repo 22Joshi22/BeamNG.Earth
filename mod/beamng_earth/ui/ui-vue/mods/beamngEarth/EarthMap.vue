@@ -9,29 +9,32 @@
       @dblclick.prevent="onDblClick"
       @contextmenu.prevent="onContext"
     >
-      <img
-        v-for="t in fallback"
-        :key="t.key"
-        class="map-tile"
-        :src="t.src"
-        :style="{ left: t.left + 'px', top: t.top + 'px', width: t.size + 1 + 'px', height: t.size + 1 + 'px' }"
-        draggable="false"
-      />
-      <img
-        v-for="t in tiles"
-        :key="t.key"
-        class="map-tile"
-        :src="t.src"
-        :style="{ left: t.left + 'px', top: t.top + 'px', width: t.size + 1 + 'px', height: t.size + 1 + 'px' }"
-        draggable="false"
-        @load="onTileLoad"
-        @error="onTileError($event, t)"
-      />
+      <!-- the base layer, then the roads & labels over it; each with its coarser tiles stretched under the missing ones -->
+      <template v-for="L in tileLayers" :key="L.id">
+        <img
+          v-for="t in L.fallback"
+          :key="L.id + t.key"
+          class="map-tile"
+          :src="t.src"
+          :style="{ left: t.left + 'px', top: t.top + 'px', width: t.size + (L.overlay ? 0 : 1) + 'px', height: t.size + (L.overlay ? 0 : 1) + 'px' }"
+          draggable="false"
+        />
+        <img
+          v-for="t in L.tiles"
+          :key="L.id + ':' + t.key"
+          class="map-tile"
+          :src="t.src"
+          :style="{ left: t.left + 'px', top: t.top + 'px', width: t.size + (L.overlay ? 0 : 1) + 'px', height: t.size + (L.overlay ? 0 : 1) + 'px' }"
+          draggable="false"
+          @load="onTileLoad"
+          @error="onTileError($event, t)"
+        />
+      </template>
       <svg class="map-grid" :width="w" :height="h">
-        <template v-if="layersOn">
+        <g v-if="layersOn" :transform="lineTransform">
           <polyline v-for="(p, i) in stateLines" :key="'s' + i" class="layer-state" :points="p" />
           <polyline v-for="(p, i) in borderLines" :key="'b' + i" class="layer-border" :points="p" />
-        </template>
+        </g>
         <polyline v-if="routeDone" class="route-done" :points="routeDone" />
         <polyline v-if="routeAhead" class="route-line-casing" :points="routeAhead" />
         <polyline v-if="routeAhead" class="route-line" :points="routeAhead" />
@@ -104,7 +107,18 @@
       <button class="map-btn" @click="zoomBy(1)" title="Zoom in">+</button>
       <button class="map-btn" @click="zoomBy(-1)" title="Zoom out">-</button>
       <button class="map-btn" :class="{ on: follow }" @click="centreOnMe" title="Centre on the car and follow it">Me</button>
-      <button class="map-btn" :class="{ on: layersOn }" @click="toggleLayers" title="Borders and place names (Natural Earth)">Layers</button>
+      <div class="layers-wrap">
+        <button class="map-btn" :class="{ on: layersPanel }" @click="layersPanel = !layersPanel" title="Base map and overlays">Layers</button>
+        <div v-if="layersPanel" class="layers-panel" @mousedown.stop @wheel.stop @dblclick.stop>
+          <div class="panel-sub">Base map</div>
+          <label class="layer-opt"><input type="radio" value="sat" v-model="baseLayer" /> Satellite</label>
+          <label class="layer-opt"><input type="radio" value="map" v-model="baseLayer" /> Map</label>
+          <div class="panel-sub">Overlays</div>
+          <label class="layer-opt"><input type="checkbox" v-model="labelsOn" /> Roads &amp; labels</label>
+          <label class="layer-opt"><input type="checkbox" v-model="layersOn" /> Borders &amp; places
+            <span class="layer-hint">(world to city zoom)</span></label>
+        </div>
+      </div>
       <button v-if="!embedded" class="map-btn close" @click="close" title="Close (Esc / M)">Close</button>
     </div>
 
@@ -265,37 +279,80 @@ function poll() {
 
 // Tiles are files the server writes into the game's temp folder on request (the game's UI browser cancels every
 // http request, even to 127.0.0.1): beamngEarth_settings.mapTiles reports which are there and asks for the rest.
+// Layers (the Layers panel, remembered): the base map, "sat" (the imagery) or "map" (EOX terrain-light), and the
+// "labels" overlay (EOX overlay_bright: roads and names, transparent PNG) over it.
 const TILE_DIR = "/temp/beamngEarth/maptiles/"
-const readyTiles = ref(new Set())
+function stored(key, def) { try { const v = localStorage.getItem(key); return v === null ? def : v } catch (e) { return def } }
+function store(key, v) { try { localStorage.setItem(key, v) } catch (e) { /* storage blocked: not kept */ } }
+const baseLayer = ref(stored("beamngEarth.map.base", "sat") === "map" ? "map" : "sat")
+const labelsOn = ref(stored("beamngEarth.map.labels", "0") === "1")
+watch(baseLayer, v => store("beamngEarth.map.base", v))
+watch(labelsOn, on => store("beamngEarth.map.labels", on ? "1" : "0"))
+const layersPanel = ref(false)
+const activeLayers = computed(() => (labelsOn.value ? [baseLayer.value, "labels"] : [baseLayer.value]))
+
+const readyTiles = ref({})                // layer -> Set of "z/x/y" whose file is there
+const NONE = new Set()
+const readySet = layer => readyTiles.value[layer] || NONE
 const tileBase = computed(() => (state.value.mapPort ? TILE_DIR : null))
 const wanted = computed(() => {
   if (!tileBase.value) return []
   const v = view.value
   return mm.visibleTiles(v.lat, v.lon, v.z, w.value, h.value)
 })
+// the missing tiles, nearest the centre first (each tile's base, then its labels)
+function missingTiles() {
+  const out = []
+  const layers = activeLayers.value
+  for (const t of mm.centreFirst(wanted.value, w.value, h.value)) {
+    for (const L of layers) if (!readySet(L).has(`${t.z}/${t.x}/${t.y}`)) out.push([t.z, t.x, t.y, L])
+  }
+  return out
+}
+// Asked every 250 ms while tiles are missing (the server says each one as soon as it is written), else every second;
+// the whole missing list each time: Lua passes it on when it changed (the server builds the newest list first)
+const ASK_MAX = 128                       // server maptiles.MAX_FILES_REQUEST
+let askTimer = null, askAt = 0
+function scheduleAsk(ms) {
+  const at = Date.now() + ms
+  if (askTimer && askAt <= at) return     // one is due sooner (a drag must not keep pushing it back)
+  clearTimeout(askTimer)
+  askAt = at
+  askTimer = setTimeout(askTiles, ms)
+}
 function askTiles() {
-  const want = wanted.value.filter(t => !readyTiles.value.has(`${t.z}/${t.x}/${t.y}`))
-  if (!want.length) return
-  const list = JSON.stringify(want.slice(0, 48).map(t => [t.z, t.x, t.y]))
+  askTimer = null
+  const missing = tileBase.value ? missingTiles() : []
+  scheduleAsk(missing.length ? 250 : 1000)
+  if (!tileBase.value) return
+  const list = JSON.stringify(missing.slice(0, ASK_MAX))
   engineLua(`beamngEarth_settings and beamngEarth_settings.mapTiles and beamngEarth_settings.mapTiles(jsonDecode('${list}')) or {}`, r => {
     if (!Array.isArray(r) || !r.length) return
-    const s = new Set(readyTiles.value)
-    r.forEach(k => s.add(k))
-    readyTiles.value = s
+    let next = null
+    for (const k of r) {
+      const i = k.indexOf("/")
+      const L = k.slice(0, i), zxy = k.slice(i + 1)
+      if (((next && next[L]) || readySet(L)).has(zxy)) continue
+      if (!next) next = { ...readyTiles.value }
+      if (!next[L] || next[L] === readyTiles.value[L]) next[L] = new Set(next[L] || [])
+      next[L].add(zxy)
+    }
+    if (next) readyTiles.value = next
   })
 }
-let askTimer = null
-watch(wanted, () => { clearTimeout(askTimer); askTimer = setTimeout(askTiles, 120) })
-const askLoop = setInterval(askTiles, 1000)
-onUnmounted(() => { clearInterval(askLoop); clearTimeout(askTimer); clearTimeout(searchTimer); typing(false) })
+watch([wanted, activeLayers], () => scheduleAsk(120))
+scheduleAsk(0)
+onUnmounted(() => { clearTimeout(askTimer); askTimer = null; clearTimeout(searchTimer); typing(false) })
 
-const tiles = computed(() => wanted.value
-  .filter(t => readyTiles.value.has(`${t.z}/${t.x}/${t.y}`))
-  .map(t => ({ ...t, src: `${TILE_DIR}${t.z}/${t.x}/${t.y}.jpg` })))
-
-// loaded coarser tiles stretched over the ones still coming (mapmath.fallbackTiles)
-const fallback = computed(() => mm.fallbackTiles(wanted.value, readyTiles.value)
-  .map(t => ({ ...t, src: `${TILE_DIR}${t.z}/${t.x}/${t.y}.jpg` })))
+const tileLayers = computed(() => activeLayers.value.map(L => {
+  const ready = readySet(L)
+  return {
+    id: L, overlay: L === "labels",
+    tiles: wanted.value.filter(t => ready.has(`${t.z}/${t.x}/${t.y}`)).map(t => ({ ...t, src: mm.tilePath(TILE_DIR, L, t.z, t.x, t.y) })),
+    // loaded coarser tiles stretched over the ones still coming (mapmath.fallbackTiles)
+    fallback: mm.fallbackTiles(wanted.value, ready).map(t => ({ ...t, src: mm.tilePath(TILE_DIR, L, t.z, t.x, t.y) })),
+  }
+}))
 
 function onTileLoad() { tileLoads.value++ }
 function onTileError(ev, t) {
@@ -313,14 +370,19 @@ const notice = computed(() => {
 })
 
 const attributionText = computed(() => {
+  if (!state.value.mapPort) return ""
+  const sat = baseLayer.value === "sat"
+  const parts = [mm.layerCredits(baseLayer.value, labelsOn.value)]   // the EOX map / labels layers shown
   const cba = state.value.creditsByArea
-  if (cba && state.value.mapPort) {         // only the sources the view shows (the server's areas)
+  if (cba) {                                // only the imagery sources the view shows (the server's areas)
     const v = view.value
-    const list = toArray(cba.imagery).map(c => (Array.isArray(c) ? c : toArray(c)))
-    return mm.creditsFor(list, cba.other || "", mm.viewBox(v.lat, v.lon, v.z, w.value, h.value, 0))
+    const list = sat ? toArray(cba.imagery).map(c => (Array.isArray(c) ? c : toArray(c))) : []
+    parts.push(mm.creditsFor(list, cba.other || "", mm.viewBox(v.lat, v.lon, v.z, w.value, h.value, 0)))
+  } else if (sat) {
+    const a = state.value.attribution || ""
+    parts.push(a.startsWith("Imagery") ? "Map " + a.charAt(0).toLowerCase() + a.slice(1) : a)
   }
-  const a = state.value.attribution || ""
-  return state.value.mapPort ? (a.startsWith("Imagery") ? "Map " + a.charAt(0).toLowerCase() + a.slice(1) : a) : ""
+  return parts.filter(Boolean).join("; ")
 })
 
 // ---- markers ------------------------------------------------------------------------------
@@ -341,33 +403,61 @@ const playerScreen = computed(() => {
 const targetScreen = computed(() => (target.value ? screen(target.value.lat, target.value.lon) : { x: 0, y: 0 }))
 
 // ---- layers: country / state borders and place names (maplayers.js, Natural Earth) ------------------------------
-let layersStored = true
-try { layersStored = localStorage.getItem("beamngEarthMapLayers") !== "0" } catch (e) { /* storage blocked: on */ }
-const layersOn = ref(layersStored)
-function toggleLayers() {
-  layersOn.value = !layersOn.value
-  try { localStorage.setItem("beamngEarthMapLayers", layersOn.value ? "1" : "0") } catch (e) { /* not kept */ }
-}
-const borderBoxes = mm.lineBoxes(layerData.borders)
-const stateBoxes = mm.lineBoxes(layerData.states)
+const layersOn = ref(stored("beamngEarthMapLayers", "1") !== "0")
+watch(layersOn, on => store("beamngEarthMapLayers", on ? "1" : "0"))
+// in normalised Mercator once (mapmath.normLines): drawing is a multiply-add per vertex, not a log and a tan
+const borderBoxes = mm.lineBoxes(layerData.borders), borderNorm = mm.normLines(layerData.borders)
+const stateBoxes = mm.lineBoxes(layerData.states), stateNorm = mm.normLines(layerData.states)
 const countryPoints = layerData.countries.map(c => [c[0], c[1], c[2], Math.max(1.5, c[3] - 0.5)])
   .sort((a, b) => a[3] - b[3])
+const countryNorm = mm.normPoints(countryPoints)
 const placePoints = layerData.places.map(p => [p[0], p[1], p[2], mm.placeMinZoom(p[3], p[4]), p[4]])
+const placeNorm = mm.normPoints(placePoints)
+// The border lines are drawn for an anchor view with `pad` px round it, and moved (an SVG translate) while the view
+// pans less than that at the same zoom: a drag no longer redraws hundreds of polylines every frame. Only where the
+// world's wrap-around seam stays off screen (the world wider than the padded view), so the moved lines are the
+// ones a redraw would give (to 0.05 px).
+const lineAnchor = ref(null)              // { lat, lon, z, w, h, pad }
+const lineShift = ref({ x: 0, y: 0 })
+function placeLines() {
+  const v = view.value, W = w.value, H = h.value
+  const pad = Math.round(Math.max(W, H) / 2)
+  const s = mm.TILE * Math.pow(2, v.z)
+  const shiftable = s > W + 2 * pad + 40
+  const a = lineAnchor.value
+  if (shiftable && a && a.pad === pad && a.z === v.z && a.w === W && a.h === H) {
+    const pa = mm.project(a.lat, a.lon, v.z), pc = mm.project(v.lat, v.lon, v.z)
+    let dx = pa.x - pc.x
+    if (dx > s / 2) dx -= s
+    if (dx < -s / 2) dx += s
+    const dy = pa.y - pc.y
+    if (Math.abs(dx) <= pad && Math.abs(dy) <= pad) { lineShift.value = { x: dx - pad, y: dy - pad }; return }
+  }
+  const p = shiftable ? pad : 0
+  lineAnchor.value = { lat: v.lat, lon: v.lon, z: v.z, w: W, h: H, pad: p }
+  lineShift.value = { x: -p, y: -p }
+}
+watch([view, w, h], placeLines, { immediate: true })
+const lineTransform = computed(() => `translate(${lineShift.value.x.toFixed(2)},${lineShift.value.y.toFixed(2)})`)
+function anchoredLines(lines, boxes, norm) {
+  const a = lineAnchor.value
+  return mm.visibleLines(lines, boxes, a.lat, a.lon, a.z, a.w + 2 * a.pad, a.h + 2 * a.pad, 3000, norm)
+}
 const borderLines = computed(() => {
-  const v = view.value
-  return layersOn.value && v.z <= 13 ? mm.visibleLines(layerData.borders, borderBoxes, v.lat, v.lon, v.z, w.value, h.value) : []
+  const a = lineAnchor.value
+  return layersOn.value && a && a.z <= 13 ? anchoredLines(layerData.borders, borderBoxes, borderNorm) : []
 })
 const stateLines = computed(() => {
-  const v = view.value
-  return layersOn.value && v.z >= 4 && v.z <= 13 ? mm.visibleLines(layerData.states, stateBoxes, v.lat, v.lon, v.z, w.value, h.value) : []
+  const a = lineAnchor.value
+  return layersOn.value && a && a.z >= 4 && a.z <= 13 ? anchoredLines(layerData.states, stateBoxes, stateNorm) : []
 })
 const countryLabels = computed(() => {
   const v = view.value
-  return layersOn.value ? mm.visibleLabels(countryPoints, v.lat, v.lon, v.z, w.value, h.value, { maxZoom: 6.5, charW: 8 }) : []
+  return layersOn.value ? mm.visibleLabels(countryPoints, v.lat, v.lon, v.z, w.value, h.value, { maxZoom: 6.5, charW: 8, norm: countryNorm }) : []
 })
 const placeLabels = computed(() => {
   const v = view.value
-  return layersOn.value && v.z < 15 ? mm.visibleLabels(placePoints, v.lat, v.lon, v.z, w.value, h.value, { max: 80 }) : []
+  return layersOn.value && v.z < 15 ? mm.visibleLabels(placePoints, v.lat, v.lon, v.z, w.value, h.value, { max: 80, norm: placeNorm }) : []
 })
 
 // the lat/lon grid: a step that gives lines ~120-300 px apart
@@ -411,6 +501,7 @@ function localXY(ev) {
 
 function onDown(ev) {
   if (ev.button !== 0) return
+  layersPanel.value = false
   if (ctx.value) { closeCtx(); return }
   results.value = []
   const p = localXY(ev)
@@ -426,6 +517,18 @@ function onHover(ev) {
   cursor.value = mm.fromScreen(p.x, p.y, v.lat, v.lon, v.z, w.value, h.value)
 }
 
+// a drag moves the view once per animation frame (the mouse moves more often, and each move redrew the whole map)
+let panDx = 0, panDy = 0, panFrame = 0
+const nextFrame = window.requestAnimationFrame ? f => window.requestAnimationFrame(f) : f => setTimeout(f, 16)
+function applyPan() {
+  panFrame = 0
+  if (!panDx && !panDy) return
+  const v = view.value
+  const c = mm.pan(v.lat, v.lon, v.z, panDx, panDy)
+  panDx = 0; panDy = 0
+  view.value = { ...v, lat: c.lat, lon: c.lon }
+}
+
 function onMove(ev) {
   if (!drag) return
   const p = localXY(ev)
@@ -433,15 +536,15 @@ function onMove(ev) {
   if (!drag.moved && Math.hypot(p.x - drag.sx, p.y - drag.sy) < 4) return
   drag.moved = true
   follow.value = false
-  const v = view.value
-  const c = mm.pan(v.lat, v.lon, v.z, dx, dy)
-  view.value = { ...v, lat: c.lat, lon: c.lon }
+  panDx += dx; panDy += dy
   drag.x = p.x; drag.y = p.y
+  if (!panFrame) panFrame = nextFrame(applyPan) || 1
 }
 
 function onUp(ev) {
   window.removeEventListener("mousemove", onMove)
   window.removeEventListener("mouseup", onUp)
+  applyPan()
   const d = drag
   drag = null
   if (d && !d.moved) {
@@ -781,6 +884,7 @@ function close() {
 }
 
 function onEscape() {
+  if (layersPanel.value) { layersPanel.value = false; return }
   if (target.value) { target.value = null; return }
   if (results.value.length) { results.value = []; return }
   if (!embedded) close()
@@ -918,6 +1022,15 @@ const fmtLatLon = mm.fmtLatLon
 .map-btn.primary { background: #e0761c; border-color: #e0761c; }
 .map-btn:disabled { opacity: 0.45; cursor: default; }
 .map-btn.close { margin-left: auto; }
+.layers-wrap { position: relative; }
+.layers-panel {
+  position: absolute; right: 0; top: 38px; z-index: 12; min-width: 190px; padding: 8px 12px 10px;
+  background: rgba(15, 18, 22, 0.94); border: 1px solid rgba(255, 255, 255, 0.2); border-radius: 6px;
+  box-shadow: 0 3px 12px rgba(0, 0, 0, 0.5); cursor: default;
+}
+.layer-opt { display: block; padding: 4px 0; font-size: 13px; white-space: nowrap; cursor: pointer; }
+.layer-opt input { margin: 0 6px 0 0; vertical-align: -2px; cursor: pointer; }
+.layer-hint { font-size: 11px; color: #9aa4ae; }
 .map-btn.small { padding: 4px 8px; font-size: 12px; }
 .map-btn.danger { background: #a3302a; border-color: #a3302a; }
 
