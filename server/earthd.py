@@ -176,6 +176,18 @@ GROUND_RESEND_M, GROUND_RESEND_S = 1.0, 1.5   # ground_ahead: sent on a change, 
                                                # follow.GROUND_STALE_S is 3 s)
 DETAIL_RING_M = 128.0           # detail mode: L-1 tiles this far beyond the block (forced())
 IMG_WARM_MARGIN = 200.0         # m beyond the block's half width that warm_imagery fetches ahead
+# download_ahead: the raw data of the terrain blocks and road tiles ahead of a driving player, fetched into the
+# disk caches before anything there is built (a block in a new area waited ~0.5-2 s on its elevation tiles,
+# 2026-10-15). Points AHEAD_S s ahead on the straight path (at most AHEAD_MAX_M), at netfetch "prefetch"
+# priority: only a host's spare tokens, so the builds' own downloads never wait for it
+AHEAD_ON = True                 # --download-ahead
+AHEAD_S = (10.0, 20.0, 30.0, 45.0, 60.0)
+AHEAD_MAX_M = 4000.0
+AHEAD_MIN_V = 8.0               # m/s: slower, the blocks around (and surface.prefetch's 3 km) cover it
+AHEAD_MOVE_M = 150.0            # m the player moves before the next round
+AHEAD_MARGIN_M = 250.0          # m around the block's half width at each point
+AHEAD_LAYERS = ("buildings", "building_parts", "infrastructure", "land_use")    # the road tiles' cells (not
+                                                                                # landcover / roads: surface.prefetch)
 BASE_PX = 1024                  # detail mode: the block's base photo (1 km -> 1 m per texel; USGS is ~1.9 m)
 BASE_AO_VFS = "/levels/beamng_earth/art/terrains/bngEarth_base_ao.png"   # every surface layer's aoBaseTex
 BASE_AO = 251                   # its flat value (tools/make_level_assets.py)
@@ -563,6 +575,10 @@ class Server:
             raise ValueError("horizon mode needs the mesh (or detail) near-visual mode")
         self.horizon = bool(horizon)
         self.horizon_pool = ThreadPoolExecutor(1, thread_name_prefix="horizon") if self.horizon else None
+        self.ahead_pool = ThreadPoolExecutor(1, thread_name_prefix="download-ahead")   # download_ahead
+        self.ahead_busy = False
+        self.ahead_last = None          # (anchor id, x, y) of the last round
+        self.ahead_stats = {"dem": 0, "cells": 0, "deferred": 0}
         self.horizon_grids = {}             # anchorId -> farfield.HorizonGrid
         self.horizon_inflight = {}          # anchorId -> (future, half-size)
         self.horizon_failed = {}            # anchorId -> monotonic time of the last failed build
@@ -1014,6 +1030,54 @@ class Server:
                 self.warm_thread = threading.Thread(target=self._warm_loop, name="roads-ahead", daemon=True)
                 self.warm_thread.start()
             self.warm_cv.notify()
+
+    def download_ahead(self, anchor, x, y, vx, vy):
+        """Fetch the elevation tiles (the blocks' zoom) and the road tiles' map cells along the player's straight
+        path AHEAD_S s ahead into the disk caches (one round at a time, again every AHEAD_MOVE_M)."""
+        v = math.hypot(vx, vy)
+        if not AHEAD_ON or v < AHEAD_MIN_V or self.ahead_busy or self.dem is None:
+            return
+        last = self.ahead_last
+        if last is not None and last[0] == anchor.id and math.hypot(x - last[1], y - last[2]) < AHEAD_MOVE_M:
+            return
+        self.ahead_last = (anchor.id, x, y)
+        k = min(1.0, AHEAD_MAX_M / (v * AHEAD_S[-1]))
+        pts = []
+        for t in AHEAD_S:
+            la, lo, _ = anchor.frame.enu_to_geodetic(x + vx * t * k, y + vy * t * k, 0.0)
+            pts.append((float(la), float(lo)))
+        reach = self.layout.block * heightmap.SQUARE / 2 + AHEAD_MARGIN_M
+        zoom = anchor.hm_zoom
+        layers = AHEAD_LAYERS if (self.mapdata is not None and self.buildings) else ()
+        self.ahead_busy = True
+
+        def run():
+            try:
+                dem_n = cells_n = 0
+                for la, lo in pts:
+                    got, deferred = self.dem.prefetch(self.dem.keys_around(la, lo, reach, zoom))
+                    dem_n += got
+                    if deferred:
+                        self.ahead_stats["deferred"] += 1
+                        break
+                for la, lo in pts if layers else ():
+                    dlat = reach / 111320.0
+                    dlon = reach / (111320.0 * max(0.05, math.cos(math.radians(la))))
+                    for key in mapcells.cells_for_bbox(la - dlat, lo - dlon, la + dlat, lo + dlon):
+                        todo = tuple(ly for ly in layers if not self.mapdata.has(key, ly))
+                        if todo:
+                            self.mapdata.cell(key, layers=todo, kind="prefetch")
+                            cells_n += 1
+                self.ahead_stats["dem"] += dem_n
+                self.ahead_stats["cells"] += cells_n
+                if dem_n or cells_n:
+                    log.info("download ahead: %d elevation tiles, %d map cells (%.0f m/s; session: %s)", dem_n,
+                             cells_n, v, self.ahead_stats)
+            except Exception as e:      # a refused / failed fetch only costs the lookahead
+                log.debug("download ahead: %s: %s", type(e).__name__, e)
+            finally:
+                self.ahead_busy = False
+        self.ahead_pool.submit(run)
 
     def warm_imagery(self, anchor, x, y, vx, vy):
         """The lazy imagery sources (NAIP) along the player's straight path (WARM_STEPS_S), over the block's
@@ -2339,6 +2403,7 @@ class Connection:
         if aid == self.active and self.following:
             self.s.warm_roads(self.s.anchors[aid], *self.focus, *self.vel)
             self.s.warm_imagery(self.s.anchors[aid], *self.focus, *self.vel)
+            self.s.download_ahead(self.s.anchors[aid], *self.focus, *self.vel)
             self.base_refresh(aid)
         if self.s.mapdata is not None and aid == self.active:
             self.roads.on_pose(self, aid, *self.focus, asyncio.get_running_loop(), self.s.build_roads_tile)
@@ -2812,8 +2877,9 @@ async def main_async(args):
     mapdata = (mapdatamod.MapData(args.cache_dir, fetcher=net)
                if "on" in (args.surface, args.roads, args.sea, args.trees) else None)
     pacer.DUTY = args.background_duty
-    global DETAIL_RING_M
+    global DETAIL_RING_M, AHEAD_ON
     DETAIL_RING_M = args.detail_ring
+    AHEAD_ON = args.download_ahead == "on"
     block_pools, far_pool = [], None
     if args.block_process == "on":
         ctx = multiprocessing.get_context("spawn")
@@ -3092,6 +3158,8 @@ def main():
                          "land cover, Forest items of stock shapes in the mod")
     ap.add_argument("--road-processes", type=int, default=ROAD_PROCESSES,
                     help="processes building the road tiles (--block-process on); 0 = threads in the server")
+    ap.add_argument("--download-ahead", choices=("on", "off"), default="on",
+                    help="fetch the elevation tiles and map cells 10-60 s ahead of a driving player (AHEAD_S)")
     ap.add_argument("--detail-ring", type=float, default=DETAIL_RING_M,
                     help="detail mode: metres of L-1 tiles around the drawn block (0 = none)")
     ap.add_argument("--background-duty", type=float, default=pacer.CLI_DUTY,
