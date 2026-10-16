@@ -283,7 +283,8 @@ class NetDemandTest(unittest.TestCase):
             with self.subTest(start=start):
                 first, _ = net_demand(lat, lon, imagery.SOURCES[name], 0.0, 0)
                 host = netfetch.host_of(imagery.SOURCES[name].url)
-                self.assertGreater(first[host], 10 * netfetch.POLICIES[host].burst)
+                # (5x since the 2026-10-16 raise: USGS burst 150, ~1,430 requests)
+                self.assertGreater(first[host], 5 * netfetch.POLICIES[host].burst)
 
 
 if __name__ == "__main__":
