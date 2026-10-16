@@ -59,6 +59,46 @@ READ_TIMEOUT_S = 10
 
 FILE_WORKERS = 6            # map tile files built at once (network-bound; EOX's host allows 4 requests at a time)
 RETRY_S = 4.0               # a tile that failed or has no imagery is asked again only after this
+# The tile files kept (2026-10-16: ~8k files in ~1.2k folders after a night of map use, every layer, never removed;
+# the game watches its user folder): beyond MAX_FILES the oldest go, one at a time PRUNE_GAP_S apart (the game's file
+# watcher never sees a burst), when the server starts and after every PRUNE_EVERY new tiles. The map asks again for a
+# tile it shows whose file is gone.
+MAX_FILES = 4000
+PRUNE_EVERY = 500
+PRUNE_GAP_S = 0.01
+
+
+def prune(root, keep=MAX_FILES, gap_s=PRUNE_GAP_S, sleep=time.sleep):
+    """The oldest (by mtime) tile files under root deleted down to `keep`, then the emptied folders; the number
+    deleted. Errors (a file the map just rewrote, a folder gone) are skipped."""
+    files = []
+    for d, _, names in os.walk(root):
+        for n in names:
+            p = os.path.join(d, n)
+            try:
+                files.append((os.stat(p).st_mtime, p))
+            except OSError:
+                pass
+    if len(files) <= keep:
+        return 0
+    files.sort()
+    n = 0
+    for _, p in files[:len(files) - keep]:
+        try:
+            os.remove(p)
+            n += 1
+        except OSError:
+            pass
+        if gap_s:
+            sleep(gap_s)
+    for d, _, _ in os.walk(root, topdown=False):       # children first: a parent is empty once they are gone
+        if d != root:
+            try:
+                if not os.listdir(d):
+                    os.rmdir(d)
+            except OSError:
+                pass
+    return n
 MAX_FILES_REQUEST = 128     # tiles per map_tiles request (two layers over a 2560 x 1440 view)
 EOX_MAP_CREDIT = "EOX IT Services GmbH (maps.eox.at), data © OpenStreetMap contributors and others"
 # The map's other layers: XYZ sources outside the imagery chain (so never among --imagery's choices)
@@ -300,6 +340,8 @@ class TileFiles:
         self._failed = {}           # key -> clock() of its failure / "no imagery"
         self._active = 0            # worker loops running
         self.stats = {"built": 0, "had": 0, "missing": 0, "failed": 0, "dropped": 0}
+        self._since_prune = PRUNE_EVERY             # a prune at the first request (old files of earlier sessions)
+        self._pruning = False
 
     def request(self, keys):
         """keys: [(layer, z, x, y)], the most wanted first. Never blocks (no file access here)."""
@@ -314,6 +356,24 @@ class TileFiles:
             self._active += n
         for _ in range(n):
             self.pool.submit(self._work)
+        self._maybe_prune()
+
+    def _maybe_prune(self):
+        with self._lock:
+            if self._pruning or self._since_prune < PRUNE_EVERY:
+                return
+            self._pruning, self._since_prune = True, 0
+
+        def run():
+            try:
+                k = prune(self.root)
+                if k:
+                    log.info("map tiles: %d old files removed (at most %d kept)", k, MAX_FILES)
+            except Exception as e:      # (never the map's business)
+                log.debug("map tile prune: %s", e)
+            finally:
+                self._pruning = False
+        threading.Thread(target=run, name="map-prune", daemon=True).start()
 
     def pending(self):
         """(queued, being built) counts."""
@@ -373,6 +433,7 @@ class TileFiles:
         ok = os.path.exists(path)
         if ok:
             self.stats["built"] += 1
+            self._since_prune += 1
         return ok
 
     def close(self):

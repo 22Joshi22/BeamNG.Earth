@@ -395,5 +395,23 @@ class MapMathTest(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
 
 
+
+class PruneTest(unittest.TestCase):
+    def test_oldest_go_down_to_keep_and_empty_folders(self):
+        import time as _t
+        with tempfile.TemporaryDirectory() as root:
+            paths = []
+            for k in range(10):
+                p = os.path.join(root, "labels" if k % 2 else "", str(k), "1", "2.jpg")
+                os.makedirs(os.path.dirname(p), exist_ok=True)
+                open(p, "wb").write(b"x")
+                os.utime(p, (1000 + k, 1000 + k))
+                paths.append(p)
+            n = maptiles.prune(root, keep=4, gap_s=0)
+            self.assertEqual(n, 6)
+            self.assertEqual([os.path.exists(p) for p in paths], [False] * 6 + [True] * 4)
+            self.assertFalse(os.path.exists(os.path.join(root, "0")))        # emptied folders gone
+            self.assertEqual(maptiles.prune(root, keep=4, gap_s=0), 0)
+
 if __name__ == "__main__":
     unittest.main()
