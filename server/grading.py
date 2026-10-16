@@ -263,6 +263,14 @@ def grade_points(px, py, base, plans, lift=0.0):
     if not A:
         return out
     A, B, ZA, ZB, H = (np.concatenate(v) for v in (A, B, ZA, ZB, H))
+    import fast
+    if fast.AVAILABLE:          # the Rust loop: the same pairs in the same order, no temporaries (~3x less CPU)
+        f64 = np.float64
+        return fast._ef.grade_points(np.ascontiguousarray(px, f64), np.ascontiguousarray(py, f64),
+                                     np.ascontiguousarray(base, f64), np.ascontiguousarray(A[:, :2], f64),
+                                     np.ascontiguousarray(B[:, :2], f64), np.ascontiguousarray(ZA, f64),
+                                     np.ascontiguousarray(ZB, f64), np.ascontiguousarray(H, f64), float(lift),
+                                     float(SLOPE_RUN), float(T_MIN), float(T_MAX), float(BLEND_R), float(BUCKET))
     reach = H + T_MAX
     lo_x = np.minimum(A[:, 0], B[:, 0]) - reach
     hi_x = np.maximum(A[:, 0], B[:, 0]) + reach
