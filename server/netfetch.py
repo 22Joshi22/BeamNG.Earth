@@ -130,7 +130,8 @@ POLICIES = {
                                     breaker_threshold=6, breaker_window=120.0),
     "tiles.maps.eox.at": HostPolicy(rate=10.0, burst=40.0, max_conc=6, daily_budget=30000,
                                     allow_prefetch=True, offline_ok=True, miss_ttl=90 * DAY, **TILE_HOST),
-    "tiles.mapterhorn.com": HostPolicy(rate=50.0, burst=200.0, max_conc=16, daily_budget=80000,
+    # (a tile not in Cloudflare's edge cache takes ~1 s before its first byte: requests in flight set the rate)
+    "tiles.mapterhorn.com": HostPolicy(rate=50.0, burst=200.0, max_conc=32, daily_budget=80000,
                                        allow_prefetch=True, offline_ok=True, revalidate_after=180 * DAY,
                                        miss_ttl=90 * DAY, **TILE_HOST),
     "s3.amazonaws.com": HostPolicy(rate=50.0, burst=100.0, max_conc=8, daily_budget=None,
