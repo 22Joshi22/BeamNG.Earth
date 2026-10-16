@@ -313,6 +313,33 @@ class FastTest(unittest.TestCase):
             h = float(rng.uniform(1, 10))
             self.assertEqual(fast._ef.any_within(pts, road, h), bool((junctions._seg_dist(pts, road) < h).any()))
 
+    def test_shared_walls_matches_python(self):
+        import buildings
+        rng = np.random.default_rng(17)
+        for trial in range(30):
+            rings = []
+            x = 0.0
+            for _ in range(int(rng.integers(2, 40))):          # a terrace: shared walls, a few gaps and others
+                w = float(rng.uniform(4, 9))
+                d = float(rng.uniform(8, 14))
+                y0 = float(rng.normal(0, 0.3))
+                rings.append(np.array([[x, y0], [x + w, y0], [x + w, y0 + d], [x, y0 + d]]) + rng.normal(0, 0.2, (4, 2)))
+                x += w + float(rng.choice([0.0, 0.0, 0.3, 2.0]))
+            for _ in range(int(rng.integers(0, 10))):
+                c = rng.uniform(-20, x + 20, 2)
+                k = int(rng.integers(3, 9))
+                ang = np.sort(rng.uniform(0, 2 * np.pi, k))
+                rings.append(c + np.c_[np.cos(ang), np.sin(ang)] * rng.uniform(3, 15))
+            got = buildings._shared_walls(rings)
+            saved = fast._ef
+            fast._ef = None
+            try:
+                want = buildings._shared_walls(rings)
+            finally:
+                fast._ef = saved
+            self.assertEqual(got.tolist(), want.tolist(), trial)
+            self.assertGreater(want.sum(), 0)
+
     def test_points_and_distances(self):
         sq = np.array([[0, 0], [10, 0], [10, 10], [0, 10]], float)
         pts = np.array([[5, 5], [15, 5], [-1, -1], [9.9, 0.1]], float)

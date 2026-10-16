@@ -166,7 +166,8 @@ def _hash01(*vals):
 def _area2(p):
     """Twice the signed area of the ring p (n, 2), counter-clockwise positive."""
     x, y = p[:, 0], p[:, 1]
-    return float(np.dot(x, np.roll(y, -1)) - np.dot(np.roll(x, -1), y))
+    # np.roll(v, -1) by hand: the same arrays without roll's axis handling (~28k calls a 9-tile set)
+    return float(np.dot(x, np.concatenate((y[1:], y[:1]))) - np.dot(np.concatenate((x[1:], x[:1])), y))
 
 
 def clean_ring(p):
@@ -179,7 +180,7 @@ def clean_ring(p):
     for _ in range(8):
         if len(p) < 3:
             return None
-        prev, nxt = np.roll(p, 1, 0), np.roll(p, -1, 0)
+        prev, nxt = np.concatenate((p[-1:], p[:-1])), np.concatenate((p[1:], p[:1]))     # np.roll by hand
         d = nxt - prev
         L = np.hypot(d[:, 0], d[:, 1])
         off = np.abs(d[:, 0] * (p[:, 1] - prev[:, 1]) - d[:, 1] * (p[:, 0] - prev[:, 0])) / np.maximum(L, 1e-9)
@@ -1247,6 +1248,13 @@ def _shared_walls(rings, tol=0.6):
     cents = np.array([r.mean(0) for r in rings])
     rads = np.array([np.hypot(*(r - r.mean(0)).T).max() for r in rings])
     order = np.argsort(cents[:, 0])
+    if fast._ef is not None and hasattr(fast._ef, "shared_walls"):     # the Rust loop: the same counts
+        offs = np.zeros(n + 1, np.int64)
+        offs[1:] = np.cumsum([len(r) for r in rings])
+        coords = np.ascontiguousarray(np.concatenate(rings)[:, :2], np.float64)
+        return np.asarray(fast._ef.shared_walls(coords, offs, np.ascontiguousarray(cents, np.float64),
+                                                np.ascontiguousarray(rads, np.float64), order.astype(np.int64),
+                                                float(tol)), np.int64)
     xs = cents[order, 0]
     for oi, i in enumerate(order):
         lo = np.searchsorted(xs, cents[i, 0] - rads[i] - 30.0)

@@ -429,5 +429,27 @@ class CliTest(unittest.TestCase):
             self.assertGreater(im.width, 500)
 
 
+
+class BandTest(unittest.TestCase):
+    def test_band_holds_every_point_within_reach(self):
+        rng = np.random.default_rng(7)
+        lat = rng.uniform(-85, 85, 20000)
+        lon = rng.uniform(-180, 180, 20000)
+        order = np.argsort(lat, kind="stable")
+        for _ in range(300):
+            qlat, qlon = rng.uniform(-88, 88), rng.uniform(-180, 180)
+            r = rng.choice([1e3, 2e4, 2e5, 1e6])
+            # points near the query too
+            near_lat = np.clip(qlat + rng.normal(0, r / 111e3, 50), -89.9, 89.9)
+            near_lon = ((qlon + rng.normal(0, r / 60e3, 50)) + 180) % 360 - 180
+            la, lo = np.r_[lat, near_lat], np.r_[lon, near_lon]
+            o = np.argsort(la, kind="stable")
+            c = airports._band(la[o], o, qlat, qlon, lo, r)
+            want = np.flatnonzero(airports._hav(qlat, qlon, la, lo) <= r)
+            if c is None:
+                continue
+            self.assertTrue(set(want.tolist()) <= set(c.tolist()), (qlat, qlon, r))
+            self.assertTrue((np.diff(c) > 0).all())
+
 if __name__ == "__main__":
     unittest.main()

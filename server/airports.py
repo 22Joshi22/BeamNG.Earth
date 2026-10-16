@@ -464,6 +464,24 @@ def _hav(lat0, lon0, lat, lon):
     return 2 * EARTH_R * np.arcsin(np.sqrt(np.clip(a, 0.0, 1.0)))
 
 
+def _band(lat_sorted, order, lat, lon, lons, r_m):
+    """Indices (ascending) of the points within a lat/lon box sure to hold every point within r_m (great circle) of
+    (lat, lon): a prefilter before _hav (the same points pass, ~47k runways otherwise each query). lat_sorted / order:
+    the points' latitudes sorted and their argsort; lons the points' longitudes. None: no box (a pole or the
+    antimeridian within reach) -> test them all."""
+    dlat = math.degrees(r_m / EARTH_R) * 1.001 + 1e-9
+    if abs(lat) + dlat >= 89.0:
+        return None
+    dlon = dlat / math.cos(math.radians(abs(lat) + dlat))
+    if abs(lon) + dlon >= 180.0:
+        return None
+    i0 = int(np.searchsorted(lat_sorted, lat - dlat, side="left"))
+    i1 = int(np.searchsorted(lat_sorted, lat + dlat, side="right"))
+    cand = order[i0:i1]
+    cand = cand[np.abs(lons[cand] - lon) <= dlon]
+    return np.sort(cand)
+
+
 def _seg_dist(e0, n0, e1, n1):
     """Distance from the origin to the segment (e0, n0)-(e1, n1), arrays."""
     de, dn = e1 - e0, n1 - n0
@@ -494,6 +512,17 @@ class AirportDB:
         self._qual = np.array([QUALITIES.index(r.quality) for r in runways], np.int8)
         self._closed = np.array([r.closed or r.airport_type == "closed" for r in runways], bool)
         self._hp = np.array([(h.lat, h.lon) for h in helipads], np.float64).reshape(len(helipads), 2)
+        self._mid_order = np.argsort(self._mid[:, 0], kind="stable")
+        self._mid_lat = self._mid[self._mid_order, 0]
+        self._hp_order = np.argsort(self._hp[:, 0], kind="stable")
+        self._hp_lat = self._hp[self._hp_order, 0]
+        self._half_max = float(self._half.max()) if n else 0.0
+        self._cells = {}                                # in_cell memo: (key, margin, quality, closed) -> runways
+
+    def _near_mid(self, lat, lon, r_m):
+        """Indices of the runways whose midpoint may be within r_m (all of them when no box helps)."""
+        c = _band(self._mid_lat, self._mid_order, lat, lon, self._mid[:, 1], r_m)
+        return np.arange(len(self.runways)) if c is None else c
 
     @classmethod
     def from_csv(cls, airports_csv, runways_csv, snapshot=None):
@@ -567,9 +596,10 @@ class AirportDB:
         `arp` (estimated) runways only with min_quality="arp"."""
         if not self.runways:
             return []
-        m = self._select(min_quality, include_closed)
-        d0 = _hav(lat, lon, self._mid[:, 0], self._mid[:, 1]) - self._half
-        idx = np.flatnonzero(m & (d0 <= radius_m))
+        c = self._near_mid(lat, lon, radius_m + self._half_max)
+        m = self._select(min_quality, include_closed)[c]
+        d0 = _hav(lat, lon, self._mid[c, 0], self._mid[c, 1]) - self._half[c]
+        idx = c[np.flatnonzero(m & (d0 <= radius_m))]
         if not len(idx):
             return []
         f = geodesy.EnuFrame(lat, lon, 0.0)
@@ -583,8 +613,10 @@ class AirportDB:
     def helipads_near(self, lat, lon, radius_m, include_closed=False):
         if not self.helipads:
             return []
-        d = _hav(lat, lon, self._hp[:, 0], self._hp[:, 1])
-        out = [(float(d[i]), self.helipads[i]) for i in np.flatnonzero(d <= radius_m)
+        c = _band(self._hp_lat, self._hp_order, lat, lon, self._hp[:, 1], radius_m)
+        c = np.arange(len(self.helipads)) if c is None else c
+        d = _hav(lat, lon, self._hp[c, 0], self._hp[c, 1])
+        out = [(float(d[j]), self.helipads[i]) for j, i in zip(np.flatnonzero(d <= radius_m), c[d <= radius_m])
                if include_closed or not (self.helipads[i].closed or self.helipads[i].airport_type == "closed")]
         out.sort(key=lambda x: (round(x[0], 3), x[1].id))
         return out
@@ -594,12 +626,25 @@ class AirportDB:
         blend, or the runway rectangle grown by margin_m) touches the z14 cell `key` (any z), sorted by
         id. Exact rectangle-against-cell test in the cell's tangent plane."""
         key = mapcells.check(mapcells.CellKey(*key))
+        memo = (tuple(key), margin_m, min_quality, include_closed)
+        hit = self._cells.get(memo)
+        if hit is not None:
+            return list(hit)
+        out = self._in_cell(key, margin_m, min_quality, include_closed)
+        if len(self._cells) >= 4096:
+            self._cells.clear()
+        self._cells[memo] = tuple(out)
+        return out
+
+    def _in_cell(self, key, margin_m, min_quality, include_closed):
         lon0, lat0, lon1, lat1 = key.bounds()
         clat, clon = key.center()
         half_diag = _hav(lat0, lon0, np.array([lat1]), np.array([lon1]))[0] / 2
-        m = self._select(min_quality, include_closed)
-        reach = self._half + (runwaygeom.MAX_REACH if margin_m is None else margin_m) + 200.0
-        idx = np.flatnonzero(m & (_hav(clat, clon, self._mid[:, 0], self._mid[:, 1]) <= half_diag + reach))
+        extra = (runwaygeom.MAX_REACH if margin_m is None else margin_m) + 200.0
+        c = self._near_mid(clat, clon, half_diag + self._half_max + extra)
+        m = self._select(min_quality, include_closed)[c]
+        reach = self._half[c] + extra
+        idx = c[np.flatnonzero(m & (_hav(clat, clon, self._mid[c, 0], self._mid[c, 1]) <= half_diag + reach))]
         if not len(idx):
             return []
         f = geodesy.EnuFrame(clat, clon, 0.0)
