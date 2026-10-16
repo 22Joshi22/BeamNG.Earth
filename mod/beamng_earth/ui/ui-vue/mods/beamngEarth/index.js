@@ -4,8 +4,8 @@ import { lua } from "@/bridge"
 // (same pattern as the taa_standalone mod). Lua side: lua/ge/extensions/beamngEarth/settings.lua.
 //
 // The world map (EarthMap.vue): a full-screen route of its own ("beamngEarthMap", opened by the
-// map key (M, the pause menu Map, or a bound key) through beamngEarth_settings.toggleMap) and a second Mods-tab button showing it
-// inside the pause menu. The route follows ui/ui-vue/mods/README.md "Standalone routes"; any failure
+// map key (M, the pause menu Map, or a bound key) through beamngEarth_settings.toggleMap). No Mods-tab button of its own
+// (the user, 2026-10-16: "move the map out of the mods tab"; the stock Map entry opens it). The route follows ui/ui-vue/mods/README.md "Standalone routes"; any failure
 // there is logged and leaves the settings button alone.
 const MAP_SOURCE = "beamngEarth.routes"
 function mapRoutes(EarthMap, EarthWelcome) {
@@ -68,25 +68,14 @@ export async function onLoad() {
   if (window.bngApi && window.bngApi.engineLua) {
     window.bngApi.engineLua("if beamngEarth_settings then beamngEarth_settings.setPageExists(true) end")
   }
-  try {
-    await lua.extensions.ui_pause_actions.registerModButton({
-      id: "beamngEarth-map",
-      tabId: "mods",
-      label: "BeamNG.Earth map",
-      icon: "map",
-      componentName: "/ui/ui-vue/mods/beamngEarth/EarthMap.vue",
-      props: { embedded: true },
-    })
-  } catch (e) {
-    console.error("BeamNG.Earth: map button failed", e)
-  }
+  // an older version's map button, if this UI session still has one
+  try { await lua.extensions.ui_pause_actions.unregisterModButton("beamngEarth-map") } catch (e) { /* none */ }
   await registerMapRoute()
 }
 
 export async function onUnload() {
   await lua.extensions.ui_pause_actions.unregisterModButton("beamngEarth-settings")
   try {
-    await lua.extensions.ui_pause_actions.unregisterModButton("beamngEarth-map")
     if (window.bngRoutes) window.bngRoutes.remove([MAP_SOURCE])
     if (lua.extensions.ui_router_routeManager) {
       await lua.extensions.ui_router_routeManager.unregisterModRoutes(MAP_SOURCE, { fallbackRoute: "play" })
