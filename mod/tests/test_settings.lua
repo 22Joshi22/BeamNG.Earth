@@ -354,6 +354,25 @@ do
   beamngEarth_core, FS = core0, fs0
 end
 
+-- the Feedback buttons: the menu goes to play first, the report runs FEEDBACK_FRAMES frames later
+do
+  local states, calls = {}, {}
+  local gh0, rep0 = rawget(_G, 'guihooks'), rawget(_G, 'beamngEarth_report')
+  _G.guihooks = { trigger = function(name, d) if name == 'ChangeState' then states[#states + 1] = d.state end end }
+  _G.beamngEarth_report = { note = function() calls[#calls + 1] = 'note' end,
+                            profiler = function() calls[#calls + 1] = 'profiler' end }
+  T.check(settings.feedback('nope').error ~= nil and #states == 0, 'feedback: an unknown kind does nothing')
+  T.check(settings.feedback('report').ok and states[1] == 'play', 'feedback: the menu closes at once')
+  for _ = 1, settings.FEEDBACK_FRAMES - 1 do settings.onUpdate() end
+  T.check(#calls == 0, 'feedback: not while the menu may still show')
+  settings.onUpdate()
+  T.check(calls[1] == 'note' and #calls == 1, 'feedback: the report window after the frames')
+  settings.feedback('profiler')
+  for _ = 1, settings.FEEDBACK_FRAMES + 2 do settings.onUpdate() end
+  T.check(calls[2] == 'profiler' and #calls == 2, 'feedback: the profiler, once')
+  _G.guihooks, _G.beamngEarth_report = gh0, rep0
+end
+
 -- leave the shared modules as found
 rebase.distance, ui.visible, ui.compact, ui.hudHidden = dist0, vis0, compact0, false
 T.done('test_settings')
