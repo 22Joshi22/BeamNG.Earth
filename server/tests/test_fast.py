@@ -464,6 +464,43 @@ class FastTest(unittest.TestCase):
             want = [ff.view_distance(t, cone, 30.0, -20.0) for t in tiles]
             np.testing.assert_allclose(got, want, rtol=1e-12, atol=1e-9)
 
+    def test_road_corridors_match_python(self):
+        import vegetation as veg
+        rng = np.random.default_rng(53)
+
+        class Roads:                    # mapdata Features: road lines (kind 2) with a class
+            def __init__(self, lines):
+                self.kind = np.full(len(lines), 2)
+                self.attrs = {"class": np.array(["residential", "primary", "", "footway"] * 20, object)[:len(lines)]}
+                self.lines = lines
+
+            def parts(self, i):
+                return [[self.lines[i]]]
+        chm = types.SimpleNamespace(x0=-8575000.0, y0=4720000.0, dx=1.0, dy=1.0)
+        lines = []
+        for _ in range(40):
+            k = int(rng.integers(2, 12))
+            mx = chm.x0 + np.cumsum(rng.normal(0, 40, k)) + rng.uniform(0, 300)
+            my = chm.y0 - np.cumsum(rng.normal(0, 40, k)) - rng.uniform(0, 300)
+            lines.append(np.stack(veg._to4326(mx, my), -1))
+        f = Roads(lines)
+        out = []
+        for use_rust in (True, False):
+            saved = fast._ef
+            if not use_rust:
+                fast._ef = None
+            try:
+                mask = np.zeros((300, 320), bool)
+                push = np.zeros((3, 300, 320), np.float32)
+                push[2] = np.inf
+                veg._mask_roads(f, mask, chm, push)
+                out.append((mask, push))
+            finally:
+                fast._ef = saved
+        self.assertGreater(int(out[1][0].sum()), 1000)
+        np.testing.assert_array_equal(out[0][0], out[1][0])
+        np.testing.assert_array_equal(out[0][1], out[1][1])
+
     def test_vmedian_matches_python(self):
         import colormatch
         rng = np.random.default_rng(41)
