@@ -388,7 +388,9 @@ class FastTest(unittest.TestCase):
                 want = cdae.tangents(V, UV, N, I)
             finally:
                 fast._ef = saved
-            np.testing.assert_array_equal(got, want, err_msg=str(trial))
+            # equal on Linux; Windows' numpy sums its 3-term dots an ulp differently (2e-16), so not exactly there
+            np.testing.assert_allclose(got, want, rtol=0, atol=1e-12, err_msg=str(trial))
+            np.testing.assert_array_equal(got[:, 3], want[:, 3])
 
     def test_season_noise_matches_python(self):
         import season
