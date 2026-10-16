@@ -612,7 +612,12 @@ DROP_M = 1536.0             # ... and dropped beyond this
 BUILD_PER_POSE = 8
 
 
-def tile_items(frame, tx, ty, veg, cell_ready, elev, sea=None):
+class JsonRows(str):
+    """tile_items' rows already as their JSON text (as_json; write_tile writes it as is); n: how many."""
+    n = 0
+
+
+def tile_items(frame, tx, ty, veg, cell_ready, elev, sea=None, as_json=False):
     """The items of anchor tile (tx, ty), each [group, x, y, z, yaw, scale, height, rank] in the anchor
     frame, the ground z from elev(lat, lon) (the DEM shaped as the block's ground: runways, carved
     water). None when a cell under it is not at hand yet (veg cells are built in the background)."""
@@ -642,6 +647,13 @@ def tile_items(frame, tx, ty, veg, cell_ready, elev, sea=None):
         return []
     zg = np.asarray(elev(it.lat, it.lon), np.float64)
     _, _, z = frame.geodetic_to_enu(it.lat, it.lon, zg)
+    if as_json and fast._ef is not None and hasattr(fast._ef, "veg_rows_json"):
+        # Rust: the same text json.dumps would write for the rows below, without a Python list per tree
+        f64 = lambda a: np.ascontiguousarray(a, np.float64)     # noqa: E731
+        out = JsonRows(fast._ef.veg_rows_json(np.ascontiguousarray(it.group, np.int64), f64(e), f64(n), f64(z),
+                                               f64(it.yaw), f64(it.scale), f64(it.height), f64(it.rank)))
+        out.n = len(it)
+        return out
     return [[int(g), round(float(a), 2), round(float(b), 2), round(float(c), 2), round(float(yw), 1),
              round(float(sc), 3), round(float(h), 1), round(float(r), 4)]
             for g, a, b, c, yw, sc, h, r in zip(it.group, e, n, np.asarray(z), it.yaw, it.scale, it.height, it.rank)]
@@ -660,9 +672,12 @@ def write_tile(out_dir, vfs_dir, aid, tx, ty, rows):
     path = os.path.join(out_dir, name)
     tmp = path + ".tmp"
     with open(tmp, "w") as f:
-        f.write(json.dumps({"groups": list(GROUPS), "items": rows}, separators=(",", ":")))  # the C encoder
+        if isinstance(rows, JsonRows):  # (tile_items as_json: the items' text, as json.dumps writes them)
+            f.write(json.dumps({"groups": list(GROUPS), "items": []}, separators=(",", ":"))[:-3] + rows + "}")
+        else:
+            f.write(json.dumps({"groups": list(GROUPS), "items": rows}, separators=(",", ":")))  # the C encoder
     os.replace(tmp, path)
-    return f"{vfs_dir}/{name}", len(rows)
+    return f"{vfs_dir}/{name}", rows.n if isinstance(rows, JsonRows) else len(rows)
 
 
 class Tracker:

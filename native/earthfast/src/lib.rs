@@ -1924,6 +1924,47 @@ fn points_near_segments<'py>(py: Python<'py>, p: PyReadonlyArray2<'py, f64>, a: 
     numpy::ndarray::Array1::from(out).into_pyarray(py)
 }
 
+/// Python's repr(round(x, nd)) for a finite float in fixed range (|x| < 1e16, nonzero |x| >= 1e-4): round correctly
+/// (ties to even on the exact value, as float.__round__), then the shortest round-trip digits, ".0" for a whole number.
+fn py_round_repr(x: f64, nd: usize, out: &mut String) {
+    let v: f64 = format!("{:.*}", nd, x).parse().unwrap_or(x);
+    let s = format!("{}", v);
+    out.push_str(&s);
+    if !s.contains('.') && !s.contains('e') && !s.contains("inf") && !s.contains("NaN") {
+        out.push_str(".0");
+    }
+}
+
+/// vegetation.tile_items' rows as json.dumps(rows, separators=(",", ":")) writes them: [[group, round(e, 2), round(n, 2),
+/// round(z, 2), round(yaw, 1), round(scale, 3), round(height, 1), round(rank, 4)], ...], byte for byte.
+#[pyfunction]
+#[allow(clippy::too_many_arguments)]
+fn veg_rows_json<'py>(py: Python<'py>, group: PyReadonlyArray1<'py, i64>, e: PyReadonlyArray1<'py, f64>,
+                      n: PyReadonlyArray1<'py, f64>, z: PyReadonlyArray1<'py, f64>, yaw: PyReadonlyArray1<'py, f64>,
+                      scale: PyReadonlyArray1<'py, f64>, height: PyReadonlyArray1<'py, f64>,
+                      rank: PyReadonlyArray1<'py, f64>) -> String {
+    let (g, e, n, z, yaw, sc, h, r) = (group.as_array(), e.as_array(), n.as_array(), z.as_array(), yaw.as_array(),
+                                       scale.as_array(), height.as_array(), rank.as_array());
+    py.allow_threads(|| {
+        let mut out = String::with_capacity(g.len() * 56 + 2);
+        out.push('[');
+        for i in 0..g.len() {
+            if i > 0 {
+                out.push(',');
+            }
+            out.push('[');
+            out.push_str(&g[i].to_string());
+            for (x, nd) in [(e[i], 2), (n[i], 2), (z[i], 2), (yaw[i], 1), (sc[i], 3), (h[i], 1), (r[i], 4)] {
+                out.push(',');
+                py_round_repr(x, nd, &mut out);
+            }
+            out.push(']');
+        }
+        out.push(']');
+        out
+    })
+}
+
 fn bc1_565(c: [f64; 3]) -> u16 {
     let r = (c[0].clamp(0.0, 255.0) * 31.0 / 255.0).round() as u16;
     let g = (c[1].clamp(0.0, 255.0) * 63.0 / 255.0).round() as u16;
@@ -2207,6 +2248,7 @@ fn earthfast(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(road_corridors, m)?)?;
     m.add_function(wrap_pyfunction!(horizon_steps, m)?)?;
     m.add_function(wrap_pyfunction!(points_near_segments, m)?)?;
+    m.add_function(wrap_pyfunction!(veg_rows_json, m)?)?;
     m.add("VERSION", 24)?;
     Ok(())
 }
