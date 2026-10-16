@@ -102,9 +102,11 @@ M.CATALOG = {
     { UT .. 'trees/Juniper/Juniper_tree_03', 5.2 }, { UT .. 'trees/Juniper/Juniper_tree_01', 6.3 },
     { UT .. 'trees/Juniper/Juniper_tree_02', 7.4 }, { UT .. 'trees/Juniper/Juniper_ancient_01', 7.5 },
   },
+  -- (2026-10-16: not JV's deserttree_bush_tiny: it ships no imposter, and the one the engine baked into its temp
+  -- folder while the leaf material did not resolve is solid no-texture orange, kept for good: orange bushes at range)
   desert_shrub = {
     { UT .. 'groundcover/s_gc_utah_grey_bush_01', 0.7 }, { JV .. 'groundcover/s_gc_jv_dry_bush_01', 0.7 },
-    { JV .. 'trees/deserttrees/deserttree_bush_tiny', 0.7 }, { UT .. 'groundcover/s_gc_utah_grey_bush_03', 1.0 },
+    { UT .. 'groundcover/s_gc_utah_grey_bush_03', 1.0 },
     { JV .. 'groundcover/s_gc_jv_dry_bush_03', 1.0 }, { UT .. 'trees/Juniper/Juniper_bush_small_01', 1.2 },
     { UT .. 'trees/Juniper/Juniper_bush_small_dry_01', 2.0 }, { UT .. 'trees/Juniper/Juniper_bush_medium_01', 2.4 },
     { JV .. 'trees/deserttrees/deserttree_bush_medium', 2.9 },
