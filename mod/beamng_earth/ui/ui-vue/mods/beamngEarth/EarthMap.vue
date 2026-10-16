@@ -142,7 +142,7 @@
         v-if="state.gps.eta != null">, {{ fmtDur(state.gps.eta) }}</template></span>
       <span v-if="state.gps.routeError && !routePts.length" class="gps-warn" :title="state.gps.routeError">no road route: heading straight there</span>
       <button class="map-btn small" @click="showOnMap(state.gps)">Show</button>
-      <button class="map-btn small" :disabled="!!state.cannotGo" @click="askTeleport(state.gps.lat, state.gps.lon, state.gps.name)">Teleport</button>
+      <button class="map-btn small" :disabled="!!state.cannotGo" @click="teleportNow(state.gps.lat, state.gps.lon, state.gps.name)">Teleport</button>
       <button class="map-btn small" :class="{ primary: state.gps.autodrive }" @click="setAutodrive(!state.gps.autodrive)"
               :title="state.gps.autodrive ? 'Stop driving by itself' : 'The car drives itself along the route (in its lane, at the speed limit)'">
         {{ state.gps.autodrive ? "Autodrive on" : "Autodrive" }}
@@ -151,7 +151,7 @@
     </div>
 
     <!-- the confirmation -->
-    <div v-if="target" class="confirm" @mousedown.stop>
+    <div v-if="target && (!target.quick || teleportMsg)" class="confirm" @mousedown.stop>
       <div class="confirm-title">Teleport here?</div>
       <div class="confirm-where">{{ target.name ? target.name + " - " : "" }}{{ fmtLatLon(target.lat, target.lon) }}</div>
       <div v-if="state.cannotGo" class="confirm-warn">{{ state.cannotGo }}</div>
@@ -688,8 +688,7 @@ function ctxTeleport() {
   if (!ctx.value || state.value.cannotGo) return
   const c = ctx.value
   closeCtx()
-  askTeleport(c.lat, c.lon, "")
-  teleport()
+  teleportNow(c.lat, c.lon, "")
 }
 function ctxSave() {
   if (!ctx.value) return
@@ -860,6 +859,15 @@ function pickResult(r) {
 function askTeleport(lat, lon, name) {
   teleportMsg.value = ""
   target.value = { lat, lon: mm.wrapLon(lon), name: name || "" }
+}
+
+// The GPS box's Teleport (a search result) and the right-click menu: straight away, no "Teleport here?" (the user
+// 2026-10-16: "we dont need the 2nd popup"); a failure shows in the confirmation box
+function teleportNow(lat, lon, name) {
+  if (state.value.cannotGo) return
+  askTeleport(lat, lon, name)
+  target.value.quick = true       // the box only if it fails
+  teleport()
 }
 
 function teleport() {
