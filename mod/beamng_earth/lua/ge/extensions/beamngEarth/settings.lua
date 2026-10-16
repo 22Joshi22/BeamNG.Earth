@@ -433,29 +433,44 @@ local function playerHeading()
   return (math.deg(math.atan2(dir.x, dir.y)) + 360) % 360
 end
 
--- The map's basemap tiles as files (the game's UI browser cancels every http request, even to 127.0.0.1): list
--- {{z, x, y}, ...} the map shows; returns the keys "z/x/y" whose file is there (/temp/beamngEarth/maptiles/z/x/y.jpg)
--- and asks the server for the others (map_tiles; each at most every MAP_ASK_S).
+-- The map's tiles as files (the game's UI browser cancels every http request, even to 127.0.0.1): list
+-- {{z, x, y, layer}, ...} the map shows, the most wanted first (layer 'sat' when left out, 'map', 'labels'); returns
+-- the keys "layer/z/x/y" whose file is there (mapTilePath) and asks the server for the others (map_tiles): the
+-- whole missing list whenever it changes, and again every MAP_ASK_S while some are missing. The server builds the
+-- newest list first and drops what it no longer has (server/maptiles.py TileFiles), so a list that became empty
+-- goes out too (it cancels).
 M.MAP_ASK_S = 4
 M.MAP_TILES_DIR = '/temp/beamngEarth/maptiles/'
-local mapAsked = {}
+M.MAP_LAYERS = { sat = '.jpg', map = '.jpg', labels = '.png' }   -- server maptiles.LAYERS
+function M.mapTilePath(layer, z, x, y)
+  local zxy = string.format('%d/%d/%d', z, x, y)
+  if layer == 'sat' then return M.MAP_TILES_DIR .. zxy .. '.jpg' end   -- (where it always was)
+  return M.MAP_TILES_DIR .. layer .. '/' .. zxy .. M.MAP_LAYERS[layer]
+end
+local mapSent, mapSentAt = '', nil
 function M.mapTiles(list)
-  local ready, missing = {}, {}
-  local now = os.clock()
+  local ready, missing, keys = {}, {}, {}
   for _, t in ipairs(type(list) == 'table' and list or {}) do
     local z, x, y = tonumber(t[1]), tonumber(t[2]), tonumber(t[3])
-    if z and x and y then
-      local key = string.format('%d/%d/%d', z, x, y)
-      if FS:fileExists(M.MAP_TILES_DIR .. key .. '.jpg') then
+    local layer = t[4] == nil and 'sat' or t[4]
+    if z and x and y and type(layer) == 'string' and M.MAP_LAYERS[layer] then
+      local key = string.format('%s/%d/%d/%d', layer, z, x, y)
+      if FS:fileExists(M.mapTilePath(layer, z, x, y)) then
         ready[#ready + 1] = key
-      elseif not mapAsked[key] or now - mapAsked[key] > M.MAP_ASK_S then
-        mapAsked[key] = now
-        missing[#missing + 1] = { z, x, y }
+      else
+        missing[#missing + 1] = { z, x, y, layer }
+        keys[#keys + 1] = key
       end
     end
   end
-  local core = ext('beamngEarth_core')
-  if #missing > 0 and core and core.requestMapTiles then core.requestMapTiles(missing) end
+  local sig = table.concat(keys, ',')
+  local now = os.clock()
+  if sig ~= mapSent or (#missing > 0 and (not mapSentAt or now - mapSentAt > M.MAP_ASK_S)) then
+    local core = ext('beamngEarth_core')
+    if core and core.requestMapTiles and core.requestMapTiles(missing) then
+      mapSent, mapSentAt = sig, now
+    end
+  end
   return ready
 end
 

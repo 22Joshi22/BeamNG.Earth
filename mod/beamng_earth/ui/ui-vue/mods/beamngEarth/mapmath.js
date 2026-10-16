@@ -137,6 +137,31 @@ export function fallbackTiles(tiles, ready, levels = 6) {
   return [...out.values()].sort((a, b) => a.z - b.z)
 }
 
+// ---- tile layers (server/maptiles.py LAYERS: the files the server writes) -------------------------------------
+export const LAYER_EXT = { sat: "jpg", map: "jpg", labels: "png" }
+
+// A layer's tile file under dir: dir/z/x/y.jpg for "sat" (where it always was), dir/<layer>/z/x/y.<ext> otherwise.
+export function tilePath(dir, layer, z, x, y) {
+  return layer === "sat" ? `${dir}${z}/${x}/${y}.jpg` : `${dir}${layer}/${z}/${x}/${y}.${LAYER_EXT[layer]}`
+}
+
+// visibleTiles sorted nearest the view's centre first (the order the map asks for them).
+export function centreFirst(tiles, w, h) {
+  const d = t => {
+    const dx = t.left + t.size / 2 - w / 2, dy = t.top + t.size / 2 - h / 2
+    return dx * dx + dy * dy
+  }
+  return tiles.map(t => [d(t), t]).sort((a, b) => a[0] - b[0]).map(a => a[1])
+}
+
+// The EOX map layers' credit (maps.eox.at asks for a link back; the data are OpenStreetMap's and others'), or "".
+export const EOX_MAP_CREDIT = "EOX IT Services GmbH (maps.eox.at), data © OpenStreetMap contributors and others"
+export function layerCredits(base, labels) {
+  if (base === "map") return `Map: Terrain Light${labels ? " and Overlay" : ""} by ${EOX_MAP_CREDIT}`
+  if (labels) return `Labels: Overlay by ${EOX_MAP_CREDIT}`
+  return ""
+}
+
 // ---- overlay layers (maplayers.js: Natural Earth borders and names) -------------------------------------------
 // lines: flat [lon, lat, lon, lat, ...] arrays. Their lat/lon boxes [w, s, e, n], once.
 export function lineBoxes(lines) {
@@ -167,17 +192,56 @@ function boxMeets(b, v) {
   return b[2] >= v[0] || b[0] <= v[2]                     // the view spans the antimeridian
 }
 
-// The lines meeting the view, as SVG polyline point strings in screen px (at most max of them).
-export function visibleLines(lines, boxes, clat, clon, z, w, h, max = 3000) {
+// Normalised Web Mercator y (0 north edge .. 1 south edge) of a latitude: project(lat, 0, z).y / (TILE * 2^z),
+// in the same operations, so mercY(lat) * s is bit for bit project's y.
+export function mercY(lat) {
+  const phi = clampLat(lat) * Math.PI / 180
+  return (1 - Math.log(Math.tan(phi) + 1 / Math.cos(phi)) / Math.PI) / 2
+}
+
+// Lines [lon, lat, ...] as normalised Mercator [x, y, ...] (Float64Array each), once: drawing them is then a
+// multiply-add per vertex instead of a log and a tan (visibleLines(..., norm)).
+export function normLines(lines) {
+  return lines.map(l => {
+    const a = new Float64Array(l.length)
+    for (let j = 0; j < l.length; j += 2) {
+      a[j] = (l[j] + 180) / 360
+      a[j + 1] = mercY(l[j + 1])
+    }
+    return a
+  })
+}
+
+// Points [name, lon, lat, ...] as normalised Mercator, [x0, y0, x1, y1, ...] (visibleLabels opts.norm).
+export function normPoints(points) {
+  const a = new Float64Array(points.length * 2)
+  points.forEach((p, i) => { a[2 * i] = (p[1] + 180) / 360; a[2 * i + 1] = mercY(p[2]) })
+  return a
+}
+
+// The lines meeting the view, as SVG polyline point strings in screen px (at most max of them). norm: the lines
+// from normLines (the same strings, faster).
+export function visibleLines(lines, boxes, clat, clon, z, w, h, max = 3000, norm = null) {
   const v = viewBox(clat, clon, z, w, h)
   const out = []
+  const s = TILE * Math.pow(2, z), c = project(clat, clon, z)
   for (let i = 0; i < lines.length && out.length < max; i++) {
     if (!boxMeets(boxes[i], v)) continue
-    const l = lines[i]
     const pts = []
-    for (let j = 0; j < l.length; j += 2) {
-      const p = toScreen(l[j + 1], l[j], clat, clon, z, w, h)
-      pts.push(p.x.toFixed(1) + "," + p.y.toFixed(1))
+    if (norm) {
+      const n = norm[i]
+      for (let j = 0; j < n.length; j += 2) {
+        let dx = n[j] * s - c.x                 // = toScreen's, operation for operation
+        if (dx > s / 2) dx -= s
+        if (dx < -s / 2) dx += s
+        pts.push((w / 2 + dx).toFixed(1) + "," + (h / 2 + (n[j + 1] * s - c.y)).toFixed(1))
+      }
+    } else {
+      const l = lines[i]
+      for (let j = 0; j < l.length; j += 2) {
+        const p = toScreen(l[j + 1], l[j], clat, clon, z, w, h)
+        pts.push(p.x.toFixed(1) + "," + p.y.toFixed(1))
+      }
     }
     out.push(pts.join(" "))
   }
@@ -186,17 +250,28 @@ export function visibleLines(lines, boxes, clat, clon, z, w, h, max = 3000) {
 
 // Labels for the view: points [name, lon, lat, minZoom] in priority order, shown from their minZoom (and below
 // maxZoom), none overlapping another (a box of ~charW px per letter, lineH px high), at most max.
+// opts.norm: the points from normPoints (the same labels, faster).
 export function visibleLabels(points, clat, clon, z, w, h, opts = {}) {
-  const { maxZoom = 99, max = 120, charW = 7, lineH = 16 } = opts
+  const { maxZoom = 99, max = 120, charW = 7, lineH = 16, norm = null } = opts
   const out = []
   if (z >= maxZoom) return out
   const v = viewBox(clat, clon, z, w, h, 0)
   const taken = []
-  for (const p of points) {
+  const ws = TILE * Math.pow(2, z), c = project(clat, clon, z)
+  for (let i = 0; i < points.length; i++) {
+    const p = points[i]
     if (out.length >= max) break
     if (z < p[3]) continue
     if (!boxMeets([p[1], p[2], p[1], p[2]], v)) continue
-    const s = toScreen(p[2], p[1], clat, clon, z, w, h)
+    let s
+    if (norm) {
+      let dx = norm[2 * i] * ws - c.x
+      if (dx > ws / 2) dx -= ws
+      if (dx < -ws / 2) dx += ws
+      s = { x: w / 2 + dx, y: h / 2 + (norm[2 * i + 1] * ws - c.y) }
+    } else {
+      s = toScreen(p[2], p[1], clat, clon, z, w, h)
+    }
     const bw = p[0].length * charW + 8
     const box = [s.x - bw / 2, s.y - lineH, s.x + bw / 2, s.y + 4]
     if (taken.some(t => box[0] < t[2] && box[2] > t[0] && box[1] < t[3] && box[3] > t[1])) continue
