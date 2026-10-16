@@ -16,6 +16,8 @@ floating-origin rebases.
   option fixes.
 
 ## Install
+The Linux download (the AppImage) and `python3 launcher.py` start the game with this library already preloaded:
+nothing to install. By hand, for a game started from Steam:
 ```sh
 tools/gcpatch/build.sh
 ```

@@ -28,3 +28,4 @@ docs/research/ortho/
 .beamng_earth.json
 dist/
 native/earthfast/target/
+build/

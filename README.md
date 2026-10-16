@@ -81,32 +81,32 @@ roads, water, navigation, traffic, cities).
   [docs/V1_4_SPEC.md](docs/V1_4_SPEC.md), research notes in [docs/research/](docs/research/).
 
 ## Install and play
-**You need:** BeamNG.drive (tested with 0.39.x, started at least once), [Python 3.10 or newer](https://www.python.org/downloads/)
-(on Windows tick **"Add python.exe to PATH"** in the installer), about 2 GB of free disk space for the map cache,
-and an internet connection (the map is downloaded while you play).
+**You need:** BeamNG.drive (tested with 0.39.x) on Steam, about 2 GB of free disk space for the map cache, and an
+internet connection (the map is downloaded while you play).
 
-1. **Download** this project: the green **Code** button above, then **Download ZIP** (or a zip from the
-   [Releases](https://github.com/TecnaGamer/BeamNG.Earth/releases) page when there is one). Unzip it anywhere,
-   for example in your Documents folder.
-2. **Install** (once, and again after every update; it only changes what is new):
-   - **Windows:** double-click `run_server.bat`. The first time it runs the installer for you.
-   - **Linux:** open a terminal in the folder and run `python3 install.py`.
+1. **Download** the file for your system from the [Releases](https://github.com/TecnaGamer/BeamNG.Earth/releases)
+   page:
+   - **Windows:** `BeamNG.Earth-<version>.exe`. Windows may warn about an unknown app: **More info > Run anyway**.
+   - **Linux:** `BeamNG.Earth-<version>-x86_64.AppImage`. Make it executable (right-click > Properties >
+     "Allow executing", or `chmod +x`).
+2. **Run it** (with Steam running). It copies the mod into the game, starts the world server and starts
+   BeamNG.drive. On Linux it starts the native game with the grass patch (`tools/gcpatch`) already applied, so no
+   Steam launch options are needed. Closing the game stops the server.
+3. **Play:** in the game, go to **Freeroam** and pick the **BeamNG.Earth** level. A welcome page explains the
+   basics the first time. Press **M** for the world map: search a place or an address, right-click to teleport,
+   left-click to set a GPS route, and **Autodrive** to let the car drive it.
 
-   The installer finds your BeamNG.drive user folder (it asks if there is more than one), copies the mod into it
-   and sets up the world server's Python packages (a few minutes the first time).
-3. **Play:**
-   - Start the **world server**: `run_server.bat` (Windows) or `./run_server.sh` (Linux). Keep its window open
-     while you play.
-   - Start BeamNG.drive, go to **Freeroam** and pick the **BeamNG.Earth** level. A welcome page explains the
-     basics the first time.
-   - Press **M** for the world map: search a place or an address, right-click to teleport, left-click to set a
-     GPS route, and **Autodrive** to let the car drive it.
+**From the source instead** (any system with [Python 3.10+](https://www.python.org/downloads/)): download this
+project (the green **Code** button > **Download ZIP**) and unzip it. Install once (and after each update):
+double-click `run_server.bat` (Windows) or run `python3 install.py` (Linux). Then start the server with
+`run_server.bat` / `./run_server.sh`, keep its window open, and start the game yourself. Or run
+`python3 launcher.py`, which also starts the game like the downloads do.
 
-**Updating:** the mod tells you in game when a newer version is on GitHub. Download it the same way, unzip it
-over the old folder (or next to it) and run step 2 again.
+**Updating:** the mod tells you in game when a newer version is on GitHub. Download the new file and run it (from
+the source: unzip it over the old folder and run the installer again).
 
-**Uninstalling:** delete the `beamng_earth` folder in `<BeamNG user folder>/current/mods/unpacked/` and this
-folder; the map cache is `.cache/beamng-earth` in your home folder (`~/.cache/beamng-earth` on Linux,
+**Uninstalling:** delete the `beamng_earth` folder in `<BeamNG user folder>/current/mods/unpacked/` and the
+downloaded file (or this folder); the map cache is `.cache/beamng-earth` in your home folder (`~/.cache/beamng-earth` on Linux,
 `C:\Users\<you>\.cache\beamng-earth` on Windows).
 
 More detail (traffic, the status bar, reporting problems, troubleshooting): [docs/QUICKSTART.md](docs/QUICKSTART.md).
@@ -121,8 +121,9 @@ More detail (traffic, the status bar, reporting problems, troubleshooting): [doc
    streams the world; the status bar at the top shows where you are and the loading, **M** opens the
    world map (search, teleport, GPS routes, Autodrive).
 
-Release zip for sharing: `python3 tools/package.py` (writes `dist/BeamNG.Earth-<VERSION>.zip`;
-the version is the `VERSION` file).
+Player downloads: `python3 tools/build_app.py` builds this system's AppImage / .exe (PyInstaller; see its
+docstring); GitHub Actions (`.github/workflows/release.yml`) builds both and publishes the release `v<VERSION>`
+whenever `main` gets a `VERSION` without one. Release zip of the source: `python3 tools/package.py`.
 
 Tests: `cd server && python3 -m unittest discover -s tests -p "test_*.py"` and
 `cd mod/tests && for f in test_*.lua; do luajit $f; done`.

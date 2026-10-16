@@ -9,13 +9,16 @@ mod ('update' message), which says so once in game and on its settings page, wit
 """
 import os
 import re
+import sys
 
 import netfetch
 
 REPO = "TecnaGamer/BeamNG.Earth"
 VERSION_URL = f"https://raw.githubusercontent.com/{REPO}/main/VERSION"
-PAGE_URL = f"https://github.com/{REPO}"
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+PAGE_URL = f"https://github.com/{REPO}/releases"      # the downloads (.exe / AppImage)
+# the folder with VERSION: above server/, or the packaged app's bundle (launcher.py frozen by PyInstaller, where
+# every module sits at the bundle's top)
+ROOT = getattr(sys, "_MEIPASS", None) or os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 def local_version(root=ROOT):
