@@ -103,7 +103,8 @@ class HostPolicy:
 TILE_HOST = dict(redirect_limited=True, binary=True)
 # docs/research/2026-10-10-rate-limits.md §5.2, the hosts the server contacts today (rates per player).
 POLICIES = {
-    "basemap.nationalmap.gov": HostPolicy(rate=15.0, burst=60.0, max_conc=6, daily_budget=60000,
+    # (2026-10-16, the user: raise them, lower again on trouble; a first visit's far field waited ~100 s on 15/s)
+    "basemap.nationalmap.gov": HostPolicy(rate=50.0, burst=150.0, max_conc=12, daily_budget=150000,
                                           allow_prefetch=True, offline_ok=True, miss_ttl=90 * DAY, **TILE_HOST),
     # NAIP through USGS's ArcGIS exportImage (imagery.py "naip"): one 1024² image a request, 4-10 s each
     # and 5xx under parallel requests (docs/research/2026-10-10-us-state-imagery.md, in-game 2026-10-13):
@@ -127,9 +128,9 @@ POLICIES = {
                                     allow_prefetch=True, offline_ok=True, miss_ttl=30 * DAY,
                                     binary=True, timeout=60.0, max_attempts=2, base_delay=2.0,
                                     breaker_threshold=6, breaker_window=120.0),
-    "tiles.maps.eox.at": HostPolicy(rate=6.0, burst=30.0, max_conc=4, daily_budget=20000,
+    "tiles.maps.eox.at": HostPolicy(rate=10.0, burst=40.0, max_conc=6, daily_budget=30000,
                                     allow_prefetch=True, offline_ok=True, miss_ttl=90 * DAY, **TILE_HOST),
-    "tiles.mapterhorn.com": HostPolicy(rate=20.0, burst=80.0, max_conc=8, daily_budget=30000,
+    "tiles.mapterhorn.com": HostPolicy(rate=50.0, burst=200.0, max_conc=16, daily_budget=80000,
                                        allow_prefetch=True, offline_ok=True, revalidate_after=180 * DAY,
                                        miss_ttl=90 * DAY, **TILE_HOST),
     "s3.amazonaws.com": HostPolicy(rate=50.0, burst=100.0, max_conc=8, daily_budget=None,
