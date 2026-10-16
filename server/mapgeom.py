@@ -370,7 +370,7 @@ def clip_polygon_parts(parts, bounds):
 def enu_xy(feats, frame, ring):
     """(e, n) of a lon/lat ring in frame: sliced from feats.xy_in(frame) when the ring is a view of feats.lonlat
     (feats.parts' rings), else converted. Point by point the same numbers either way."""
-    L = feats.lonlat if feats is not None else None
+    L = feats.lonlat if isinstance(feats, Features) else None
     if (L is not None and isinstance(ring, np.ndarray) and ring.ndim == 2 and len(ring) and L.ndim == 2
             and ring.dtype == L.dtype and ring.strides == L.strides and ring.shape[1] == L.shape[1]):
         off, rem = divmod(ring.__array_interface__["data"][0] - L.__array_interface__["data"][0], L.strides[0])
