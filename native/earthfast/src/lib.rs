@@ -1287,6 +1287,63 @@ fn any_within(pts: PyReadonlyArray2<f64>, line: PyReadonlyArray2<f64>, h: f64) -
     (0..p.nrows()).any(|i| polyline_min_dist(&l, p[[i, 0]], p[[i, 1]]) < h)
 }
 
+/// buildings._shared_walls: per ring, the number of other rings with at least two vertices within tol of one of its
+/// edges. Rings concatenated in coords (N, 2) with offsets offs (n + 1); cents / rads / order as the Python computes
+/// them (numpy's means, so the same prefilter); the same arithmetic in the same order as the numpy expressions.
+#[pyfunction]
+fn shared_walls(coords: PyReadonlyArray2<f64>, offs: PyReadonlyArray1<i64>, cents: PyReadonlyArray2<f64>,
+                rads: PyReadonlyArray1<f64>, order: PyReadonlyArray1<i64>, tol: f64) -> Vec<i64> {
+    let c = coords.as_array();
+    let o = offs.as_array();
+    let ce = cents.as_array();
+    let r = rads.as_array();
+    let ord = order.as_array();
+    let n = r.len();
+    let mut cnt = vec![0i64; n];
+    if n < 2 {
+        return cnt;
+    }
+    let xs: Vec<f64> = ord.iter().map(|&i| ce[[i as usize, 0]]).collect();
+    // np.searchsorted(side="left"): the first index whose value is >= v
+    let left = |v: f64| -> usize { xs.partition_point(|&x| x < v) };
+    for &iu in ord.iter() {
+        let i = iu as usize;
+        let lo = left(ce[[i, 0]] - r[i] - 30.0);
+        let hi = left(ce[[i, 0]] + r[i] + 30.0);
+        let (ia, ib) = (o[i] as usize, o[i + 1] as usize);
+        let ni = ib - ia;
+        for k in lo..hi.max(lo) {
+            let j = ord[k] as usize;
+            if j == i || (ce[[j, 0]] - ce[[i, 0]]).hypot(ce[[j, 1]] - ce[[i, 1]]) > r[i] + r[j] + tol {
+                continue;
+            }
+            let (ja, jb) = (o[j] as usize, o[j + 1] as usize);
+            let mut close = 0usize;
+            'pts: for pj in ja..jb {
+                let (px, py) = (c[[pj, 0]], c[[pj, 1]]);
+                for e in 0..ni {
+                    let (ax, ay) = (c[[ia + e, 0]], c[[ia + e, 1]]);
+                    let bi = ia + (e + 1) % ni;
+                    let (dx, dy) = (c[[bi, 0]] - ax, c[[bi, 1]] - ay);
+                    let l2 = (dx * dx + dy * dy).max(1e-9);
+                    let t = (((px - ax) * dx + (py - ay) * dy) / l2).clamp(0.0, 1.0);
+                    let (qx, qy) = (ax + t * dx, ay + t * dy);
+                    if (px - qx).hypot(py - qy) < tol {
+                        close += 1;
+                        if close >= 2 {
+                            break 'pts;
+                        }
+                    }
+                }
+            }
+            if close >= 2 {
+                cnt[i] += 1;
+            }
+        }
+    }
+    cnt
+}
+
 #[pymodule]
 fn earthfast(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(island_ring_rays, m)?)?;
@@ -1311,6 +1368,7 @@ fn earthfast(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(srgb_monotonic, m)?)?;
     m.add_function(wrap_pyfunction!(loop_crossed, m)?)?;
     m.add_function(wrap_pyfunction!(any_within, m)?)?;
-    m.add("VERSION", 16)?;
+    m.add_function(wrap_pyfunction!(shared_walls, m)?)?;
+    m.add("VERSION", 17)?;
     Ok(())
 }
