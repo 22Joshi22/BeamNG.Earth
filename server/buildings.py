@@ -14,6 +14,7 @@ its windows a whole number of bays along every wall (no window cut at a corner).
 footprints and a ground-height function; no game state.
 """
 import hashlib
+import itertools
 import math
 
 import numpy as np
@@ -654,9 +655,11 @@ class Mesh:
         self.n += len(pts3)
 
     def arrays(self):
-        return (np.array(self.P, np.float64).reshape(-1, 3), np.array(self.UV, np.float64).reshape(-1, 2),
-                np.array(self.T, np.int64).reshape(-1, 3), np.array(self.M, np.int64),
-                np.array(self.C, np.uint8).reshape(-1, 4))
+        # fromiter over the flattened tuples: the same arrays, ~2x faster than np.array of a list of tuples
+        def flat(L, k, dt):
+            return np.fromiter(itertools.chain.from_iterable(L), dt, len(L) * k).reshape(-1, k)
+        return (flat(self.P, 3, np.float64), flat(self.UV, 2, np.float64), flat(self.T, 3, np.int64),
+                np.array(self.M, np.int64), flat(self.C, 4, np.uint8))
 
 
 def _band_v(band, k):
