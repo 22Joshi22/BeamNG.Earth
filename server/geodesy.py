@@ -17,6 +17,7 @@ F = 1 / 298.257223563            # flattening
 B = A * (1 - F)                  # semi-minor axis
 E2 = F * (2 - F)                 # first eccentricity squared
 EP2 = E2 / (1 - E2)              # second eccentricity squared
+ENU_RUST_MAX = 1024              # EnuFrame.enu_to_geodetic: the Rust kernel below this many points (64: 16 vs 55 us)
 
 
 def geodetic_to_ecef(lat, lon, h=0.0):
@@ -88,6 +89,15 @@ class EnuFrame:
                 r[2, 0] * dx + r[2, 1] * dy + r[2, 2] * dz)
 
     def enu_to_geodetic(self, e, n, u=0.0):
+        if _ef is not None and hasattr(_ef, "enu_to_geodetic") and (type(e) is np.ndarray or type(n) is np.ndarray):
+            # the Rust kernel (the same closed form; ground-ahead and the far tiles call this with many small grids)
+            f64 = np.float64
+            E, N, U = np.broadcast_arrays(np.asarray(e, f64), np.asarray(n, f64), np.asarray(u, f64))
+            if 0 < E.size < ENU_RUST_MAX:       # (numpy's vector maths wins on large grids: 318 vs 485 us at 4096)
+                shape = E.shape
+                la, lo, h = _ef.enu_to_geodetic(np.ascontiguousarray(E.ravel()), np.ascontiguousarray(N.ravel()),
+                                                np.ascontiguousarray(U.ravel()), self.origin, self.rot)
+                return la.reshape(shape), lo.reshape(shape), h.reshape(shape)
         return ecef_to_geodetic(*self.enu_to_ecef(e, n, u))
 
     def geodetic_to_enu(self, lat, lon, h=0.0):

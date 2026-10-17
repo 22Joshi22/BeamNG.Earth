@@ -332,6 +332,61 @@ fn geodetic_to_enu<'py>(py: Python<'py>, lat: PyReadonlyArray1<'py, f64>, lon: P
     (e.into_pyarray(py), nn.into_pyarray(py), u.into_pyarray(py))
 }
 
+/// geodesy.EnuFrame.enu_to_geodetic for point lists: ENU (e, n, u) -> ECEF through the frame (origin, rot rows =
+/// E, N, U in ECEF) -> (lat, lon, h) by Heikkinen's closed form, the same float64 maths as geodesy.ecef_to_geodetic
+/// (the polar axis included), without the GIL. The ground-ahead / far-tile threads made many small numpy calls.
+#[pyfunction]
+fn enu_to_geodetic<'py>(py: Python<'py>, e: PyReadonlyArray1<'py, f64>, n: PyReadonlyArray1<'py, f64>,
+                        u: PyReadonlyArray1<'py, f64>, origin: PyReadonlyArray1<'py, f64>,
+                        rot: PyReadonlyArray2<'py, f64>)
+                        -> (Bound<'py, PyArray1<f64>>, Bound<'py, PyArray1<f64>>, Bound<'py, PyArray1<f64>>) {
+    const A: f64 = 6378137.0;
+    const F: f64 = 1.0 / 298.257223563;
+    const B: f64 = A * (1.0 - F);
+    const E2: f64 = F * (2.0 - F);
+    const EP2: f64 = E2 / (1.0 - E2);
+    let (ea, na, ua, o, r) = (e.as_array(), n.as_array(), u.as_array(), origin.as_array(), rot.as_array());
+    let m = ea.len();
+    let (lat, lon, hgt) = py.allow_threads(|| {
+    let (mut lat, mut lon, mut hgt) = (Vec::with_capacity(m), Vec::with_capacity(m), Vec::with_capacity(m));
+    for i in 0..m {
+        let (ev, nv, uv) = (ea[i], na[i], ua[i]);
+        let x = o[0] + r[[0, 0]] * ev + r[[1, 0]] * nv + r[[2, 0]] * uv;
+        let y = o[1] + r[[0, 1]] * ev + r[[1, 1]] * nv + r[[2, 1]] * uv;
+        let z = o[2] + r[[0, 2]] * ev + r[[1, 2]] * nv + r[[2, 2]] * uv;
+        let p2 = x * x + y * y;
+        let p = p2.sqrt();
+        let z2 = z * z;
+        let (la, h);
+        if p < 1e-6 {
+            la = if z >= 0.0 { 90.0 } else { -90.0 };
+            h = z.abs() - B;
+        } else {
+            let f_ = 54.0 * B * B * z2;
+            let g = p2 + (1.0 - E2) * z2 - E2 * (A * A - B * B);
+            let c = E2 * E2 * f_ * p2 / (g * g * g);
+            let s = (1.0 + c + (c * c + 2.0 * c).sqrt()).cbrt();
+            let k = s + 1.0 + 1.0 / s;
+            let pp = f_ / (3.0 * k * k * g * g);
+            let q = (1.0 + 2.0 * E2 * E2 * pp).sqrt();
+            let r0 = -pp * E2 * p / (1.0 + q)
+                + (0.5 * A * A * (1.0 + 1.0 / q) - pp * (1.0 - E2) * z2 / (q * (1.0 + q)) - 0.5 * pp * p2).max(0.0).sqrt();
+            let t = (p - E2 * r0) * (p - E2 * r0);
+            let uu = (t + z2).sqrt();
+            let vv = (t + (1.0 - E2) * z2).sqrt();
+            let z0 = B * B * z / (A * vv);
+            h = uu * (1.0 - B * B / (A * vv));
+            la = (z + EP2 * z0).atan2(p).to_degrees();
+        }
+        lat.push(la);
+        lon.push(y.atan2(x).to_degrees());
+        hgt.push(h);
+    }
+    (lat, lon, hgt)
+    });
+    (lat.into_pyarray(py), lon.into_pyarray(py), hgt.into_pyarray(py))
+}
+
 /// bc7.encode: BC7 mode-6 blocks (16 bytes each, row-major) of an (h, w, 3|4) uint8 image, edges padded by
 /// repetition. The same encoder as the numpy one: endpoints along the block's main axis (power iteration on the
 /// RGBA covariance), 7-bit endpoints with the best p-bit, indices by projection onto the quantised endpoints.
@@ -2220,6 +2275,7 @@ fn earthfast(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(deck_crossings, m)?)?;
     m.add_function(wrap_pyfunction!(point_inside, m)?)?;
     m.add_function(wrap_pyfunction!(geodetic_to_enu, m)?)?;
+    m.add_function(wrap_pyfunction!(enu_to_geodetic, m)?)?;
     m.add_function(wrap_pyfunction!(bc7_encode, m)?)?;
     m.add_function(wrap_pyfunction!(inside_blockers, m)?)?;
     m.add_function(wrap_pyfunction!(densify, m)?)?;
