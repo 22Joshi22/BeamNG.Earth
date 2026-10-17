@@ -339,13 +339,16 @@ def tunnel(chunks, origin, walls=()):
         # the lamps: under the vault along both lines, every other step, faced down (a long tunnel's; not under an arch)
         if not low:
             nv = _tunnel_lamps(P, T, UV, M, nv, mid, u, z, hw, origin)
-        for end, at in zip(c.get("portal") or (False, False), (0, k - 1)):
+        pups = c.get("portal_up") or (None, None)
+        for end, at, pup in zip(c.get("portal") or (False, False), (0, k - 1), pups):
             if not end:
                 continue
             # the face: from the opening's outline out to a frame PORTAL_FRAME wider and higher, both sides
             inner = rows[:, at]
             o = sec.copy()
             up, side = (LOW_PORTAL_UP, LOW_PORTAL_SIDE) if low else (PORTAL_FRAME, PORTAL_FRAME)
+            if pup is not None and not low:     # to the ground over the portal (TunnelProfiles.portal_ups)
+                up = float(pup)
             o[:, 0] = np.sign(o[:, 0]) * (np.abs(o[:, 0]) + side)
             # its foot under the ground (2 m into a hillside; a low arch's mouth is flat: just under its floor, or the
             # face's bottom stood as a dark wedge beside the opening)

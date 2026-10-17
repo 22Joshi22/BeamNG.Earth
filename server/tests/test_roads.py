@@ -557,3 +557,11 @@ class PaintRoadsTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class WallRunsTest(unittest.TestCase):
+    def test_one_wall_over_a_wavering_cut(self):
+        cut = np.array([0, 0.5, 2.5, 1.9, 2.2, 1.5, 0.9, 1.0, 2.4, 2.6, 1.3, 0.2, 0, 2.1, 0, 0, 0])
+        w = roads._wall_runs(cut)
+        self.assertTrue(w[2:11].all(), "one wall from 2 to 10 (the 0.9 / 1.0 dip filled)")
+        self.assertFalse(w[:2].any() or w[11:].any(), "no stub for a lone 2.1 m sample")

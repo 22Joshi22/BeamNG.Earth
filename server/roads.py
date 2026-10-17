@@ -868,6 +868,9 @@ TUNNEL_OPEN_COVER = 4.0 # m: a 'tunnel' whose ground nowhere rises this far over
                         # Drive over the 86th Street Transverse: 3.4 m clearance under ~1.5 m of arch and soil):
                         # straight between its portals, its tube as high as the ground over it allows (TUNNEL_SOIL_M
                         # under it, at least TUNNEL_LOW_H), of stone (roadmesh.tunnel)
+PORTAL_LOOK_M = 12.0    # m inside a portal where the ground over it is read for its face's height ...
+PORTAL_GROUND_M = 0.5   # ... which reaches this far over that ground ...
+PORTAL_UP_MIN = 1.0     # ... and at least this far over the vault
 TUNNEL_SOIL_M = 1.0     # m of arch and soil kept over a low tunnel's vault
 TUNNEL_LOW_H = 3.6      # m: the lowest tube (floor to vault)
 
@@ -1533,6 +1536,38 @@ class TunnelProfiles(BridgeProfiles):
                     # 100 m down: a car in the tube would float; earthd / blockworker set the sea's depth)
 
     def _solve(self, comp, pool, ground):
+        zs = self._solve_floor(comp, pool, ground)
+        self._portal_ups(comp, pool, zs)
+        return zs
+
+    def _portal_ups(self, comp, pool, zs):
+        """How far each part's portal faces may reach over its vault: to PORTAL_GROUND_M over the ground just inside
+        it (the most within PORTAL_LOOK_M), at least PORTAL_UP_MIN, at most roadmesh.PORTAL_FRAME (a 6 m frame stood
+        ~10 m over the flat park at the 79th Street Transverse's portal, 2026-10-17)."""
+        import roadmesh
+        gfn = self._raw_ground if self.raw is not None else self._ground
+        for k, z in zip(comp, zs):
+            xy = np.asarray(pool[k][1], np.float64)
+            z = np.asarray(z, np.float64)
+            if len(xy) < 2 or not np.isfinite(z).all():
+                continue
+            s = np.r_[0.0, np.cumsum(np.hypot(*np.diff(xy, axis=0).T))]
+            g = gfn(xy)
+            th = self.heights.get(k[0], roadmesh.TUNNEL_H)
+            ups = []
+            for near in (s <= PORTAL_LOOK_M, s >= s[-1] - PORTAL_LOOK_M):
+                cover = float(np.max(g[near] - z[near])) if near.any() else th
+                ups.append(float(np.clip(cover + PORTAL_GROUND_M - th, PORTAL_UP_MIN, roadmesh.PORTAL_FRAME)))
+            with self.lock:
+                self.ups[k[0]] = ups
+
+    def portal_ups(self, fid):
+        """(at the part's start, at its end): see _portal_ups; the full frame when not known."""
+        import roadmesh
+        with self.lock:
+            return self.ups.get(fid, [roadmesh.PORTAL_FRAME, roadmesh.PORTAL_FRAME])
+
+    def _solve_floor(self, comp, pool, ground):
         lines = [pool[k][1] for k in comp]
         # the cover over it from the ungraded ground (raw): graded, the roads' approaches pulled a park bridge's
         # ground down near its portals and it read as open, while the grading (on the DEM) left it (2026-10-17)
@@ -1581,6 +1616,7 @@ class TunnelProfiles(BridgeProfiles):
         super().__init__(*a, **kw)
         self.open = set()           # fids of the tunnel parts that are open underpasses (TUNNEL_OPEN_COVER)
         self.heights = {}           # fid -> a low arch's tube height (TUNNEL_COVER)
+        self.ups = {}               # fid -> its portal faces' reach over the vault at its start and end (_portal_ups)
 
     def open_parts(self, cells_feats, box):
         """[(fid, spec, xy, z, lon)] of the open underpasses near box: roads straight between their ends, the
@@ -1770,6 +1806,46 @@ WALL_TOP_M = 0.15       # m the wall stands over the ground behind it
 WALL_FOOT_M = 0.3       # m it reaches under the road
 
 
+WALL_KEEP_M = 1.2       # m: a wall goes on while the cut stays this deep (it starts at grading.WALL_CUT_M) ...
+WALL_GAP_N = 3          # ... over gaps of up to this many WALL_STEPs, and none shorter than WALL_MIN_N (the cut's depth
+WALL_MIN_N = 3          # wavered round 2 m: stubs of wall with gaps, the 97th Street Transverse, 2026-10-17)
+
+
+def _wall_runs(cut):
+    """Which samples along one side of a road get a wall, from the cut's depth there (m). Pure."""
+    import grading
+    cut = np.asarray(cut, np.float64)
+    keep = cut > WALL_KEEP_M
+    out = np.zeros(len(cut), bool)
+    i = 0
+    while i < len(cut):                     # runs over WALL_KEEP_M that reach WALL_CUT_M somewhere
+        if not keep[i]:
+            i += 1
+            continue
+        j = i
+        while j + 1 < len(cut) and keep[j + 1]:
+            j += 1
+        if (cut[i:j + 1] > grading.WALL_CUT_M).any():
+            out[i:j + 1] = True
+        i = j + 1
+    i = 0
+    while i < len(out):                     # runs shorter than WALL_MIN_N dropped ...
+        if not out[i]:
+            i += 1
+            continue
+        j = i
+        while j + 1 < len(out) and out[j + 1]:
+            j += 1
+        if j - i + 1 < WALL_MIN_N:
+            out[i:j + 1] = False
+        i = j + 1
+    idx = np.flatnonzero(out)               # ... then gaps of up to WALL_GAP_N filled
+    for a, b in zip(idx[:-1], idx[1:]):
+        if 1 < b - a <= WALL_GAP_N + 1:
+            out[a:b] = True
+    return out
+
+
 def retaining_walls(frame, roads, elev, exact):
     """Stone retaining walls along the ground roads cut deeper than grading.WALL_CUT_M into the ground (the grading
     leaves the ground at its natural height right behind them): [dict(base (k, 2) the wall's face line, top (k,),
@@ -1809,7 +1885,7 @@ def retaining_walls(frame, roads, elev, exact):
     for xy, z, out_n, core, inside in info:
         gg = g[k:k + len(xy)]
         k += len(xy)
-        cut = (gg - z > grading.WALL_CUT_M) & inside
+        cut = _wall_runs(gg - z) & inside
         i = 0
         while i < len(cut):
             if not cut[i]:
@@ -1864,6 +1940,10 @@ def _tunnel_chunks(tunnels, cells, exact):
                             ch["deck"] = ch["tunnel"] = True
                             if getattr(tunnels, "height", None) is not None:
                                 ch["tunnel_h"] = tunnels.height(fid)
+                            if getattr(tunnels, "portal_ups", None) is not None:
+                                u0, u1 = tunnels.portal_ups(fid)
+                                at = lambda p: u0 if np.hypot(*(p - ends[0])) < 0.5 else u1    # noqa: E731
+                                ch["portal_up"] = [at(c[0, :2]), at(c[-1, :2])]
                             ch["portal"] = [bool(np.hypot(*(c[0, :2] - ends[0])) < 0.5 or np.hypot(*(c[0, :2] - ends[1])) < 0.5),
                                             bool(np.hypot(*(c[-1, :2] - ends[0])) < 0.5 or np.hypot(*(c[-1, :2] - ends[1])) < 0.5)]
                         out.append(ch)
