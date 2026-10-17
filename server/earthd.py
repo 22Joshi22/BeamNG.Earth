@@ -896,6 +896,7 @@ class Server:
                     anchor.bridges = roadsmod.BridgeProfiles(
                         anchor.frame,
                         lambda key: self.mapdata.cell(key, layers=("roads",), kind="demand").layers.get("roads"), elev)
+                    anchor.bridges.wet = self.sea.depth if self.sea is not None else None
             for fid, _spec, xy, z, _lon in anchor.bridges.parts(feats, (x - w, y - w, x + w, y + w)):
                 decks.setdefault(fid, []).append((np.asarray(xy, np.float64)[:, :2], np.asarray(z, np.float64)))
         except Exception as e:          # no decks: the graph follows the ground under bridges
@@ -981,6 +982,7 @@ class Server:
                 anchor.bridges = roadsmod.BridgeProfiles(
                     anchor.frame, lambda key: self.mapdata.cell(key, layers=("roads",), kind="demand").layers.get("roads"),
                     elev)
+                anchor.bridges.wet = self.sea.depth if self.sea is not None else None    # (decks clear the water)
             if anchor.tunnels is None:
                 anchor.tunnels = roadsmod.TunnelProfiles(
                     anchor.frame, lambda key: self.mapdata.cell(key, layers=("roads",), kind="demand").layers.get("roads"),
@@ -1015,7 +1017,8 @@ class Server:
             buildingsmod.brick_walks(walks, items, anchor.lat, anchor.lon)
         mesh = roadmeshmod.build(anchor.frame, chunks, elev, (x0, y0, 0.0),
                                  DETAIL_ROAD_LIFT if self.near_visual == "detail" else 0.0)
-        dmesh = roadmeshmod.deck(chunks, (x0, y0, 0.0))
+        dmesh = roadmeshmod.deck(chunks, (x0, y0, 0.0),
+                                 anchor.bridges.piers_in(roadsmod.tile_bbox(tx, ty)) if anchor.bridges is not None else ())
         tmesh = roadmeshmod.tunnel(chunks, (x0, y0, 0.0), rwalls)
         bld = None
         if self.buildings:

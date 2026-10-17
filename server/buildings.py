@@ -65,6 +65,7 @@ BARN_CLASSES = {"barn", "farm_auxiliary", "stable", "cowshed"}
 MATERIALS = (FACADE, SHOP, OFFICE, ROOF_FLAT, ROOF_SLATE, ROOF_SHINGLE, SIDING, STUCCO, ROOF_METAL, PANEL, METALWALL,
              STONE)
 LOOKS = {
+    "bne_bridge_steel": (METALWALL, (0.50, 0.52, 0.54)),
     "bne_bld_fac_white": (FACADE, (1.0, 1.0, 1.0)), "bne_bld_fac_cream": (FACADE, (1.0, 0.93, 0.80)),
     "bne_bld_fac_sand": (FACADE, (0.92, 0.82, 0.68)), "bne_bld_fac_grey": (FACADE, (0.80, 0.82, 0.84)),
     "bne_bld_fac_brickdark": (FACADE, (0.78, 0.72, 0.70)), "bne_bld_fac_brickwarm": (FACADE, (1.0, 0.88, 0.80)),
@@ -142,6 +143,14 @@ BAND_OFFICE2 = (1, 4)
 BAND_SHOP = (2, 2)          # shopfront with awnings
 BANDS = 4
 
+# Overture "bridge_structure" (OSM man_made=bridge parts with a height: the Queensboro Bridge's towers, 110 m) was a
+# glass tower the decks ran through (the user's report, 2026-10-17)
+BRIDGE_CLASSES = {"bridge_structure"}
+BRIDGE_PIER_M = 12.0        # a bridge structure's height when not mapped
+STEEL = "bne_bridge_steel"  # (a LOOKS name: the corrugated-metal material, painted steel grey)
+STEEL_LEG_MAX = 3.0         # m: a frame's legs at most this thick (a quarter of its short side)
+STEEL_BAY_M = 14.0          # m between a frame's bracing levels
+STEEL_TOP_SHARE = 0.85      # cross beams over the decks only from this share of the height up
 SHED_CLASSES = {"shed", "garage", "garages", "carport", "roof", "hut", "cabin", "barn", "farm_auxiliary",
                 "greenhouse", "service", "storage_tank", "toilets", "kiosk", "parking"}
 GLASS_FLOORS = (20, 40)     # towers from 20 floors: glass, but for OLD_TOWER_GLASS of the old ones below 40 ...
@@ -432,6 +441,10 @@ def plan(ring, attrs, neighbours=0, lat=None, lon=None, look=None, town=False, d
         nf = 1                                          # a nave: one tall storey under a steep gable
     h = None if h is None or not np.isfinite(h) or h <= 0 else float(h)
     nf = None if nf is None or not np.isfinite(nf) or nf <= 0 else int(round(nf))
+    if cls in BRIDGE_CLASSES:       # a bridge's tower or pier: an open steel frame (_steel_frame), the decks through it
+        return Spec(ring=ring, floors=1, floor_h=h or BRIDGE_PIER_M, height=h or BRIDGE_PIER_M, roof="flat",
+                    roof_mat=ROOF_FLAT, facade=STEEL, band=None, shop=False, plain=True, seed=seed, min_h=0.0,
+                    wall=None, windows=False, steeple=False, porch=False, cls=cls, deck=False, pitch=None)
     floor_h = FLOOR_M
     if industrial:
         floor_h = 4.5
@@ -1271,6 +1284,9 @@ def build(specs_and_ground, lite=False):
     m = Mesh()
     for spec, gmin, gmax in specs_and_ground:
         mat_idx = _Looks(spec.seed)
+        if spec.cls in BRIDGE_CLASSES:
+            _steel_frame(m, spec, gmin, mat_idx[STEEL], lite)
+            continue
         ring = drawn_ring(spec)
         mh = spec.min_h or 0.0
         if spec.deck and not lite and _parking_deck(m, spec, gmin, gmax, mat_idx):
@@ -1303,6 +1319,42 @@ def build(specs_and_ground, lite=False):
     return P, UV, T, M, MATERIALS, C
 
 
+def _steel_frame(m, spec, gmin, mat, lite=False, legs_only=False):
+    """A bridge structure (BRIDGE_CLASSES) as an open steel frame on its oriented box: a leg at each corner, bracing
+    along the short sides every STEEL_BAY_M (beside the decks running along them), cross beams over the long sides
+    only near the top (STEEL_TOP_SHARE, over any deck); a narrow footprint is one pier. lite: legs and top only."""
+    c, u, hl, hw = oriented_box(np.asarray(spec.ring, np.float64))
+    v = np.array([-u[1], u[0]])
+    z0, z1 = gmin - FOUNDATION_M, gmin + spec.height
+    if hl < 6.0:                                            # a pier
+        _box(m, c, u, hl, hw, z0, z1, mat)
+        return
+    if hw < 3.0:    # a thin wall across the decks (the Queensboro Bridge's towers, 33 x 4.6 m): a leg at each end
+        t = float(min(hw, STEEL_LEG_MAX))
+        for sx in (-1, 1):
+            _box(m, c + u * sx * (hl - t), u, t, hw, z0, z1, mat)
+        if not legs_only:
+            b = t * 0.6
+            top = gmin + STEEL_TOP_SHARE * spec.height
+            for z in [z1 - b] + ([] if lite else list(np.arange(z1 - b - STEEL_BAY_M / 2, top, -STEEL_BAY_M / 2))):
+                _box(m, c, u, hl - 2 * t, b, z - b, z + b, mat)
+        return
+    t = float(np.clip(hw * 0.5, 0.5, STEEL_LEG_MAX))        # leg half size
+    corners = [c + u * sx * (hl - t) + v * sy * (hw - t) for sx in (-1, 1) for sy in (-1, 1)]
+    for k in corners:
+        _box(m, k, u, t, t, z0, z1, mat)
+    if legs_only:
+        return
+    b = t * 0.6                                             # beam half size
+    levels = [z1 - b] if lite else list(np.arange(gmin + STEEL_BAY_M, z1 - b, STEEL_BAY_M)) + [z1 - b]
+    for z in levels:
+        for sx in (-1, 1):          # along the short sides (along v): beside a deck running through the frame
+            _box(m, c + u * sx * (hl - t), v, hw - 2 * t, b, z - b, z + b, mat)
+        if z >= gmin + STEEL_TOP_SHARE * spec.height:       # across the top only
+            for sy in (-1, 1):
+                _box(m, c + v * sy * (hw - t), u, hl - 2 * t, b, z - b, z + b, mat)
+
+
 def collision_mesh(specs_and_ground):
     """The tile's buildings for physics only: one quad per wall and a flat lid at the eaves (pitched roofs on their
     oriented box), parking decks as drawn; (positions, uvs, tris, tri materials, MATERIALS, colours) or None.
@@ -1312,6 +1364,9 @@ def collision_mesh(specs_and_ground):
     tok = (MATERIALS.index(PANEL), (128, 128, 128, 255))
     zero = (0.0, 0.0)
     for spec, gmin, gmax in specs_and_ground:
+        if spec.cls in BRIDGE_CLASSES:          # its legs (the decks run between them)
+            _steel_frame(m, spec, gmin, tok, True, legs_only=True)
+            continue
         if deck_plan(spec, gmin, gmax) is not None:
             _parking_deck(m, spec, gmin, gmax, _Looks(spec.seed))
             continue
@@ -1677,6 +1732,8 @@ def collider_boxes(items, x0, y0):
     out = []
     for spec, gmin, gmax in items:
         if deck_plan(spec, gmin, gmax) is not None:     # an open parking deck: driven into on purpose
+            continue
+        if spec.cls in BRIDGE_CLASSES:                  # a bridge's frame: driven through between its legs
             continue
         r = spec.ring
         out.append([round(float(r[:, 0].min() + x0), 2), round(float(r[:, 1].min() + y0), 2),

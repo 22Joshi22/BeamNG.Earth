@@ -2053,6 +2053,37 @@ fn points_near_segments<'py>(py: Python<'py>, p: PyReadonlyArray2<'py, f64>, a: 
     numpy::ndarray::Array1::from(out).into_pyarray(py)
 }
 
+/// roadmesh.deck's parapet test: for each deck edge point p (m, 3) of deck owner op (m,), does another deck's surface
+/// lie there: a centre-line segment a -> b (s, 3) of another owner (os, (s,)) nearer in plan than its half width hw (s,)
+/// with its height there within dz of the point's (a ramp leaving the mainline, the carriageways of one road side by
+/// side: no wall between them, 2026-10-17).
+#[pyfunction]
+#[allow(clippy::too_many_arguments)]
+fn deck_edges_covered<'py>(py: Python<'py>, p: PyReadonlyArray2<'py, f64>, op: PyReadonlyArray1<'py, i64>,
+                           a: PyReadonlyArray2<'py, f64>, b: PyReadonlyArray2<'py, f64>, hw: PyReadonlyArray1<'py, f64>,
+                           os: PyReadonlyArray1<'py, i64>, dz: f64) -> Bound<'py, PyArray1<bool>> {
+    let (pv, opv, av, bv, hv, osv) = (p.as_array(), op.as_array(), a.as_array(), b.as_array(), hw.as_array(), os.as_array());
+    let out: Vec<bool> = py.allow_threads(|| {
+        let ns = av.shape()[0];
+        // per segment: start, direction, squared length, half width, z at both ends, owner
+        let seg: Vec<[f64; 9]> = (0..ns).map(|k| {
+            let (a0, a1, a2) = (av[[k, 0]], av[[k, 1]], av[[k, 2]]);
+            let (ab0, ab1) = (bv[[k, 0]] - a0, bv[[k, 1]] - a1);
+            [a0, a1, ab0, ab1, (ab0 * ab0 + ab1 * ab1).max(1e-9), hv[k], a2, bv[[k, 2]], osv[k] as f64]
+        }).collect();
+        (0..pv.shape()[0]).map(|i| {
+            let (p0, p1, p2, o) = (pv[[i, 0]], pv[[i, 1]], pv[[i, 2]], opv[i] as f64);
+            seg.iter().any(|g| {
+                if g[8] == o { return false; }
+                let t = (((p0 - g[0]) * g[2] + (p1 - g[1]) * g[3]) / g[4]).clamp(0.0, 1.0);
+                let d = (p0 - (g[0] + t * g[2])).hypot(p1 - (g[1] + t * g[3]));
+                d < g[5] && (p2 - (g[6] + t * (g[7] - g[6]))).abs() < dz
+            })
+        }).collect()
+    });
+    numpy::ndarray::Array1::from(out).into_pyarray(py)
+}
+
 /// Python's repr(round(x, nd)) for a finite float in fixed range (|x| < 1e16, nonzero |x| >= 1e-4): round correctly
 /// (ties to even on the exact value, as float.__round__), then the shortest round-trip digits, ".0" for a whole number.
 fn py_round_repr(x: f64, nd: usize, out: &mut String) {
@@ -2378,8 +2409,9 @@ fn earthfast(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(view_distances, m)?)?;
     m.add_function(wrap_pyfunction!(road_corridors, m)?)?;
     m.add_function(wrap_pyfunction!(horizon_steps, m)?)?;
+    m.add_function(wrap_pyfunction!(deck_edges_covered, m)?)?;
     m.add_function(wrap_pyfunction!(points_near_segments, m)?)?;
     m.add_function(wrap_pyfunction!(veg_rows_json, m)?)?;
-    m.add("VERSION", 28)?;
+    m.add("VERSION", 29)?;
     Ok(())
 }

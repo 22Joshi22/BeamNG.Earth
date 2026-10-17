@@ -527,6 +527,32 @@ class PhotoFillTest(unittest.TestCase):
         self.assertTrue(np.allclose(out[mask].astype(int), (40, 160, 60), atol=4), "no black holes, no roof colour")
 
 
+class BridgeStructureTest(unittest.TestCase):
+    """A bridge's tower (Overture bridge_structure: the Queensboro Bridge's, 33 x 4.6 x 110 m) is an open steel frame
+    the decks run through, not a glass tower (2026-10-17)."""
+
+    def ring(self, hl, hw):
+        return np.array([[-hl, -hw], [hl, -hw], [hl, hw], [-hl, hw]], np.float64)
+
+    def test_thin_tower_is_two_legs_and_top_beams(self):
+        spec = bld.plan(self.ring(16.7, 2.3), {"class": "bridge_structure", "height": 110.0})
+        self.assertEqual(spec.cls, "bridge_structure")
+        self.assertFalse(spec.door)
+        P, UV, T, M, mats, C = bld.build([(spec, 5.0, 6.0)])
+        c = P[T].mean(1)
+        low = c[:, 2] < 5.0 + bld.STEEL_TOP_SHARE * 110.0 - 1.0
+        self.assertTrue((np.abs(c[low, 0]) > 16.7 - 2 * 2.3 - 0.01).all(), "below the top only the legs at the ends")
+        self.assertAlmostEqual(P[:, 2].max(), 115.0, places=3)
+        self.assertEqual(bld.collider_boxes([(spec, 5.0, 6.0)], 0.0, 0.0), [], "driven through")
+        Pc = bld.collision_mesh([(spec, 5.0, 6.0)])[0]
+        self.assertTrue((np.abs(Pc[:, 0]) > 16.7 - 2 * 2.3 - 0.01).all(), "it collides at its legs only")
+
+    def test_small_footprint_is_a_pier(self):
+        spec = bld.plan(self.ring(3.0, 2.0), {"class": "bridge_structure", "height": 12.0})
+        P = bld.build([(spec, 0.0, 0.0)])[0]
+        self.assertAlmostEqual(P[:, 2].max(), 12.0, places=3)
+
+
 if __name__ == "__main__":
     unittest.main()
 

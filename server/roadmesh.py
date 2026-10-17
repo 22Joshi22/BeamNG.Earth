@@ -152,15 +152,31 @@ DECK_DEPTH = 1.2        # m of deck slab under the surface
 DECK_SKIN = 0.01        # m the road mesh lies over a deck's top (the decal materials are translucent:
                         # 2026-10-11 a deck topped with road_asphalt_2lane was see-through)
 DECK_SIDE = "sidewalk1" # the slab's sides and underside (West Coast USA concrete)
+# A bridge as the official maps build theirs (Italy's road bridges on tapered wall piers, East Coast's): girders under
+# the slab, a parapet along each free edge, piers (roads.pier_sites); ours was a bare floating slab (the user,
+# 2026-10-17: "Bridges need a lot of work in general")
+GIRDER_D = 1.0          # m of girders under the slab
+GIRDER_W = 0.6          # m wide each
+GIRDER_EVERY = 3.0      # m between girders across the deck
+PARAPET_W = 0.45        # m: the slab reaches this far past the road's edge, a parapet on it ...
+PARAPET_H = 0.9         # ... this high over the road
+PARAPET_COVER_DZ = 1.2  # m: another deck's surface within this height at an edge point: no parapet there
+FOOTING_M = 2.0         # m a pier reaches into the ground
+PIER_T = 1.8            # m: a wall pier's thickness along the deck (at its top; FOOTING tapers wider)
+PIER_TAPER = 0.012      # its width grows this much per m down (each side)
+PIER_CAP_H = 1.2        # m of pier cap under the girders, as wide as the deck
+PIER_BENT_W = 16.0      # a deck wider than this stands on columns (a bent) rather than one wall
+PIER_COLUMN = 1.6       # m square columns of a bent
 
 
-def deck(chunks, origin):
+def deck(chunks, origin, piers=()):
     """The bridge decks of a tile as one colliding mesh: per "deck" chunk a slab of opaque concrete
     (DECK_SIDE) whose top is at the chunk's fixed heights (the road surface, drawn DECK_SKIN above it
     by build()), with sides and underside DECK_DEPTH below. (positions, tris, uvs, materials, tri
     material index) or None. Pure."""
-    rb = [r for r in ribbons([c for c in chunks if c.get("deck")]) if r[5] is not None]
-    if not rb:
+    dch = [c for c in chunks if c.get("deck")]
+    rb = [(r, c) for r, c in zip(ribbons(dch), dch) if r[5] is not None]
+    if not rb and not piers:
         return None
     mats, P, UV, T, M = [], [], [], [], []
     nv = 0
@@ -183,19 +199,145 @@ def deck(chunks, origin):
         M.append(np.full(len(tri), mi))
         nv += 2 * k
 
-    for left, right, v, m, layer, z in rb:
-        if DECK_SIDE not in mats:
-            mats.append(DECK_SIDE)
-        top = side = mats.index(DECK_SIDE)       # opaque concrete; the asphalt is the road mesh's
-        L = np.c_[left, z] - origin
-        R = np.c_[right, z] - origin
+    if DECK_SIDE not in mats:
+        mats.append(DECK_SIDE)
+    side = mats.index(DECK_SIDE)                # opaque concrete; the asphalt is the road mesh's
+    covered = _parapet_cover([(r, c) for r, c in rb])
+    for n, ((left, right, v, m, layer, z), c) in enumerate(rb):
+        k = len(z)
+        lat = left - right
+        u = lat / np.maximum(np.hypot(lat[:, 0], lat[:, 1]), 1e-9)[:, None]     # unit left
+        wide = 0.0 if c.get("tunnel") else PARAPET_W
+        el, er = left + u * wide, right - u * wide                  # the slab's edges, past the road's
+        L = np.c_[el, z] - origin
+        R = np.c_[er, z] - origin
         Lb, Rb = L - [0, 0, DECK_DEPTH], R - [0, 0, DECK_DEPTH]
-        out_l = np.c_[left - right, np.zeros(len(z))]
-        quads(L, R, 0.0, 1.0, v, v, top, np.array([0.0, 0.0, 1.0]))
+        out_l = np.c_[u, np.zeros(k)]
+        quads(L, R, 0.0, 1.0, v, v, side, np.array([0.0, 0.0, 1.0]))
         quads(L, Lb, 0.0, 0.1, v, v, side, out_l)
         quads(R, Rb, 0.0, 0.1, v, v, side, -out_l)
         quads(Lb, Rb, 0.0, 1.0, v, v, side, np.array([0.0, 0.0, -1.0]))
+        if c.get("tunnel"):                     # a tunnel's floor: the slab alone
+            continue
+        # girders under the slab
+        half = float(np.median(np.hypot(lat[:, 0], lat[:, 1]))) / 2
+        ng = max(2, int(round(2 * half / GIRDER_EVERY)))
+        for off in np.linspace(-(half - 0.6), half - 0.6, ng):
+            mid = (left + right) / 2 + u * off
+            gl, gr = mid + u * GIRDER_W / 2, mid - u * GIRDER_W / 2
+            GL, GR = np.c_[gl, z - DECK_DEPTH] - origin, np.c_[gr, z - DECK_DEPTH] - origin
+            GLb, GRb = GL - [0, 0, GIRDER_D], GR - [0, 0, GIRDER_D]
+            quads(GL, GLb, 0.0, 0.1, v, v, side, out_l)
+            quads(GR, GRb, 0.0, 0.1, v, v, side, -out_l)
+            quads(GLb, GRb, 0.0, 0.05, v, v, side, np.array([0.0, 0.0, -1.0]))
+        # a parapet on each free edge (not where another deck goes on beside it: a ramp leaving, a carriageway)
+        for sgn, edge, inner, cov in ((1, el, left, covered[n][0]), (-1, er, right, covered[n][1])):
+            i = 0
+            while i < k:
+                if cov[i]:
+                    i += 1
+                    continue
+                j = i
+                while j + 1 < k and not cov[j + 1]:
+                    j += 1
+                if j > i:
+                    sl = slice(i, j + 1)
+                    zz = z[sl]
+                    Eo, Ei = np.c_[edge[sl], zz] - origin, np.c_[inner[sl], zz] - origin
+                    To, Ti = Eo + [0, 0, PARAPET_H], Ei + [0, 0, PARAPET_H]
+                    o = out_l[sl] * sgn
+                    quads(Eo, To, 0.0, 0.1, v[sl], v[sl], side, o)          # outside face
+                    quads(Ei, Ti, 0.0, 0.1, v[sl], v[sl], side, -o)         # road face
+                    quads(Ti, To, 0.0, 0.05, v[sl], v[sl], side, np.array([0.0, 0.0, 1.0]))
+                i = j + 1
+    for p in piers:
+        _pier(p, origin, P, T, UV, M, side)
+        nv = sum(len(a) for a in P)
     return (np.concatenate(P), np.concatenate(T), np.concatenate(UV), mats, np.concatenate(M))
+
+
+def _parapet_cover(rb):
+    """Per deck ribbon (left, right edge points) whether another deck's surface lies there (no parapet):
+    earthfast.deck_edges_covered over every ribbon's centre line, its half width + PARAPET_W; Python else."""
+    import fast
+    out = []
+    if not rb:
+        return out
+    pts, own, A, B, HW, OS = [], [], [], [], [], []
+    for n, ((left, right, v, m, layer, z), c) in enumerate(rb):
+        lat = left - right
+        u = lat / np.maximum(np.hypot(lat[:, 0], lat[:, 1]), 1e-9)[:, None]
+        mid = (left + right) / 2
+        hw = float(np.median(np.hypot(lat[:, 0], lat[:, 1]))) / 2 + PARAPET_W
+        oid = hash(c.get("fid", n)) & 0x3FFFFFFF
+        for e in (left + u * PARAPET_W / 2, right - u * PARAPET_W / 2):
+            pts.append(np.c_[e, z])
+            own.append(np.full(len(z), oid))
+        A.append(np.c_[mid[:-1], z[:-1]])
+        B.append(np.c_[mid[1:], z[1:]])
+        HW.append(np.full(len(z) - 1, hw))
+        OS.append(np.full(len(z) - 1, oid))
+    P_, O_ = np.concatenate(pts), np.concatenate(own).astype(np.int64)
+    A_, B_, H_, S_ = np.concatenate(A), np.concatenate(B), np.concatenate(HW), np.concatenate(OS).astype(np.int64)
+    if fast.AVAILABLE and hasattr(fast._ef, "deck_edges_covered"):
+        cov = np.asarray(fast._ef.deck_edges_covered(np.ascontiguousarray(P_), O_, np.ascontiguousarray(A_),
+                                                      np.ascontiguousarray(B_), H_, S_, PARAPET_COVER_DZ))
+    else:
+        cov = np.zeros(len(P_), bool)
+        ab = B_[:, :2] - A_[:, :2]
+        L2 = np.maximum((ab * ab).sum(1), 1e-9)
+        for i, p in enumerate(P_):
+            t = np.clip(((p[:2] - A_[:, :2]) * ab).sum(1) / L2, 0.0, 1.0)
+            d = np.hypot(*(p[:2] - (A_[:, :2] + t[:, None] * ab)).T)
+            zz = A_[:, 2] + t * (B_[:, 2] - A_[:, 2])
+            cov[i] = bool(((S_ != O_[i]) & (d < H_) & (np.abs(p[2] - zz) < PARAPET_COVER_DZ)).any())
+    k0 = 0
+    for (left, right, v, m, layer, z), c in rb:
+        k = len(z)
+        out.append((cov[k0:k0 + k], cov[k0 + k:k0 + 2 * k]))
+        k0 += 2 * k
+    return out
+
+
+def _pier(p, origin, P, T, UV, M, mat):
+    """One pier (roads.pier_sites) appended to P, T, UV, M: a tapered wall with a cap under the girders, or for a deck
+    wider than PIER_BENT_W a bent: square columns under a cap beam."""
+    x, y, ux, uy, zt, zb, width = p
+    t = np.array([ux, uy])
+    nrm = np.array([-uy, ux])
+    c = np.array([x, y])
+    boxes = []                                  # (centre, half along t, half across, z0, z1, widen per m down)
+    cap_w = width / 2 + PARAPET_W
+    boxes.append((c, PIER_T / 2 + 0.3, cap_w, zt - PIER_CAP_H, zt, 0.0))
+    if width > PIER_BENT_W:
+        nc = max(2, int(round(width / 9.0)))
+        for off in np.linspace(-(width / 2 - 2.0), width / 2 - 2.0, nc):
+            boxes.append((c + nrm * off, PIER_COLUMN / 2, PIER_COLUMN / 2, zb, zt - PIER_CAP_H, 0.0))
+    else:
+        wall = float(np.clip(0.7 * width, 2.5, 14.0)) / 2
+        boxes.append((c, PIER_T / 2, wall, zb, zt - PIER_CAP_H, PIER_TAPER))
+    for cc, ht, hn, z0, z1, taper in boxes:
+        grow = taper * max(z1 - z0, 0.0)
+        top = [cc + t * a * ht + nrm * b * hn for a, b in ((-1, -1), (1, -1), (1, 1), (-1, 1))]
+        bot = [cc + t * a * (ht + grow * 0.5) + nrm * b * (hn + grow) for a, b in ((-1, -1), (1, -1), (1, 1), (-1, 1))]
+        nv = sum(len(a) for a in P)
+        V = np.array([[*q, z1] for q in top] + [[*q, z0] for q in bot]) - np.asarray(origin, np.float64)
+        P.append(V)
+        UV.append(np.c_[np.r_[0, 1, 0, 1, 0, 1, 0, 1] * 0.25, np.r_[0, 0, 0, 0, 1, 1, 1, 1] * (z1 - z0) / 8.0])
+        tri = []
+        for i in range(4):                      # sides (outward: the corners go counter-clockwise from above)
+            a, b = i, (i + 1) % 4
+            tri += [(a, b + 4, b), (a, a + 4, b + 4)]
+        tri += [(0, 1, 2), (0, 2, 3)]           # top
+        tri = np.array(tri, np.int64)
+        # outward winding: check one side's normal against the outward direction, flip all if wrong
+        Vn = V[tri]
+        nrm_ = np.cross(Vn[:, 1] - Vn[:, 0], Vn[:, 2] - Vn[:, 0])
+        cen = V.mean(0)
+        flip = (nrm_ * (Vn.mean(1) - cen)).sum(1) < 0
+        tri[flip] = tri[flip][:, ::-1]
+        T.append(tri + nv)
+        M.append(np.full(len(tri), mat))
 
 
 TUNNEL_SHOULDER = 1.2      # m of concrete floor between the road's edge and the wall
