@@ -21,13 +21,13 @@ end
 -- compute: one state per situation
 
 local id, level, text = banner.compute(info({ attempts = 1 }), 0.5)
-T.check(id == 'starting' and level == 'info' and text:find('looking for the world server', 1, true), 'just loaded: starting')
+T.check(id == 'starting' and level == 'info' and text:find('looking for the BeamNG.Earth server on this PC', 1, true), 'just loaded: starting')
 id, level, text = banner.compute(info({ attempts = 4 }), banner.STARTING_S + 0.1)
 T.check(id == 'noserver' and level == 'error', 'never connected after STARTING_S: not running')
-T.check(text:find('python3 server/earthd.py', 1, true) and text:find('automatically', 1, true),
-  'not running: the start command and the auto-start hint')
+T.check(text:find('not running on this PC', 1, true) and text:find('launcher', 1, true)
+  and text:find('python3 server/earthd.py', 1, true), 'not running: on this PC, the launcher and the start command')
 id, level, text = banner.compute(info({ everConnected = true, attempts = 3 }), 100)
-T.check(id == 'lost' and level == 'warn' and text == 'Connection to the world server lost - reconnecting (attempt 3)',
+T.check(id == 'lost' and level == 'warn' and text == 'Lost the BeamNG.Earth server on this PC - reconnecting (attempt 3). Is its launcher window still open?',
   'lost: reconnecting with the attempt number')
 id, _, text = banner.compute(info({ net = 'connecting', everConnected = true, attempts = 0 }), 100)
 T.check(id == 'lost' and text:find('attempt 1', 1, true), 'lost while connecting: at least attempt 1')
@@ -36,19 +36,19 @@ T.check(id == 'starting' and level == 'info', 'connected, no hello yet: starting
 id, level, text = banner.compute(info({ net = 'connected', session = true, everConnected = true }), 100)
 T.check(id == 'ok' and level == 'ok' and text == '', 'all is well: ok, no text')
 id, level, text = banner.compute(info({ net = 'connected', session = true, everConnected = true, note = 'offline' }), 100)
-T.check(id == 'offline' and level == 'warn' and text:find('Offline - using cached data', 1, true), 'offline')
+T.check(id == 'offline' and level == 'warn' and text:find('Server OK, internet data sources unreachable', 1, true), 'offline: the server is fine')
 id, level, text = banner.compute(info({ net = 'connected', session = true, everConnected = true, note = 'degraded',
   noteDetail = 'usgs unreachable; 3 tiles without imagery' }), 100)
-T.check(id == 'degraded' and level == 'warn' and text == 'World server degraded: usgs unreachable; 3 tiles without imagery',
+T.check(id == 'degraded' and level == 'warn' and text == 'Server OK, some internet data sources not answering: usgs unreachable; 3 tiles without imagery',
   'degraded: the server\'s note')
 -- the edge guard's line
 id, level, text = banner.compute(info({ everConnected = true, attempts = 2, edge = 'warn' }), 100)
 T.check(id == 'lost' and level == 'warn' and text:find('\nNear the edge of the loaded ground', 1, true)
-  and text:find('until the world server is back', 1, true), 'lost + near the edge: a second line')
+  and text:find('until the BeamNG.Earth server is back', 1, true), 'lost + near the edge: a second line')
 id, level, text = banner.compute(info({ everConnected = true, attempts = 2, edge = 'hold' }), 100)
 T.check(level == 'error' and text:find('\nHeld at the edge of the loaded ground', 1, true), 'held at the edge: error level')
 id, level, text = banner.compute(info({ net = 'connected', session = true, everConnected = true, stuck = true, edge = 'hold' }), 100)
-T.check(id == 'edge' and level == 'error' and text == 'Held at the edge of the loaded ground until the world server answers terrain requests again',
+T.check(id == 'edge' and level == 'error' and text == 'Held at the edge of the loaded ground until the BeamNG.Earth server answers terrain requests again',
   'connected but not answering terrain: the edge line alone')
 id, _, text = banner.compute(info({ net = 'connected', session = true, everConnected = true, stuck = true }), 100)
 T.check(id == 'ok' and text == '', 'not answering terrain, far from the edge: nothing to say yet')
@@ -83,12 +83,12 @@ s = banner.update(0.1, i)
 T.check(s.id == 'starting', 'connected: waiting for hello')
 i.session = true
 s = banner.update(0.1, i)
-T.check(s.id == 'recovered' and s.level == 'ok' and s.text == 'World server connected', 'the server came: "connected" for a while')
+T.check(s.id == 'recovered' and s.level == 'ok' and s.text == 'BeamNG.Earth server connected', 'the server came: "connected" for a while')
 for _ = 1, 30 do s = banner.update(0.1, i) end
 T.check(s.id == 'recovered', '... still within RECOVERED_S')
 for _ = 1, 20 do s = banner.update(0.1, i) end
 T.check(s.id == 'ok' and not s.visible, '... then hidden')
-T.check(banner.line() == 'World server connected', 'line(): all is well')
+T.check(banner.line() == 'BeamNG.Earth server connected', 'line(): all is well')
 i.net, i.session, i.attempts = 'disconnected', false, 1
 s = banner.update(0.1, i)
 T.check(s.id == 'lost' and s.text:find('attempt 1', 1, true), 'connection lost: attempt 1')
@@ -142,7 +142,7 @@ banner.update(0.1, lostInfo)
 draws = {}
 T.check(banner.draw(true, false), 'lost: drawn')
 T.check(#draws == 2 and draws[1].kind == 'rect' and draws[2].kind == 'text', 'one backdrop + one text')
-local txt = 'Connection to the world server lost - reconnecting (attempt 3)'
+local txt = 'Lost the BeamNG.Earth server on this PC - reconnecting (attempt 3). Is its launcher window still open?'
 T.near(draws[2].x, (VW - #txt * GLYPH) / 2, 1e-9, 'centred horizontally')
 T.near(draws[2].y, banner.TOP + banner.PAD_Y, 1e-9, 'at the top')
 T.check(draws[1].col == '0.42,0.28,0.02,0.86', 'warn level: amber backdrop')
