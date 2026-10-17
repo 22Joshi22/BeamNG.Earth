@@ -28,5 +28,59 @@
     ],
     "groundType": "METAL",
     "translucent": false
+  },
+  "bne_tunnel_stone": {
+    "name": "bne_tunnel_stone",
+    "mapTo": "bne_tunnel_stone",
+    "class": "Material",
+    "version": 1.5,
+    "persistentId": "9ad9dd62-4ce9-5e3d-81f4-7fa1710ca7af",
+    "Stages": [
+      {
+        "baseColorMap": "/assets/materials/tileable/stone/m_stonebrick_mixed_01/t_stonebrick_mixed_01_b.color.png",
+        "normalMap": "/assets/materials/tileable/stone/m_stonebrick_mixed_01/t_stonebrick_mixed_01_nm.normal.png",
+        "roughnessMap": "/assets/materials/tileable/stone/m_stonebrick_mixed_01/t_stonebrick_mixed_01_r.data.png",
+        "ambientOcclusionMap": "/assets/materials/tileable/stone/m_stonebrick_mixed_01/t_stonebrick_mixed_01_ao.data.png",
+        "metallicFactor": 0,
+        "baseColorFactor": [
+          0.92,
+          0.86,
+          0.8,
+          1
+        ]
+      },
+      {},
+      {},
+      {}
+    ],
+    "groundType": "ROCK",
+    "translucent": false
+  },
+  "bne_tunnel_stone_in": {
+    "name": "bne_tunnel_stone_in",
+    "mapTo": "bne_tunnel_stone_in",
+    "class": "Material",
+    "version": 1.5,
+    "persistentId": "ef9843c2-f603-5455-9e38-76fdc283406d",
+    "Stages": [
+      {
+        "baseColorMap": "/assets/materials/tileable/stone/m_stonebrick_mixed_01/t_stonebrick_mixed_01_b.color.png",
+        "normalMap": "/assets/materials/tileable/stone/m_stonebrick_mixed_01/t_stonebrick_mixed_01_nm.normal.png",
+        "roughnessMap": "/assets/materials/tileable/stone/m_stonebrick_mixed_01/t_stonebrick_mixed_01_r.data.png",
+        "ambientOcclusionMap": "/assets/materials/tileable/stone/m_stonebrick_mixed_01/t_stonebrick_mixed_01_ao.data.png",
+        "metallicFactor": 0,
+        "baseColorFactor": [
+          0.5,
+          0.47,
+          0.44,
+          1
+        ]
+      },
+      {},
+      {},
+      {}
+    ],
+    "groundType": "ROCK",
+    "translucent": false
   }
 }

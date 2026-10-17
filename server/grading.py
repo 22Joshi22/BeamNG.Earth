@@ -166,6 +166,7 @@ class Grader:
         self.lock = threading.Lock()
         self.key_locks = {}     # cell key -> Lock: one thread plans a cell, the others wait for it
         self.covers = {}        # cell key -> [(xy (k, 2), half width)]: the tunnels whose ground over them stays
+        self.opens = {}         # cell key -> [(xy (k, 2), Spec)]: the tunnels' open sections (roads in the open)
 
     def _cell_plans(self, key):
         with self.lock:
@@ -204,43 +205,21 @@ class Grader:
             for fid, p in zip(ids, plan_roads(self.frame, parts, self.elev)):
                 if p is not None:
                     plans.append((fid, p))
-            plans.extend(self._open_tunnels(feats))
-            covers = self._covered_tunnels(feats)
+            secs = self._tunnel_sections(feats)
+            plans.extend((fid, Plan(xy, z, spec.width / 2 + shoulder(spec))) for fid, spec, xy, z, k in secs if k == 0)
+            covers = [(xy, spec.width / 2 + TUNNEL_KEEP_M) for _f, spec, xy, _z, k in secs if k]
+            opens = [(xy, spec) for _f, spec, xy, _z, k in secs if k == 0]
         else:
-            covers = []
+            covers, opens = [], []
         with self.lock:
             self.cells.setdefault(key, plans)
             self.covers.setdefault(key, covers)
+            self.opens.setdefault(key, opens)
             return self.cells[key]
 
-    def _covered_tunnels(self, feats):
-        """[(xy, half width)] of the tunnel parts with ground over them (not open underpasses): the grading leaves
-        that ground as it is (apply): the approaches' grading reached up to T_MAX past a portal and cut a park
-        bridge's soil down under its arch's vault, the terrain then cut away over it (2026-10-17)."""
-        out = []
-        ts = roadsmod.tunnel_specs(feats)
-        for i in range(len(feats)):
-            if ts[i] is None:
-                continue
-            for ring in roadsmod.tunnel_parts(feats, i):
-                ll = np.asarray(ring, np.float64)
-                if len(ll) < 2:
-                    continue
-                E, N, _ = self.frame.geodetic_to_enu(ll[:, 1], ll[:, 0], 0.0)
-                xy = np.stack([np.asarray(E), np.asarray(N)], axis=1)
-                xs, s = resample(xy, VERTEX_STEP)
-                if len(xs) >= 2 and s[-1] > 0:
-                    la, lo, _ = self.frame.enu_to_geodetic(xs[:, 0], xs[:, 1], 0.0)
-                    g = np.asarray(self.elev(la, lo), np.float64)
-                    if float(np.max(g - (g[0] + (g[-1] - g[0]) * s / s[-1]))) < roadsmod.TUNNEL_OPEN_COVER:
-                        continue            # an open underpass: graded (_open_tunnels)
-                out.append((xy, ts[i].width / 2 + TUNNEL_KEEP_M))
-        return out
-
-    def _open_tunnels(self, feats):
-        """(fid, Plan) of the tunnel parts that are open underpasses (roads.TUNNEL_OPEN_COVER): the ground graded to
-        the straight line between their ends, as the road is drawn (roads._tunnel_chunks): over a footbridge's hump
-        in the DEM the road climbed it, the ground over the road (Central Park's transverse, 2026-10-17)."""
+    def _tunnel_sections(self, feats):
+        """[(fid, spec, xy, z, kind)] of the tunnels' sections (roads.tunnel_sections on the ungraded ground, as
+        roads.TunnelProfiles cuts them): kind 0 an open road at z, 1 a low arch, 2 a full tunnel."""
         out = []
         ts = roadsmod.tunnel_specs(feats)
         for i in range(len(feats)):
@@ -256,12 +235,30 @@ class Grader:
                     continue
                 la, lo, _ = self.frame.enu_to_geodetic(xy[:, 0], xy[:, 1], 0.0)
                 g = np.asarray(self.elev(la, lo), np.float64)
-                z = g[0] + (g[-1] - g[0]) * s / s[-1]
-                if float(np.max(g - z)) >= roadsmod.TUNNEL_OPEN_COVER:
-                    continue                    # a real tunnel: the ground over it stays
-                spec = ts[i]
-                out.append((str(feats.ids[i]), Plan(xy, z, spec.width / 2 + shoulder(spec))))
+                floor, kinds = roadsmod.tunnel_sections(s, g)
+                i0 = 0
+                while i0 < len(kinds):
+                    i1 = i0
+                    while i1 + 1 < len(kinds) and kinds[i1 + 1] == kinds[i0]:
+                        i1 += 1
+                    a = max(0, i0 - 1)          # sharing the end sample with the section before
+                    if i1 > a:
+                        out.append((str(feats.ids[i]), ts[i], xy[a:i1 + 1], floor[a:i1 + 1], int(kinds[i0])))
+                    i0 = i1 + 1
         return out
+
+    def _covered_tunnels(self, feats):
+        """[(xy, half width)] of the tunnels' covered sections (not open roads): the grading leaves the ground over
+        them as it is (apply): the approaches' grading reached up to T_MAX past a portal and cut a park bridge's soil
+        down under its arch's vault, the terrain then cut away over it (2026-10-17)."""
+        return [(xy, spec.width / 2 + TUNNEL_KEEP_M) for _f, spec, xy, _z, kind in self._tunnel_sections(feats) if kind]
+
+    def _open_tunnels(self, feats):
+        """(fid, Plan) of the tunnels' open sections (roads.TUNNEL_OPEN_COVER): the ground graded to the road's floor
+        (the lower hull of the ground), as the road is drawn (roads._tunnel_chunks): over a footbridge's hump in the
+        DEM the road climbed it, the ground over the road (Central Park's transverses, 2026-10-17)."""
+        return [(fid, Plan(xy, z, spec.width / 2 + shoulder(spec)))
+                for fid, spec, xy, z, kind in self._tunnel_sections(feats) if kind == 0]
 
     def planned(self, key):
         """True once cell key's plans exist (made, or failed recently)."""
@@ -311,6 +308,32 @@ class Grader:
         if keep is not None:
             out[keep] = base.ravel()[keep]
         return out.reshape(shape)
+
+    def open_tunnels(self, lat, lon):
+        """[(lat (k,), lon (k,), Spec)] of the tunnels' open sections planned near the points: roads on the ground
+        that the map calls tunnels (surface.paint_roads paints them: grass grew over the open road of Central Park's
+        79th Street Transverse, 2026-10-17)."""
+        lat = np.asarray(lat, np.float64)
+        lon = np.asarray(lon, np.float64)
+        if lat.size == 0:
+            return []
+        for key in mapcells.cells_for_bbox(float(lat.min()), float(lon.min()), float(lat.max()), float(lon.max())):
+            self._cell_plans(key)
+        with self.lock:
+            secs = [o for v in self.opens.values() for o in v]
+        out, seen = [], set()
+        for xy, spec in secs:
+            k = (round(float(xy[0, 0]), 2), round(float(xy[0, 1]), 2), len(xy))
+            if k in seen:
+                continue
+            seen.add(k)
+            la, lo, _ = self.frame.enu_to_geodetic(xy[:, 0], xy[:, 1], 0.0)
+            la, lo = np.asarray(la), np.asarray(lo)
+            if la.max() < lat.min() - 0.001 or la.min() > lat.max() + 0.001 or \
+                    lo.max() < lon.min() - 0.0015 or lo.min() > lon.max() + 0.0015:
+                continue
+            out.append((la, lo, spec))
+        return out
 
     def _over_tunnels(self, e, n):
         """Which points lie over a covered tunnel (its half width + TUNNEL_KEEP_M), or None."""

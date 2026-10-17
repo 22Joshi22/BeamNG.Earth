@@ -203,10 +203,16 @@ TUNNEL_WALL_H = 4.6        # m of upright wall before the vault
 TUNNEL_H = 6.8             # m from the floor to the vault's top
 PORTAL_FRAME = 6.0         # m of portal face around the opening (hides the terrain hole's 2 m steps)
 TUNNEL_SIDE = DECK_SIDE    # the tube's concrete
-TUNNEL_STONE = "bne_bld_stone"     # a low arch's tube and portal (a park's stone bridge; buildings' dressed stone)
-STONE_UV_M = 2.0           # m per repeat of the stone on a low arch
+TUNNEL_STONE = "bne_tunnel_stone"  # a low arch's portal faces and the retaining walls: grey coursed rubble (Central
+                                    # Park's transverse walls and arches; the buildings' pale dressed stone read as
+                                    # concrete, 2026-10-17)
+TUNNEL_STONE_IN = "bne_tunnel_stone_in"   # the same stone darker: a low arch's vault (in its shade)
+STONE_UV_M = 3.0           # m per repeat of the stone on a low arch
 LOW_PORTAL_UP = 1.4        # m a low arch's portal face reaches over the vault (to the ground over it) ...
 LOW_PORTAL_SIDE = 3.0      # ... and beside the opening
+LOW_CAP_M = 7.0            # m a low arch's stone top runs back from its portal face over the mouth: the terrain there
+                           # dips to the floor and is cut away (roads.arch_raise, LOW_HOLE_M + LOW_HOLE_STEP): from
+                           # above a row of dark terrain teeth behind the face (79th Street Transverse, 2026-10-17)
 TUNNEL_OVERLAP = 0.25      # m a tube piece reaches past a tile edge
 TUNNEL_LIGHT = "bne_tunnel_light"   # the lamps' emissive material (levels/beamng_earth/art/shapes/beamngEarth)
 TUNNEL_LAMP_OFF = 0.35     # two lamp lines, this share of the half-width either side of the centre, ...
@@ -283,7 +289,7 @@ def tunnel(chunks, origin, walls=()):
     rb = [(r, c) for r, c in zip(ribbons(tc), tc) if r[5] is not None] if tc else []
     if not rb and not walls:
         return None
-    P, T, UV, M = [], [], [], []           # M: per T entry its material index (0 concrete, 1 lamps, 2 stone)
+    P, T, UV, M = [], [], [], []           # M: per T entry its material index (0 concrete, 1 lamps, 2 stone, 3 dark stone)
     nv = _retaining_walls(walls, np.asarray(origin, np.float64), P, T, UV, M, 0) if walls else 0
     for (left, right, v, _, _, z), c in rb:
         # a piece ending at a tile edge reaches TUNNEL_OVERLAP past it: the next tile's piece meets it there without a
@@ -303,7 +309,7 @@ def tunnel(chunks, origin, walls=()):
         hw = float(np.median(lw)) / 2 + TUNNEL_SHOULDER
         th = float(c.get("tunnel_h") or TUNNEL_H)
         low = th < TUNNEL_H - 0.05                          # a low arch: stone, a short portal face
-        mat = 2 if low else 0
+        mat = 3 if low else 0                               # (its portal faces: 2, the stone in daylight)
         sec = _tunnel_section(hw, th)
         k, m = len(mid), len(sec)
         rows = np.empty((m, k, 3))
@@ -364,12 +370,46 @@ def tunnel(chunks, origin, walls=()):
             A, A1, B, B1 = nv + i, nv + i + 1, nv + m + i, nv + m + i + 1
             tri = np.concatenate([np.stack([A, B, B1], 1), np.stack([A, B1, A1], 1)])
             T.append(np.concatenate([tri, tri[:, ::-1]]))   # seen from outside and from in the tube
-            M.append(mat)
+            M.append(2 if low else 0)
             nv += 2 * m
-    mats = [TUNNEL_SIDE, TUNNEL_LIGHT] + ([TUNNEL_STONE] if any(mm == 2 for mm in M) else [])
+            if low:
+                nv = _arch_cap(P, T, UV, M, nv, mid, u, z, at, k, float(np.max(o[:, 0])), float(o[:, 1].max()), th, origin)
+    mats = [TUNNEL_SIDE, TUNNEL_LIGHT] + ([TUNNEL_STONE, TUNNEL_STONE_IN] if any(mm >= 2 for mm in M) else [])
     Tall = np.concatenate(T)
     Mall = np.concatenate([np.full(len(t), m, np.int64) for t, m in zip(T, M)]) if M else np.zeros(len(Tall), np.int64)
     return (np.concatenate(P), Tall, np.concatenate(UV), mats, Mall)
+
+
+def _arch_cap(P, T, UV, M, nv, mid, u, z, at, k, side, top, th, origin):
+    """A low arch's stone top over its mouth (LOW_CAP_M back from the portal face at row `at`, side either way of
+    the centre, `top` over the floor): its top, its sides down to the floor's level (outside the tube's walls) and
+    its back down to just over the vault (th), seen from both sides. Appended to P, T, UV, M; returns the new vertex count."""
+    nb = 1 if at == 0 else k - 2
+    t = mid[nb] - mid[at]
+    t = t / max(float(np.hypot(*t)), 1e-9)              # into the tube
+    a = mid[at]
+    b = a + t * LOW_CAP_M
+    ua = u[at]
+    z0 = float(z[at]) + top
+    corners = np.array([[*(a + ua * side), z0], [*(a - ua * side), z0], [*(b - ua * side), z0], [*(b + ua * side), z0]])
+    foot = corners.copy()
+    foot[:, 2] = float(z[at])
+    over = corners.copy()
+    over[:, 2] = float(z[at]) + th + 0.1
+    quads = [corners,                                   # the top
+             np.array([corners[3], corners[2], over[2], over[3]]),     # its back, toward the soil over the vault
+             np.array([corners[0], corners[3], foot[3], foot[0]]),     # its sides
+             np.array([corners[1], corners[2], foot[2], foot[1]])]
+    for q in quads:
+        P.append(q - origin)
+        w = float(np.hypot(*(q[1, :2] - q[0, :2]))) or float(abs(q[1, 2] - q[0, 2]))
+        h = float(np.hypot(*(q[2, :2] - q[1, :2]))) + float(abs(q[2, 2] - q[1, 2]))
+        UV.append(np.array([[0, 0], [w, 0], [w, h], [0, h]], np.float64) / STONE_UV_M)
+        tri = np.array([[nv, nv + 1, nv + 2], [nv, nv + 2, nv + 3]], np.int64)
+        T.append(np.concatenate([tri, tri[:, ::-1]]))
+        M.append(2)
+        nv += 4
+    return nv
 
 
 def _tunnel_lamps(P, T, UV, M, nv, mid, u, z, hw, origin):

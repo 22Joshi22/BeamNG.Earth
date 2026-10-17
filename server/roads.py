@@ -871,6 +871,7 @@ TUNNEL_OPEN_COVER = 4.0 # m: a 'tunnel' whose ground nowhere rises this far over
 PORTAL_LOOK_M = 12.0    # m inside a portal where the ground over it is read for its face's height ...
 PORTAL_GROUND_M = 0.5   # ... which reaches this far over that ground ...
 PORTAL_UP_MIN = 1.0     # ... and at least this far over the vault
+SECTION_MIN_M = 8.0     # m: a tunnel's covered sections and the open gaps between them at least this long
 TUNNEL_SOIL_M = 1.0     # m of arch and soil kept over a low tunnel's vault
 TUNNEL_LOW_H = 3.6      # m: the lowest tube (floor to vault)
 
@@ -1525,117 +1526,186 @@ class BridgeProfiles:
         return out
 
 
+def tunnel_sections(s, g, open_cover=None, full_cover=None, min_m=SECTION_MIN_M):
+    """A tunnel's road level and its sections from the ground over it (g at arc lengths s): (floor, kinds). floor: the
+    lower convex hull of (s, g), the road's level under the covered parts and the ground where it lies open; kinds per
+    sample: 0 open road, 1 a low arch, 2 a full tunnel (a run with TUNNEL_OPEN_COVER over the floor, full where it
+    reaches TUNNEL_COVER; runs and gaps shorter than min_m merged away). One long 'tunnel' in the map can be a sunken
+    road with arches and a rock tunnel along it (Central Park's 79th Street Transverse, 683 m: one tube, 2026-10-17).
+    The Rust kernel (fast), else the same in numpy. Pure."""
+    s = np.ascontiguousarray(s, np.float64)
+    g = np.ascontiguousarray(g, np.float64)
+    oc = TUNNEL_OPEN_COVER if open_cover is None else open_cover
+    fc = TUNNEL_COVER if full_cover is None else full_cover
+    step = float(np.median(np.diff(s))) if len(s) > 1 else 1.0
+    min_n = max(1, int(math.ceil(min_m / max(step, 1e-6))))
+    import fast
+    if fast.AVAILABLE and getattr(fast._ef, "VERSION", 0) >= 28:
+        f, k = fast._ef.tunnel_sections(s, g, float(oc), float(fc), int(min_n))
+        return np.asarray(f), np.asarray(k)
+    n = len(s)
+    floor = np.zeros(n)
+    kinds = np.zeros(n, np.int64)
+    if n == 0:
+        return floor, kinds
+    hull = []
+    for i in range(n):
+        while len(hull) >= 2:
+            a, b = hull[-2], hull[-1]
+            if (s[b] - s[a]) * (g[i] - g[a]) - (g[b] - g[a]) * (s[i] - s[a]) <= 0:
+                hull.pop()
+            else:
+                break
+        hull.append(i)
+    floor = np.interp(s, s[hull], g[hull])
+    covered = g - floor >= oc
+    runs, i = [], 0
+    while i < n:
+        if not covered[i]:
+            i += 1
+            continue
+        j = i
+        while j + 1 < n and covered[j + 1]:
+            j += 1
+        if j + 1 - i >= min_n:
+            runs.append([i, j, 2 if (g[i:j + 1] - floor[i:j + 1] >= fc).any() else 1])
+        i = j + 1
+    merged = []
+    for r in runs:
+        if merged and r[0] - merged[-1][1] - 1 < min_n:
+            merged[-1][1] = r[1]
+            merged[-1][2] = max(merged[-1][2], r[2])
+        else:
+            merged.append(r)
+    for a, b, kind in merged:
+        kinds[a:b + 1] = kind
+    return floor, kinds
+
+
 class TunnelProfiles(BridgeProfiles):
     """Floor heights per tunnel part for one anchor frame, each chain (joined parts: a tunnel split over several
-    segments) resolved once from all of it (tunnel_profile), as BridgeProfiles. Worker threads."""
+    segments) resolved once, as BridgeProfiles; each part cut into its sections (tunnel_sections): open roads
+    (open_parts), low arches (heights) and full tunnels, each a part of its own (fid#k) with its own portals. Worker
+    threads."""
     specs_of = staticmethod(lambda feats: tunnel_specs(feats))
     parts_of = staticmethod(lambda feats, i: tunnel_parts(feats, i))
     levels_of = staticmethod(lambda feats, i: [-1.0] * len(tunnel_parts(feats, i)))
 
     wet = None      # wet(lat, lon) -> water depth (m): tunnels under water are left out (the sea's WaterBlocks reach
                     # 100 m down: a car in the tube would float; earthd / blockworker set the sea's depth)
-
-    def _solve(self, comp, pool, ground):
-        zs = self._solve_floor(comp, pool, ground)
-        self._portal_ups(comp, pool, zs)
-        return zs
-
-    def _portal_ups(self, comp, pool, zs):
-        """How far each part's portal faces may reach over its vault: to PORTAL_GROUND_M over the ground just inside
-        it (the most within PORTAL_LOOK_M), at least PORTAL_UP_MIN, at most roadmesh.PORTAL_FRAME (a 6 m frame stood
-        ~10 m over the flat park at the 79th Street Transverse's portal, 2026-10-17)."""
-        import roadmesh
-        gfn = self._raw_ground if self.raw is not None else self._ground
-        for k, z in zip(comp, zs):
-            xy = np.asarray(pool[k][1], np.float64)
-            z = np.asarray(z, np.float64)
-            if len(xy) < 2 or not np.isfinite(z).all():
-                continue
-            s = np.r_[0.0, np.cumsum(np.hypot(*np.diff(xy, axis=0).T))]
-            g = gfn(xy)
-            th = self.heights.get(k[0], roadmesh.TUNNEL_H)
-            ups = []
-            for near in (s <= PORTAL_LOOK_M, s >= s[-1] - PORTAL_LOOK_M):
-                cover = float(np.max(g[near] - z[near])) if near.any() else th
-                ups.append(float(np.clip(cover + PORTAL_GROUND_M - th, PORTAL_UP_MIN, roadmesh.PORTAL_FRAME)))
-            with self.lock:
-                self.ups[k[0]] = ups
-
-    def portal_ups(self, fid):
-        """(at the part's start, at its end): see _portal_ups; the full frame when not known."""
-        import roadmesh
-        with self.lock:
-            return self.ups.get(fid, [roadmesh.PORTAL_FRAME, roadmesh.PORTAL_FRAME])
-
-    def _solve_floor(self, comp, pool, ground):
-        lines = [pool[k][1] for k in comp]
-        # the cover over it from the ungraded ground (raw): graded, the roads' approaches pulled a park bridge's
-        # ground down near its portals and it read as open, while the grading (on the DEM) left it (2026-10-17)
-        gfn = self._raw_ground if self.raw is not None else self._ground
-        # the floor straight between its portals at the roads' (graded) height there, as the approaches arrive
-        straight = deck_heights(lines, self._ground)
-        cover = [float(np.max(gfn(np.asarray(ln, np.float64)) - z)) for ln, z in zip(lines, straight)
-                 if np.isfinite(z).all()]
-        if cover and max(cover) < TUNNEL_OPEN_COVER:
-            with self.lock:
-                self.open.update(k[0] for k in comp)
-            return straight             # straight between its ends (open_parts)
-        if cover and max(cover) < TUNNEL_COVER:
-            import roadmesh
-            # the tube under the thin part of the cover over its middle (a 20th percentile of the middle 60 %): sized
-            # from the most, the ground came down into it all along and was cut away, a bare stone vault (2026-10-17)
-            mids = []
-            for ln, z in zip(lines, straight):
-                if not np.isfinite(z).all():
-                    continue
-                c_ = gfn(np.asarray(ln, np.float64)) - z
-                k0, k1 = int(len(c_) * 0.2), max(int(len(c_) * 0.8), int(len(c_) * 0.2) + 1)
-                mids.append(c_[k0:k1])
-            mid = np.concatenate(mids) if mids else np.array([max(cover)])
-            h = float(np.clip(np.percentile(mid, 20) - TUNNEL_SOIL_M, TUNNEL_LOW_H, roadmesh.TUNNEL_H))
-            with self.lock:
-                for k in comp:
-                    self.heights[k[0]] = h
-            return straight             # a low arch: no dip under the ground over it
-        return tunnel_profile(lines, self._ground)
-
-    def height(self, fid):
-        """The tube's height (floor to vault) of tunnel part fid: a low arch's, else roadmesh.TUNNEL_H."""
-        import roadmesh
-        with self.lock:
-            return self.heights.get(fid, roadmesh.TUNNEL_H)
-
     open = None
     raw = None      # raw(lat, lon) -> the ground without the roads' grading (the cover over a tunnel is read on it)
+
+    def __init__(self, *a, **kw):
+        super().__init__(*a, **kw)
+        self.open = set()           # sub-part fids that are open roads
+        self.heights = {}           # sub-part fid -> a low arch's tube height
+        self.ups = {}               # sub-part fid -> its portal faces' reach over the vault at its start and end
+        self.sections = {}          # part fid -> [(i0, i1, kind)] (inclusive sample ranges, sharing their ends)
+        self.mouths = {}            # sub-part fid -> (its start is a portal, its end is one): not where a low arch
+                                    # meets a full tunnel inside the hill (no hole, no portal face there)
 
     def _raw_ground(self, xy):
         la, lo, _ = self.frame.enu_to_geodetic(xy[:, 0], xy[:, 1], 0.0)
         return self.frame.geodetic_to_enu(la, lo, np.asarray(self.raw(la, lo), np.float64))[2]
 
-    def __init__(self, *a, **kw):
-        super().__init__(*a, **kw)
-        self.open = set()           # fids of the tunnel parts that are open underpasses (TUNNEL_OPEN_COVER)
-        self.heights = {}           # fid -> a low arch's tube height (TUNNEL_COVER)
-        self.ups = {}               # fid -> its portal faces' reach over the vault at its start and end (_portal_ups)
+    def _solve(self, comp, pool, ground):
+        """Per part: the floor (the hull of the ungraded ground, its ends at the roads' graded height at its portals,
+        where the approaches arrive) and its sections; a low arch's tube under the thin part of the cover over its
+        middle (a 20th percentile of the middle 60 %, less TUNNEL_SOIL_M; sized from the most, the ground came down
+        into it and was cut away, a bare stone vault), a full tunnel's roadmesh.TUNNEL_H."""
+        import roadmesh
+        gfn = self._raw_ground if self.raw is not None else self._ground
+        out = []
+        for k in comp:
+            xy = np.asarray(pool[k][1], np.float64)
+            if len(xy) < 2:
+                out.append(np.full(len(xy), np.nan))
+                continue
+            s = np.r_[0.0, np.cumsum(np.hypot(*np.diff(xy, axis=0).T))]
+            g = np.asarray(gfn(xy), np.float64)
+            ge = np.asarray(self._ground(xy[[0, -1]]), np.float64)
+            g = g.copy()
+            g[0], g[-1] = ge[0], ge[-1]
+            floor, kinds = tunnel_sections(s, g)
+            secs, i = [], 0
+            while i < len(kinds):
+                j = i
+                while j + 1 < len(kinds) and kinds[j + 1] == kinds[i]:
+                    j += 1
+                secs.append((i, j, int(kinds[i])))
+                i = j + 1
+            # neighbouring sections share their end sample (no gap between a portal and the open road)
+            secs = [(a if n == 0 else a - 1, b, kd) for n, (a, b, kd) in enumerate(secs)]
+            cover = g - floor
+            with self.lock:
+                self.sections[k[0]] = secs
+                for n, (a, b, kd) in enumerate(secs):
+                    sub = f"{k[0]}#{n}"
+                    if kd == 0:
+                        self.open.add(sub)
+                        continue
+                    th = roadmesh.TUNNEL_H
+                    if kd == 1:
+                        c_ = cover[a:b + 1]
+                        k0, k1 = int(len(c_) * 0.2), max(int(len(c_) * 0.8), int(len(c_) * 0.2) + 1)
+                        th = float(np.clip(np.percentile(c_[k0:k1], 20) - TUNNEL_SOIL_M, TUNNEL_LOW_H, roadmesh.TUNNEL_H))
+                        self.heights[sub] = th
+                    ups = []
+                    for near in (s[a:b + 1] <= s[a] + PORTAL_LOOK_M, s[a:b + 1] >= s[b] - PORTAL_LOOK_M):
+                        cv = float(np.max(cover[a:b + 1][near])) if near.any() else th
+                        ups.append(float(np.clip(cv + PORTAL_GROUND_M - th, PORTAL_UP_MIN, roadmesh.PORTAL_FRAME)))
+                    self.ups[sub] = ups
+                    self.mouths[sub] = (n == 0 or secs[n - 1][2] == 0, n == len(secs) - 1 or secs[n + 1][2] == 0)
+            out.append(floor)
+        return out
+
+    def portal_ups(self, fid):
+        """(at the part's start, at its end): the portal faces' reach over the vault, PORTAL_GROUND_M over the ground
+        just inside (within PORTAL_LOOK_M), PORTAL_UP_MIN..roadmesh.PORTAL_FRAME (a 6 m frame stood ~10 m over the
+        flat park at the 79th Street Transverse, 2026-10-17); the full frame when not known."""
+        import roadmesh
+        with self.lock:
+            return self.ups.get(fid, [roadmesh.PORTAL_FRAME, roadmesh.PORTAL_FRAME])
+
+    def height(self, fid):
+        """The tube's height (floor to vault) of a sub-part: a low arch's, else roadmesh.TUNNEL_H."""
+        import roadmesh
+        with self.lock:
+            return self.heights.get(fid, roadmesh.TUNNEL_H)
+
+    def mouth(self, fid):
+        """(start, end) of a sub-part: True where it is a portal."""
+        with self.lock:
+            return self.mouths.get(fid, (True, True))
+
+    def _split(self, parts):
+        """parts (whole map parts) as their sections' sub-parts (fid#n, spec, xy, z, lon)."""
+        out = []
+        for fid, spec, xy, z, lon in parts:
+            with self.lock:
+                secs = self.sections.get(fid)
+            if not secs:
+                out.append((f"{fid}#0", spec, xy, z, lon))
+                continue
+            for n, (a, b, kd) in enumerate(secs):
+                if b > a:
+                    out.append((f"{fid}#{n}", spec, np.asarray(xy)[a:b + 1], np.asarray(z)[a:b + 1], lon))
+        return out
 
     def open_parts(self, cells_feats, box):
-        """[(fid, spec, xy, z, lon)] of the open underpasses near box: roads straight between their ends, the
-        ground graded to them (grading.Grader's open tunnel plans; _tunnel_chunks)."""
-        self.parts(cells_feats, box)                # (resolves the chains: fills self.open)
-        out = []
+        """[(fid, spec, xy, z, lon)] of the open sections near box: roads at the floor (the ground graded to it,
+        grading.Grader._open_tunnels; _tunnel_chunks)."""
+        whole = super().parts(cells_feats, box)
         with self.lock:
-            for (fid, j), (spec, xy, z, lon) in self.done.items():
-                if fid in self.open:
-                    out.append((fid, spec, xy, z, lon))
-        x0, y0, x1, y1 = box
-        return [p for p in out if not (p[2][:, 0].max() < x0 - NEAR_M or p[2][:, 0].min() > x1 + NEAR_M
-                                       or p[2][:, 1].max() < y0 - NEAR_M or p[2][:, 1].min() > y1 + NEAR_M)]
+            opened = set(self.open)
+        return [p for p in self._split(whole) if p[0] in opened]
 
     def parts(self, cells_feats, box):
-        out = super().parts(cells_feats, box)
-        if self.open:
-            with self.lock:
-                out = [p for p in out if p[0] not in self.open]
+        out = self._split(super().parts(cells_feats, box))
+        with self.lock:
+            opened = set(self.open)
+        out = [p for p in out if p[0] not in opened]
         if self.wet is None or not out:
             return out
         keep = []
@@ -1655,7 +1725,7 @@ LOW_HOLE_STEP = 2.5         # ... the cut a terrain grid step further (the squar
 TUNNEL_HOLE_MARGIN = 0.5    # m around the tube a portal's terrain hole reaches (above, below and sideways)
 
 
-def tunnel_hole_mask(parts, u, cx, cy, square, heights=None):
+def tunnel_hole_mask(parts, u, cx, cy, square, heights=None, mouths=None):
     """Where the terrain block (heights u [iy, ix]: sample (ix, iy) at (cx - half + ix * square, cy - half +
     iy * square), half = n * square / 2) must be a hole for the tunnels `parts` ([(fid, spec, xy, z, lon)]: a
     TunnelProfiles' parts): the samples over a tube's footprint whose ground lies between its floor and its
@@ -1701,7 +1771,8 @@ def tunnel_hole_mask(parts, u, cx, cy, square, heights=None):
                 # lay within the band all along: cut, the tube was seen into from above); wider than arch_raise's soil
                 # (a raised square beside its wall stood in the tube near the mouth, 2026-10-17)
                 s_ = sj[j] + t * (sj[j + 1] - sj[j])
-                ends = (s_ <= LOW_HOLE_M + LOW_HOLE_STEP) | (s_ >= sj[-1] - LOW_HOLE_M - LOW_HOLE_STEP)
+                m0, m1 = (mouths or {}).get(_fid, (True, True))     # (not where it meets a full tunnel in the hill)
+                ends = ((s_ <= LOW_HOLE_M + LOW_HOLE_STEP) & m0) | ((s_ >= sj[-1] - LOW_HOLE_M - LOW_HOLE_STEP) & m1)
                 hit = inside & (d <= hw + ARCH_SIDE_M + 1.0) & ends     # (inside the portal face: LOW_PORTAL_SIDE)
             mask[iy0:iy1 + 1, ix0:ix1 + 1] |= hit
     return mask
@@ -1711,7 +1782,7 @@ ARCH_SIDE_M = 1.0           # m beside a low arch's tube its soil is raised too
 ARCH_SOIL_MIN = 0.6         # m of ground kept over a low arch's vault (arch_raise)
 
 
-def arch_raise(parts, heights, px, py, z):
+def arch_raise(parts, heights, px, py, z, mouths=None):
     """z (ground heights at the anchor-frame points px, py) raised over the low arches among parts (TunnelProfiles
     parts; heights: their tubes, TunnelProfiles.heights) to ARCH_SOIL_MIN over the vault, beside it too, but for
     their mouths (LOW_HOLE_M, cut there by tunnel_hole_mask): the ground dipping into a low tube near its mouths
@@ -1744,7 +1815,8 @@ def arch_raise(parts, heights, px, py, z):
             s_ = sj[j] + np.clip(t, 0, 1) * (sj[j + 1] - sj[j])
             inside = (t >= 0) & (t <= 1) & (d <= hw)
             floor = zf[j] + np.clip(t, 0, 1) * (zf[j + 1] - zf[j])
-            mouth = inside & ((s_ <= LOW_HOLE_M) | (s_ >= sj[-1] - LOW_HOLE_M))
+            m0, m1 = (mouths or {}).get(fid, (True, True))
+            mouth = inside & (((s_ <= LOW_HOLE_M) & m0) | ((s_ >= sj[-1] - LOW_HOLE_M) & m1))
             on = inside & ~mouth
             if on.any():            # over the vault: soil at least ARCH_SOIL_MIN over it
                 z[k[on]] = np.maximum(z[k[on]], floor[on] + th + ARCH_SOIL_MIN)
@@ -1771,7 +1843,7 @@ def block_arch_raise(tunnels, cell_fn, frame, la, lo, z, box):
             return z
         e, n, _ = frame.geodetic_to_enu(np.asarray(la, np.float64).ravel(), np.asarray(lo, np.float64).ravel(), 0.0)
         return arch_raise(parts, tunnels.heights, np.asarray(e), np.asarray(n),
-                          np.asarray(z, np.float64).ravel()).reshape(np.shape(z))
+                          np.asarray(z, np.float64).ravel(), getattr(tunnels, "mouths", None)).reshape(np.shape(z))
     except Exception as ex:         # no raise rather than no block
         log.debug("arch raise: %s: %s", type(ex).__name__, ex)
         return z
@@ -1797,7 +1869,8 @@ def block_tunnel_holes(tunnels, cell_fn, frame, keep, cx, cy, square):
         return None
     if not parts:
         return None
-    return tunnel_hole_mask(parts, u, cx, cy, square, getattr(tunnels, "heights", None))
+    return tunnel_hole_mask(parts, u, cx, cy, square, getattr(tunnels, "heights", None),
+                            getattr(tunnels, "mouths", None))
 
 
 WALL_STEP = 2.0         # m between a retaining wall's points
@@ -1944,8 +2017,10 @@ def _tunnel_chunks(tunnels, cells, exact):
                                 u0, u1 = tunnels.portal_ups(fid)
                                 at = lambda p: u0 if np.hypot(*(p - ends[0])) < 0.5 else u1    # noqa: E731
                                 ch["portal_up"] = [at(c[0, :2]), at(c[-1, :2])]
-                            ch["portal"] = [bool(np.hypot(*(c[0, :2] - ends[0])) < 0.5 or np.hypot(*(c[0, :2] - ends[1])) < 0.5),
-                                            bool(np.hypot(*(c[-1, :2] - ends[0])) < 0.5 or np.hypot(*(c[-1, :2] - ends[1])) < 0.5)]
+                            m0, m1 = tunnels.mouth(fid) if getattr(tunnels, "mouth", None) is not None else (True, True)
+                            isp = lambda p: bool((np.hypot(*(p - ends[0])) < 0.5 and m0) or      # noqa: E731
+                                                 (np.hypot(*(p - ends[1])) < 0.5 and m1))
+                            ch["portal"] = [isp(c[0, :2]), isp(c[-1, :2])]
                         out.append(ch)
     return out
 

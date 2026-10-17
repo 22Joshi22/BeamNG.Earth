@@ -202,7 +202,7 @@ def build(aid, lat, lon, hm_zoom, q, cx, cy, size, out_dir, name, ter_name=None)
         t1 = time.perf_counter()
         if road_feats:
             idx = surfacemod.paint_roads(idx, keep["lat"], keep["lon"], road_feats, heightmap.SQUARE,
-                                         _s.surface.urban, _s.widths)
+                                         _s.surface.urban, _s.widths, _open_tunnels(g, keep))
         idx = (surfacemod.paint_lots(idx, keep["lat"], keep["lon"], _s.surface.lots(keep["lat"], keep["lon"]))
             if hasattr(_s.surface, "lots") else idx)
         stages["roadPaint"] = time.perf_counter() - t1
@@ -280,6 +280,17 @@ def roads_tile(aid, lat, lon, zoom, tx, ty, out_dir, vfs_dir, sidewalks, lift, b
                                      items)
     return roadsmod.write_tile(out_dir, vfs_dir, aid, tx, ty, chunks, walks if sidewalks else None, mesh, dmesh,
                                bld, props, wires, park, tunnel_mesh=tmesh)
+
+
+def _open_tunnels(g, keep):
+    """The tunnels' open sections over a block (grading.Grader.open_tunnels; none without a grader)."""
+    if g is None:
+        return []
+    try:
+        return g.open_tunnels(keep["lat"], keep["lon"])
+    except Exception:
+        log.exception("open tunnel sections")
+        return []
 
 
 def _tunnel_holes(aid, frame, elev, keep, cx, cy, idx, info, raw=None):

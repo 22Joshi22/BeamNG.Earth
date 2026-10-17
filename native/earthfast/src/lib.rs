@@ -872,6 +872,67 @@ fn grade_points<'py>(py: Python<'py>, px: PyReadonlyArray1<'py, f64>, pyy: PyRea
     out.into_pyarray(py)
 }
 
+/// roads.tunnel_sections: a tunnel's road level and its sections from the ground over it, sampled at arc lengths s.
+/// The floor: the lower convex hull of (s, g) (the road's level under the covered parts, the ground where it lies
+/// open). Each run of samples with cover (g - floor) of at least open_cover is one section: kind 2 (a full tunnel)
+/// when its cover reaches full_cover, else 1 (a low arch); the rest 0 (open road). Covered runs of fewer than min_n
+/// samples are open, open gaps of fewer than min_n between covered runs covered (the deeper kind). (floor, kinds)
+#[pyfunction]
+fn tunnel_sections<'py>(py: Python<'py>, s: PyReadonlyArray1<'py, f64>, g: PyReadonlyArray1<'py, f64>,
+                        open_cover: f64, full_cover: f64, min_n: usize)
+                        -> (Bound<'py, PyArray1<f64>>, Bound<'py, PyArray1<i64>>) {
+    let (s, g) = (s.as_array(), g.as_array());
+    let n = s.len();
+    let mut floor = vec![0.0f64; n];
+    let mut kinds = vec![0i64; n];
+    if n == 0 {
+        return (floor.into_pyarray(py), kinds.into_pyarray(py));
+    }
+    // the lower hull (monotone chain over s ascending)
+    let mut hull: Vec<usize> = Vec::new();
+    for i in 0..n {
+        while hull.len() >= 2 {
+            let (a, b) = (hull[hull.len() - 2], hull[hull.len() - 1]);
+            let cross = (s[b] - s[a]) * (g[i] - g[a]) - (g[b] - g[a]) * (s[i] - s[a]);
+            if cross <= 0.0 { hull.pop(); } else { break; }
+        }
+        hull.push(i);
+    }
+    let mut k = 0usize;
+    for i in 0..n {
+        while k + 1 < hull.len() - 1 && s[hull[k + 1]] <= s[i] { k += 1; }
+        let (a, b) = (hull[k], hull[(k + 1).min(hull.len() - 1)]);
+        floor[i] = if b == a || s[b] <= s[a] { g[a] } else { g[a] + (g[b] - g[a]) * (s[i] - s[a]) / (s[b] - s[a]) };
+    }
+    // covered runs and their kinds
+    let covered: Vec<bool> = (0..n).map(|i| g[i] - floor[i] >= open_cover).collect();
+    let mut runs: Vec<(usize, usize, i64)> = Vec::new();
+    let mut i = 0usize;
+    while i < n {
+        if !covered[i] { i += 1; continue; }
+        let mut j = i;
+        while j + 1 < n && covered[j + 1] { j += 1; }
+        let deep = (i..=j).any(|q| g[q] - floor[q] >= full_cover);
+        if j + 1 - i >= min_n { runs.push((i, j, if deep { 2 } else { 1 })); }
+        i = j + 1;
+    }
+    let mut merged: Vec<(usize, usize, i64)> = Vec::new();
+    for r in runs {
+        if let Some(last) = merged.last_mut() {
+            if r.0 - last.1 - 1 < min_n {
+                last.1 = r.1;
+                last.2 = last.2.max(r.2);
+                continue;
+            }
+        }
+        merged.push(r);
+    }
+    for (a, b, kind) in merged {
+        for q in a..=b { kinds[q] = kind; }
+    }
+    (floor.into_pyarray(py), kinds.into_pyarray(py))
+}
+
 /// grading.resample: points every step m along xy (k, 2), the last point kept, and their arc lengths.
 #[pyfunction]
 fn resample<'py>(py: Python<'py>, xy: PyReadonlyArray2<'py, f64>, step: f64)
@@ -2295,6 +2356,7 @@ fn earthfast(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(measure_row, m)?)?;
     m.add_function(wrap_pyfunction!(grade_points, m)?)?;
     m.add_function(wrap_pyfunction!(resample, m)?)?;
+    m.add_function(wrap_pyfunction!(tunnel_sections, m)?)?;
     m.add_function(wrap_pyfunction!(smooth_profile, m)?)?;
     m.add_function(wrap_pyfunction!(seg_dist_min, m)?)?;
     m.add_function(wrap_pyfunction!(contains_points, m)?)?;
@@ -2318,6 +2380,6 @@ fn earthfast(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(horizon_steps, m)?)?;
     m.add_function(wrap_pyfunction!(points_near_segments, m)?)?;
     m.add_function(wrap_pyfunction!(veg_rows_json, m)?)?;
-    m.add("VERSION", 27)?;
+    m.add("VERSION", 28)?;
     Ok(())
 }

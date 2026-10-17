@@ -554,6 +554,17 @@ class PaintRoadsTest(unittest.TestCase):
         self.assertEqual(sf.MATERIALS[sf.COBBLE][1], "COBBLESTONE")
         self.assertEqual(sf.DIRT, len(sf.MATERIALS) - 1, "dirt still last")
 
+    def test_a_tunnels_open_section_painted(self):
+        # a 'tunnel' in the map lying open (grading.Grader.open_tunnels): road, not grass (Central Park, 2026-10-17)
+        lat, lon = self.grid()
+        f = features([[(-200, 0), (200, 0)]], ["residential"], flags=[(0, "is_tunnel")])
+        idx = np.full(lat.shape, sf.GRASS, np.uint8)
+        self.assertEqual(int(sf.paint_roads(idx, lat, lon, [f], 2.0)[64, 10]), sf.GRASS, "a tunnel: not painted")
+        la = np.array([LAT, LAT])
+        lo = LON + np.array([-200.0, 200.0]) / M_LON
+        out = sf.paint_roads(idx, lat, lon, [f], 2.0, extra=[(la, lo, roads.Spec(7.0, "paved", False, "residential"))])
+        self.assertEqual(int(out[64, 10]), sf.ASPHALT)
+
 
 if __name__ == "__main__":
     unittest.main()

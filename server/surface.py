@@ -187,16 +187,32 @@ def grid_affine(lat, lon):
     return f
 
 
-def paint_roads(idx, lat, lon, feats_list, square, urban_fn=None, widths=None):
+def paint_roads(idx, lat, lon, feats_list, square, urban_fn=None, widths=None, extra=()):
     """idx (material per sample, [row, col], as classify gives it) with the roads of feats_list (the
     "roads" Features of the cells around) drawn in at their width: ROAD_MATERIAL by surface kind.
     lat / lon: the samples' positions; square: m between samples; urban_fn: as roads.road_specs (the
-    same widths as the drawn roads). Pure (a new array)."""
+    same widths as the drawn roads); extra: [(lat (k,), lon (k,), roads.Spec)] more roads (a tunnel's open
+    sections, grading.Grader.open_tunnels). Pure (a new array)."""
     h, w = idx.shape
     to_px = grid_affine(lat, lon)
     layers = {k: Image.new("L", (w, h), 0) for k in ROAD_ORDER}
     draws = {k: ImageDraw.Draw(im) for k, im in layers.items()}
     seen = set()
+
+    def line(x, y, spec, aisle):
+        width, kind = spec.width, spec.kind
+        if aisle:
+            width += 2 * AISLE_STALLS_M         # the stalls either side (parking.aisle_spots): no grass under cars
+        if roadsmod.has_sidewalks(spec):
+            width += 2 * (spec.walk + square)   # the sidewalks (+ a sample: tufts at the outer edge): grass grew up
+                                                # through them (ground cover is the terrain's: Lauterbrunnen, Baltimore
+                                                # 2026-10-15)
+        px = max(1, int(round(width / square)))
+        c, r = to_px(x, y)
+        if c.max() < -px or c.min() > w + px or r.max() < -px or r.min() > h + px:
+            return
+        draws[kind].line(list(zip(c.tolist(), r.tolist())), fill=255, width=px, joint="curve")
+
     for feats in feats_list:
         if feats is None or len(feats) == 0:
             continue
@@ -206,19 +222,12 @@ def paint_roads(idx, lat, lon, feats_list, square, urban_fn=None, widths=None):
             if specs[i] is None or fid in seen:
                 continue
             seen.add(fid)
-            width, kind = specs[i].width, specs[i].kind
-            if kind == "paved" and roadsmod._rule_value(feats.rules.get("subclass"), i) == "parking_aisle":
-                width += 2 * AISLE_STALLS_M         # the stalls either side (parking.aisle_spots): no grass under cars
-            if roadsmod.has_sidewalks(specs[i]):
-                width += 2 * (specs[i].walk + square)   # the sidewalks (+ a sample: tufts at the outer edge): grass
-                                                    # grew up through them (ground cover is the terrain's: Lauterbrunnen,
-                                                    # Baltimore 2026-10-15)
-            px = max(1, int(round(width / square)))
+            aisle = specs[i].kind == "paved" and \
+                roadsmod._rule_value(feats.rules.get("subclass"), i) == "parking_aisle"
             for ring in roadsmod.ground_parts(feats, i):      # not bridges / tunnels
-                c, r = to_px(ring[:, 0], ring[:, 1])
-                if c.max() < -px or c.min() > w + px or r.max() < -px or r.min() > h + px:
-                    continue
-                draws[kind].line(list(zip(c.tolist(), r.tolist())), fill=255, width=px, joint="curve")
+                line(ring[:, 0], ring[:, 1], specs[i], aisle)
+    for la, lo, spec in extra:
+        line(np.asarray(lo), np.asarray(la), spec, False)
     out = idx.copy()
     for k in ROAD_ORDER:
         m = np.asarray(layers[k]) > 0

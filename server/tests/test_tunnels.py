@@ -100,10 +100,6 @@ class Mesh(unittest.TestCase):
         self.assertIsNone(roadmesh.tunnel([ch], (0.0, 0.0, 0.0)))
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class OpenUnderpass(unittest.TestCase):
     def chunks(self, elev):
         from test_roads import features, FRAME, M_LAT
@@ -168,3 +164,86 @@ class ArchRaise(unittest.TestCase):
         self.assertEqual(out[3], 12.0, "away from it as it was")
         self.assertEqual(out[4], 12.0, "past its portal as it was")
         self.assertTrue(np.array_equal(roads.arch_raise([part], {}, px, py, z), z), "a full tunnel: nothing")
+
+
+class Sections(unittest.TestCase):
+    """A long 'tunnel' cut by its cover (Central Park's 79th Street Transverse, 683 m in the map: a sunken road with
+    arches and a short rock tunnel, drawn as one concrete tube, 2026-10-17)."""
+
+    def ground(self):
+        s = np.arange(0.0, 400.0 + 1e-9, 4.0)
+        g = np.full(len(s), 10.0)
+        g[(s > 60) & (s < 100)] = 15.5           # a park bridge: a low arch
+        g[(s > 200) & (s < 300)] = 25.0          # a hill: a full tunnel
+        return s, g
+
+    def test_kinds(self):
+        s, g = self.ground()
+        floor, k = roads.tunnel_sections(s, g)
+        self.assertTrue(np.allclose(floor, 10.0))
+        self.assertTrue((k[(s > 64) & (s < 96)] == 1).all())
+        self.assertTrue((k[(s > 204) & (s < 296)] == 2).all())
+        self.assertTrue((k[(s < 56) | ((s > 104) & (s < 196)) | (s > 304)] == 0).all())
+
+    def test_short_gaps_merge(self):
+        s, g = self.ground()
+        g[(s > 240) & (s < 246)] = 11.0          # a dip under a full tunnel's cover: one tunnel still
+        _f, k = roads.tunnel_sections(s, g)
+        self.assertTrue((k[(s > 204) & (s < 296)] == 2).all())
+
+    def test_rust_and_python_agree(self):
+        import fast
+        if not (fast.AVAILABLE and getattr(fast._ef, "VERSION", 0) >= 28):
+            self.skipTest("no kernel")
+        rng = np.random.default_rng(3)
+        for _ in range(20):
+            s = np.cumsum(rng.uniform(2.0, 5.0, 120))
+            g = np.cumsum(rng.normal(0, 1.5, 120))
+            f1, k1 = roads.tunnel_sections(s, g)
+            ef, fast._ef = fast._ef, None
+            try:
+                avail, fast.AVAILABLE = fast.AVAILABLE, False
+                f2, k2 = roads.tunnel_sections(s, g)
+            finally:
+                fast._ef, fast.AVAILABLE = ef, avail
+            self.assertTrue(np.allclose(f1, f2))
+            self.assertTrue(np.array_equal(k1, k2))
+
+    def test_one_line_three_parts(self):
+        from test_roads import features, FRAME, LON, M_LON
+        f = features([[(-200, 0), (200, 0)]], ["residential"], flags=[(0, "is_tunnel")])
+        s0, g0 = self.ground()
+
+        def elev(la, lo):
+            e = (np.asarray(lo) - LON) * M_LON + 200.0
+            return np.interp(e, s0, g0)
+        tp = roads.TunnelProfiles(FRAME, lambda key: f, elev)
+        box = (-256.0, -256.0, 256.0, 256.0)
+        ch = roads._tunnel_chunks(tp, [f], box)
+        tube = [c for c in ch if c.get("tunnel")]
+        hs = sorted({round(c["tunnel_h"], 2) for c in tube})
+        self.assertEqual(len(hs), 2, "a low arch and a full tube")
+        self.assertAlmostEqual(hs[0], 5.5 - roads.TUNNEL_SOIL_M, delta=0.3)
+        self.assertEqual(hs[1], roadmesh.TUNNEL_H)
+        self.assertTrue(any(c["m"] == roads.LOOK["paved"]["m"] for c in ch), "open road between them")
+        parts = tp.parts([f], box)
+        self.assertEqual(len(parts), 2)
+        self.assertTrue(all(tp.mouth(p[0]) == (True, True) for p in parts))
+
+    def test_no_hole_where_an_arch_meets_a_tunnel(self):
+        # a low arch running straight on into a full tunnel: no mouth inside the hill
+        xy = np.array([[0.0, 0.0], [30.0, 0.0]])
+        part = ("a", Spec(7.0, "paved", False, "residential"), xy, np.array([10.0, 10.0]), 0.0)
+        sq, n = 1.0, 64
+        u = np.full((n, n), 15.0)
+        u[:, :] = 10.0 + 0.0 * u                 # ground at the floor: a mouth would be cut
+        m_both = roads.tunnel_hole_mask([part], u, 15.0, 0.0, sq, {"a": 4.0})
+        m_one = roads.tunnel_hole_mask([part], u, 15.0, 0.0, sq, {"a": 4.0}, {"a": (True, False)})
+        xs = 15.0 - n * sq / 2 + np.arange(n) * sq
+        self.assertTrue(m_both[:, xs > 28].any())
+        self.assertFalse(m_one[:, xs > 28].any())
+        self.assertTrue(m_one[:, xs < 2].any())
+
+
+if __name__ == "__main__":
+    unittest.main()
