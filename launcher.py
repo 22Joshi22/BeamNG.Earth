@@ -47,6 +47,34 @@ GAME_START_S = 180          # waiting for the game's process after asking Steam
 DIRECT_FAIL_S = 20          # a direct start that ends this soon did not work (no Steam client): through Steam
 
 
+# the system's CA bundle on the common distributions (Debian/Ubuntu/Arch, Fedora/RHEL, openSUSE, Alpine)
+CA_BUNDLES = ("/etc/ssl/certs/ca-certificates.crt", "/etc/pki/tls/certs/ca-bundle.crt",
+              "/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem", "/etc/ssl/ca-bundle.pem", "/etc/ssl/cert.pem")
+
+
+def ensure_ca_certs():
+    """Linux, the packaged app: its OpenSSL (built on Ubuntu) looks for the CA certificates in /usr/lib/ssl, which
+    only Debian / Ubuntu have; elsewhere (Fedora, Arch...) every HTTPS request failed ("tiles.mapterhorn.com
+    unavailable (circuit open)", a player's report on Fedora 44, 2026-10-17). SSL_CERT_FILE (the server inherits
+    it) points at the system's bundle, else at certifi's copy in the app."""
+    if IS_WIN or os.environ.get("SSL_CERT_FILE"):
+        return
+    import ssl
+    paths = ssl.get_default_verify_paths()
+    if (paths.cafile and os.path.isfile(paths.cafile)) or \
+            (paths.capath and os.path.isdir(paths.capath) and os.listdir(paths.capath)):
+        return
+    for f in CA_BUNDLES:
+        if os.path.isfile(f):
+            os.environ["SSL_CERT_FILE"] = f
+            return
+    try:
+        import certifi
+        os.environ["SSL_CERT_FILE"] = certifi.where()
+    except ImportError:
+        pass
+
+
 def say(msg=""):
     try:
         print(f"[BeamNG.Earth] {msg}" if msg else "", flush=True)
@@ -567,6 +595,7 @@ def user_folder():
 
 
 def main():
+    ensure_ca_certs()
     if len(sys.argv) > 1 and sys.argv[1] == "--server":
         run_server(sys.argv[2:])
         return
