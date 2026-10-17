@@ -843,9 +843,14 @@ class Server:
         if anchor is None or self.veg is None:
             return None
         zoom = anchor.zooms[0]
-        rows = vegetationmod.tile_items(anchor.frame, tx, ty, self.veg, lambda k: True,
-                                        lambda la, lo: self.ground(anchor.frame, la, lo, self.dem.sample(la, lo, zoom)),
-                                        self.sea, as_json=True)
+        g = self.grader_for(anchor)
+
+        def elev(la, lo):
+            z = self.ground(anchor.frame, la, lo, self.dem.sample(la, lo, zoom))
+            # graded under the roads as the block is: a rock beside a track cut into a slope floated 1.9 m over the cut
+            # (Stelvio pass, the user's report 2026-10-17)
+            return g.apply(la, lo, z, gradingmod.ROAD_LIFT) if g is not None else z
+        rows = vegetationmod.tile_items(anchor.frame, tx, ty, self.veg, lambda k: True, elev, self.sea, as_json=True)
         if rows is None:
             return None
         return vegetationmod.write_tile(self.out_dir, self.vfs_dir, aid, tx, ty, rows)
