@@ -6,6 +6,7 @@ engine converts and caches it as .cdae next to the source.
 import os
 
 import numpy as np
+import staging
 
 
 def _floats(a):
@@ -70,9 +71,10 @@ def write_grid_dae(path, positions, uvs, tris, material="bngEarthDae", texture=N
 <scene><instance_visual_scene url="#scene"/></scene>
 </COLLADA>
 '''
-    with open(path + ".tmp", "w") as f:
+    tmp = staging.tmp_for(path)
+    with open(tmp, "w") as f:
         f.write(xml)
-    os.replace(path + ".tmp", path)
+    os.replace(tmp, path)
 
 
 def grid(n_cells, spacing, zfun=lambda x, y: 0.0, uv_repeat=8.0):

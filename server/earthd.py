@@ -109,6 +109,7 @@ import rockface as rockfacemod  # noqa: E402
 import riverlines as riverlinesmod  # noqa: E402
 import groundahead as groundaheadmod  # noqa: E402
 import heightmap  # noqa: E402
+import staging  # noqa: E402
 import imagery as imagerymod  # noqa: E402
 import matslots as matslotsmod  # noqa: E402
 import maptiles as maptilesmod  # noqa: E402
@@ -1293,8 +1294,9 @@ class Server:
         if photo is not None:
             photo.append(rgb)
         t1 = time.perf_counter()
-        Image.fromarray(rgb, "RGB").save(path + ".tmp", format="PNG", compress_level=1)
-        os.replace(path + ".tmp", path)
+        tmp = staging.tmp_for(path)
+        Image.fromarray(rgb, "RGB").save(tmp, format="PNG", compress_level=1)
+        os.replace(tmp, path)
         t2 = time.perf_counter()
         try:            # after the photo: the cache entry must be the newer file
             args = (self.user_dir, f"{self.vfs_dir}/{name}", BASE_AO_VFS, rgb, BASE_AO)
@@ -1755,9 +1757,10 @@ class Server:
             if new != info.material:
                 data = matslotsmod.restamp(data, info.material, new)
             dst = os.path.join(self.out_dir, name)
-            with open(dst + ".tmp", "wb") as fh:
+            tmp = staging.tmp_for(dst)
+            with open(tmp, "wb") as fh:
                 fh.write(data)
-            os.replace(dst + ".tmp", dst)
+            os.replace(tmp, dst)
         except (OSError, ValueError) as e:
             log.warning("tile %s of anchor %d: material name not renewed (%s)", ck[1], ck[0], e)
             return info

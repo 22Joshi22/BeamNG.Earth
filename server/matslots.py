@@ -26,6 +26,7 @@ spare or a doomed object before loading it again (farfield.lua freeSlot).
 import os
 import shutil
 import threading
+import staging
 
 PREFIX = "bngEarthFar"
 DIGITS = 5
@@ -136,7 +137,7 @@ def restamp(data, old, new):
 def place(src, dst):
     """dst becomes a file with src's content, atomically (a hard link; a copy where links fail): a game loading
     dst sees either the old file or the new one, never a partial one."""
-    tmp = dst + ".tmp"
+    tmp = staging.tmp_for(dst)
     try:
         os.remove(tmp)
     except FileNotFoundError:

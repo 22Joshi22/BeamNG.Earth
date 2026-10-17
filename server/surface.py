@@ -30,6 +30,7 @@ import heightmap
 import mapcells
 import mapdata as mapdatamod
 import roads as roadsmod
+import staging
 
 log = logging.getLogger("earthd.surface")
 
@@ -292,7 +293,7 @@ def write_masks(idx, out_dir, stem):
     names = mask_names(stem)
     for i, name in enumerate(names):
         path = os.path.join(out_dir, name)
-        tmp = path + ".tmp"
+        tmp = staging.tmp_for(path)
         Image.fromarray(np.where(idx == i, 255, 0).astype(np.uint8), "L").save(tmp, format="PNG", compress_level=1)
         os.replace(tmp, path)
     return names
@@ -328,15 +329,16 @@ def photo_lawns(out_dir, ter_name, mask_names_, rgb):
     lay = lay.copy()
     lay[bare] = DIRT
     data[off:off + n * n] = lay.tobytes()
-    with open(path + ".tmp", "wb") as f:
+    tmp = staging.tmp_for(path)
+    with open(tmp, "wb") as f:
         f.write(data)
-    os.replace(path + ".tmp", path)
+    os.replace(tmp, path)
     north = lay[::-1]
     for i in (LAWN, DIRT):
         p = os.path.join(out_dir, mask_names_[i])
-        Image.fromarray(np.where(north == i, 255, 0).astype(np.uint8), "L").save(p + ".tmp", format="PNG",
-                                                                                  compress_level=1)
-        os.replace(p + ".tmp", p)
+        tmp = staging.tmp_for(p)
+        Image.fromarray(np.where(north == i, 255, 0).astype(np.uint8), "L").save(tmp, format="PNG", compress_level=1)
+        os.replace(tmp, p)
     return k
 
 
