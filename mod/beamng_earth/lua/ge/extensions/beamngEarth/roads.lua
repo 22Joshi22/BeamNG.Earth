@@ -447,8 +447,8 @@ end
 -- (ghostsCovered). Before (2026-10-17, forced rebase at Fells Point) every building, road mesh and sidewalk went at
 -- once and came back over ~26 s as the server re-sent the tiles. DecalRoads (no rotation) and anything still queued go
 -- now: their positions are the old frame's. A ghost's colliders are not made again (updateCollideRange).
-M.GHOST_MAX_S = 60          -- ghosts left after this long go anyway
-M.GHOST_QUIET_S = 6         -- ... or once no new tile arrived for this long (places with no tile over a ghost)
+M.GHOST_MAX_S = 120         -- ghosts left after this long go anyway
+M.GHOST_FAR_M = 960         -- ... and once farther from the player than this (the server's roads DROP_M)
 local ghostSince = nil      -- stopwatch since the last rebase that left ghosts
 
 local WHATS = { 'walk', 'road', 'deck', 'bld', 'bld2', 'bld3', 'bld4', 'bldcol', 'walkcol', 'wire', 'tunnel' }
@@ -522,12 +522,15 @@ local function releaseGhosts()
   if not ghostSince then return end
   local busyKeys = {}
   for _, q in ipairs(walkQ) do busyKeys[q.key] = true end
-  local all = ghostSince() > M.GHOST_MAX_S * 1000 or (sinceChange() > M.GHOST_QUIET_S * 1000 and #walkQ == 0)
+  local all = ghostSince() > M.GHOST_MAX_S * 1000
   local left = false
   local done = madeSquares(anchorId, busyKeys)
+  local veh = getPlayerVehicle and getPlayerVehicle(0)
+  local p = veh and veh:getPosition()
   for key, t in pairs(tiles) do
     if t.ghost then
-      if all or (t.cx and covered(done, t.cx, t.cy)) then
+      local far = p and t.cx and math.max(math.abs(p.x - t.cx), math.abs(p.y - t.cy)) - M.TILE_M / 2 > M.GHOST_FAR_M
+      if all or far or (t.cx and covered(done, t.cx, t.cy)) then
         dropTile(key)
         collisionDirty = true
       else left = true end

@@ -692,11 +692,25 @@ class Tracker:
         # skip_m: tiles within this (Chebyshev, as roads.tiles_near) are not built: the far buildings under the road
         # tiles, which carry the full buildings (the mod would hide them at once; ~36 of a teleport's ~196 tiles)
         self.skip_m = skip_m
+        # its own threads (per_pose): in the loop's shared executor the tiles queued behind other trackers' builds
+        # blocked on the road processes, which re-plan every road cell for a new anchor: after a rebase at 90 mph
+        # not one tree tile came for minutes (2026-10-17, salt flats)
+        self.pool = None
+        self.futs = {}
+
+    def close(self):
+        if self.pool is not None:
+            self.pool.shutdown(wait=False, cancel_futures=True)
 
     def on_pose(self, conn, aid, x, y, loop, build):
         import roads as roadsmod
         if aid != self.aid:
-            self.aid, self.sent, self.building = aid, set(), set()
+            for f in self.futs.values():
+                f.cancel()                  # the old anchor's that have not started
+            self.aid, self.sent, self.building, self.futs = aid, set(), set(), {}
+        if self.pool is None:
+            from concurrent.futures import ThreadPoolExecutor
+            self.pool = ThreadPoolExecutor(self.per_pose, thread_name_prefix=f"{self.kind}-tile")
         skip = set(roadsmod.tiles_near(x, y, self.skip_m)) if self.skip_m else ()
         want = [k for k in roadsmod.tiles_near(x, y, self.send_m)
                 if k not in self.sent and k not in self.building and k not in skip]
@@ -706,15 +720,18 @@ class Tracker:
         # (Sinaia 2026-10-15: bare ground for minutes)
         for tx, ty in want[:max(0, self.per_pose - len(self.building))]:
             self.building.add((tx, ty))
-            fut = loop.run_in_executor(None, build, aid, tx, ty)
+            fut = self.futs[(tx, ty)] = loop.run_in_executor(self.pool, build, aid, tx, ty)
             fut.add_done_callback(lambda f, k=(tx, ty), a=aid: self._built(conn, a, k, f))
         for k in [k for k in self.sent if roadsmod.tile_distance(k[0], k[1], x, y) > self.drop_m]:
             self.sent.discard(k)
             conn.send({"type": f"{self.kind}_drop", "anchorId": aid, "key": f"{k[0]}_{k[1]}"})
 
     def _built(self, conn, aid, key, fut):
+        if aid != self.aid:                 # (an old anchor's: the same key may be in flight for the new one)
+            return
         self.building.discard(key)
-        if aid != self.aid:
+        self.futs.pop(key, None)
+        if fut.cancelled():
             return
         try:
             res = fut.result()

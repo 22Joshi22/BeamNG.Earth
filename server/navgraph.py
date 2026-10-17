@@ -379,6 +379,11 @@ class Tracker:
         self.centre = None
         self.building = False
         self.serial = 0
+        self.pool = None        # one thread of its own (vegetation.Tracker: not behind other trackers' builds)
+
+    def close(self):
+        if self.pool is not None:
+            self.pool.shutdown(wait=False, cancel_futures=True)
 
     def on_pose(self, conn, aid, x, y, loop, build):
         """build(aid, x, y, serial) runs in a worker and returns (vfs path, nodes, edges) or None."""
@@ -390,7 +395,10 @@ class Tracker:
         self.building = True
         self.serial += 1
         serial = self.serial
-        fut = loop.run_in_executor(None, build, aid, x, y, serial)
+        if self.pool is None:
+            from concurrent.futures import ThreadPoolExecutor
+            self.pool = ThreadPoolExecutor(1, thread_name_prefix="navgraph")
+        fut = loop.run_in_executor(self.pool, build, aid, x, y, serial)
         fut.add_done_callback(lambda f: self._built(conn, aid, (x, y), serial, f))
 
     def _built(self, conn, aid, centre, serial, fut):
