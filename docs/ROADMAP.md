@@ -7,7 +7,7 @@ requirements: players routinely drive 150-300 mph (67-134 m/s), and some fly pla
 Public beta since 2026-10-16 (posted on r/BeamNG): player reports come first.
 
 The previous, longer roadmap (per-version design notes, measurements, research pointers) is in git
-history (`git show 8f4a759:docs/ROADMAP.md`); docs/ARCHITECTURE.md and docs/V1_*.md hold the designs.
+history (`git log -p -- docs/ROADMAP.md`, the version before 2026-10-17); docs/ARCHITECTURE.md and docs/V1_*.md hold the designs.
 
 ## Principle: improvements must generalise (user, 2026-10-10)
 "An improvement in one part of the world should improve things everywhere." Places like Fells Point,
