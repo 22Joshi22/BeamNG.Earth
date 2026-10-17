@@ -589,7 +589,10 @@ function M.update(gov, currentAnchor, player)
   while #walkQ > 0 and gov:try('roadWalk') do
     local q = table.remove(walkQ, 1)
     local t = tiles[q.key]
-    if t and q.what ~= 'road' and playerIn(t.colliders[q.what]) then
+    -- (only a colliding mesh waits: a render-only one (q.renderOnly: the drawn sidewalks and buildings beside their lean
+    -- collision meshes) cannot catch the car, and holding it hid a whole tile's sidewalks while the car stood in their
+    -- box: a roundabout's island band was never drawn, 2026-10-17 Harbor Point)
+    if t and q.what ~= 'road' and not q.renderOnly and playerIn(t.colliders[q.what]) then
       held[#held + 1] = q           -- the car is on it: made once the car is clear (playerIn)
       t = nil
     end

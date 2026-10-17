@@ -182,6 +182,22 @@ T.check(#statics() == 1, 'made again once clear')
 roads.RELOAD_EVERY_S = 0
 roads.onDrop({ anchorId = 2, key = '0_0' })
 roads.update(gov, 2)
+-- with a lean collision mesh the drawn sidewalk is render-only: made with the car in its box (it cannot catch the car;
+-- held, a roundabout's island band was never drawn, 2026-10-17); the collision mesh still waits
+files['/t/hl.json'] = '{ chunks = { }, walk = { shape = "/t/walks_2_8_8.cdae", pos = { 0, 0, 0 } }, ' ..
+  'walkcol = { shape = "/t/walkcol_2_8_8.cdae", pos = { 0, 0, 0 } }, ' ..
+  'colliders = { walk = { { 100, 100, 0, 120, 110, 1 } }, walkcol = { { 100, 100, 0, 120, 110, 1 } } } }'
+car.pos = vec3(110, 105, 0.5)
+roads.onTile({ anchorId = 2, key = '0_0', path = '/t/hl.json', n = 0 }, 2)
+roads.update(gov, 2)
+local shapes = {}
+for _, o in ipairs(statics()) do shapes[#shapes + 1] = o.fields.shapeName end
+T.check(#statics() == 1 and shapes[1] == '/t/walks_2_8_8.cdae', 'the drawn sidewalk made with the car on it, its collision held')
+car.pos = vec3(200, 105, 0.5)
+roads.update(gov, 2)
+T.check(#statics() == 2, 'the collision mesh once the car is clear')
+roads.onDrop({ anchorId = 2, key = '0_0' })
+roads.update(gov, 2)
 -- colliders only near the car: a far tile's sidewalk waits, made as the car comes near, dropped far behind
 roads.COLLIDE_CHECK_S = 0
 roads.RELOAD_EVERY_S = 0
