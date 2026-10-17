@@ -858,6 +858,7 @@ def _end_dists(lines, end_z):
 TUNNEL_COVER = 8.0      # m from the floor up to the ground over it wanted inside a tunnel (the tube's 6.5 m and rock)
 TUNNEL_GRADE = 0.05     # a tunnel floor falls no steeper than this from a portal
 TUNNEL_STEP = 4.0       # m between tunnel profile points
+TUNNEL_WET_SHARE = 0.25 # a tunnel part with more of its points under water is left out (TunnelProfiles.wet)
 
 
 def tunnel_profile(lines, ground_fn):
@@ -1531,7 +1532,9 @@ class TunnelProfiles(BridgeProfiles):
         for p in out:
             xy = np.asarray(p[2], np.float64)
             la, lo, _ = self.frame.enu_to_geodetic(xy[:, 0], xy[:, 1], 0.0)
-            if not (np.asarray(self.wet(la, lo)) > 0.5).any():
+            # under water for a good part of it (a portal on a river bank, Fort Pitt's east end 0.6 m "in" the
+            # Monongahela, is not: that dropped one of its two tubes, 2026-10-17)
+            if (np.asarray(self.wet(la, lo)) > 0.5).mean() <= TUNNEL_WET_SHARE:
                 keep.append(p)
         return keep
 
