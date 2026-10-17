@@ -41,12 +41,16 @@ GCPATCH_NAME = "libbngearth_gcpatch.so"
 # the recommended server options (start.py's)
 RECOMMENDED = ["--deshadow", "full", "--near-visual", "detail", "--airports", "on", "--sea", "on", "--trees", "on",
                "--buildings", "on"]
+SERVER_PORT = 47613         # earthd's default
 GAME_START_S = 180          # waiting for the game's process after asking Steam
 DIRECT_FAIL_S = 20          # a direct start that ends this soon did not work (no Steam client): through Steam
 
 
 def say(msg=""):
-    print(f"[BeamNG.Earth] {msg}" if msg else "", flush=True)
+    try:
+        print(f"[BeamNG.Earth] {msg}" if msg else "", flush=True)
+    except (OSError, ValueError):       # the terminal window already closed
+        pass
 
 
 def data_dir():
@@ -59,8 +63,47 @@ def data_dir():
 
 # --- the server -----------------------------------------------------------------------------------
 
+def watch_parent():
+    """The server's guard: it ends (with its worker processes) when the launcher that started it is gone, e.g. its
+    terminal closed (SIGHUP) or it was killed. A server left behind kept the port, so the next start's server could
+    not listen and the game talked to the old one (the user's AppImage, 2026-10-16)."""
+    try:
+        parent = int(os.environ.get("BNGEARTH_PARENT") or 0)
+    except ValueError:
+        parent = 0
+    if not parent:
+        return
+    import threading
+
+    def gone():
+        if IS_WIN:
+            import ctypes
+            k32 = ctypes.windll.kernel32
+            h = k32.OpenProcess(0x00100000, False, parent)      # SYNCHRONIZE
+            if not h:
+                return True
+            k32.WaitForSingleObject(h, 0xFFFFFFFF)
+            return True
+        while os.getppid() == parent:
+            time.sleep(2)
+        return True
+
+    def run():
+        gone()
+        print("[BeamNG.Earth] the launcher is gone: the world server stops", flush=True)
+        if IS_WIN:
+            subprocess.run(["taskkill", "/T", "/F", "/PID", str(os.getpid())], capture_output=True)
+        else:
+            os.killpg(os.getpgid(0), signal.SIGTERM)
+        time.sleep(10)
+        os._exit(1)
+
+    threading.Thread(target=run, name="watch-parent", daemon=True).start()
+
+
 def run_server(argv):
     """In this process: server/earthd.py with argv (the --server mode of the packaged app)."""
+    watch_parent()
     sys.path.insert(0, os.path.join(ROOT, "server"))
     import earthd
     sys.argv = ["earthd"] + argv
@@ -70,7 +113,9 @@ def run_server(argv):
 def start_server(user_dir, extra, log_path):
     cmd = [sys.executable] + ([] if FROZEN else [os.path.abspath(__file__)])
     cmd += ["--server", "--user-dir", user_dir] + RECOMMENDED + extra
-    kw = {"cwd": ROOT}
+    env = dict(os.environ)
+    env["BNGEARTH_PARENT"] = str(os.getpid())      # the server ends when this launcher does (watch_parent)
+    kw = {"cwd": ROOT, "env": env}
     if IS_WIN:
         kw["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
     else:
@@ -85,6 +130,16 @@ def start_server(user_dir, extra, log_path):
         kw.update(stdout=out, stderr=subprocess.STDOUT)
         say(f"server log: {log_path}")
     return subprocess.Popen(cmd, **kw)
+
+
+def server_port_busy(port=SERVER_PORT):
+    """Something already listens on the world server's port (a server still running from an earlier start)."""
+    import socket
+    try:
+        with socket.create_connection(("127.0.0.1", port), timeout=1):
+            return True
+    except OSError:
+        return False
 
 
 def stop_server(proc):
@@ -494,6 +549,12 @@ def main():
         log = os.path.join(data_dir(), "logs", "launcher.log")     # no terminal at all: a log
         os.makedirs(os.path.dirname(log), exist_ok=True)
         sys.stdout = sys.stderr = open(log, "w", encoding="utf-8")
+    if not IS_WIN:
+        # the terminal window closed (SIGHUP) or a stop request: as Ctrl+C, so the server is stopped first
+        def stop(*_):
+            raise KeyboardInterrupt
+        signal.signal(signal.SIGHUP, stop)
+        signal.signal(signal.SIGTERM, stop)
     try:
         run(args)
     except KeyboardInterrupt:
@@ -529,6 +590,10 @@ def run(args):
             say("the game is already running: the mod is copied now, the game loads it on its next start")
         install.install_mod(user_dir, True, dry_run=False)
     extra = args.extra[1:] if args.extra[:1] == ["--"] else args.extra
+    if "--port" not in extra and server_port_busy():
+        say(f"another BeamNG.Earth world server is still running (port {SERVER_PORT} is taken), maybe from an "
+            "earlier start. Close it (its window, or end 'BeamNG.Earth' in the task manager) and start again.")
+        sys.exit(1)
     server = start_server(user_dir, extra, os.path.join(data_dir(), "logs", "server.log"))
     say("world server started")
     try:
