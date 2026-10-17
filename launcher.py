@@ -29,6 +29,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import threading
 import time
 
 FROZEN = getattr(sys, "frozen", False)
@@ -75,11 +76,38 @@ def ensure_ca_certs():
         pass
 
 
-def say(msg=""):
+def _out(text):
     try:
-        print(f"[BeamNG.Earth] {msg}" if msg else "", flush=True)
+        print(text, flush=True)
     except (OSError, ValueError):       # the terminal window already closed
         pass
+
+
+def say(msg=""):
+    """A line of the launcher's own (indented under the title; the user, 2026-10-17: 'easier to read')."""
+    _out(f"  {msg}" if msg else "")
+
+
+def row(label, value):
+    """A status line: label in a column, then its value."""
+    _out(f"  {label:<14}{value}")
+
+
+def title(text):
+    _out("")
+    _out(f"  {text}")
+    _out("  " + "-" * max(24, len(text)))
+
+
+def problem(msg, hint=None):
+    """Something that stops the start: set apart, with what to do about it."""
+    import textwrap
+    _out("")
+    _out("  Problem: " + "\n           ".join(textwrap.wrap(msg, 78)))
+    if hint:
+        for line in textwrap.wrap(hint, 78):
+            _out(f"           {line}")
+    _out("")
 
 
 def data_dir():
@@ -149,16 +177,52 @@ def start_server(user_dir, extra, log_path):
         kw["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
     else:
         kw["start_new_session"] = True          # its worker processes with it: stopped as one group
-    out = None
-    if IS_WIN and sys.stdout and sys.stdout.isatty():
-        # the console (one we may have opened: our standard handles still pointed elsewhere) to the server too
-        kw.update(stdout=sys.stdout, stderr=sys.stdout)
-    elif not (sys.stdout and sys.stdout.isatty()):  # no terminal (the AppImage from a file manager): a log file
-        os.makedirs(os.path.dirname(log_path), exist_ok=True)
-        out = open(log_path, "w", encoding="utf-8")
-        kw.update(stdout=out, stderr=subprocess.STDOUT)
-        say(f"server log: {log_path}")
-    return subprocess.Popen(cmd, **kw)
+    # its full log to a file; the console shows only its warnings and errors (echo_server_log): the INFO lines
+    # buried the launcher's own (the user, 2026-10-17: 'easier to read')
+    os.makedirs(os.path.dirname(log_path), exist_ok=True)
+    out = open(log_path, "w", encoding="utf-8")
+    kw.update(stdout=out, stderr=subprocess.STDOUT)
+    proc = subprocess.Popen(cmd, **kw)
+    threading.Thread(target=echo_server_log, args=(log_path, proc), daemon=True).start()
+    return proc
+
+
+ECHO_LEVELS = (" WARNING ", " ERROR ", " CRITICAL ")
+
+
+def echo_lines(lines, state):
+    """The lines of the server's log the console shows: warnings, errors and tracebacks (with their lines up to
+    the next log record), and 'Game connected' once. state: a dict kept between calls. Pure but for state."""
+    out = []
+    for line in lines:
+        line = line.rstrip("\n")
+        record = line[:4].isdigit() and line[4:5] == "-"        # '2026-10-17 07:04:50,488 INFO earthd: ...'
+        if record or line.startswith("earthd listening"):
+            state["tb"] = False
+        if line.startswith("Traceback"):
+            state["tb"] = True
+        if "client connected" in line and not state.get("connected"):
+            state["connected"] = True
+            out.append("  Game          connected to the world server")
+        elif state.get("tb") or (record and any(k in line for k in ECHO_LEVELS)):
+            out.append("  server: " + (line[11:] if record else line))
+    return out
+
+
+def echo_server_log(path, proc):
+    state = {}
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            while True:
+                lines = f.readlines()
+                for text in echo_lines(lines, state):
+                    _out(text)
+                if not lines:
+                    if proc.poll() is not None:
+                        return
+                    time.sleep(0.5)
+    except OSError:
+        pass
 
 
 def server_port_busy(port=SERVER_PORT):
@@ -174,7 +238,7 @@ def server_port_busy(port=SERVER_PORT):
 def stop_server(proc):
     if proc is None or proc.poll() is not None:
         return
-    say("stopping the world server")
+    row("World server", "stopping")
     try:
         if IS_WIN:
             subprocess.run(["taskkill", "/T", "/F", "/PID", str(proc.pid)], capture_output=True)
@@ -398,19 +462,19 @@ def start_game(use_gcpatch, build="native", gfx=""):
         # Wine / Proton too (the .exe started with protontricks), where Steam's links do not reach Steam
         d = windows_game_dir()
         if d:
-            say(f"starting BeamNG.drive ({d})")
+            row("Game", f"starting ({d})")
             try:
                 return subprocess.Popen([os.path.join(d, "BeamNG.drive.exe")] + win_args, cwd=d)
             except OSError as e:
                 say(f"could not start it ({e}); asking Steam")
     elif build == "proton":
-        say("starting BeamNG.drive (the Windows build, Proton) through Steam")
+        row("Game", "starting through Steam (the Windows build, Proton)")
         steam_launch(win_args)
         return None
     if not IS_WIN:
         exe = linux_game_exe()
         if exe and sandboxed_game(exe):
-            say("Steam is a Flatpak / snap: starting the game through Steam (without the grass patch)")
+            row("Game", "starting through Steam (a Flatpak / snap Steam: without the grass patch)")
             exe = None
         if exe and steam_running():
             env = clean_env()
@@ -418,7 +482,7 @@ def start_game(use_gcpatch, build="native", gfx=""):
             lib = gcpatch_lib() if use_gcpatch else None
             if lib:
                 env["LD_PRELOAD"] = lib + (":" + env["LD_PRELOAD"] if env.get("LD_PRELOAD") else "")
-            say("starting BeamNG.drive" + (" (with the grass patch, tools/gcpatch)" if lib else ""))
+            row("Game", "starting" + ("  (with the grass patch)" if lib else ""))
             proc = subprocess.Popen([exe], cwd=os.path.dirname(os.path.dirname(exe)), env=env,
                                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
             t0 = time.time()
@@ -430,8 +494,8 @@ def start_game(use_gcpatch, build="native", gfx=""):
                 return proc
             say(f"the direct start ended (code {proc.returncode}); starting the game through Steam instead")
         elif exe:
-            say("Steam is not running: starting the game through Steam (without the grass patch)")
-    say("starting BeamNG.drive through Steam")
+            row("Game", "Steam is not running: starting through Steam (without the grass patch)")
+    row("Game", "starting through Steam")
     steam_launch(win_args if IS_WIN else ())
     return None
 
@@ -685,13 +749,14 @@ def main():
         import traceback
         traceback.print_exc()
         if own_window():
-            pause("BeamNG.Earth stopped with an error (above). Press Enter to close this window.")
+            problem("BeamNG.Earth stopped with an error (above).")
+            pause("Press Enter to close this window.")
         sys.exit(1)
 
 
 def run(args):
     import install
-    say(f"BeamNG.Earth {install.version()}")
+    title(f"BeamNG.Earth {install.version()}")
     wine = under_wine()
     build = "native"
     if args.user_dir:
@@ -701,34 +766,42 @@ def run(args):
         build, user_dir = linux_build(args.build)
     else:
         user_dir = user_folder()
-    say(f"BeamNG.drive user folder: {user_dir}" + (" (the Windows build, Proton)" if build == "proton" else ""))
+    row("Game folder", user_dir + ("  (the Windows build, Proton)" if build == "proton" else ""))
     running = game_alive()
     if not args.keep_mod:
-        if running:
-            say("the game is already running: the mod is copied now, the game loads it on its next start")
-        install.install_mod(user_dir, True, dry_run=False)
+        status = install.install_mod(user_dir, True, dry_run=False, quiet=True)
+        row("Mod", {"current": "up to date", "updated": "updated", "installed": "installed",
+                    "kept": "kept the installed copy"}.get(status, status or "")
+            + ("  (the game is running: it loads the new copy on its next start)"
+               if running and status in ("updated", "installed") else ""))
     extra = args.extra[1:] if args.extra[:1] == ["--"] else args.extra
     if "--port" not in extra and server_port_busy():
-        say(f"another BeamNG.Earth world server is still running (port {SERVER_PORT} is taken), maybe from an "
-            "earlier start. Close it (its window, or end 'BeamNG.Earth' in the task manager) and start again.")
+        problem(f"another BeamNG.Earth world server is already running (port {SERVER_PORT} is in use), maybe "
+                "left over from an earlier start.",
+                "Close its window (or end 'BeamNG.Earth' in the task manager), then start again.")
         sys.exit(1)
-    server = start_server(user_dir, extra, os.path.join(data_dir(), "logs", "server.log"))
-    say("world server started")
+    log_path = os.path.join(data_dir(), "logs", "server.log")
+    server = start_server(user_dir, extra, log_path)
+    row("World server", "running")
+    row("Server log", log_path)
     try:
         if args.no_game:
-            say("Start BeamNG.drive and pick the 'BeamNG.Earth' level in Freeroam. Ctrl+C stops the server.")
+            say()
+            say("Start BeamNG.drive and pick 'BeamNG.Earth' in Freeroam. Ctrl+C stops the server.")
             server.wait()
             return
         if running:
-            say("BeamNG.drive is already running")
+            row("Game", "already running")
             proc = None
         else:
             if wine:
                 say("(under Wine / Proton: on Linux the AppImage runs the server natively, faster)")
             proc = start_game(not args.no_gcpatch, build, args.gfx)
-        say("In the game: Freeroam > 'BeamNG.Earth'. The server stops when the game closes.")
+        say()
+        say("In the game: Freeroam > BeamNG.Earth.  Closing the game stops the server.")
+        say()
         wait_for_game(proc)
-        say("the game closed")
+        row("Game", "closed")
     finally:
         stop_server(server)
 

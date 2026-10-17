@@ -196,7 +196,12 @@ def tree_hash(path):
     return h.hexdigest()
 
 
-def install_mod(user_dir, assume_yes, dry_run):
+def install_mod(user_dir, assume_yes, dry_run, quiet=False):
+    """Copy the mod into the user folder. Returns 'current', 'updated', 'installed', 'kept' or None (dry run);
+    quiet: no messages but the notes (the launcher prints one status line)."""
+    def note(msg):
+        if not quiet:
+            say(msg)
     if not os.path.isdir(MOD_SRC):
         fail(f"the mod folder is missing: {MOD_SRC}\n  Run install.py from the unzipped BeamNG.Earth folder.")
     dest = os.path.join(user_dir, "mods", "unpacked", MOD_NAME)
@@ -205,21 +210,25 @@ def install_mod(user_dir, assume_yes, dry_run):
         say(f"Note: there is also a zipped copy at {packed}; remove it so the game does not load two versions.")
     if os.path.isdir(dest):
         if tree_hash(dest) == tree_hash(MOD_SRC):
-            say(f"Mod: already up to date in {dest}")
-            return
-        if not ask(f"Mod: an older copy is installed in {dest}. Replace it?", assume_yes):
-            say("Mod: kept the installed copy (it may not match this server version).")
-            return
+            note(f"Mod: already up to date in {dest}")
+            return "current"
+        if not (assume_yes and quiet) and not ask(f"Mod: an older copy is installed in {dest}. Replace it?", assume_yes):
+            note("Mod: kept the installed copy (it may not match this server version).")
+            return "kept"
         if dry_run:
             say(f"(dry run) would replace {dest}")
-            return
+            return None
         shutil.rmtree(dest)
+        status = "updated"
     elif dry_run:
         say(f"(dry run) would copy the mod to {dest}")
-        return
+        return None
+    else:
+        status = "installed"
     os.makedirs(os.path.dirname(dest), exist_ok=True)
     shutil.copytree(MOD_SRC, dest, ignore=shutil.ignore_patterns("__pycache__", "*.pyc", ".DS_Store"))
-    say(f"Mod: installed to {dest}")
+    note(f"Mod: installed to {dest}")
+    return status
 
 
 # --- the server's Python environment ------------------------------------------------------------
