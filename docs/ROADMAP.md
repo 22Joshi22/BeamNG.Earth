@@ -90,6 +90,18 @@ whatever order tiles loaded, after any number of rebases, on any machine.
 7. **Huts above the tree line are grey boxes** (Mount Whitney summit shelter): a stone wall look. *Fixed in
    1.4.30: a small isolated hut above the tree line (by latitude) gets stone walls.*
 
+### Reddit feedback (r/BeamNG release thread, read 2026-10-17; in this order)
+8. **Bumpy roads**, worst uphill and at speed (three players): smooth the road profile / the terrain under it.
+9. **Sidewalks lying flat like a plane** instead of following the ground, and **non-colliding geometry over
+   roads**; everything feeling oversized (buildings crowding narrow streets); some roads missing.
+10. **Las Vegas Strip partly flooded** (water where there is none).
+11. **Spawn location**: pick the start place (now Mount Whitney); maybe a start per country.
+12. **The map does not zoom out from the car** when opened, as the stock map does.
+13. **Outdriving the loading over 100 mph** on Chicago highways; choppy in dense woods.
+14. **Quality presets** (Steam Deck, low-end PCs).
+15. **Multiplayer (BeamMP)**: asked by five or more players; big, later.
+Not possible / out of scope: a repo-only version (GeForce Now; the mod needs its server), Windows 7.
+
 ### Performance and loading
 - First-visit far field: fewer requests per place (e.g. Mapterhorn PMTiles range reads) rather than more
   threads (2026-10-17 A/B: threads and DEM prefetch made no difference).
