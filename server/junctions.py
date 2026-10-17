@@ -40,6 +40,9 @@ CW_GAP = 0.5                    # m between a corner's tangent point and its cro
 NODE_TOL = 0.5                  # m: centreline vertices this close are one node
 MERGE_M = 3.0                   # m: junction nodes this close are one junction
 CONNECTOR_M = 0.0              # m: ... and nodes joined by a road shorter than this
+CONNECTOR_WIDTHS = 1.0          # ... or by a connector no longer than this many times the widest road at its two
+                                # nodes: an offset junction lying within the carriageway (Fells Point, 10 m between
+                                # two nodes of 10.6 m streets, 2026-10-17)
 
 
 def _unit(v):
@@ -59,6 +62,27 @@ def _line_x(p, d, q, e):
     w = q - p
     t = (w[0] * e[1] - w[1] * e[0]) / den
     return p + t * d
+
+
+def _piece(P, u1, w1, u2, w2, r):
+    """The curb from a road along u1 (its left side, half width w1) round to one along u2 (its right side,
+    w2), both from P: (points (k, 2), t1, t2, the road edges' meeting point or None): a curb return of radius
+    r, or one point where the two roads run on straight (over CORNER_ANGLES[1] between them)."""
+    n1, n2 = _left(u1), _left(u2)
+    theta = math.degrees((math.atan2(u2[1], u2[0]) - math.atan2(u1[1], u1[0])) % (2 * math.pi))
+    if theta >= CORNER_ANGLES[1]:
+        return (P + n1 * w1)[None], 0.0, 0.0, None
+    Z = _line_x(P + n1 * (w1 + r), u1, P - n2 * (w2 + r), u2)
+    if Z is None:
+        return None
+    T1, T2 = Z - n1 * r, Z + n2 * r
+    a0 = math.atan2(*(T1 - Z)[::-1])
+    a1 = math.atan2(*(T2 - Z)[::-1])
+    da = (a1 - a0 + math.pi) % (2 * math.pi) - math.pi
+    k = max(3, int(abs(da) * r / 0.75) + 1)
+    ang = a0 + da * np.linspace(0.0, 1.0, k)
+    arc = np.c_[Z[0] + r * np.cos(ang), Z[1] + r * np.sin(ang)]
+    return arc, float((T1 - P) @ u1), float((T2 - P) @ u2), _line_x(P + n1 * w1, u1, P - n2 * w2, u2)
 
 
 def _branch_dir(pts, vi, step):
@@ -134,6 +158,79 @@ def _crosses(a, b, line):
     return bool(((d1 * d2 < 0) & (d3 * d4 < 0)).any())
 
 
+def _across(roads, bi, bj, cr, X, walk_w, debug=None):
+    """The corner from branch bi (its left side) to branch bj (its right side), whose nodes the road cr joins:
+    (corner dict as find's, cut on bi, cut on bj) or None (the pieces do not fit, or the corner would lie on a
+    carriageway). No curb extensions here: the curb at the full width."""
+    _, ri, vi, si, ui, _, Pi = bi
+    _, rj, vj, sj, uj, _, Pj = bj
+    spi, spj, spc = roads[ri][1], roads[rj][1], roads[cr][1]
+    d = Pj - Pi
+    Lc = math.hypot(*d)
+    if Lc < 1e-6:
+        return None
+    uc = d / Lc
+    wi, wj, wc = spi.width / 2, spj.width / 2, spc.width / 2
+    r = max(RADII.get(spi.cls, RADIUS), RADII.get(spj.cls, RADIUS), RADII.get(spc.cls, RADIUS))
+    p1 = _piece(Pi, ui, wi, uc, wc, r)
+    p2 = _piece(Pj, -uc, wc, uj, wj, r)
+    if p1 is None or p2 is None:
+        return None
+    (a1, ti, tc1, C1), (a2, tc2, tj, C2) = p1, p2
+    # a branch running on straight from the connector: the other node's curb return may end on it, past its node
+    if len(a1) == 1 and len(a2) > 1 and tc2 > Lc:
+        a1, ti, tc1, C1 = a1[:0], tc2 - Lc, 0.0, None
+        tc2 = Lc
+    elif len(a2) == 1 and len(a1) > 1 and tc1 > Lc:
+        a2, tj, tc2, C2 = a2[:0], tc1 - Lc, 0.0, None
+        tc1 = Lc
+    if ti < 0 or tj < 0 or tc1 < 0 or tc2 < 0 or tc1 + tc2 > Lc + 0.25:
+        if debug is not None:
+            debug.append(('across: no fit', round(ti, 1), round(tc1, 1), round(tc2, 1), round(tj, 1), round(Lc, 1), X.round(1).tolist()))
+        return None
+    if _branch_len(roads[ri][2], vi, si) < ti + 1.0 or _branch_len(roads[rj][2], vj, sj) < tj + 1.0:
+        return None
+    curb2 = np.vstack([a1, a2])
+    keep = np.r_[True, np.hypot(*np.diff(curb2, axis=0).T) > 0.05]
+    curb2 = curb2[keep]
+    if len(curb2) < 2:
+        return None
+    zi, zj = _z_along(roads[ri][2], vi, si, ti), _z_along(roads[rj][2], vj, sj, tj)
+    s = np.r_[0.0, np.cumsum(np.hypot(*np.diff(curb2, axis=0).T))]
+    z = zi + (zj - zi) * s / max(s[-1], 1e-9)
+    curb = np.c_[curb2, z]
+    g = np.gradient(curb2, axis=0)
+    nrm = np.stack([-g[:, 1], g[:, 0]], axis=1)
+    nrm /= np.maximum(np.hypot(*nrm.T), 1e-9)[:, None]
+    flip = ((curb2 - X) * nrm).sum(1) < 0           # toward the sidewalk: away from the junction
+    nrm[flip] = -nrm[flip]
+    wki = spi.walk if walk_w is None else walk_w
+    wkj = spj.walk if walk_w is None else walk_w
+    wkc = max(wki, wkj)
+    ni, nj, nc = _left(ui), _left(uj), _left(uc)
+    Oi = _line_x(Pi + ni * (wi + wki), ui, Pi - nc * (wc + wkc), uc)
+    Oj = _line_x(Pj - nc * (wc + wkc), -uc, Pj - nj * (wj + wkj), uj)
+    Oi = Pi + ni * (wi + wki) if Oi is None or a1.shape[0] == 1 else Oi
+    Oj = Pj - nj * (wj + wkj) if Oj is None or a2.shape[0] == 1 else Oj
+    if math.hypot(*(Oi - X)) > 20.0 + Lc or math.hypot(*(Oj - X)) > 20.0 + Lc:
+        return None                                 # a needle at a very sharp turn
+    zo = 0.5 * (zi + zj)
+    mids = [Oj] if len(a1) == 0 else [Oi] if len(a2) == 0 else [Oj, Oi]
+    outer = [(*(Pj + uj * tj - nj * (wj + wkj)), zj)] + [(*o, zo) for o in mids] + \
+        [(*(Pi + ui * ti + ni * (wi + wki)), zi)]
+    probe = np.vstack([curb2 + nrm * 0.8, curb2 + nrm * 2.0, mids])
+    hit = _on_carriageway(probe, roads, (X, 60.0), half={roads[ri][0]: wi, roads[rj][0]: wj, roads[cr][0]: wc})
+    if hit is not None:
+        if debug is not None:
+            debug.append(('across: on carriageway', hit[:8], X.round(1).tolist()))
+        return None
+    fills = []
+    for C, arc in ((C1, a1), (C2, a2)):
+        if C is not None and len(arc) > 1:
+            fills.append(np.vstack([np.r_[C, zo]] + [np.r_[q, zo] for q in arc]))
+    return {"arc": curb, "inward": nrm, "outer": outer, "fill": None, "fills": fills, "ramps": []}, ti, tj
+
+
 def find(roads, has_walk, walk_w, parking_m=0.0, has_parking=lambda spec: False, debug=None):
     """Corners, cuts and crosswalks of the junctions among `roads` [(fid, spec, pts (k, 3), lon)].
     has_walk(spec) -> bool; walk_w: sidewalk width. Returns
@@ -172,13 +269,20 @@ def find(roads, has_walk, walk_w, parking_m=0.0, has_parking=lambda spec: False,
     for a, inc in enumerate(jn):
         for ri, vi in inc:
             node_of[(ri, vi)] = a
+    node_w = [max(roads[ri][1].width for ri, _ in inc) for inc in jn]
+    reach = {}                                  # road index -> its longest merged connector (m)
+    connector = {}                              # {node a, node b} -> the road joining them (merged)
     for ri, (fid, spec, pts, lon) in enumerate(roads):
         seg = np.hypot(*np.diff(pts[:, :2], axis=0).T)
         s_at = np.r_[0.0, np.cumsum(seg)]
         on = [(vi, node_of[(ri, vi)]) for vi in range(len(pts)) if (ri, vi) in node_of]
         for (v0, a), (v1, b) in zip(on[:-1], on[1:]):
-            if s_at[v1] - s_at[v0] < CONNECTOR_M:
+            L = s_at[v1] - s_at[v0]
+            if L < CONNECTOR_M or L <= CONNECTOR_WIDTHS * max(node_w[a], node_w[b]):
                 parent[root(a)] = root(b)
+                reach[ri] = max(reach.get(ri, 0.0), float(L) + 0.5)
+                if a != b:
+                    connector.setdefault(frozenset((a, b)), ri)
     groups = {}
     for a in range(len(jn)):
         groups.setdefault(root(a), []).append(a)
@@ -197,7 +301,7 @@ def find(roads, has_walk, walk_w, parking_m=0.0, has_parking=lambda spec: False,
         """Whether the road from vertex vi reaches another node of the same junction within 2 MERGE_M."""
         pts = roads[ri][2]
         k, acc = vi, 0.0
-        while 0 <= k + step < len(pts) and acc < max(2 * MERGE_M, CONNECTOR_M):
+        while 0 <= k + step < len(pts) and acc < max(2 * MERGE_M, CONNECTOR_M, reach.get(ri, 0.0)):
             acc += math.hypot(*(pts[k + step, :2] - pts[k, :2]))
             k += step
             if at_cluster.get((ri, k)) == cid:
@@ -214,7 +318,10 @@ def find(roads, has_walk, walk_w, parking_m=0.0, has_parking=lambda spec: False,
             for step in (1, -1):
                 if 0 <= vi + step < len(pts) and not leads_inside(ri, vi, step, cid):
                     u = _branch_dir(pts, vi, step)
-                    branches.append((math.atan2(u[1], u[0]), ri, vi, step, u, step, pts[vi, :2].copy()))
+                    # ordered round the junction by where the branch is BRANCH_M out, seen from its centre:
+                    # by direction alone, branches of a merged junction's two nodes interleave wrongly
+                    q = pts[vi, :2] + u * BRANCH_M - X
+                    branches.append((math.atan2(q[1], q[0]), ri, vi, step, u, step, pts[vi, :2].copy()))
         branches.sort(key=lambda b: (b[0], roads[b[1]][0]))
         n = len(branches)
         if n < 2:
@@ -224,10 +331,32 @@ def find(roads, has_walk, walk_w, parking_m=0.0, has_parking=lambda spec: False,
             j = (i + 1) % n
             ai, ri, vi, si, ui, li, Pi = branches[i]
             aj, rj, vj, sj, uj, lj, Pj = branches[j]
-            theta = math.degrees((aj - ai) % (2 * math.pi))
+            theta = math.degrees((math.atan2(uj[1], uj[0]) - math.atan2(ui[1], ui[0])) % (2 * math.pi))
             if ri == rj and n == 2:
                 continue
             spi, spj = roads[ri][1], roads[rj][1]
+            na, nb = node_of[(ri, vi)], node_of[(rj, vj)]
+            cr = connector.get(frozenset((na, nb))) if na != nb else None
+            if cr is not None and has_walk(spi) and has_walk(spj):
+                # two nodes of a merged junction: the curb turns onto the connector's edge at one node,
+                # runs along it and turns off at the other (an offset junction, Fells Point 2026-10-17)
+                got = _across(roads, branches[i], branches[j], cr, X, walk_w, debug)
+                if got is not None:
+                    corner, ci, cj = got
+                    corners.append(corner)
+                    cuts.setdefault((roads[ri][0], li), []).append((Pi.copy(), ui, ci))
+                    cuts.setdefault((roads[rj][0], -lj), []).append((Pj.copy(), uj, cj))
+                    side_t[(i, "L")] = (ci, corner, ("dec", None, ci), 0.0)
+                    side_t[(j, "R")] = (cj, corner, ("inc", None, cj), 0.0)
+                    # the connector's sidewalk on the corner's side goes (it keeps the other one: a side
+                    # street on one side of a through road)
+                    cp = roads[cr][2][:, :2]
+                    ki = int(np.argmin(np.hypot(*(cp - Pi).T)))
+                    kj = int(np.argmin(np.hypot(*(cp - Pj).T)))
+                    uc = _unit(Pj - Pi)
+                    cuts.setdefault((roads[cr][0], -1 if kj > ki else 1), []).append(
+                        (Pi.copy(), uc, float(math.hypot(*(Pj - Pi)))))
+                    continue
             if not (has_walk(spi) and has_walk(spj)) or not (CORNER_ANGLES[0] < theta < CORNER_ANGLES[1]):
                 if debug is not None:
                     debug.append(('walk/angle', round(theta), has_walk(spi), has_walk(spj), X.round(1).tolist()))

@@ -1830,9 +1830,9 @@ def build_tile(frame, tx, ty, cells, elev, urban_fn=None, walks=None, bridges=No
                 continue                        # a curb return inside a loop: its island has its own curb
             if x0 <= p[0] < x1 and y0 <= p[1] < y1:
                 walks.append({"corner": c})
-                if c["fill"] is not None:
+                for fill in ([c["fill"]] if c["fill"] is not None else []) + c.get("fills", []):
                     chunks.append({"m": LOOK["paved"]["m"], "w": 0.0, "tl": LOOK["paved"]["tl"], "p": LOOK["paved"]["p"],
-                                   "poly": [[round(float(v), 3) for v in q] for q in c["fill"]], "n": []})
+                                   "poly": [[round(float(v), 3) for v in q] for q in fill], "n": []})
         for cw in crosswalks:                   # crosswalks and stop lines
             mid = 0.5 * (cw["a"] + cw["b"])
             if x0 <= mid[0] < x1 and y0 <= mid[1] < y1:
