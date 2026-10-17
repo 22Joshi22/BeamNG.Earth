@@ -451,6 +451,7 @@ end
 -- now: their positions are the old frame's. A ghost's colliders are not made again (updateCollideRange).
 M.GHOST_MAX_S = 120         -- ghosts left after this long go anyway
 M.GHOST_FAR_M = 960         -- ... and once farther from the player than this (the server's roads DROP_M)
+M.GHOST_FAR_WAIT_S = 2      -- ... from this long after the rebase on
 local ghostSince = nil      -- stopwatch since the last rebase that left ghosts
 
 local WHATS = { 'walk', 'road', 'deck', 'bld', 'bld2', 'bld3', 'bld4', 'bldcol', 'walkcol', 'wire', 'tunnel' }
@@ -520,18 +521,20 @@ local function covered(done, cx, cy)
   return true
 end
 
-local function releaseGhosts()
+local function releaseGhosts(player)
   if not ghostSince then return end
   local busyKeys = {}
   for _, q in ipairs(walkQ) do busyKeys[q.key] = true end
   local all = ghostSince() > M.GHOST_MAX_S * 1000
   local left = false
   local done = madeSquares(anchorId, busyKeys)
-  local veh = getPlayerVehicle and getPlayerVehicle(0)
-  local p = veh and veh:getPosition()
+  local p = player             -- core's player (the camera's focus: a test drive's vehicle is not the player's car)
   for key, t in pairs(tiles) do
     if t.ghost then
-      local far = p and t.cx and math.max(math.abs(p.x - t.cx), math.abs(p.y - t.cy)) - M.TILE_M / 2 > M.GHOST_FAR_M
+      -- (not in the rebase's first GHOST_FAR_WAIT_S: in its frame the player is still read in the old frame, every
+      -- ghost looked kilometres away and all went: 46 road tiles -> 0 at each rebase, 2026-10-17)
+      local far = p and t.cx and ghostSince() > M.GHOST_FAR_WAIT_S * 1000
+        and math.max(math.abs(p.x - t.cx), math.abs(p.y - t.cy)) - M.TILE_M / 2 > M.GHOST_FAR_M
       if all or far or (t.cx and covered(done, t.cx, t.cy)) then
         dropTile(key)
         collisionDirty = true
@@ -551,9 +554,9 @@ local function releaseGhosts()
 end
 
 -- Once per frame (core onUpdate): deletions, then creations, within the governor's budget.
-function M.update(gov, currentAnchor)
+function M.update(gov, currentAnchor, player)
   if currentAnchor then switchAnchor(currentAnchor) end
-  releaseGhosts()
+  releaseGhosts(player)
   while #deleteQ > 0 and gov:try('roadDelete') do
     local t0 = now()
     local did = table.remove(deleteQ)

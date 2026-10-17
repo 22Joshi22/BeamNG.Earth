@@ -386,6 +386,7 @@ end
 -- anchor's first tiles took longer and every tree went, 2026-10-17 salt flats.)
 M.GHOST_MAX_S = 120
 M.GHOST_FAR_M = 1536
+M.GHOST_FAR_WAIT_S = 2
 
 function M.transform(xf, geodesy)
   local bx, by, bz, bw = xf:beamngQuat()
@@ -426,7 +427,7 @@ releaseGhosts = function(anchorId, player)
   for _, t in pairs(tiles) do
     if t.ghost and not t.drop then
       local ok = all
-      if not ok and player then
+      if not ok and player and ghostSince() > M.GHOST_FAR_WAIT_S * 1000 then     -- (roads.lua GHOST_FAR_WAIT_S)
         local dx = math.max(math.abs(player.x - t.cx) - 128, 0)
         local dy = math.max(math.abs(player.y - t.cy) - 128, 0)
         ok = math.max(dx, dy) > M.GHOST_FAR_M
