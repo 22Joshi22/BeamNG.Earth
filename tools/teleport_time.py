@@ -52,7 +52,7 @@ def main():
             print(f"poll: {e}", file=sys.stderr)
             continue
         t = round(time.time() - t0, 1)
-        moved = s["anchor"] != before["anchor"]
+        moved = s.get("anchor") is not None and s.get("anchor") != before.get("anchor")
         done = {
             "anchor": moved,
             "far": moved and bool(s["farDone"]) and not s["farQueued"],
