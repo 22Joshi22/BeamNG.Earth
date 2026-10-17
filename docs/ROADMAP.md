@@ -66,17 +66,21 @@ whatever order tiles loaded, after any number of rebases, on any machine.
 ### Bugs (reported)
 1. **Roundabouts** (Harbor Point, 39.2801, -76.5890): the ring drawn as cobbles with a D-shaped island,
    odd sidewalk pieces at the entries, road patches that do not meet. Needs ring handling: a one-way ring
-   road, a raised round island, splitter islands.
+   road, a raised round island, splitter islands. *1.4.29: the island and the ring's sidewalks were never
+   drawn (held render-only meshes); now shown. The D-shaped island is the map's own outline.*
 2. **Sidewalks at offset multi-road junctions** (Fells Point 39.28188, -76.59114): connectors ~10 m apart
    get no curb returns; corners must be built across the merged junction from its outer branches.
 3. **Sidewalk pulls the car down** (39.28499, -76.60554): a wheel sank at a sidewalk end beside a verge;
-   suspect the slab's end face or a curb-ramp edge in the collision mesh.
+   suspect the slab's end face or a curb-ramp edge in the collision mesh. *Fixed in 1.4.29: the slab's back
+   slopes down at 1:2 instead of a 20 cm ledge.*
 4. **Raindrops jumping / streaking** (Fells Point rain): the Precipitation box following the camera or the
-   rebase, or gusts changing its speed every frame.
+   rebase, or gusts changing its speed every frame. *Fixed in 1.4.30: the drops' rotateWithCamVel drew them
+   as screen-wide streaks even with the car still; off now, drops 0.2 m as west_coast_usa.*
 5. **Coarse ground tiles over roads** 150-300 m from the car: sink coarse tiles under roads, or draw far
    roads into the tile imagery.
 6. **Parking garages are solid boxes**: an open ground storey (columns, a slab) where the map has an entrance.
-7. **Huts above the tree line are grey boxes** (Mount Whitney summit shelter): a stone wall look.
+7. **Huts above the tree line are grey boxes** (Mount Whitney summit shelter): a stone wall look. *Fixed in
+   1.4.30: a small isolated hut above the tree line (by latitude) gets stone walls.*
 
 ### Performance and loading
 - First-visit far field: fewer requests per place (e.g. Mapterhorn PMTiles range reads) rather than more
