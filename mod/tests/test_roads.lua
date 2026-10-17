@@ -102,7 +102,7 @@ roads.onTile({ anchorId = 2, key = '5_5', path = '/t/w.json', n = 1 }, 2)
 roads.update(gov, 2)
 local w = statics()[1]
 T.check(#statics() == 1 and roads.status().walks == 1, 'sidewalk mesh made')
-T.check(w.fields.shapeName == '/t/walks_2_5_5.cdae' and w.fields.collisionType == 'Visible Mesh' and w.canSave == false,
+T.check(w.fields.shapeName == '/t/walks_2_5_5.cdae' and w.fields.collisionType == 'Visible Mesh Final' and w.canSave == false,
   'shape, collides with its visible mesh, not saved')
 T.check(w.pos.x == 256 and w.pos.y == 512, 'at the tile corner')
 T.check(S.calls.reloadCollision == 1, 'collision reloaded for it')

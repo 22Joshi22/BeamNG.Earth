@@ -286,11 +286,13 @@ local function isCollider(o)
   return c == 'TSStatic' and o:getField('collisionType', 0) ~= 'None'
 end
 
--- collide: true ('Visible Mesh'), a collision type name, or false / nil (render only)
+-- collide: true ('Visible Mesh Final'), a collision type name, or false / nil (render only)
 local function createWalk(walk, collide)
   local o = createObject('TSStatic')
   o:setField('shapeName', 0, walk.shape)
-  o:setField('collisionType', 0, type(collide) == 'string' and collide or (collide and 'Visible Mesh' or 'None'))
+  -- 'Visible Mesh Final' (the engine's own suggestion: 'Performance: Mesh is using visible collision ... switch the
+  -- mesh to Visible Mesh Final'); the same collision (in-game rays, 2026-10-17)
+  o:setField('collisionType', 0, type(collide) == 'string' and collide or (collide and 'Visible Mesh Final' or 'None'))
   o:setField('decalType', 0, 'None')
   o.canSave = false
   o:setPosition(vec3(walk.pos[1], walk.pos[2], walk.pos[3]))
