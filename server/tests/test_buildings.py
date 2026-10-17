@@ -101,6 +101,20 @@ class RegionStyleTest(unittest.TestCase):
 
 
 class PlanTest(unittest.TestCase):
+    def test_hut_above_the_tree_line_is_stone(self):
+        # the user, 2026-10-14: Mount Whitney's stone summit shelter was a plain grey box
+        self.assertAlmostEqual(bld.tree_line_m(36.6), 3600 - 110 * 4.6, places=6)
+        self.assertGreater(bld.tree_line_m(46.0), 1900)
+        self.assertLess(bld.tree_line_m(46.0), 2200)
+        self.assertEqual(bld.tree_line_m(75.0), 0.0)
+        hut = bld.plan(rect(0, 0, 4, 6), {"class": ""}, 0, 36.58, -118.29, alpine=True)
+        self.assertTrue(str(hut.wall).startswith(bld.STONE))
+        self.assertTrue(str(hut.facade).startswith(bld.STONE))
+        town = bld.plan(rect(0, 0, 4, 6), {"class": ""}, 0, 36.58, -118.29)
+        self.assertFalse(str(town.wall).startswith(bld.STONE), "the same hut down in a town: unchanged")
+        big = bld.plan(rect(0, 0, 20, 20), {"class": ""}, 0, 36.58, -118.29, alpine=True)
+        self.assertFalse(str(big.wall).startswith(bld.STONE), "a big building up there: unchanged")
+
     def test_given_height_kept(self):
         s = bld.plan(rect(0, 0, 20, 20), {"class": "", "height": 18.0})
         self.assertAlmostEqual(s.height, 18.0)

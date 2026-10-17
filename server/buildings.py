@@ -377,7 +377,19 @@ def roof_pitch(spec):
     return spec.pitch or PITCH.get(spec.roof, PITCH["gabled"])
 
 
-def plan(ring, attrs, neighbours=0, lat=None, lon=None, look=None, town=False, dense=False, west_town=False):
+ALPINE_HUT_M2 = 120.0        # an isolated building this small above the tree line (a summit shelter, a mountain hut) ...
+ALPINE_COVER = 0.02          # ... in a tile this empty gets dressed stone walls (the user, 2026-10-14: Mount Whitney's
+                             # stone summit hut was a plain grey box)
+
+
+def tree_line_m(lat):
+    """A rough tree line (m) by latitude: ~3,600 m to 32 deg, falling ~110 m per degree (the Alps at 46 deg ~2,050 m,
+    Scandinavia at 60 deg ~520 m), sea level towards 70 deg. Pure."""
+    return max(0.0, 3600.0 - 110.0 * max(0.0, abs(float(lat)) - 32.0))
+
+
+def plan(ring, attrs, neighbours=0, lat=None, lon=None, look=None, town=False, dense=False, west_town=False,
+         alpine=False):
     """The Spec of a footprint (local ring (n, 2) in metres, counter-clockwise) from its Overture attributes
     (dict: class, height, num_floors, min_height, roof_shape, roof_height) and the number of buildings
     sharing a wall with it. Height and roof are predicted when not given. west_town: a small town of the
@@ -565,6 +577,11 @@ def plan(ring, attrs, neighbours=0, lat=None, lon=None, look=None, town=False, d
                 n = min(n, US_WALL_TINTS.get(kind, n))
                 wall = f"{kind}|{int(_hash01(seed, 'wc') * n)}"
             facade = wall
+    # a hut above the tree line, alone: stone walls (alpine: the tile is nearly empty and high, tile_buildings)
+    stone_hut = wall is None and alpine and area < ALPINE_HUT_M2 and neighbours == 0
+    if stone_hut:                       # (sheds too: a summit shelter is shed-sized)
+        wall = f"{STONE}|{int(_hash01(seed, 'stc') * len(WALL_TINTS[STONE]))}"
+        facade = wall
     # dressed stone: a regional share of low older buildings, attached ones too (their plaster sheet otherwise)
     if wall is None and style.stone and nf <= STONE_FLOORS and band is not BAND_BRICK \
             and not (shop or industrial or terminal or garage or shed or barn or church) \
@@ -589,7 +606,7 @@ def plan(ring, attrs, neighbours=0, lat=None, lon=None, look=None, town=False, d
     else:       # the region's pitched roofs (the US: slate or shingle by the seed, their first four tints)
         mat, tints = style.roofs[min(int(seed * len(style.roofs)), len(style.roofs) - 1)]
         roof_mat = f"{mat}|{tints[int(_hash01(seed, 'roof') * len(tints))]}"
-    if barn or shed:                    # plain walls tinted: barns the region's barn red or wood, sheds the siding colours
+    if (barn or shed) and not stone_hut:    # plain walls tinted: barns the region's barn red or wood, sheds the siding colours
         tints = WALL_TINTS[SIDING]
         if barn and _hash01(seed, "barn") < style.barn_red:
             facade = f"{SIDING}|{len(tints) - 1 - int(_hash01(seed, 'red') * 2)}"
@@ -1481,11 +1498,18 @@ def tile_buildings(frame, x0, y0, x1, y1, layers, elev, water=None, part_layers=
     town, dense = cover < TOWN_COVERAGE, cover > BRICK_WALK_COVERAGE
     clat, clon, _ = frame.enu_to_geodetic((x0 + x1) / 2, (y0 + y1) / 2, 0.0)
     clat, clon = float(clat), float(clon)
+    alpine = False
+    if cover < ALPINE_COVER:
+        try:
+            gz = float(np.asarray(elev(np.array([clat]), np.array([clon])), np.float64)[0])
+            alpine = np.isfinite(gz) and gz > tree_line_m(clat)
+        except Exception:
+            alpine = False
     out = []
     for ring, at, sh, look, mh in zip(rings, attrs, shared, looks, mins):
         if mh > 0.5 and at.get("height") is not None and np.isfinite(at["height"]) and look is None:
             at = dict(at, height=max(2.5, float(at["height"]) - mh))     # a building's own height range
-        spec = plan(ring, at, int(sh) if look is None else 0, clat, clon, look, town, dense, west_town)
+        spec = plan(ring, at, int(sh) if look is None else 0, clat, clon, look, town, dense, west_town, alpine)
         spec.min_h = mh
         e = ring[:, 0] + x0
         n = ring[:, 1] + y0
