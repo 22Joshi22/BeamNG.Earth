@@ -1417,10 +1417,13 @@ class BridgeProfiles:
             if bs[i] is not None:
                 lvls = self.levels_of(feats, i)
                 for j, ring in enumerate(self.parts_of(feats, i)):
-                    if (fid, j) not in pool:
+                    # a part in several cells can come clipped differently: the longest (the same part whichever
+                    # cell a process loads first: the terrain and the road tiles took different ones, 2026-10-17)
+                    old = pool.get((fid, j))
+                    if old is None or len(ring) > old[4]:
                         e, n = mapgeom.enu_xy(feats, self.frame, ring)
                         pool[(fid, j)] = (bs[i], densify(_dedupe(np.stack([e, n], axis=1)), DECK_STEP),
-                                          float(np.mean(ring[:, 0])), lvls[j] if j < len(lvls) else 1.0)
+                                          float(np.mean(ring[:, 0])), lvls[j] if j < len(lvls) else 1.0, len(ring))
             if rs[i] is not None and (fid, "g") not in ground:
                 ground[(fid, "g")] = []
                 for ring in ground_parts(feats, i):
@@ -1433,7 +1436,7 @@ class BridgeProfiles:
             return (round(float(p[0]) * 2), round(float(p[1]) * 2))
         while True:
             by_node = {}
-            for k, (_, xy, _, _) in pool.items():
+            for k, (_, xy, *_) in pool.items():
                 by_node.setdefault(nk(xy[0]), []).append(k)
                 by_node.setdefault(nk(xy[-1]), []).append(k)
             keys = sorted(pool)
@@ -1517,13 +1520,24 @@ class BridgeProfiles:
                 zs = self._solve(comp, pool, ground)
                 with self.lock:
                     for k, z in zip(comp, zs):
-                        spec, xy, lon, _ = pool[k]
-                        self.done.setdefault(k, (spec, xy, z, lon))
+                        spec, xy, lon = pool[k][:3]
+                        old = self.done.get(k)
+                        # the first solve of a part is kept, and what goes with it, unless this one saw more of it
+                        if old is None or len(xy) > len(old[1]):
+                            self.done[k] = (spec, xy, z, lon)
+                            self._commit(k)
                     got = self.done.get(key)
             if got is not None:
                 spec, xy, z, lon = got
-                out.append((key[0], spec, xy, z, lon))
+                out.append((self._part_id(key), spec, xy, z, lon))
         return out
+
+    def _commit(self, k):
+        """Under self.lock: part k's solve was kept (TunnelProfiles keeps its sections with it)."""
+
+    @staticmethod
+    def _part_id(key):
+        return key[0]
 
 
 def tunnel_sections(s, g, open_cover=None, full_cover=None, min_m=SECTION_MIN_M):
@@ -1595,6 +1609,10 @@ class TunnelProfiles(BridgeProfiles):
                     # 100 m down: a car in the tube would float; earthd / blockworker set the sea's depth)
     open = None
     raw = None      # raw(lat, lon) -> the ground without the roads' grading (the cover over a tunnel is read on it)
+    ends = None     # ends(lat, lon) -> the graded ground (its portals' floor), else the profiles' elev. Both at one DEM
+                    # zoom (grading.PROFILE_ZOOM) in every process: the terrain blocks and the road tiles are built in
+                    # different processes at different zooms, and cut 97th Street's arch 15 m apart: its west mouth
+                    # filled with ground behind the portal face (2026-10-17)
 
     def __init__(self, *a, **kw):
         super().__init__(*a, **kw)
@@ -1604,10 +1622,40 @@ class TunnelProfiles(BridgeProfiles):
         self.sections = {}          # part fid -> [(i0, i1, kind)] (inclusive sample ranges, sharing their ends)
         self.mouths = {}            # sub-part fid -> (its start is a portal, its end is one): not where a low arch
                                     # meets a full tunnel inside the hill (no hole, no portal face there)
+        self._tls = threading.local()   # a thread's solved sections, kept with its parts (_commit) or dropped
 
     def _raw_ground(self, xy):
         la, lo, _ = self.frame.enu_to_geodetic(xy[:, 0], xy[:, 1], 0.0)
         return self.frame.geodetic_to_enu(la, lo, np.asarray(self.raw(la, lo), np.float64))[2]
+
+    @staticmethod
+    def _part_id(key):
+        # one feature can come as several parts (clipped differently in the map cells around: 97th Street's arch as
+        # 45 m and 30 m pieces, the shorter one's sections cut the longer one's terrain 15 m short, 2026-10-17)
+        return f"{key[0]}.{key[1]}"
+
+    def _commit(self, k):
+        staged = getattr(self._tls, "staged", {}).pop(k, None)
+        if staged is None:
+            return
+        pid = self._part_id(k)
+        secs, subs = staged
+        self.sections[pid] = secs
+        for n, (kind, th, ups, mouths) in subs.items():
+            sub = f"{pid}#{n}"
+            if kind == 0:
+                self.open.add(sub)
+                continue
+            if kind == 1:
+                self.heights[sub] = th
+            self.ups[sub] = ups
+            self.mouths[sub] = mouths
+
+    def _ends_ground(self, xy):
+        if self.ends is None:
+            return self._ground(xy)
+        la, lo, _ = self.frame.enu_to_geodetic(xy[:, 0], xy[:, 1], 0.0)
+        return self.frame.geodetic_to_enu(la, lo, np.asarray(self.ends(la, lo), np.float64))[2]
 
     def _solve(self, comp, pool, ground):
         """Per part: the floor (the hull of the ungraded ground, its ends at the roads' graded height at its portals,
@@ -1617,6 +1665,7 @@ class TunnelProfiles(BridgeProfiles):
         import roadmesh
         gfn = self._raw_ground if self.raw is not None else self._ground
         out = []
+        self._tls.staged = {}           # (committed by parts() right after, the rest dropped with the next solve)
         for k in comp:
             xy = np.asarray(pool[k][1], np.float64)
             if len(xy) < 2:
@@ -1624,7 +1673,7 @@ class TunnelProfiles(BridgeProfiles):
                 continue
             s = np.r_[0.0, np.cumsum(np.hypot(*np.diff(xy, axis=0).T))]
             g = np.asarray(gfn(xy), np.float64)
-            ge = np.asarray(self._ground(xy[[0, -1]]), np.float64)
+            ge = np.asarray(self._ends_ground(xy[[0, -1]]), np.float64)
             g = g.copy()
             g[0], g[-1] = ge[0], ge[-1]
             floor, kinds = tunnel_sections(s, g)
@@ -1638,25 +1687,23 @@ class TunnelProfiles(BridgeProfiles):
             # neighbouring sections share their end sample (no gap between a portal and the open road)
             secs = [(a if n == 0 else a - 1, b, kd) for n, (a, b, kd) in enumerate(secs)]
             cover = g - floor
-            with self.lock:
-                self.sections[k[0]] = secs
-                for n, (a, b, kd) in enumerate(secs):
-                    sub = f"{k[0]}#{n}"
-                    if kd == 0:
-                        self.open.add(sub)
-                        continue
-                    th = roadmesh.TUNNEL_H
-                    if kd == 1:
-                        c_ = cover[a:b + 1]
-                        k0, k1 = int(len(c_) * 0.2), max(int(len(c_) * 0.8), int(len(c_) * 0.2) + 1)
-                        th = float(np.clip(np.percentile(c_[k0:k1], 20) - TUNNEL_SOIL_M, TUNNEL_LOW_H, roadmesh.TUNNEL_H))
-                        self.heights[sub] = th
-                    ups = []
-                    for near in (s[a:b + 1] <= s[a] + PORTAL_LOOK_M, s[a:b + 1] >= s[b] - PORTAL_LOOK_M):
-                        cv = float(np.max(cover[a:b + 1][near])) if near.any() else th
-                        ups.append(float(np.clip(cv + PORTAL_GROUND_M - th, PORTAL_UP_MIN, roadmesh.PORTAL_FRAME)))
-                    self.ups[sub] = ups
-                    self.mouths[sub] = (n == 0 or secs[n - 1][2] == 0, n == len(secs) - 1 or secs[n + 1][2] == 0)
+            log.debug("tunnel %s: sections %s over %.0f m", k, secs, s[-1])
+            subs = {}
+            for n, (a, b, kd) in enumerate(secs):
+                if kd == 0:
+                    subs[n] = (0, None, None, None)
+                    continue
+                th = roadmesh.TUNNEL_H
+                if kd == 1:
+                    c_ = cover[a:b + 1]
+                    k0, k1 = int(len(c_) * 0.2), max(int(len(c_) * 0.8), int(len(c_) * 0.2) + 1)
+                    th = float(np.clip(np.percentile(c_[k0:k1], 20) - TUNNEL_SOIL_M, TUNNEL_LOW_H, roadmesh.TUNNEL_H))
+                ups = []
+                for near in (s[a:b + 1] <= s[a] + PORTAL_LOOK_M, s[a:b + 1] >= s[b] - PORTAL_LOOK_M):
+                    cv = float(np.max(cover[a:b + 1][near])) if near.any() else th
+                    ups.append(float(np.clip(cv + PORTAL_GROUND_M - th, PORTAL_UP_MIN, roadmesh.PORTAL_FRAME)))
+                subs[n] = (kd, th, ups, (n == 0 or secs[n - 1][2] == 0, n == len(secs) - 1 or secs[n + 1][2] == 0))
+            self._tls.staged[k] = (secs, subs)
             out.append(floor)
         return out
 
@@ -1825,6 +1872,30 @@ def arch_raise(parts, heights, px, py, z, mouths=None):
     return z
 
 
+def tunnel_floor_at(parts, x, y):
+    """The floor height of the tunnel tubes among parts ([(fid, spec, xy, z, lon)]) over the point (x, y), the lowest
+    one, or None outside them (within the road's half width + roadmesh.TUNNEL_SHOULDER). Pure."""
+    import roadmesh
+    best = None
+    p = np.array([x, y], np.float64)
+    for _fid, spec, xy, z, _lon in parts:
+        xy = np.asarray(xy, np.float64)
+        z = np.asarray(z, np.float64)
+        if len(xy) < 2 or not np.isfinite(z).all():
+            continue
+        hw = spec.width / 2 + roadmesh.TUNNEL_SHOULDER
+        a, b = xy[:-1], xy[1:]
+        ab = b - a
+        L2 = np.maximum((ab * ab).sum(1), 1e-12)
+        t = np.clip(((p - a) * ab).sum(1) / L2, 0.0, 1.0)
+        d = np.hypot(*(a + t[:, None] * ab - p).T)
+        j = int(np.argmin(d))
+        if d[j] <= hw:
+            f = float(z[j] + t[j] * (z[j + 1] - z[j]))
+            best = f if best is None else min(best, f)
+    return best
+
+
 def block_arch_raise(tunnels, cell_fn, frame, la, lo, z, box):
     """arch_raise for ground heights at the points (la, lo) of a block in the anchor-frame box (x0, y0, x1, y1),
     the tunnels from the map cells under it. z as it was when the cells are not at hand."""
@@ -1991,9 +2062,10 @@ def _tunnel_chunks(tunnels, cells, exact):
                 for piece in clip_polyline(line, *exact):
                     for c in split(densify(simplify(piece))):
                         if len(c) >= 2:
-                            ch = _chunk(look, w, c)
-                            ch["fixed"] = True      # its own heights: the graded ground lies at them
-                            out.append(ch)
+                            # on the ground as any road (the grading lays the ground at its floor, Grader._open_tunnels:
+                            # at the floor's own heights the ground graded from the grader's profile covered it
+                            # outside 97th Street's arch, 2026-10-17)
+                            out.append(_chunk(look, w, c))
     for fid, spec, xy, z, lon in tunnels.parts(cells, exact):
         if not np.isfinite(z).all():
             continue

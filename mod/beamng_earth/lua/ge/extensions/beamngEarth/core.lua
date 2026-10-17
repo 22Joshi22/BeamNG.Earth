@@ -76,6 +76,8 @@ local SKY_INTERVAL = 5.0       -- TimeOfDay lat/lon follow
 local VISIBLE_DISTANCE = 100000
 local LAG_PROBE_FRAMES = 10   -- simulated frames to watch for a rebase's vehicle move to show up
 local PLACE_DELAY_FRAMES = 2   -- let the collision rebuild settle before placing the vehicle
+local FLOOR_WAIT_S = 60        -- s a teleport into a tunnel waits for the tube's floor before giving up (car stays on top)
+local FLOOR_HIT_M = 0.8        -- m the static collision found under floorZ + 2 may differ from floorZ: the tube is there
 local PRE_LIFT = 5             -- m above groundZ + 1 to hold the vehicle until it is placed
 local LOADING_AFTER_TELEPORT_S = 3 -- governor loading mode (8 ms budget) this long after a teleport
 local SLOW_SPEED, SLOW_S = 1, 3    -- ... and while the player is below 1 m/s for over 3 s
@@ -142,6 +144,8 @@ local function resetState()
     status = '',
     placeFrames = nil,       -- countdown to placing the player after a teleport
     placeZ = nil,
+    floorZ = nil,            -- a teleport into a tunnel: its floor (the car moved down once the tube collides)
+    floorUntil = nil,
     poseTimer = 0,
     skyTimer = SKY_INTERVAL,
     autoTeleportDone = false,
@@ -360,6 +364,10 @@ local function commitTeleport(msg)
   st.loadingUntil = st.clock + LOADING_AFTER_TELEPORT_S
   st.placeFrames = PLACE_DELAY_FRAMES
   st.placeZ = (msg.groundZ or 0) + 1.0
+  -- in a tunnel: set down on the ground over it first (placed in the tube before its road tile came, the car fell
+  -- through the world under the one-sided terrain), moved down onto the floor once that collides (2026-10-17)
+  st.floorZ = msg.floorZ
+  st.floorUntil = msg.floorZ and (st.clock + FLOOR_WAIT_S) or nil
   -- The player's old coordinates may now lie anywhere on the new terrain.
   -- Lift it above the new origin in this same frame (velocity zeroed as in spawn.lua:532-534)
   -- so physics never sees that; placePlayer() then sets it down properly.
@@ -526,6 +534,26 @@ local function placePlayer(z)
   dir = vec3(dir.x, dir.y, 0)
   if dir:length() < 1e-3 then dir = vec3(0, 1, 0) end
   spawn.safeTeleport(veh, vec3(0, 0, z), quatFromDir(dir:normalized(), vec3(0, 0, 1)), nil, nil, false, nil, true)
+end
+
+-- A teleport into a tunnel: once a ray down from just over its floor (floorZ) meets collision at the floor (the tube's
+-- road tile is in), the player goes down onto it; after FLOOR_WAIT_S it stays where it is (on the ground over it).
+function M.floorCheck()
+  if st.clock > (st.floorUntil or 0) then
+    st.floorZ, st.floorUntil = nil, nil
+    return
+  end
+  if not roads.settledFor(st.anchorId, 0, 0) then return end
+  local ray = rawget(_G, 'castRayStatic')
+  if not ray then return end
+  local from = vec3(0, 0, st.floorZ + 2)
+  local d = ray(from, vec3(0, 0, -1), 6)
+  if d and math.abs((from.z - d) - st.floorZ) < FLOOR_HIT_M then
+    local z = st.floorZ
+    st.floorZ, st.floorUntil = nil, nil
+    log('I', 'beamngEarth', string.format('teleport: down onto the tunnel floor at %.1f', z))
+    placePlayer(z + 1.0)
+  end
 end
 
 ------------------------------------------------------------------------------------------
@@ -828,6 +856,7 @@ local function anchorKnown()
 end
 
 local function updateWorld(dt)
+  if st.floorZ and not st.placeFrames then M.floorCheck() end
   if st.placeFrames then
     st.placeFrames = st.placeFrames - 1
     if st.placeFrames <= 0 then

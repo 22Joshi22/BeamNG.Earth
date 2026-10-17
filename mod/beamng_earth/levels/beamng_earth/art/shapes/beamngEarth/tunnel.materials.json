@@ -82,5 +82,32 @@
     ],
     "groundType": "ROCK",
     "translucent": false
+  },
+  "bne_tunnel_soil": {
+    "name": "bne_tunnel_soil",
+    "mapTo": "bne_tunnel_soil",
+    "class": "Material",
+    "version": 1.5,
+    "persistentId": "569ac43d-9576-542c-973d-787ab367f694",
+    "Stages": [
+      {
+        "baseColorMap": "/assets/materials/terrain/grass/t_grass_01/t_grass_01_b.png",
+        "normalMap": "/assets/materials/terrain/grass/t_grass_01/t_grass_01_nm.png",
+        "roughnessMap": "/assets/materials/terrain/grass/t_grass_01/t_grass_01_r.png",
+        "ambientOcclusionMap": "/assets/materials/terrain/grass/t_grass_01/t_grass_01_ao.png",
+        "metallicFactor": 0,
+        "baseColorFactor": [
+          0.36,
+          0.36,
+          0.24,
+          1
+        ]
+      },
+      {},
+      {},
+      {}
+    ],
+    "groundType": "GRASS",
+    "translucent": false
   }
 }

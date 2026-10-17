@@ -172,6 +172,7 @@ NEAR_VISUALS = ("mesh", "terrain", "detail")
 # as in terrain mode. MESH_LAYOUT: the modes on the mesh-mode tile layout; BLOCK_DRAWN: the block is seen.
 MESH_LAYOUT = ("mesh", "detail")
 BLOCK_DRAWN = ("terrain", "detail")
+TUNNEL_FLOOR_UNDER_M = 2.0     # a tunnel floor this far under the ground at a teleport's origin: the car goes on the floor
 SEA_CHECK_S = 15.0          # sea (--sea on): the water tiles planned again when the player enters another
                             # 512 m square, or after this long (cells built meanwhile; seatiles.py)
 GROUND_RESEND_M, GROUND_RESEND_S = 1.0, 1.5   # ground_ahead: sent on a change, else this often (the mod's
@@ -985,7 +986,7 @@ class Server:
                     anchor.frame, lambda key: self.mapdata.cell(key, layers=("roads",), kind="demand").layers.get("roads"),
                     elev)
                 anchor.tunnels.wet = self.sea.depth if self.sea is not None else None
-                anchor.tunnels.raw = lambda la, lo: self.ground(anchor.frame, la, lo, self.dem.sample(la, lo, anchor.zooms[0]))
+                self._tunnel_ground(anchor, g)
         props = [] if self.buildings else None
         lines = [] if self.buildings else None
         wires = [] if self.buildings else None
@@ -1183,12 +1184,15 @@ class Server:
             grade_s[0] += time.perf_counter() - t1
             return z
         gen = elev
-        if self.mapdata is not None and anchor.tunnels is not None:
+        if self.mapdata is not None:
+            # (made here when not yet: an anchor's first block was built before any road tile made them, without
+            # its arches' raise and flat mouths, 2026-10-17)
+            tun = self.tunnels_of(anchor, elev, g)
             half = self.layout.block * heightmap.SQUARE / 2
             cell_fn = lambda key: self.mapdata.cell(key, layers=("roads",), kind="demand").layers.get("roads")  # noqa: E731
 
             def gen(la, lo):        # the ground over the low arches raised over their vaults (roads.arch_raise)
-                return roadsmod.block_arch_raise(anchor.tunnels, cell_fn, anchor.frame, la, lo, elev(la, lo),
+                return roadsmod.block_arch_raise(tun, cell_fn, anchor.frame, la, lo, elev(la, lo),
                                                  (cx - half, cy - half, cx + half, cy + half))
         info = heightmap.generate(anchor.frame, gen,
                                   os.path.join(self.out_dir, self.hm_name((anchor.id, cx, cy))), cx, cy, q=q,
@@ -1220,18 +1224,54 @@ class Server:
         info["stages"] = stages
         return self._finish_heightmap(anchor, cx, cy, info, t0)
 
+    def tunnels_of(self, anchor, elev, g):
+        """anchor.tunnels (roads.TunnelProfiles), made now if not yet (elev: the caller's ground; g: the anchor's
+        Grader or None, taken before: grader_for takes grader_lock)."""
+        with self.grader_lock:
+            if anchor.tunnels is None:
+                cell_fn = lambda key: self.mapdata.cell(key, layers=("roads",), kind="demand").layers.get("roads")  # noqa: E731
+                anchor.tunnels = roadsmod.TunnelProfiles(anchor.frame, cell_fn, elev)
+                anchor.tunnels.wet = self.sea.depth if self.sea is not None else None
+                self._tunnel_ground(anchor, g)
+            return anchor.tunnels
+
+    def tunnel_floor(self, anchor):
+        """The floor of a tunnel tube at the anchor's origin (roads.tunnel_floor_at), or None: a teleport into a park
+        arch set the car down on the soil over it, where it hung on the arch's top (2026-10-17)."""
+        if self.mapdata is None:
+            return None
+        g = self.grader_for(anchor)
+        cell_fn = lambda key: self.mapdata.cell(key, layers=("roads",), kind="demand").layers.get("roads")   # noqa: E731
+        try:
+            def elev(la, lo):
+                z = self.ground(anchor.frame, la, lo, self.dem.sample(la, lo, gradingmod.PROFILE_ZOOM))
+                return g.apply(la, lo, z, gradingmod.ROAD_LIFT) if g is not None else z
+            self.tunnels_of(anchor, elev, g)
+            box = (-40.0, -40.0, 40.0, 40.0)
+            la, lo, _ = anchor.frame.enu_to_geodetic(np.array([-40.0, 40.0]), np.array([-40.0, 40.0]), np.zeros(2))
+            cells = [cell_fn(k) for k in mapcells.cells_for_bbox(float(la.min()), float(lo.min()),
+                                                                float(la.max()), float(lo.max()))]
+            return roadsmod.tunnel_floor_at(anchor.tunnels.parts(cells, box), 0.0, 0.0)
+        except Exception:
+            log.exception("tunnel floor at anchor %s", anchor.id)
+            return None
+
+    def _tunnel_ground(self, anchor, g):
+        """anchor.tunnels' ground at grading.PROFILE_ZOOM, as in the block workers (roads.TunnelProfiles.ends; g: the
+        anchor's Grader or None). Under grader_lock."""
+        t = anchor.tunnels
+        t.raw = lambda la, lo: self.ground(anchor.frame, la, lo, self.dem.sample(la, lo, gradingmod.PROFILE_ZOOM))
+        if g is not None:
+            t.ends = lambda la, lo: g.apply(la, lo, t.raw(la, lo), gradingmod.ROAD_LIFT, roads_only=True)
+
     def _tunnel_holes(self, anchor, elev, keep, cx, cy, idx, info):
         """idx with the block's tunnel portals as holes (roads.block_tunnel_holes; blockworker._tunnel_holes)."""
+        g = self.grader_for(anchor)       # (before grader_lock: it takes it)
         if self.mapdata is None:
             return idx
         cell_fn = lambda key: self.mapdata.cell(key, layers=("roads",), kind="demand").layers.get("roads")   # noqa: E731
         try:
-            with self.grader_lock:
-                if anchor.tunnels is None:
-                    anchor.tunnels = roadsmod.TunnelProfiles(anchor.frame, cell_fn, elev)
-                    anchor.tunnels.wet = self.sea.depth if self.sea is not None else None
-                    anchor.tunnels.raw = lambda la, lo: self.ground(anchor.frame, la, lo,
-                                                                    self.dem.sample(la, lo, anchor.zooms[0]))
+            self.tunnels_of(anchor, elev, g)
             holes = roadsmod.block_tunnel_holes(anchor.tunnels, cell_fn, anchor.frame, keep, cx, cy, heightmap.SQUARE)
         except Exception:
             log.exception("tunnel holes of block (%s, %s)", cx, cy)
@@ -2432,12 +2472,18 @@ class Connection:
         self.s.hm_sent.append(key)
         # groundZ is None when (0, 0) lies outside the block (a resync around a distant player)
         gz = info["groundZ"]
+        floor_z = None                  # in a tunnel: its floor under the ground (the mod moves the car down onto it
+        if gz is not None:              # once the tube's collision is there: set down in it at once, it fell)
+            fl = await asyncio.get_running_loop().run_in_executor(self.s.ui_pool, self.s.tunnel_floor, anchor)
+            if fl is not None and fl < gz - TUNNEL_FLOOR_UNDER_M:
+                floor_z = round(fl + gradingmod.ROAD_LIFT, 3)
+                log.info("anchor %d: in a tunnel, its floor %.1f under the ground %.1f", anchor.id, floor_z, gz)
         log.info("anchor %d (%.5f, %.5f) ready in %.2f s, terrain at (%.0f, %.0f), groundZ %s; dem %s",
                  anchor.id, lat, lon, time.perf_counter() - t0, cx, cy,
                  "n/a" if gz is None else f"{gz:.1f}",
                  self.s.dem.stats_snapshot())
         self.send({"type": "anchor_ready", "requestId": req, "anchorId": anchor.id, "lat": lat, "lon": lon,
-                   "groundZ": info["groundZ"], "terrain": self.terrain_msg(key, info)})
+                   "groundZ": info["groundZ"], "floorZ": floor_z, "terrain": self.terrain_msg(key, info)})
         self.status(f"Terrain ready ({time.perf_counter() - t0:.1f} s)")
 
     async def prepare_terrain(self, msg):

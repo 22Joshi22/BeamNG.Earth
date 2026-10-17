@@ -55,6 +55,8 @@ WALL_T_M = 0.8              # (roadmesh.retaining_walls) and the ground at its n
 WALL_FLAT_M = 2.0           # ... after one terrain grid step at the road's level behind the wall: rising at the wall
                             # itself, the 2 m grid's triangles stood as dark wedges in front of its face; the wall's
                             # top (roadmesh.WALL_THICK_M) covers the strip
+TUNNEL_TAG = ":tun"          # in the fid of the tunnels' own plans (open sections, mouths): apply(roads_only) skips them
+MOUTH_PLAN_M = 4.0          # m into a tunnel from a portal its floor is a grading plan too (Grader._mouth_plans)
 TUNNEL_KEEP_IN_M = 3.0      # (roads.LOW_HOLE_M: a low arch's mouths, flat at its floor)
 TUNNEL_KEEP_M = 5.0         # m beside a covered tunnel's road where the ground over it is left ungraded
 WALL_AHEAD_M = 2.5          # ... only beside a segment or this little past its end (a joint between two: VERTEX_STEP)
@@ -205,8 +207,10 @@ class Grader:
             for fid, p in zip(ids, plan_roads(self.frame, parts, self.elev)):
                 if p is not None:
                     plans.append((fid, p))
-            secs = self._tunnel_sections(feats)
-            plans.extend((fid, Plan(xy, z, spec.width / 2 + shoulder(spec))) for fid, spec, xy, z, k in secs if k == 0)
+            secs = self._tunnel_sections(feats, key, [p for _f, p in plans])
+            plans.extend((fid + TUNNEL_TAG, Plan(xy, z, spec.width / 2 + shoulder(spec)))
+                         for fid, spec, xy, z, k in secs if k == 0)
+            plans.extend(self._mouth_plans(secs))
             covers = [(xy, spec.width / 2 + TUNNEL_KEEP_M) for _f, spec, xy, _z, k in secs if k]
             opens = [(xy, spec) for _f, spec, xy, _z, k in secs if k == 0]
         else:
@@ -217,15 +221,41 @@ class Grader:
             self.opens.setdefault(key, opens)
             return self.cells[key]
 
-    def _tunnel_sections(self, feats):
-        """[(fid, spec, xy, z, kind)] of the tunnels' sections (roads.tunnel_sections on the ungraded ground, as
-        roads.TunnelProfiles cuts them): kind 0 an open road at z, 1 a low arch, 2 a full tunnel."""
+    def _longest(self, fid, j, ring, key):
+        """Part j of tunnel fid as the cells at its ends have it, the longest (a part comes clipped differently in
+        the cells around: graded as the 30 m piece, 97th Street's 45 m arch got an open road graded in it; the
+        same rule as roads.BridgeProfiles._load, 2026-10-17)."""
+        best = ring
+        for p in (ring[0], ring[-1]):
+            ck = mapcells.cell_of(float(p[1]), float(p[0]))
+            if key is not None and str(ck) == str(key):
+                continue
+            try:
+                f = self.md.cell(ck, layers=("roads",), kind="demand").layers.get("roads")
+            except Exception:
+                continue
+            if f is None or not len(f):
+                continue
+            ids = [str(x) for x in f.ids]
+            if fid not in ids:
+                continue
+            i = ids.index(fid)
+            parts = roadsmod.tunnel_parts(f, i)
+            if j < len(parts) and len(parts[j]) > len(best):
+                best = parts[j]
+        return best
+
+    def _tunnel_sections(self, feats, key=None, road_plans=()):
+        """[(fid, spec, xy, z, kind)] of the tunnels' sections (roads.tunnel_sections on the ungraded ground, its
+        ends graded by road_plans: the cell's road Plans, as roads.TunnelProfiles.ends grades them with the roads'
+        plans alone): kind 0 an open road at z, 1 a low arch, 2 a full tunnel."""
         out = []
         ts = roadsmod.tunnel_specs(feats)
         for i in range(len(feats)):
             if ts[i] is None:
                 continue
-            for ring in roadsmod.tunnel_parts(feats, i):
+            for j, ring in enumerate(roadsmod.tunnel_parts(feats, i)):
+                ring = self._longest(str(feats.ids[i]), j, ring, key)
                 ll = np.asarray(ring, np.float64)
                 if len(ll) < 2:
                     continue
@@ -235,6 +265,9 @@ class Grader:
                     continue
                 la, lo, _ = self.frame.enu_to_geodetic(xy[:, 0], xy[:, 1], 0.0)
                 g = np.asarray(self.elev(la, lo), np.float64)
+                if road_plans:
+                    g = g.copy()
+                    g[[0, -1]] = grade_points(xy[[0, -1], 0], xy[[0, -1], 1], g[[0, -1]], list(road_plans))
                 floor, kinds = roadsmod.tunnel_sections(s, g)
                 i0 = 0
                 while i0 < len(kinds):
@@ -245,6 +278,41 @@ class Grader:
                     if i1 > a:
                         out.append((str(feats.ids[i]), ts[i], xy[a:i1 + 1], floor[a:i1 + 1], int(kinds[i0])))
                     i0 = i1 + 1
+        return out
+
+    @staticmethod
+    def _mouth_plans(secs):
+        """(fid, Plan) of the covered sections' mouths: the floor MOUTH_PLAN_M into the tube from a portal (where an
+        open section or nothing comes before / after it): the ground at the portal graded to the road on both sides
+        of it (the grading faded from the road's plan into the ungraded hill there, and the road tile and the
+        terrain block, sampled at different zooms, came out a few cm apart: the block poked through the road
+        outside 97th Street's arch, 2026-10-17)."""
+        out = []
+        for n, (fid, spec, xy, z, kind) in enumerate(secs):
+            if not kind or len(xy) < 2:
+                continue
+            same = lambda m: 0 <= m < len(secs) and secs[m][0] == fid     # noqa: E731
+            s = np.r_[0.0, np.cumsum(np.hypot(*np.diff(xy, axis=0).T))]
+            hw = spec.width / 2 + shoulder(spec)
+            for at_start in (True, False):
+                nb = n - 1 if at_start else n + 1
+                if same(nb) and secs[nb][4] != 0:
+                    continue                    # inside the hill: a full tunnel goes on
+                if at_start:
+                    m = s <= MOUTH_PLAN_M
+                    t = np.interp(MOUTH_PLAN_M, s, np.arange(len(s)))
+                else:
+                    m = s >= s[-1] - MOUTH_PLAN_M
+                    t = np.interp(s[-1] - MOUTH_PLAN_M, s, np.arange(len(s)))
+                i0 = int(np.floor(t))
+                p = xy[i0] + (t - i0) * (xy[min(i0 + 1, len(xy) - 1)] - xy[i0])
+                pz = z[i0] + (t - i0) * (z[min(i0 + 1, len(z) - 1)] - z[i0])
+                if at_start:
+                    pxy, pzz = np.r_[xy[m], p[None]], np.r_[z[m], pz]
+                else:
+                    pxy, pzz = np.r_[p[None], xy[m]], np.r_[pz, z[m]]
+                if len(pxy) >= 2:
+                    out.append((fid + TUNNEL_TAG + ("m0" if at_start else "m1"), Plan(pxy, pzz, hw)))
         return out
 
     def _covered_tunnels(self, feats):
@@ -270,8 +338,8 @@ class Grader:
         """Make cell key's plans now (worker threads: the lookahead ahead of the player)."""
         self._cell_plans(key)
 
-    def plans(self, lat, lon):
-        """The Plans touching the points' area (each road once)."""
+    def plans(self, lat, lon, roads_only=False):
+        """The Plans touching the points' area (each road once); roads_only: not the tunnels' (TUNNEL_TAG)."""
         lat = np.asarray(lat, np.float64)
         lon = np.asarray(lon, np.float64)
         pad = (T_MAX + 40.0) / 111320.0
@@ -280,13 +348,15 @@ class Grader:
         for key in mapcells.cells_for_bbox(float(lat.min()) - pad, float(lon.min()) - padlon,
                                            float(lat.max()) + pad, float(lon.max()) + padlon):
             for fid_part, p in self._cell_plans(key):
+                if roads_only and TUNNEL_TAG in fid_part:
+                    continue
                 k = (fid_part, p.xy[0, 0], p.xy[0, 1])
                 if k not in seen:
                     seen.add(k)
                     out.append(p)
         return out
 
-    def apply(self, lat, lon, base, lift=0.0):
+    def apply(self, lat, lon, base, lift=0.0, roads_only=False):
         """base (the ungraded heights at the points) graded under the roads. Same shape as base.
         lift: m added under the roads (tapering with the grading's weight): the physics block and the
         road mesh use ROAD_LIFT, the visible ground tiles 0, so the road mesh lies exactly on the
@@ -298,7 +368,7 @@ class Grader:
         shape = base.shape
         if base.size == 0:
             return base
-        plans = self.plans(lat, lon)
+        plans = self.plans(lat, lon, roads_only)
         if not plans:
             return base
         e, n, _ = self.frame.geodetic_to_enu(lat.ravel(), lon.ravel(), 0.0)

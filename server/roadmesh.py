@@ -207,9 +207,16 @@ TUNNEL_STONE = "bne_tunnel_stone"  # a low arch's portal faces and the retaining
                                     # Park's transverse walls and arches; the buildings' pale dressed stone read as
                                     # concrete, 2026-10-17)
 TUNNEL_STONE_IN = "bne_tunnel_stone_in"   # the same stone darker: a low arch's vault (in its shade)
+TUNNEL_SOIL = "bne_tunnel_soil"     # grass on the ground over the masonry: a retaining wall's top behind its coping,
+                                    # a low arch's top (stone slabs on the grass, the user 2026-10-17: "blend the
+                                    # stone and terrain better")
+SOIL_UV_M = 1.0            # m per repeat of the grass (the terrain's detail texture: bngEarthGroundGrass, size 1)
+WALL_COPING_M = 0.5        # m of a retaining wall's top in stone (its coping), the rest of it soil
 STONE_UV_M = 3.0           # m per repeat of the stone on a low arch
 LOW_PORTAL_UP = 1.4        # m a low arch's portal face reaches over the vault (to the ground over it) ...
 LOW_PORTAL_SIDE = 3.0      # ... and beside the opening
+LOW_RISE = 0.4             # a low arch's vault rises this share of its height from its walls (a segmental arch)
+ARCH_CAP_OVER = 0.75       # m a low arch's top lies over its vault (roads.ARCH_SOIL_MIN of soil there, + a little)
 LOW_CAP_M = 7.0            # m a low arch's stone top runs back from its portal face over the mouth: the terrain there
                            # dips to the floor and is cut away (roads.arch_raise, LOW_HOLE_M + LOW_HOLE_STEP): from
                            # above a row of dark terrain teeth behind the face (79th Street Transverse, 2026-10-17)
@@ -220,13 +227,21 @@ TUNNEL_LAMP_W = 0.25       # ... this wide, ...
 TUNNEL_LAMP_DROP = 0.05    # ... this far under the vault, lit along every other profile step (2-4 m lamps and gaps)
 
 
-def _tunnel_section(hw, th=TUNNEL_H):
+def _tunnel_section(hw, th=TUNNEL_H, low=False):
     """The tube's cross-section from the left road edge's floor over the vault to the right one: (lateral offset
     from the centre line, positive = left; height over the floor) for half-width hw (centre to wall) and a vault
-    th over the floor (its walls in proportion)."""
-    wall = TUNNEL_WALL_H * th / TUNNEL_H
-    vault = [(np.cos(a) * hw, wall + np.sin(a) * (th - wall))
-             for a in np.linspace(0.0, np.pi, 9)]
+    th over the floor (its walls in proportion). low: a park arch's segmental vault, a shallow circular arc rising
+    LOW_RISE of th from its walls (Central Park's transverse arches)."""
+    if low:
+        rise = LOW_RISE * th
+        wall = th - rise
+        r = (hw * hw + rise * rise) / (2 * rise)
+        a0 = math.asin(min(1.0, hw / r))
+        vault = [(r * math.sin(a), th - r + r * math.cos(a)) for a in np.linspace(a0, -a0, 9)]
+    else:
+        wall = TUNNEL_WALL_H * th / TUNNEL_H
+        vault = [(np.cos(a) * hw, wall + np.sin(a) * (th - wall))
+                 for a in np.linspace(0.0, np.pi, 9)]
     return np.array([(hw - TUNNEL_SHOULDER, 0.0), (hw, 0.0)] + vault + [(-hw, 0.0), (-hw + TUNNEL_SHOULDER, 0.0)],
                     np.float64)
 
@@ -248,12 +263,15 @@ def _retaining_walls(walls, origin, P, T, UV, M, nv):
         face_lo = np.c_[b, foot] - origin
         face_hi = np.c_[b, top] - origin
         back_hi = np.c_[back, top] - origin
-        for lo_, hi_, vlo, vhi in ((face_lo, face_hi, foot, top), (face_hi, back_hi, None, None)):
+        cop_hi = np.c_[b - tw * WALL_COPING_M, top] - origin
+        for lo_, hi_, vlo, vhi, mat in ((face_lo, face_hi, foot, top, 2), (face_hi, cop_hi, None, WALL_COPING_M, 2),
+                                        (cop_hi, back_hi, None, WALL_THICK_M - WALL_COPING_M, 4)):
             P.append(np.concatenate([lo_, hi_]))
             if vlo is not None:
                 UV.append(np.c_[np.r_[s, s] / STONE_UV_M, np.r_[vlo, vhi] / STONE_UV_M])
             else:
-                UV.append(np.c_[np.r_[s, s] / STONE_UV_M, np.r_[np.zeros(k), np.full(k, WALL_THICK_M)] / STONE_UV_M])
+                sc = SOIL_UV_M if mat == 4 else STONE_UV_M
+                UV.append(np.c_[np.r_[s, s] / sc, np.r_[np.zeros(k), np.full(k, vhi)] / sc])
             i = np.arange(k - 1)
             A, A1, B, B1 = nv + i, nv + i + 1, nv + k + i, nv + k + i + 1
             tri = np.concatenate([np.stack([A, B, B1], 1), np.stack([A, B1, A1], 1)])
@@ -267,7 +285,7 @@ def _retaining_walls(walls, origin, P, T, UV, M, nv):
             flip = (nrm * look).sum(1) < 0
             tri[flip] = tri[flip][:, ::-1]
             T.append(tri)
-            M.append(2)
+            M.append(mat)
             nv += 2 * k
         for at in (0, k - 1):           # the ends: from the face over to the back, foot to top
             q = np.array([[*b[at], foot[at]], [*b[at], top[at]], [*back[at], top[at]], [*back[at], foot[at]]]) - origin
@@ -289,7 +307,8 @@ def tunnel(chunks, origin, walls=()):
     rb = [(r, c) for r, c in zip(ribbons(tc), tc) if r[5] is not None] if tc else []
     if not rb and not walls:
         return None
-    P, T, UV, M = [], [], [], []           # M: per T entry its material index (0 concrete, 1 lamps, 2 stone, 3 dark stone)
+    P, T, UV, M = [], [], [], []           # M: per T entry its material index (0 concrete, 1 lamps, 2 stone, 3 dark stone,
+                                            # 4 soil)
     nv = _retaining_walls(walls, np.asarray(origin, np.float64), P, T, UV, M, 0) if walls else 0
     for (left, right, v, _, _, z), c in rb:
         # a piece ending at a tile edge reaches TUNNEL_OVERLAP past it: the next tile's piece meets it there without a
@@ -310,7 +329,7 @@ def tunnel(chunks, origin, walls=()):
         th = float(c.get("tunnel_h") or TUNNEL_H)
         low = th < TUNNEL_H - 0.05                          # a low arch: stone, a short portal face
         mat = 3 if low else 0                               # (its portal faces: 2, the stone in daylight)
-        sec = _tunnel_section(hw, th)
+        sec = _tunnel_section(hw, th, low)
         k, m = len(mid), len(sec)
         rows = np.empty((m, k, 3))
         for j, (off, h) in enumerate(sec):
@@ -353,12 +372,16 @@ def tunnel(chunks, origin, walls=()):
             inner = rows[:, at]
             o = sec.copy()
             up, side = (LOW_PORTAL_UP, LOW_PORTAL_SIDE) if low else (PORTAL_FRAME, PORTAL_FRAME)
-            if pup is not None and not low:     # to the ground over the portal (TunnelProfiles.portal_ups)
-                up = float(pup)
+            if pup is not None:     # to the ground over the portal (TunnelProfiles.portal_ups); a low arch's at least
+                # LOW_PORTAL_UP (under a hill higher than its top, the ground dipping into its mouth showed over it)
+                up = max(LOW_PORTAL_UP, float(pup)) if low else float(pup)
             o[:, 0] = np.sign(o[:, 0]) * (np.abs(o[:, 0]) + side)
             # its foot under the ground (2 m into a hillside; a low arch's mouth is flat: just under its floor, or the
             # face's bottom stood as a dark wedge beside the opening)
-            o[:, 1] = np.where(o[:, 1] > 0.0, o[:, 1] + up, -0.3 if low else -2.0)
+            if low:     # a flat top over the arch (a parapet), not following its curve
+                o[:, 1] = np.where(o[:, 1] > 0.0, th + up, -0.3)
+            else:
+                o[:, 1] = np.where(o[:, 1] > 0.0, o[:, 1] + up, -2.0)
             outer = np.empty((m, 3))
             outer[:, :2] = mid[at] + u[at] * o[:, :1]
             outer[:, 2] = z[at] + o[:, 1]
@@ -374,7 +397,7 @@ def tunnel(chunks, origin, walls=()):
             nv += 2 * m
             if low:
                 nv = _arch_cap(P, T, UV, M, nv, mid, u, z, at, k, float(np.max(o[:, 0])), float(o[:, 1].max()), th, origin)
-    mats = [TUNNEL_SIDE, TUNNEL_LIGHT] + ([TUNNEL_STONE, TUNNEL_STONE_IN] if any(mm >= 2 for mm in M) else [])
+    mats = [TUNNEL_SIDE, TUNNEL_LIGHT] + ([TUNNEL_STONE, TUNNEL_STONE_IN, TUNNEL_SOIL] if any(mm >= 2 for mm in M) else [])
     Tall = np.concatenate(T)
     Mall = np.concatenate([np.full(len(t), m, np.int64) for t, m in zip(T, M)]) if M else np.zeros(len(Tall), np.int64)
     return (np.concatenate(P), Tall, np.concatenate(UV), mats, Mall)
@@ -390,7 +413,7 @@ def _arch_cap(P, T, UV, M, nv, mid, u, z, at, k, side, top, th, origin):
     a = mid[at]
     b = a + t * LOW_CAP_M
     ua = u[at]
-    z0 = float(z[at]) + top
+    z0 = float(z[at]) + top - (LOW_PORTAL_UP - ARCH_CAP_OVER)   # the soil's level (the face stands over it)
     corners = np.array([[*(a + ua * side), z0], [*(a - ua * side), z0], [*(b - ua * side), z0], [*(b + ua * side), z0]])
     foot = corners.copy()
     foot[:, 2] = float(z[at])
@@ -400,14 +423,14 @@ def _arch_cap(P, T, UV, M, nv, mid, u, z, at, k, side, top, th, origin):
              np.array([corners[3], corners[2], over[2], over[3]]),     # its back, toward the soil over the vault
              np.array([corners[0], corners[3], foot[3], foot[0]]),     # its sides
              np.array([corners[1], corners[2], foot[2], foot[1]])]
-    for q in quads:
+    for qi, q in enumerate(quads):
         P.append(q - origin)
         w = float(np.hypot(*(q[1, :2] - q[0, :2]))) or float(abs(q[1, 2] - q[0, 2]))
         h = float(np.hypot(*(q[2, :2] - q[1, :2]))) + float(abs(q[2, 2] - q[1, 2]))
-        UV.append(np.array([[0, 0], [w, 0], [w, h], [0, h]], np.float64) / STONE_UV_M)
+        UV.append(np.array([[0, 0], [w, 0], [w, h], [0, h]], np.float64) / (SOIL_UV_M if qi == 0 else STONE_UV_M))
         tri = np.array([[nv, nv + 1, nv + 2], [nv, nv + 2, nv + 3]], np.int64)
         T.append(np.concatenate([tri, tri[:, ::-1]]))
-        M.append(2)
+        M.append(4 if qi == 0 else 2)                   # its top grass, its sides stone
         nv += 4
     return nv
 

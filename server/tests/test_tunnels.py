@@ -147,7 +147,8 @@ class LowArch(unittest.TestCase):
         P, T, UV, mats, M = roadmesh.tunnel(tube, (0.0, 0.0, 0.0))
         self.assertIn(roadmesh.TUNNEL_STONE, mats)
         self.assertNotIn(1, set(M.tolist()), "no lamps under an arch")
-        self.assertLess(P[:, 2].max(), zs.max() + h + roadmesh.LOW_PORTAL_UP + 0.01)
+        # its face to just over the ground over the portal (15 m here), its top stone under that
+        self.assertLess(P[:, 2].max(), 15.0 + roads.PORTAL_GROUND_M + 0.01)
 
 
 class ArchRaise(unittest.TestCase):
@@ -243,6 +244,30 @@ class Sections(unittest.TestCase):
         self.assertTrue(m_both[:, xs > 28].any())
         self.assertFalse(m_one[:, xs > 28].any())
         self.assertTrue(m_one[:, xs < 2].any())
+
+
+class FloorAt(unittest.TestCase):
+    def test_in_the_tube_and_beside_it(self):
+        # a teleport into a park arch: the car on its floor, not the soil over it
+        part = ("a", Spec(7.0, "paved", False, "residential"), np.array([[-20.0, 0.0], [20.0, 0.0]]),
+                np.array([10.0, 12.0]), 0.0)
+        self.assertAlmostEqual(roads.tunnel_floor_at([part], 0.0, 1.0), 11.0)
+        self.assertIsNone(roads.tunnel_floor_at([part], 0.0, 3.5 + roadmesh.TUNNEL_SHOULDER + 0.5))
+        self.assertIsNone(roads.tunnel_floor_at([part], 25.0, 0.0), "past its portal")
+
+
+class SegmentalArch(unittest.TestCase):
+    def test_low_vault_is_a_shallow_arc(self):
+        sec = roadmesh._tunnel_section(6.0, 5.0, low=True)
+        top = sec[:, 1].max()
+        self.assertAlmostEqual(top, 5.0)
+        vault = sec[2:-2]
+        self.assertAlmostEqual(vault[0, 1], 5.0 * (1 - roadmesh.LOW_RISE))
+        self.assertAlmostEqual(abs(vault[0, 0]), 6.0)
+        # a circular arc: one radius from one centre on the axis
+        r = (36 + (5.0 * roadmesh.LOW_RISE) ** 2) / (2 * 5.0 * roadmesh.LOW_RISE)
+        d = np.hypot(vault[:, 0], vault[:, 1] - (5.0 - r))
+        self.assertTrue(np.allclose(d, r))
 
 
 if __name__ == "__main__":

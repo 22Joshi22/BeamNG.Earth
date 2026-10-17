@@ -147,6 +147,7 @@ SERVER_TO_MOD = {
                "radius": F(NUM, OPT)},      # v1.4 M1h: the far-field radius (m), --horizon only
     "anchor_ready": {"requestId": F(int), "anchorId": F(int), "lat": F(NUM), "lon": F(NUM),
                      "groundZ": F(NUM, NULL), "terrain": F(dict),
+                     "floorZ": F(NUM, NULL, OPT),          # 2026-10-17: in a tunnel, its floor (core.floorCheck)
                      "anchorKey": F(str, OPT)},            # phase 5 (lattice anchors): not sent yet
     "anchor_error": {"requestId": F(int, NULL), "error": F(str)},
     "terrain_ready": {"requestId": F(int), "anchorId": F(int), **TERRAIN},
