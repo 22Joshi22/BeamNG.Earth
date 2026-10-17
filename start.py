@@ -32,7 +32,7 @@ RECOMMENDED = [
 
 
 def server_flags(py):
-    r = subprocess.run([py, EARTHD, "--help"], capture_output=True, text=True, cwd=ROOT)
+    r = subprocess.run([py, EARTHD, "--help"], capture_output=True, text=True, errors="replace", cwd=ROOT)
     if r.returncode != 0:
         install.fail("the server does not start:\n" + (r.stderr or r.stdout).strip() +
                      "\n  Run the installer again: python install.py")
