@@ -298,6 +298,54 @@ function M.update(anchorId, player)
   end
 end
 
+-- Origin rebase (core.lua finishRebase): the water moves into the new frame now instead of going until the server's
+-- next 'sea' message (2026-10-17: every rebase left no sea, and no water physics under a car in it, for seconds).
+-- The wanted tiles and rivers are mapped (p_new = R*p + t, a tile's normal turned by R) and become newAnchorId's; the
+-- made blocks take their new place and tilt, the physics block its new place; rivers (splines in world coordinates)
+-- are made again from the mapped nodes. The server's next 'sea' message replaces the set as usual.
+function M.transform(xf, newAnchorId)
+  local ox, oy, oz = xf:apply(0, 0, 0)
+  local function turn(nx, ny)
+    local nz = math.sqrt(math.max(0, 1 - nx * nx - ny * ny))
+    local x, y = xf:apply(nx, ny, nz)
+    return x - ox, y - oy
+  end
+  local function mapTile(t)
+    t.x, t.y, t.z = xf:apply(t.x, t.y, t.z)
+    t.nx, t.ny = turn(t.nx or 0, t.ny or 0)
+  end
+  if want and want.anchorId == madeAnchor then
+    for _, t in pairs(want.tiles) do mapTile(t) end
+    for _, r in pairs(want.rivers) do
+      for _, n in ipairs(r.nodes) do n[1], n[2], n[3] = xf:apply(n[1], n[2], n[3]) end
+    end
+    want.anchorId = newAnchorId
+  end
+  for key, m in pairs(made) do
+    if m.t ~= (want and want.tiles or {})[key] then mapTile(m.t) end   -- (the same table as want's: mapped above)
+    local o = scenetree.findObjectById(m.id)
+    if o then
+      local t = m.t
+      local n = math.sqrt(t.nx * t.nx + t.ny * t.ny)
+      if n > 1e-9 then
+        o:setField('rotation', 0, string.format('%.9f %.9f 0 %.6f', -t.ny / n, t.nx / n, math.deg(math.asin(math.min(n, 1)))))
+      end
+      o:setPosition(vec3(t.x, t.y, t.z))
+    end
+  end
+  for _, id in pairs(madeRivers) do
+    local o = scenetree.findObjectById(id)
+    if o then o:delete() end
+  end
+  madeRivers = {}
+  if phys then
+    phys.x, phys.y, phys.z = xf:apply(phys.x, phys.y, phys.z)
+    local o = scenetree.findObjectById(phys.id)
+    if o then o:setPosition(vec3(phys.x, phys.y, phys.z)) end
+  end
+  if madeAnchor ~= nil then madeAnchor = newAnchorId end
+end
+
 -- Disconnect, a new server session, mod unload: no tiles until the server says so again.
 function M.clear()
   want = nil

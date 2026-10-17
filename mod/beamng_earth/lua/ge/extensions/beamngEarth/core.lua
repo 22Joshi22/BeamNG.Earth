@@ -395,6 +395,10 @@ local function finishRebase()
   groundcover.rebuild()
   if not ok then log('E', 'beamngEarth', 'rebase terrain import failed: ' .. tostring(err)) end
   farfield.transform(xf)
+  -- roads, buildings, street furniture and trees move with it and stay until the new anchor's tiles cover them
+  roads.transform(xf, geodesy)
+  trees.transform(xf, geodesy)
+  sea.transform(xf, msg.anchorId)
   -- a resync with a restarted server keeps the previous session's tiles the same way (st.sessionId
   -- is the new session's): they go once the new session's tiles cover them
   farfield.switchAnchor(msg.anchorId, true, { cx = tr.cx, cy = tr.cy }, st.sessionId)
