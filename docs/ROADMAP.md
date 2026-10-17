@@ -70,6 +70,9 @@ whatever order tiles loaded, after any number of rebases, on any machine.
    drawn (held render-only meshes); now shown. The D-shaped island is the map's own outline.*
 2. **Sidewalks at offset multi-road junctions** (Fells Point 39.28188, -76.59114): connectors ~10 m apart
    get no curb returns; corners must be built across the merged junction from its outer branches.
+   *1.4.32: nodes joined by a connector no longer than the road is wide are one junction; its corners turn
+   onto the connector's edge at one node and off at the other (2 -> 4 corners there; the 36-tile Fells Point
+   survey 428 -> 440 corners, no new slab on a carriageway). Left: the 73-degree corner on a curving branch.*
 3. **Sidewalk pulls the car down** (39.28499, -76.60554): a wheel sank at a sidewalk end beside a verge;
    suspect the slab's end face or a curb-ramp edge in the collision mesh. *Fixed in 1.4.29: the slab's back
    slopes down at 1:2 instead of a 20 cm ledge.*

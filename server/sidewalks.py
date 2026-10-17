@@ -302,18 +302,25 @@ class Builder:
         out = np.asarray(outer, np.float64) - self.origin
         out[:, 2] = out[:, 2] + h + 2.5 * CROSS_SLOPE
         poly = np.vstack([inner, out])                      # arc from Ti to Tj, then Tj_out, O, Ti_out
-        o_idx = k + 1                                       # O
         # planar, at the runs' texel density (the sheet is 4096 x 1024: SLAB_REPEAT_M wide, a quarter
         # of that high); a constant v stretched one texel row over the corner (the user, 2026-10-11)
         UV = np.c_[poly[:, 0] / SLAB_REPEAT_M, poly[:, 1] / (SLAB_REPEAT_M / 4.0)]
         base = self._add(poly, UV)
         m = len(poly)
-        fan = np.array([(o_idx, a, (a + 1) % m) for a in range(m) if a != o_idx and (a + 1) % m != o_idx])
+        if len(out) == 3:                                   # a fan from O
+            o_idx = k + 1
+            fan = np.array([(o_idx, a, (a + 1) % m) for a in range(m) if a != o_idx and (a + 1) % m != o_idx])
+        else:                                               # round a merged junction's connector: ear clipping
+            import buildings
+            xy = poly[:, :2]
+            area = float(np.sum(xy[:, 0] * np.roll(xy[:, 1], -1) - np.roll(xy[:, 0], -1) * xy[:, 1]))
+            order = np.arange(m) if area > 0 else np.arange(m)[::-1]
+            fan = order[buildings.triangulate(xy[order])]
         self.T.append(base + _orient(fan, poly, np.array([0.0, 0.0, 1.0])))
         self.M.append(np.full(len(fan), 1))
         c = poly[:, :2].mean(axis=0)
         drop = h + SINK + 2.5 * CROSS_SLOPE
-        for a, b in ((out[0], out[1]), (out[1], out[2])):  # back faces down to the ground, sloping out (BACK_RUN)
+        for a, b in zip(out[:-1], out[1:]):                 # back faces down to the ground, sloping out (BACK_RUN)
             t = b[:2] - a[:2]
             nrm = np.array([t[1], -t[0]]) / max(float(np.hypot(*t)), 1e-9)
             if nrm @ (0.5 * (a[:2] + b[:2]) - c) < 0:

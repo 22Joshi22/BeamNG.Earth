@@ -363,6 +363,28 @@ class BuildTileTest(unittest.TestCase):
                     if junctions._seg_dist(np.array([(a + b) / 2]), ln)[0] > 1.0:
                         self.assertFalse(junctions._crosses(a, b, ln))
 
+    def test_offset_junction_corners_across_the_connector(self):
+        import junctions
+        # two junctions ~10 m apart on a diagonal connector no longer than the streets are wide (the user's
+        # Fells Point junction, 2026-10-17): every quadrant gets a curb return, turning onto the connector's edge
+        # at one node and off at the other, none on a carriageway, and the connector keeps no sidewalk
+        A, B = (120.0, 120.0), (127.0, 113.0)
+        arms = [[A, (120, 300)], [A, (-60, 120)], [A, B], [B, (127, -60)], [B, (300, 113)]]
+        f = features(arms, ["residential"] * 5)
+        walks = []
+        roads.build_tile(FRAME, 0, 0, [f], flat, lambda la, lo: np.ones(np.shape(la), bool), walks=walks)
+        corners = [wk["corner"] for wk in walks if "corner" in wk]
+        self.assertEqual(len(corners), 4)
+        w = roads.carriageway("residential", "paved", True) / 2
+        lines = [np.array(a, np.float64) for a in arms]
+        for c in corners:
+            probe = c["arc"][:, :2] + c["inward"] * 1.0
+            for ln in lines:
+                self.assertGreater(junctions._seg_dist(probe, ln).min(), w - 0.5 - roads.PARKING_M)
+        mid = np.array([(A[0] + B[0]) / 2, (A[1] + B[1]) / 2])
+        for r in [wk for wk in walks if "pts" in wk]:
+            self.assertGreater(np.hypot(*(r["pts"][:, :2] - mid).T).min(), w, "no sidewalk along the connector")
+
     def test_cobblestone_strips_no_paint(self):
         self.assertEqual(roads.surface_kind("residential", "paving_stones"), "cobble")
         f = features([[(-300, 50), (300, 50)]], ["tertiary"], surfaces=[(0, "paving_stones")])
