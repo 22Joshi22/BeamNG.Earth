@@ -77,19 +77,24 @@ lines(os.path.join(L, "main/MissionGroup/Sky/items.level.json"), [
 # follow the ground under the player (sky.lua), the precipitation follows the camera and the reverb
 # is 2D, so the floating origin does not matter. Precipitation: BWM_Weather's verified 0.39 setup
 # (rain_drop; the pool `numDrops` is set when it rains, then setPercentage); no `numOfDrops` field,
-# so BWM_Weather still uses its own rain object here.
+# so BWM_Weather still uses its own rain object here. rotateWithCamVel off: on, the drops were drawn as streaks
+# across the whole screen at odd angles even with the car standing still (the user's "raindrops jumping /
+# streaking", Fells Point; in-game 2026-10-17: each of the three drop options off in turn, only this one fixed it).
+# dropSize 0.2 as west_coast_usa's rain (the same rain_drop in a 50 m box): at 0.36 a drop beside the camera was
+# still a line across the screen.
 lines(os.path.join(L, "main/MissionGroup/Weather/items.level.json"), [
     {"name": "bngEarthClouds", "class": "CloudLayer", "persistentId": "3b0f6f0e-8f5e-4a51-9a59-0b8e2f6a1c21", "__parent": "Weather",
      "texture": "art/skies/clouds/clouds_normal_displacement.png", "coverage": 0.5, "cirrusCoverage": 0.3, "exposure": 1.45,
      "windSpeed": 0.1, "baseColor": [0.99, 0.99, 0.99, 0.9], "altitudeKm": 1.5},
     {"name": "bngEarthRain", "class": "Precipitation", "persistentId": "3b0f6f0e-8f5e-4a51-9a59-0b8e2f6a1c22", "__parent": "Weather",
-     "dataBlock": "rain_drop", "numDrops": 0, "boxWidth": 50, "boxHeight": 40, "dropSize": 0.36, "splashSize": 0.2,
+     "dataBlock": "rain_drop", "numDrops": 0, "boxWidth": 50, "boxHeight": 40, "dropSize": 0.2, "splashSize": 0.2,
      "fadeDist": 6, "fadeDistEnd": 65, "followCam": True, "useWind": True, "useTurbulence": True, "doCollision": True,
-     "hitVehicles": False},
+     "hitVehicles": False, "rotateWithCamVel": False},
     {"name": "bngEarthSnow", "class": "Precipitation", "persistentId": "3b0f6f0e-8f5e-4a51-9a59-0b8e2f6a1c23", "__parent": "Weather",
      "dataBlock": "Snow_menu", "numDrops": 0, "boxWidth": 40, "boxHeight": 30, "dropSize": 0.25, "splashSize": 0,
      "minSpeed": 0.15, "maxSpeed": 0.3, "fadeDist": 6, "fadeDistEnd": 45, "followCam": True, "useWind": True,
-     "useTurbulence": True, "maxTurbulence": 0.5, "turbulenceSpeed": 0.2, "doCollision": False},
+     "useTurbulence": True, "maxTurbulence": 0.5, "turbulenceSpeed": 0.2, "doCollision": False,
+     "rotateWithCamVel": False},
     {"name": "bngEarthWind", "class": "ForestWindEmitter", "persistentId": "3b0f6f0e-8f5e-4a51-9a59-0b8e2f6a1c24", "__parent": "Weather",
      "position": [0, 0, 0], "strength": 0.5},
     {"name": "bngEarthReverb", "class": "SFXEmitter", "persistentId": "3b0f6f0e-8f5e-4a51-9a59-0b8e2f6a1c25", "__parent": "Weather",
