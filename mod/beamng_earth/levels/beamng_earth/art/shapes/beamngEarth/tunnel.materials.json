@@ -1,0 +1,32 @@
+{
+  "bne_tunnel_light": {
+    "name": "bne_tunnel_light",
+    "mapTo": "bne_tunnel_light",
+    "class": "Material",
+    "version": 1.5,
+    "persistentId": "5951539d-2fb8-52fa-82f2-84e9fe21e54f",
+    "Stages": [
+      {
+        "baseColorFactor": [
+          1,
+          0.96,
+          0.88,
+          1
+        ],
+        "emissive": true,
+        "emissiveFactor": [
+          1,
+          0.93,
+          0.8
+        ],
+        "emissiveIntensityNits": 3000,
+        "roughnessFactor": 0.4
+      },
+      {},
+      {},
+      {}
+    ],
+    "groundType": "METAL",
+    "translucent": false
+  }
+}

@@ -1591,9 +1591,19 @@ def block_tunnel_holes(tunnels, cell_fn, frame, keep, cx, cy, square):
     the map cells under it (cell_fn(key) -> roads Features) through the anchor's TunnelProfiles."""
     lat, lon, u = keep["lat"], keep["lon"], keep["u"]
     keys = mapcells.cells_for_bbox(float(np.min(lat)), float(np.min(lon)), float(np.max(lat)), float(np.max(lon)))
-    cells = [cell_fn(k) for k in keys]
+    cells = []
+    for k in keys:
+        try:
+            cells.append(cell_fn(k))
+        except Exception as e:      # a cell not at hand (offline, a network error): no tunnels from it this time
+            log.debug("tunnel holes: cell %s: %s: %s", k, type(e).__name__, e)
+            cells.append(None)
     half = u.shape[0] * square / 2
-    parts = tunnels.parts(cells, (cx - half, cy - half, cx + half, cy + half))
+    try:
+        parts = tunnels.parts(cells, (cx - half, cy - half, cx + half, cy + half))
+    except Exception as e:          # a chain's other cells not at hand (offline): no holes this time
+        log.debug("tunnel holes: %s: %s", type(e).__name__, e)
+        return None
     if not parts:
         return None
     return tunnel_hole_mask(parts, u, cx, cy, square)

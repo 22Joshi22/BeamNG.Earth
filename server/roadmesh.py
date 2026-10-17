@@ -15,6 +15,8 @@ materials render on a mesh (probe 2026-10-11: they are translucent with zwrite, 
 ribbons in one mesh draw in a fixed order and do not flicker). No collision: the tyres stay on the
 terrain, whose surface masks carry the asphalt / dirt ground models. Pure given elev.
 """
+import math
+
 import numpy as np
 
 import cdae
@@ -202,6 +204,10 @@ TUNNEL_H = 6.8             # m from the floor to the vault's top
 PORTAL_FRAME = 6.0         # m of portal face around the opening (hides the terrain hole's 2 m steps)
 TUNNEL_SIDE = DECK_SIDE    # the tube's concrete
 TUNNEL_OVERLAP = 0.25      # m a tube piece reaches past a tile edge
+TUNNEL_LIGHT = "bne_tunnel_light"   # the lamps' emissive material (levels/beamng_earth/art/shapes/beamngEarth)
+TUNNEL_LAMP_OFF = 0.35     # two lamp lines, this share of the half-width either side of the centre, ...
+TUNNEL_LAMP_W = 0.25       # ... this wide, ...
+TUNNEL_LAMP_DROP = 0.05    # ... this far under the vault, lit along every other profile step (2-4 m lamps and gaps)
 
 
 def _tunnel_section(hw):
@@ -222,7 +228,7 @@ def tunnel(chunks, origin):
     rb = [(r, c) for r, c in zip(ribbons(tc), tc) if r[5] is not None]
     if not rb:
         return None
-    P, T, UV = [], [], []
+    P, T, UV, M = [], [], [], []           # M: per T entry its material index (0 the concrete, 1 the lamps)
     nv = 0
     for (left, right, v, _, _, z), c in rb:
         # a piece ending at a tile edge reaches TUNNEL_OVERLAP past it: the next tile's piece meets it there without a
@@ -263,7 +269,10 @@ def tunnel(chunks, origin):
             flip = (nrm * (ax - cen)).sum(1) < 0
             tri[flip] = tri[flip][:, ::-1]
             T.append(tri)
+            M.append(0)
             nv += 2 * k
+        # the lamps: under the vault along both lines, every other step, faced down
+        nv = _tunnel_lamps(P, T, UV, M, nv, mid, u, z, hw, origin)
         for end, at in zip(c.get("portal") or (False, False), (0, k - 1)):
             if not end:
                 continue
@@ -282,10 +291,39 @@ def tunnel(chunks, origin):
             A, A1, B, B1 = nv + i, nv + i + 1, nv + m + i, nv + m + i + 1
             tri = np.concatenate([np.stack([A, B, B1], 1), np.stack([A, B1, A1], 1)])
             T.append(np.concatenate([tri, tri[:, ::-1]]))   # seen from outside and from in the tube
+            M.append(0)
             nv += 2 * m
-    mats = [TUNNEL_SIDE]
+    mats = [TUNNEL_SIDE, TUNNEL_LIGHT]
     Tall = np.concatenate(T)
-    return (np.concatenate(P), Tall, np.concatenate(UV), mats, np.zeros(len(Tall), np.int64))
+    Mall = np.concatenate([np.full(len(t), m, np.int64) for t, m in zip(T, M)]) if M else np.zeros(len(Tall), np.int64)
+    return (np.concatenate(P), Tall, np.concatenate(UV), mats, Mall)
+
+
+def _tunnel_lamps(P, T, UV, M, nv, mid, u, z, hw, origin):
+    """Two dashed lamp strips under a tube's vault (material TUNNEL_LIGHT, index 1), appended to P, T, UV, M; returns
+    the new vertex count. Pure but for the lists."""
+    a = math.acos(TUNNEL_LAMP_OFF)
+    h = TUNNEL_WALL_H + math.sin(a) * (TUNNEL_H - TUNNEL_WALL_H) - TUNNEL_LAMP_DROP
+    k = len(mid)
+    for side in (-1.0, 1.0):
+        c = side * TUNNEL_LAMP_OFF * hw
+        for i in range(0, k - 1, 2):
+            quad = []
+            for j in (i, i + 1):
+                for off in (c - TUNNEL_LAMP_W / 2, c + TUNNEL_LAMP_W / 2):
+                    xy = mid[j] + u[j] * off
+                    quad.append([xy[0], xy[1], z[j] + h])
+            q = np.asarray(quad, np.float64) - origin
+            P.append(q)
+            UV.append(np.array([[0, 0], [1, 0], [0, 1], [1, 1]], np.float64))
+            tri = np.array([[nv, nv + 1, nv + 3], [nv, nv + 3, nv + 2]], np.int64)
+            nrm = np.cross(q[1] - q[0], q[3] - q[0])
+            if nrm[2] > 0:                  # faced down, into the tube
+                tri = tri[:, ::-1]
+            T.append(tri)
+            M.append(1)
+            nv += 4
+    return nv
 
 
 def write(path, mesh):
