@@ -31,7 +31,7 @@ import roads as roadsmod
 
 log = logging.getLogger("earthd.grading")
 
-VERSION = 1
+VERSION = 2
 PROFILE_STEP = 2.0          # m between profile samples
 SIGMA_M = 12.0              # m, profile smoothing of built roads
 DIRT_SIGMA_M = 5.0          # m, profile smoothing of gravel / dirt roads
@@ -39,7 +39,10 @@ SHOULDER_M = 1.0            # m of flat shoulder beyond the carriageway, each si
 SIDEWALK_MARGIN_M = 0.5     # m of flat ground beyond a sidewalk (roads.SIDEWALK_CLASSES)
 T_MIN, T_MAX = 5.0, 12.0    # m, transition back to the natural ground (5: roads close together meet gently)
 SLOPE_RUN = 2.0             # transition = SLOPE_RUN x the height difference (1:2 slope)
-VERTEX_STEP = 16.0          # m between the plan's vertices (segments for the grading pass)
+VERTEX_STEP = 4.0           # m between the plan's vertices (segments for the grading pass; linear between: at 16 m a
+                            # crest or a sag was a kink every 16 m, 'bumpy roads, worst uphill and at speed' on r/BeamNG,
+                            # 2026-10-17: a San Francisco street's slope changed 4.4 % rms per 2 m, 1.2 % at 4 m;
+                            # grading a 1 km block 0.06 -> 0.14 s)
 BUCKET = 32.0               # m, query-point buckets
 PAIR_BATCH = 2_000_000      # (segment, point) pairs graded at once (bounds the temporaries, ~200 MB)
 ROAD_LIFT = 0.04            # m the physics ground is raised under roads (see Grader.apply)

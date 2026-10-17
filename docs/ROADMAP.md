@@ -92,6 +92,8 @@ whatever order tiles loaded, after any number of rebases, on any machine.
 
 ### Reddit feedback (r/BeamNG release thread, read 2026-10-17; in this order)
 8. **Bumpy roads**, worst uphill and at speed (three players): smooth the road profile / the terrain under it.
+   *1.4.35: the grading plan's vertices 16 -> 4 m (a slope kink every 16 m on crests and sags; a San Francisco
+   street in-game: slope change per 2 m 4.4 % rms / 11.5 % max -> 0.8 % / 1.9 %).*
 9. **Sidewalks lying flat like a plane** instead of following the ground, and **non-colliding geometry over
    roads**; everything feeling oversized (buildings crowding narrow streets); some roads missing.
 10. **Las Vegas Strip partly flooded** (water where there is none).

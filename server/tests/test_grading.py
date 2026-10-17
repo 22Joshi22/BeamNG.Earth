@@ -26,6 +26,20 @@ class ProfileTest(unittest.TestCase):
         self.assertEqual(len(sm), len(s))
 
 
+class CrestTest(unittest.TestCase):
+    def test_no_kinks_over_a_crest(self):
+        # a road over a crest (the grade falls 4 % per 10 m): the graded centreline's slope changes smoothly, not
+        # in a kink at every plan vertex (r/BeamNG 2026-10-17: 'bumpy roads, worst uphill and at speed'; with
+        # 16 m vertices the slope jumped 6.4 % at each)
+        xy = np.stack([np.arange(-150.0, 150.1, grading.PROFILE_STEP), np.zeros(151)], axis=1)
+        z = 20.0 - 0.002 * xy[:, 0] ** 2
+        plan = grading._plan(xy, z, roads.Spec(7.0, "paved", False, "residential"))
+        px = np.arange(-60.0, 60.1, 0.5)
+        out = grading.grade_points(px, np.zeros(len(px)), 20.0 - 0.002 * px ** 2, [plan])
+        slope = np.diff(out[::4]) / 2.0                     # per 2 m (the terrain grid)
+        self.assertLess(np.abs(np.diff(slope)).max(), 0.02)
+
+
 def slope_ground(x, y):
     """A hillside: 10 % up to the north, plus small bumps."""
     return 0.10 * y + 0.2 * np.sin(x / 7.0) * np.cos(y / 5.0)
