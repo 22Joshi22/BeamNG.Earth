@@ -56,7 +56,8 @@ WALL_FLAT_M = 2.0           # ... after one terrain grid step at the road's leve
                             # itself, the 2 m grid's triangles stood as dark wedges in front of its face; the wall's
                             # top (roadmesh.WALL_THICK_M) covers the strip
 TUNNEL_KEEP_IN_M = 3.0      # (roads.LOW_HOLE_M: a low arch's mouths, flat at its floor)
-TUNNEL_KEEP_M = 3.0         # m beside a covered tunnel's road where the ground over it is left ungraded
+TUNNEL_KEEP_M = 5.0         # m beside a covered tunnel's road where the ground over it is left ungraded
+WALL_AHEAD_M = 2.5          # ... only beside a segment or this little past its end (a joint between two: VERTEX_STEP)
 RETRY_S = 60.0              # s before a cell whose road data failed is asked for again
 
 
@@ -369,14 +370,14 @@ def grade_points(px, py, base, plans, lift=0.0):
         return out
     A, B, ZA, ZB, H = (np.concatenate(v) for v in (A, B, ZA, ZB, H))
     import fast
-    if fast.AVAILABLE and getattr(fast._ef, "VERSION", 0) >= 26:   # the Rust loop: the same pairs in the same order
+    if fast.AVAILABLE and getattr(fast._ef, "VERSION", 0) >= 27:   # the Rust loop: the same pairs in the same order
         f64 = np.float64
         return fast._ef.grade_points(np.ascontiguousarray(px, f64), np.ascontiguousarray(py, f64),
                                      np.ascontiguousarray(base, f64), np.ascontiguousarray(A[:, :2], f64),
                                      np.ascontiguousarray(B[:, :2], f64), np.ascontiguousarray(ZA, f64),
                                      np.ascontiguousarray(ZB, f64), np.ascontiguousarray(H, f64), float(lift),
                                      float(SLOPE_RUN), float(T_MIN), float(T_MAX), float(BLEND_R), float(BUCKET),
-                                     float(WALL_CUT_M), float(WALL_T_M), float(WALL_FLAT_M))
+                                     float(WALL_CUT_M), float(WALL_T_M), float(WALL_FLAT_M), float(WALL_AHEAD_M))
     reach = H + T_MAX
     lo_x = np.minimum(A[:, 0], B[:, 0]) - reach
     hi_x = np.maximum(A[:, 0], B[:, 0]) + reach
@@ -421,7 +422,7 @@ def grade_points(px, py, base, plans, lift=0.0):
         side = np.abs(qx * ab[:, 1] - qy * ab[:, 0]) / Lab
         along = (qx * ab[:, 0] + qy * ab[:, 1]) / Lab
         ahead = np.maximum(np.maximum(-along, along - Lab), 0.0)
-        wall = (base[idx] - target > WALL_CUT_M) & (ahead < side)
+        wall = (base[idx] - target > WALL_CUT_M) & (ahead < side) & (ahead < WALL_AHEAD_M)
         T = np.where(wall, WALL_T_M, np.clip(SLOPE_RUN * np.abs(target - base[idx]), T_MIN, T_MAX))
         u = np.clip((d - H[s_] - np.where(wall, WALL_FLAT_M, 0.0)) / T, 0.0, 1.0)
         w = 1.0 - u * u * (3.0 - 2.0 * u)           # 1 on the core, smooth to 0 over T

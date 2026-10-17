@@ -1662,14 +1662,16 @@ def tunnel_hole_mask(parts, u, cx, cy, square, heights=None):
                 (g < floor + th + TUNNEL_HOLE_MARGIN)
             if low:     # a low arch: its mouths (arch_raise left them flat at the floor), one grid step past them whatever
                 # the height (the squares up to the raised soil over the vault), and nothing more (its thin soil cover
-                # lay within the band all along: cut, the tube was seen into from above)
+                # lay within the band all along: cut, the tube was seen into from above); wider than arch_raise's soil
+                # (a raised square beside its wall stood in the tube near the mouth, 2026-10-17)
                 s_ = sj[j] + t * (sj[j + 1] - sj[j])
                 ends = (s_ <= LOW_HOLE_M + LOW_HOLE_STEP) | (s_ >= sj[-1] - LOW_HOLE_M - LOW_HOLE_STEP)
-                hit = inside & (d <= hw) & ends
+                hit = inside & (d <= hw + ARCH_SIDE_M + 1.0) & ends     # (inside the portal face: LOW_PORTAL_SIDE)
             mask[iy0:iy1 + 1, ix0:ix1 + 1] |= hit
     return mask
 
 
+ARCH_SIDE_M = 1.0           # m beside a low arch's tube its soil is raised too
 ARCH_SOIL_MIN = 0.6         # m of ground kept over a low arch's vault (arch_raise)
 
 
@@ -1689,7 +1691,7 @@ def arch_raise(parts, heights, px, py, z):
         zf = np.asarray(zf, np.float64)
         if len(xy) < 2 or not np.isfinite(zf).all():
             continue
-        hw = spec.width / 2 + roadmesh.TUNNEL_SHOULDER + 1.0
+        hw = spec.width / 2 + roadmesh.TUNNEL_SHOULDER + ARCH_SIDE_M
         sj = np.r_[0.0, np.cumsum(np.hypot(*np.diff(xy, axis=0).T))]
         lo = xy.min(0) - hw
         hi = xy.max(0) + hw
