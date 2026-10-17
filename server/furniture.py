@@ -221,6 +221,30 @@ def _link_check(junctions):
     return link_ok
 
 
+SIGN_CLEAR_M = 0.6          # m a junction sign stands clear of every carriageway's edge
+
+
+def _off_carriageways(c, u, right, along, out, lines):
+    """The point along m past the junction c along u and out m to the right, moved further along and out (up to
+    10 m and 3 m) until it is SIGN_CLEAR_M clear of every carriageway in lines [(half width, centreline)]; None
+    when nowhere is: stop signs and signals stood in the middle of a wide road beside the junction (Boston Street,
+    Baltimore, the user's report 2026-10-17: 6 in one tile)."""
+    for da in (0.0, 2.0, 4.0, 6.0, 8.0, 10.0):
+        for do in (0.0, 1.0, 2.0, 3.0):
+            q = c + u * (along + da) + right * (out + do)
+            if all(_seg_dist_min(q, ln) >= h + SIGN_CLEAR_M for h, ln in lines):
+                return q
+    return None
+
+
+def _seg_dist_min(p, line):
+    a, b = line[:-1], line[1:]
+    d = b - a
+    L2 = np.maximum((d * d).sum(1), 1e-12)
+    t = np.clip(((p - a) * d).sum(1) / L2, 0, 1)
+    return float(np.hypot(*(a + t[:, None] * d - p).T).min())
+
+
 def junction_props(roads, box, curb_h=0.15, left_hand=False):
     """Signals at urban junctions of two or more major roads (every arm), stop signs at urban junctions
     of minor roads (the minor arms meeting a major road; the stem of a T; half the four-way ones, hashed).
@@ -232,12 +256,14 @@ def junction_props(roads, box, curb_h=0.15, left_hand=False):
     link_ok = _link_check(junctions)
     import islands
     ring = islands.ring_fids(roads)
+    lines = [(spec.width / 2, np.asarray(pts, np.float64)[:, :2]) for _, spec, pts, _ in roads if len(pts) >= 2]
     for k, arms in junctions.items():
         if len(arms) < 3 or not all(a[1].urban for a in arms):
             continue
         p = arms[0][3]
         if not (x0 <= p[0] < x1 and y0 <= p[1] < y1):
             continue
+        near = [(h, ln) for h, ln in lines if np.hypot(*(ln - p[:2]).T).min() < 80.0]
         put = junction_controls(arms, k, link_ok, ring)
         if not put:
             continue
@@ -246,8 +272,8 @@ def junction_props(roads, box, curb_h=0.15, left_hand=False):
             # the approach comes in along -u; its right is (-u_y, u_x)... rotated: right of travel (-u)
             inc = -u
             right = np.array([inc[1], -inc[0]]) * (-1 if left_hand else 1)     # the kerb side of the approach
-            q = c[:2] + u * (wide + 2.5) + right * (spec.width / 2 + 1.0)
-            if not (x0 - 20 <= q[0] < x1 + 20 and y0 - 20 <= q[1] < y1 + 20):
+            q = _off_carriageways(c[:2], u, right, wide + 2.5, spec.width / 2 + 1.0, near)
+            if q is None or not (x0 - 20 <= q[0] < x1 + 20 and y0 - 20 <= q[1] < y1 + 20):
                 continue
             rows.append([what, round(float(q[0]), 2), round(float(q[1]), 2), round(float(c[2] + curb_h), 2),
                          round(_yaw(right[0], right[1]), 1), 1.0, 9.4 if what == G_SIGNAL else 3.0, 0.0])

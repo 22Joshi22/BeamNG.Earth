@@ -102,3 +102,27 @@ class Mesh(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class OpenUnderpass(unittest.TestCase):
+    def chunks(self, elev):
+        from test_roads import features, FRAME, M_LAT
+        f = features([[(-100, 0), (100, 0)]], ["residential"], flags=[(0, "is_tunnel")])
+        tp = roads.TunnelProfiles(FRAME, lambda key: f, elev)
+        return roads._tunnel_chunks(tp, [f], (-128.0, -128.0, 128.0, 128.0))
+
+    def test_flat_ground_is_a_road_in_the_open(self):
+        # a 'tunnel' under a park bridge in a trench: the ground over it never rises TUNNEL_OPEN_COVER over the road
+        ch = self.chunks(lambda la, lo: np.full(np.shape(la), 10.0))
+        self.assertTrue(ch)
+        self.assertFalse(any(c.get("tunnel") for c in ch), "no tube or portals")
+        self.assertTrue(any(c["m"] == roads.LOOK["paved"]["m"] for c in ch), "the road on the ground")
+
+    def test_under_a_hill_keeps_its_tube(self):
+        from test_roads import LON, M_LON
+
+        def hill(la, lo):
+            e = (np.asarray(lo) - LON) * M_LON
+            return 10.0 + np.maximum(0.0, 40.0 - np.abs(e) * 0.4)
+        ch = self.chunks(hill)
+        self.assertTrue(any(c.get("tunnel") for c in ch))

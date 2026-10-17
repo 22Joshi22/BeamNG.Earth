@@ -155,3 +155,24 @@ class DilateTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RockSinkTest(unittest.TestCase):
+    def test_rocks_sink_into_slopes_trees_do_not(self):
+        # a 45-degree hillside rising to the east (z = e): a 2 m rock sinks ROCK_SINK of its height, a tree stays
+        f = geodesy.EnuFrame(LAT, LON)
+        e = np.array([10.0, 20.0, 30.0]); n = np.zeros(3)
+        la, lo, _ = f.enu_to_geodetic(e, n, np.zeros(3))
+        it = veg.Items(lo, la, np.array([2.0, 2.0, 15.0]), np.ones(3), np.zeros(3, np.uint8),
+                       np.array([veg.G_ROCK, veg.G_DESERT_ROCK, veg.G_CONIFER], np.uint8), np.zeros(3), np.zeros(3),
+                       np.ones(3))
+
+        def elev(lat, lon):
+            x, _, _ = f.geodetic_to_enu(np.asarray(lat), np.asarray(lon), np.zeros(np.size(lat)))
+            return np.asarray(x, np.float64)
+        z = veg._sink_rocks(f, it, e, n, e.copy(), elev)
+        self.assertAlmostEqual(z[0], 10.0 - veg.ROCK_SINK * 2.0, delta=0.02)
+        self.assertAlmostEqual(z[1], 20.0 - veg.ROCK_SINK * 2.0, delta=0.02)
+        self.assertEqual(z[2], 30.0)
+        flat = veg._sink_rocks(f, it, e, n, np.zeros(3), lambda la, lo: np.zeros(np.size(la)))
+        self.assertTrue(np.allclose(flat, 0.0, atol=0.02), "no sinking on flat ground")

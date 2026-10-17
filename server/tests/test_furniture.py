@@ -185,3 +185,21 @@ class UnderDeckTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SignClearance(unittest.TestCase):
+    def test_moved_off_a_wide_road_beside_the_junction(self):
+        # the spot 'past the junction, right of the approach' lies on a 16 m road running beside it (Boston Street,
+        # Baltimore, 2026-10-17): the sign moves along / out until clear, never onto a carriageway
+        wide = (3.0, np.array([[-50.0, -4.0], [50.0, -4.0]]))     # crossing the approach just past the junction
+        own = (3.0, np.array([[0.0, 0.0], [0.0, -60.0]]))         # the approach, away from the junction along -y
+        q = furniture._off_carriageways(np.array([0.0, 0.0]), np.array([0.0, -1.0]), np.array([1.0, 0.0]), 2.0, 4.0,
+                                        [wide, own])
+        self.assertIsNotNone(q)
+        for h, ln in (wide, own):
+            self.assertGreaterEqual(furniture._seg_dist_min(q, ln), h + furniture.SIGN_CLEAR_M - 1e-9)
+
+    def test_nowhere_clear_no_sign(self):
+        big = (40.0, np.array([[-100.0, 0.0], [100.0, 0.0]]))
+        self.assertIsNone(furniture._off_carriageways(np.zeros(2), np.array([0.0, 1.0]), np.array([1.0, 0.0]),
+                                                      2.0, 4.0, [big]))

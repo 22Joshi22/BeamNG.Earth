@@ -362,7 +362,7 @@ class DoorTest(unittest.TestCase):
         self.assertEqual(len(rows), 1)
         g, x, y, z, yaw, sc, h, r = rows[0]
         self.assertEqual(g, "door")
-        self.assertAlmostEqual(y, -0.03, places=2)                     # on the south wall
+        self.assertAlmostEqual(y, -bld.DOOR_OUT_M, places=2)            # on the south wall (its panel just out of it)
         self.assertAlmostEqual(yaw, 0.0)                               # the wall runs +x
 
     def test_main_street_shopfronts(self):
@@ -529,3 +529,14 @@ class PhotoFillTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class StoopTest(unittest.TestCase):
+    def test_steps_reach_the_lowest_ground(self):
+        # a row house on a street falling 1.5 m along it: its front steps go down to the lowest ground (they floated)
+        spec = bld.plan(rect(0, 0, 6, 14), {"class": "house"}, 1, 39.28, -76.59)
+        spec.roof, spec.band, spec.stoop = "flat", bld.BAND_BRICK, (0, 3.0)
+        P, UV, T, M, mats, C = bld.build([(spec, 10.0, 11.5)])
+        front = (P[:, 1] < 0.0) & (P[:, 1] > -2.0)          # out from the wall y = 0 (edge 0 runs along +x)
+        self.assertTrue(front.any())
+        self.assertLessEqual(P[front, 2].min(), 10.0 - 0.3 + 1e-6)

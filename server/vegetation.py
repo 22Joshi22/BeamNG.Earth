@@ -648,6 +648,7 @@ def tile_items(frame, tx, ty, veg, cell_ready, elev, sea=None, as_json=False):
         return []
     zg = np.asarray(elev(it.lat, it.lon), np.float64)
     _, _, z = frame.geodetic_to_enu(it.lat, it.lon, zg)
+    z = _sink_rocks(frame, it, e, n, np.asarray(z, np.float64), elev)
     if as_json and fast._ef is not None and hasattr(fast._ef, "veg_rows_json"):
         # Rust: the same text json.dumps would write for the rows below, without a Python list per tree
         f64 = lambda a: np.ascontiguousarray(a, np.float64)     # noqa: E731
@@ -658,6 +659,30 @@ def tile_items(frame, tx, ty, veg, cell_ready, elev, sea=None, as_json=False):
     return [[int(g), round(float(a), 2), round(float(b), 2), round(float(c), 2), round(float(yw), 1),
              round(float(sc), 3), round(float(h), 1), round(float(r), 4)]
             for g, a, b, c, yw, sc, h, r in zip(it.group, e, n, np.asarray(z), it.yaw, it.scale, it.height, it.rank)]
+
+
+ROCK_SINK = 0.35            # a rock sinks this share of its height per unit of ground slope (1 = 45 degrees) ...
+ROCK_SINK_MAX = 0.6         # ... up to this share: on a steep slope its downhill side stood clear of the ground and
+                            # its flat underside showed (Stelvio pass, the user's report 2026-10-17)
+SLOPE_STEP_M = 1.5
+
+
+def _sink_rocks(frame, it, e, n, z, elev):
+    """z with the rocks lowered into sloping ground (ROCK_SINK)."""
+    rock = (it.group == G_ROCK) | (it.group == G_DESERT_ROCK)
+    if not rock.any():
+        return z
+    k = np.flatnonzero(rock)
+    d = SLOPE_STEP_M
+    ex = np.concatenate([e[k] + d, e[k] - d, e[k], e[k]])
+    ny = np.concatenate([n[k], n[k], n[k] + d, n[k] - d])
+    la, lo, _ = frame.enu_to_geodetic(ex, ny, np.zeros(len(ex)))
+    _, _, zz = frame.geodetic_to_enu(la, lo, np.asarray(elev(la, lo), np.float64))
+    zz = np.asarray(zz, np.float64).reshape(4, len(k))
+    slope = np.hypot(zz[0] - zz[1], zz[2] - zz[3]) / (2 * d)
+    z = z.copy()
+    z[k] -= np.minimum(ROCK_SINK * slope, ROCK_SINK_MAX) * it.height[k]
+    return z
 
 
 def _concat_all(parts):

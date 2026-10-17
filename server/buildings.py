@@ -763,8 +763,9 @@ def _walls(m, spec, ring, z0, z_eave, mat_idx, lite=False):
         za = z0
         if base - z0 > FOUNDATION_M + 0.4:
             pv0, pv1 = _band_v(spec.band, spec.band[0])
-            m.quad((a[0], a[1], z0), (b[0], b[1], z0), (b[0], b[1], base - 0.3), (a[0], a[1], base - 0.3),
-                   (0.002, pv0), (0.012, pv0), (0.012, pv0 + 0.01), (0.002, pv0 + 0.01), fac)
+            hp = (base - 0.3) - z0                      # the plinth: the band's plain strip at its scale
+            _plain_strip(m, a, b, z0, base - 0.3, bays_per_tile, bay, pv0,
+                         pv0 + (pv1 - pv0) * min(1.0, hp / max(spec.floor_h, 1e-3)), fac)
             za = base - 0.3
         for f in range(spec.floors):
             zb = z_eave if f == spec.floors - 1 else base + (f + 1) * spec.floor_h
@@ -785,8 +786,7 @@ def _walls(m, spec, ring, z0, z_eave, mat_idx, lite=False):
                         g = good[int(_hash01(spec.seed, i, f, k) * len(good))]
                         pa, pb = a + (b - a) * (k / nb), a + (b - a) * ((k + 1) / nb)
                         if k == dk:
-                            m.quad((pa[0], pa[1], za), (pb[0], pb[1], za), (pb[0], pb[1], zb), (pa[0], pa[1], zb),
-                                   (0.002, v0), (0.012, v0), (0.012, v0 + 0.01), (0.002, v0 + 0.01), mat)
+                            _plain_strip(m, pa, pb, za, zb, bays_per_tile, bay, v0, v1, mat)
                             continue
                         m.quad((pa[0], pa[1], za), (pb[0], pb[1], za), (pb[0], pb[1], zb), (pa[0], pa[1], zb),
                                (g / bays_per_tile, v0), ((g + 1) / bays_per_tile, v0), ((g + 1) / bays_per_tile, v1),
@@ -796,21 +796,45 @@ def _walls(m, spec, ring, z0, z_eave, mat_idx, lite=False):
             v0, v1 = _band_v(spec.band, band_k)
             door = spec.door if (f == 0 and spec.roof == "flat" and spec.door and spec.door[0] == i) else None
             if door is not None and DOOR_GAP_M < door[1] < L - DOOR_GAP_M:
-                # the band either side of the door; a plain strip of the sheet's wall behind it
+                # the band either side of the door; a plain strip of the sheet's wall behind it, whole bays of the
+                # band (a gap cutting a bay left a sliver of its window beside the door, the user 2026-10-17)
                 s0, s1 = door[1] - DOOR_GAP_M, door[1] + DOOR_GAP_M
+                if nb >= 1:
+                    bw = L / nb
+                    s0, s1 = max(0.0, math.floor(s0 / bw) * bw), min(L, math.ceil(s1 / bw) * bw)
                 for ta, tb in ((0.0, s0), (s1, L)):
+                    if tb - ta < 1e-3:
+                        continue
                     pa, pb = a + (b - a) * (ta / L), a + (b - a) * (tb / L)
                     m.quad((pa[0], pa[1], za), (pb[0], pb[1], za), (pb[0], pb[1], zb), (pa[0], pa[1], zb),
                            (uu * ta / L, v0), (uu * tb / L, v0), (uu * tb / L, v1), (uu * ta / L, v1), mat)
                 pa, pb = a + (b - a) * (s0 / L), a + (b - a) * (s1 / L)
-                m.quad((pa[0], pa[1], za), (pb[0], pb[1], za), (pb[0], pb[1], zb), (pa[0], pa[1], zb),
-                       (0.002, v0), (0.012, v0), (0.012, v0 + 0.01), (0.002, v0 + 0.01), mat)
+                _plain_strip(m, pa, pb, za, zb, bays_per_tile, bay, v0, v1, mat)
                 za = zb
                 continue
             # the foundation and the parapet stretch the band a little; the windows stay a floor's height
             m.quad((a[0], a[1], za), (b[0], b[1], za), (b[0], b[1], zb), (a[0], a[1], zb),
                    (0, v0), (uu, v0), (uu, v1), (0, v1), mat)
             za = zb
+
+
+PLAIN_STRIP = 0.3           # of a bay: the plain wall between two windows of a sheet's band (centred on a bay edge)
+
+
+def _plain_strip(m, pa, pb, za, zb, bays_per_tile, bay_w, v0, v1, mat):
+    """The wall from pa to pb (za..zb) in slices of the band's plain strip between its first two windows, at the
+    sheet's own scale (a bay of the sheet = bay_w m). The wall behind a front door was one texel of the sheet
+    stretched over it, a blurred smear round every door (the user, 2026-10-17)."""
+    L = float(np.hypot(*(pb - pa)))
+    if L < 1e-3:
+        return
+    c, h = 1.0 / bays_per_tile, 0.5 * PLAIN_STRIP / bays_per_tile
+    sw = max(0.1, PLAIN_STRIP * bay_w)                  # m one slice covers
+    n = max(1, int(round(L / sw)))
+    for j in range(n):
+        qa, qb = pa + (pb - pa) * (j / n), pa + (pb - pa) * ((j + 1) / n)
+        m.quad((qa[0], qa[1], za), (qb[0], qb[1], za), (qb[0], qb[1], zb), (qa[0], qa[1], zb),
+               (c - h, v0), (c + h, v0), (c + h, v1), (c - h, v1), mat)
 
 
 def _cornice(m, spec, ring, z_eave, mat_idx):
@@ -884,11 +908,23 @@ PORCH_H_M = 2.7             # the porch roof's underside above the floor
 PORCH_DECK_M = 0.35         # the deck's top above the ground
 
 
+def drawn_ring(spec):
+    """The footprint its walls are drawn on: a pitched roof's house is its oriented box (build); its door, steps and
+    porch go on these walls (on the map's outline they stood off a box wall at an angle, or inside it, only the
+    door's frame showing: Stelvio pass, the user's reports 2026-10-17)."""
+    ring = spec.ring
+    if spec.roof != "flat":
+        c, u, hl, hw = oriented_box(ring)
+        v = np.array([-u[1], u[0]])
+        ring = np.array([c - u * hl - v * hw, c + u * hl - v * hw, c + u * hl + v * hw, c - u * hl + v * hw])
+    return ring
+
+
 def _porch(m, spec, base, mat_idx):
     """A front porch on the front door's wall (spec.door: (edge, distance along it) of spec.ring): a deck, three
     posts and a shallow roof, the house's trim white and its roof's colour."""
     edge, sd = spec.door
-    ring = spec.ring
+    ring = drawn_ring(spec)
     a, b = ring[edge], ring[(edge + 1) % len(ring)]
     L = float(math.hypot(*(b - a)))
     if L < 4.0:
@@ -908,8 +944,10 @@ def _porch(m, spec, base, mat_idx):
     _box(m, c + out * (D / 2 + 0.1), d, w / 2 + 0.15, D / 2 + 0.1, top, top + 0.18, roof)          # roof
 
 
-def _stoop(m, spec, ring, base, mat_idx):
-    """Two white steps out from the front door (spec.stoop: (edge, distance along it))."""
+def _stoop(m, spec, ring, gmin, base, mat_idx):
+    """Two white steps out from the front door (spec.stoop: (edge, distance along it)), down to the footprint's
+    lowest ground: from the highest one only, they floated where the street falls away (Fells Point, the user's
+    report 2026-10-17)."""
     edge, sd = spec.stoop
     a, b = ring[edge], ring[(edge + 1) % len(ring)]
     L = float(math.hypot(*(b - a)))
@@ -921,7 +959,7 @@ def _stoop(m, spec, ring, base, mat_idx):
     white = mat_idx["bne_bld_fac_white"]
     for k, (depth, z1) in enumerate(((0.9, STOOP_H), (0.45, STOOP_H / 2))):
         p = c + out * (0.9 + depth / 2) if k == 1 else c + out * depth / 2
-        _box(m, p, d, 0.8, depth / 2, base - 0.3, base + z1, white)
+        _box(m, p, d, 0.8, depth / 2, min(gmin, base) - 0.3, base + z1, white)
 
 
 def _steeple(m, spec, z_eave, mat_idx):
@@ -1194,11 +1232,7 @@ def build(specs_and_ground, lite=False):
     m = Mesh()
     for spec, gmin, gmax in specs_and_ground:
         mat_idx = _Looks(spec.seed)
-        ring = spec.ring
-        if spec.roof != "flat":
-            c, u, hl, hw = oriented_box(ring)
-            v = np.array([-u[1], u[0]])
-            ring = np.array([c - u * hl - v * hw, c + u * hl - v * hw, c + u * hl + v * hw, c - u * hl + v * hw])
+        ring = drawn_ring(spec)
         mh = spec.min_h or 0.0
         if spec.deck and not lite and _parking_deck(m, spec, gmin, gmax, mat_idx):
             continue
@@ -1215,7 +1249,7 @@ def build(specs_and_ground, lite=False):
         if spec.steeple:
             _steeple(m, spec, z_eave, mat_idx)
         if spec.stoop and not lite:
-            _stoop(m, spec, ring, gmax, mat_idx)
+            _stoop(m, spec, ring, gmin, gmax, mat_idx)
         if spec.porch and spec.door and not lite:
             _porch(m, spec, gmax, mat_idx)
         if spec.sign is not None and spec.roof == "flat" and not lite:
@@ -1613,6 +1647,9 @@ def write(path, mesh, collision_only=False):
                       collision_only=collision_only)
 
 
+DOOR_OUT_M = 0.09            # m the door model's origin stands off the wall: its panel is 6.9 cm behind the origin
+                             # (both Building Architect doors), so at 3 cm it was inside the wall, only the frame
+                             # showing (Fells Point, 2026-10-17)
 STOOP_SHARE = 0.8           # row houses with a front stoop (Baltimore's white marble steps)
 STOOP_H = 0.36              # m: two steps up to the door
 DOOR_ROAD_M = 30.0          # a front door on the wall facing the nearest road within this
@@ -1659,6 +1696,7 @@ def doors(items, lines, x0, y0, drives=None):
     D = B - A
     L2 = np.maximum((D * D).sum(1), 1e-12)
     rows = []
+    others = [(spec, spec.ring + np.array([x0, y0])) for spec, _, _ in items if (spec.min_h or 0.0) <= 0.5]
     for spec, gmin, gmax in items:
         no_door = False
         if spec.plain or spec.floors >= 7 or spec.band in (BAND_OFFICE, BAND_OFFICE2) or spec.wall:
@@ -1668,7 +1706,7 @@ def doors(items, lines, x0, y0, drives=None):
         storefront = (spec.shop or spec.windows is False) and not spec.plain and spec.roof == "flat"
         if no_door and not storefront:
             continue
-        ring = spec.ring + np.array([x0, y0])
+        ring = drawn_ring(spec) + np.array([x0, y0])
         best = None
         for i in range(len(ring)):
             a, b = ring[i], ring[(i + 1) % len(ring)]
@@ -1697,10 +1735,10 @@ def doors(items, lines, x0, y0, drives=None):
             spec.front = edge                   # a big box: its storefront faces the road
             if storefront:
                 spec.sign = edge
-            rows.extend(_wall_sign(spec, a, d, Le, out, gmax))
+            rows.extend(_sign_in_open(_wall_sign(spec, a, d, Le, out, gmax), spec, d, out, others))
             continue
         if spec.cls in RESTAURANT_CLASSES and spec.floors == 1:
-            rows.extend(_wall_sign(spec, a, d, Le, out, gmax))
+            rows.extend(_sign_in_open(_wall_sign(spec, a, d, Le, out, gmax), spec, d, out, others))
         if spec.shop:
             if storefront and not spec.wall:
                 spec.sign = edge                # the sign band over the street wall's shopfront
@@ -1736,7 +1774,7 @@ def doors(items, lines, x0, y0, drives=None):
         if spec.roof != "flat" and not narrow and _hash01(spec.seed, "fence") < FENCE_SHARE:
             rows.extend(_front_fence(spec, a, d, Le, f, A[kseg], D[kseg], L2[kseg], SHALF[kseg], gmin,
                                      drives is not None and spec.wall and Le >= 7.0))
-        p = a + d * (Le * f) + out * 0.03
+        p = a + d * (Le * f) + out * DOOR_OUT_M
         base = gmax + (STOOP_H if spec.stoop else 0.0) + (PORCH_DECK_M if spec.porch else 0.0)   # (the deck / stoop)
         rows.append([G_DOOR, round(float(p[0]), 2), round(float(p[1]), 2), round(base, 2),
                      round(math.degrees(math.atan2(d[1], d[0])) % 360.0, 1), 1.0, 2.2,
@@ -1751,6 +1789,25 @@ WALL_SIGNS = {"logistics": ("wallsign_logistics", 10.8, 5.8, True), "rentabox": 
               "lemon": ("wallsign_lemon", 11.5, 3.6, True), "burger": ("wallsign_turboburger", 5.8, 2.4, False)}
 WALL_SIGN_SHARE = 0.6
 RESTAURANT_CLASSES = {"restaurant", "fast_food", "cafe"}
+
+
+def _sign_in_open(rows, spec, d, out, others):
+    """rows (a _wall_sign) kept only when the panel and the air in front of it are clear of the other buildings:
+    a sign on a wall hidden behind a neighbour stood out through the neighbour at the wall's angle (Stelvio
+    pass, a big box's sign through the shop in front of it, the user's report 2026-10-17)."""
+    if not rows:
+        return rows
+    _, x, y, _, _, _, h, _ = rows[0]
+    w = WALL_SIGNS[next(k for k, v in WALL_SIGNS.items() if v[0] == rows[0][0])][1] * h / \
+        WALL_SIGNS[next(k for k, v in WALL_SIGNS.items() if v[0] == rows[0][0])][2]
+    c = np.array([x, y])
+    probes = [c + d * (w / 2 * f) + out * o for f in (-1.0, 0.0, 1.0) for o in (0.0, 1.5)]
+    for other, ring in others:
+        if other is spec:
+            continue
+        if any(_inside(ring, p) for p in probes):
+            return []
+    return rows
 
 
 def _wall_sign(spec, a, d, Le, out, gmax):

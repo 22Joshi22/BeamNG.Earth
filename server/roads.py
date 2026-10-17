@@ -860,6 +860,10 @@ TUNNEL_COVER = 8.0      # m from the floor up to the ground over it wanted insid
 TUNNEL_GRADE = 0.05     # a tunnel floor falls no steeper than this from a portal
 TUNNEL_STEP = 4.0       # m between tunnel profile points
 TUNNEL_WET_SHARE = 0.25 # a tunnel part with more of its points under water is left out (TunnelProfiles.wet)
+TUNNEL_OPEN_COVER = 4.0 # m: a 'tunnel' whose ground nowhere rises this far over the straight line between its portals
+                        # is an underpass in the open (under a bridge the map does not draw as a deck over it): a road
+                        # on the ground, no tube, portals or holes (Central Park's 86th Street Transverse under its
+                        # park bridges got portal frames standing in the open, the user's report 2026-10-17)
 
 
 def tunnel_profile(lines, ground_fn):
@@ -1523,7 +1527,33 @@ class TunnelProfiles(BridgeProfiles):
                     # 100 m down: a car in the tube would float; earthd / blockworker set the sea's depth)
 
     def _solve(self, comp, pool, ground):
-        return tunnel_profile([pool[k][1] for k in comp], self._ground)
+        lines = [pool[k][1] for k in comp]
+        straight = deck_heights(lines, self._ground)
+        cover = [float(np.max(self._ground(np.asarray(ln, np.float64)) - z)) for ln, z in zip(lines, straight)
+                 if np.isfinite(z).all()]
+        if cover and max(cover) < TUNNEL_OPEN_COVER:
+            with self.lock:
+                self.open.update(k[0] for k in comp)
+            return [np.full(len(ln), np.nan) for ln in lines]     # (parts() gives these as open roads)
+        return tunnel_profile(lines, self._ground)
+
+    open = None
+
+    def __init__(self, *a, **kw):
+        super().__init__(*a, **kw)
+        self.open = set()           # fids of the tunnel parts that are open underpasses (TUNNEL_OPEN_COVER)
+
+    def open_parts(self, cells_feats, box):
+        """[(fid, spec, xy, lon)] of the open underpasses near box: roads on the ground (_tunnel_chunks)."""
+        self.parts(cells_feats, box)                # (resolves the chains: fills self.open)
+        out = []
+        with self.lock:
+            for (fid, j), (spec, xy, z, lon) in self.done.items():
+                if fid in self.open:
+                    out.append((fid, spec, xy, lon))
+        x0, y0, x1, y1 = box
+        return [p for p in out if not (p[2][:, 0].max() < x0 - NEAR_M or p[2][:, 0].min() > x1 + NEAR_M
+                                       or p[2][:, 1].max() < y0 - NEAR_M or p[2][:, 1].min() > y1 + NEAR_M)]
 
     def parts(self, cells_feats, box):
         out = super().parts(cells_feats, box)
@@ -1614,6 +1644,17 @@ def _tunnel_chunks(tunnels, cells, exact):
     built around it, roadmesh.tunnel) and its lines, every one "fixed" at the floor's heights; a surface chunk
     ending at its part's end carries "portal": [start is one, end is one]."""
     out = []
+    if getattr(tunnels, "open_parts", None) is not None:
+        for fid, spec, xy, lon in tunnels.open_parts(cells, exact):
+            gz = tunnels._ground(np.asarray(xy, np.float64))
+            pts = np.c_[xy, gz]
+            for look, w, line in [(LOOK[spec.kind], spec.width, pts)] + [
+                    (lk, w2, ln) for lk, w2, ln in extras(spec, pts, lon)
+                    if lk["m"] != SIDEWALK["m"] and lk["m"] != GUTTER["m"]]:
+                for piece in clip_polyline(line, *exact):
+                    for c in split(densify(simplify(piece))):
+                        if len(c) >= 2:
+                            out.append(_chunk(look, w, c))
     for fid, spec, xy, z, lon in tunnels.parts(cells, exact):
         if not np.isfinite(z).all():
             continue
@@ -1655,6 +1696,8 @@ def _bridge_chunks(frame, bseen, elev, exact, bridges=None, cells=None):
                 e, n = mapgeom.enu_xy(feats, frame, ring)
                 parts.append((fid, spec, densify(np.stack([e, n], axis=1), DECK_STEP),
                               float(np.mean(ring[:, 0]))))
+    if not parts:
+        return []
 
     def ground(xy):
         la, lo, _ = frame.enu_to_geodetic(xy[:, 0], xy[:, 1], 0.0)
