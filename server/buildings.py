@@ -1296,6 +1296,33 @@ THROUGH_CLASSES = {"motorway", "trunk", "primary", "secondary", "tertiary", "res
                    "living_street"}
 
 
+def tunnel_lines(frame, road_layers, x0, y0, margin=50.0, size=256.0):
+    """Polylines (k, 2) relative to (x0, y0) of the road tunnels near the tile (roads.tunnel_parts; for
+    road_through: a building a tunnel runs into is its portal building, its floor over the tube)."""
+    import roads as roadsmod
+    out = []
+    for f in road_layers:
+        if f is None or len(f.kind) == 0:
+            continue
+        ts = roadsmod.tunnel_specs(f)
+        for i in range(len(f.kind)):
+            if ts[i] is None:
+                continue
+            for ring in roadsmod.tunnel_parts(f, i):
+                e, n = mapgeom.enu_xy(f, frame, ring)
+                xy = np.stack([e - x0, n - y0], 1)
+                if xy[:, 0].max() < -margin or xy[:, 0].min() > size + margin or xy[:, 1].max() < -margin \
+                        or xy[:, 1].min() > size + margin:
+                    continue
+                out.append(xy)
+    return out
+
+
+TUNNEL_THROUGH_M = 5.0      # a footprint a road tunnel runs into this far: its portal building, lifted over the tube
+OVER_TUNNEL_CLEAR_M = 7.5   # (the tube's vault is roadmesh.TUNNEL_H = 6.8 m over the floor; 2026-10-17: Eisenhower's
+                            # east portal building closed the tunnel)
+
+
 def road_lines(frame, road_layers, x0, y0, margin=50.0, size=256.0):
     """Polylines (k, 2) relative to (x0, y0) of the public roads on the ground near the tile (for road_through)."""
     import roads as roadsmod
@@ -1340,7 +1367,8 @@ def road_through(ring, lines, step=2.0):
 CENTRE_PREFILTER_M = 1.0       # m of slack for Features.outer_centres (cumulative sums: within ~1e-5 m of the exact mean)
 
 
-def tile_buildings(frame, x0, y0, x1, y1, layers, elev, water=None, part_layers=(), west_town=False, roads_xy=None):
+def tile_buildings(frame, x0, y0, x1, y1, layers, elev, water=None, part_layers=(), west_town=False, roads_xy=None,
+                   tunnels_xy=None):
     """[(Spec, gmin, gmax)] of the buildings whose footprint centroid is in the tile [x0, x1) x [y0, y1)
     (anchor frame), rings relative to (x0, y0). layers: mapgeom.Features of buildings (one per map cell; a
     building in two cells is taken once, by id); elev(lat, lon) the physics ground. part_layers: the
@@ -1437,6 +1465,11 @@ def tile_buildings(frame, x0, y0, x1, y1, layers, elev, water=None, part_layers=
                 h = at.get("height")
                 if h is None or not np.isfinite(h) or h < mh + 3.0:
                     at = dict(at, height=mh + 3.0)      # keeps its top; at least a slab's worth over the clearance
+            if mh < OVER_TUNNEL_CLEAR_M and tunnels_xy and road_through(ring, tunnels_xy) >= TUNNEL_THROUGH_M:
+                mh = OVER_TUNNEL_CLEAR_M
+                h = at.get("height")
+                if h is None or not np.isfinite(h) or h < mh + 3.0:
+                    at = dict(at, height=mh + 3.0)
             attrs.append(at)
             looks.append(None)
             mins.append(mh)
@@ -1698,7 +1731,8 @@ def road_tile_items(frame, tx, ty, md, ground):
     return tile_buildings(frame, x0, y0, x1, y1, [c.layers.get("buildings") for c in cds], ground,
                           part_layers=[c.layers.get("building_parts") for c in cds],
                           west_town=district_town(frame, tx, ty, md),
-                          roads_xy=road_lines(frame, [c.layers.get("roads") for c in cds], x0, y0))
+                          roads_xy=road_lines(frame, [c.layers.get("roads") for c in cds], x0, y0),
+                          tunnels_xy=tunnel_lines(frame, [c.layers.get("roads") for c in cds], x0, y0))
 
 
 TOWN_COVERAGE = 0.16        # a tile whose footprints cover less than this share is a town / suburb (heights)
