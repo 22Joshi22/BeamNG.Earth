@@ -248,7 +248,7 @@ def setup_venv(dry_run):
              "  Check your internet connection (and proxy/firewall), then run install.py again.\n"
              "  The mod is installed already; only the server's packages are missing.")
     r = subprocess.run([py, "-c", "import numpy, PIL; print('numpy', numpy.__version__, '/ Pillow', PIL.__version__)"],
-                       capture_output=True, text=True)
+                       capture_output=True, text=True, errors="replace")
     if r.returncode != 0:
         fail("the packages were installed but do not import:\n" + r.stderr)
     say("Python packages: ready (" + r.stdout.strip() + ")")

@@ -115,3 +115,26 @@ class CaCerts(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class WindowsTasklist(unittest.TestCase):
+    """game_pids on Windows: tasklist's output in the console's code page (a German Windows, 2026-10-17: byte 0x81
+    stopped the launcher with UnicodeDecodeError)."""
+
+    def run_with(self, stdout):
+        res = mock.Mock(stdout=stdout, returncode=0)
+        with mock.patch.object(launcher, "IS_WIN", True), mock.patch.object(launcher.subprocess, "run", return_value=res):
+            return launcher.game_pids()
+
+    def test_localised_no_tasks_message(self):
+        msg = "INFORMATION: Es werden keine Aufgaben mit den angegebenen Kriterien ausgeführt.\r\n".encode("cp850")
+        self.assertIn(b"\x81", msg)
+        self.assertEqual(self.run_with(msg), [])
+
+    def test_game_found(self):
+        exe = launcher.GAME_EXE_WIN
+        out = f'"{exe}","4242","Console","1","1.234.567 K"\r\n'.encode("cp850")
+        self.assertEqual(self.run_with(out), [4242])
+
+    def test_no_output(self):
+        self.assertEqual(self.run_with(None), [])

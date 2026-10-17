@@ -205,9 +205,23 @@ def linux_game_exe():
 def game_pids():
     """The game's main processes (not its CEF helpers)."""
     if IS_WIN:
-        r = subprocess.run(["tasklist", "/FI", f"IMAGENAME eq {GAME_EXE_WIN}", "/FO", "CSV", "/NH"],
-                           capture_output=True, text=True)
-        return [int(line.split('","')[1]) for line in r.stdout.splitlines() if line.startswith(f'"{GAME_EXE_WIN}"')]
+        # bytes, decoded leniently: on a non-English Windows tasklist's "no tasks" message is in the console's code
+        # page (German "ü" = 0x81 in cp850), which text=True's cp1252 could not decode (a player's report,
+        # 2026-10-17: the launcher stopped with UnicodeDecodeError and r.stdout None)
+        try:
+            r = subprocess.run(["tasklist", "/FI", f"IMAGENAME eq {GAME_EXE_WIN}", "/FO", "CSV", "/NH"],
+                               capture_output=True)
+        except OSError:
+            return []
+        text = (r.stdout or b"").decode("utf-8", errors="replace")
+        out = []
+        for line in text.splitlines():
+            if line.startswith(f'"{GAME_EXE_WIN}"'):
+                try:
+                    out.append(int(line.split('","')[1]))
+                except (IndexError, ValueError):
+                    pass
+        return out
     out = []
     for d in os.listdir("/proc"):
         if not d.isdigit():
