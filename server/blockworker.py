@@ -273,6 +273,8 @@ def roads_tile(aid, lat, lon, zoom, tx, ty, out_dir, vfs_dir, sidewalks, lift, b
 def _tunnel_holes(aid, frame, elev, keep, cx, cy, idx, info):
     """idx with the block's tunnel portals as holes (roads.block_tunnel_holes); info["tunnelHoles"]: how many."""
     import roads as roadsmod
+    if getattr(_s, "md", None) is None:     # no map data (roads off): no tunnels
+        return idx
     try:
         holes = roadsmod.block_tunnel_holes(
             tunnel_profiles(aid, frame, elev),
