@@ -81,6 +81,7 @@ class GameClosed(unittest.TestCase):
         def sleep(s):
             clock[0] += s
         with mock.patch.object(launcher, "game_pids", lambda: next(seen)), \
+                mock.patch.object(launcher, "game_connected", lambda: False), \
                 mock.patch.object(launcher.time, "sleep", sleep), \
                 mock.patch.object(launcher.time, "time", lambda: clock[0]):
             launcher.wait_for_game(None)
@@ -138,3 +139,58 @@ class WindowsTasklist(unittest.TestCase):
 
     def test_no_output(self):
         self.assertEqual(self.run_with(None), [])
+
+
+class FlatpakGameProcess(unittest.TestCase):
+    """game_pids / game_alive on Linux when argv[0] does not name the game (a Flatpak Steam's container, a player's
+    video 2026-10-17: the server stopped ~30 s after the game started)."""
+
+    def fake_proc(self, procs):
+        """procs: {pid: (argv list of bytes, exe path or None)}"""
+        real_open, real_listdir, real_readlink = open, os.listdir, os.readlink
+
+        def listdir(p):
+            return [str(k) for k in procs] + ["self"] if p == "/proc" else real_listdir(p)
+
+        def fopen(p, *a, **k):
+            parts = str(p).split("/")
+            if len(parts) == 4 and parts[1] == "proc" and parts[3] == "cmdline":
+                import io
+                return io.BytesIO(b"\0".join(procs[int(parts[2])][0]))
+            return real_open(p, *a, **k)
+
+        def readlink(p):
+            parts = str(p).split("/")
+            if len(parts) == 4 and parts[1] == "proc" and parts[3] == "exe":
+                exe = procs[int(parts[2])][1]
+                if exe is None:
+                    raise PermissionError(p)
+                return exe
+            return real_readlink(p)
+        return mock.patch.multiple(launcher.os, listdir=listdir, readlink=readlink), \
+            mock.patch("builtins.open", fopen)
+
+    def test_game_found_by_its_executable(self):
+        game = "/home/u/.var/app/com.valvesoftware.Steam/.local/share/Steam/steamapps/common/BeamNG.drive/BinLinux/" + \
+            os.path.basename(launcher.GAME_EXE_LINUX)
+        procs = {
+            10: ([b"/usr/lib/pressure-vessel/from-host/lib/ld-linux-x86-64.so.2", game.encode(), b"-forcecloud"], game),
+            11: ([game.encode() + b" --type=renderer --enable-crash-reporter"], game),       # a CEF helper
+            12: ([b"/usr/bin/bash", b"-c", b"x"], "/usr/bin/bash"),
+            13: ([b"/usr/bin/other"], None),                                                     # not ours
+        }
+        p1, p2 = self.fake_proc(procs)
+        with mock.patch.object(launcher, "IS_WIN", False), p1, p2:
+            self.assertEqual(launcher.game_pids(), [10])
+
+    def test_alive_while_the_mod_is_connected(self):
+        port = format(launcher.SERVER_PORT, "04X")
+        tcp = ("  sl  local_address rem_address   st\n"
+               f"   0: 0100007F:{port} 0100007F:8A3C 01 00000000:00000000\n")
+        with mock.patch.object(launcher, "IS_WIN", False), mock.patch.object(launcher, "game_pids", lambda: []), \
+                mock.patch("builtins.open", mock.mock_open(read_data=tcp)):
+            self.assertTrue(launcher.game_alive())
+        listen = tcp.replace(" 01 ", " 0A ")
+        with mock.patch.object(launcher, "IS_WIN", False), mock.patch.object(launcher, "game_pids", lambda: []), \
+                mock.patch("builtins.open", mock.mock_open(read_data=listen)):
+            self.assertFalse(launcher.game_alive())
