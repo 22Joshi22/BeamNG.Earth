@@ -1914,17 +1914,28 @@ class Tracker:
         self.aid = None
         self.sent = set()       # (tx, ty) announced for self.aid
         self.building = set()
+        self.pool = None        # its own BUILD_PER_POSE threads (vegetation.Tracker)
+        self.futs = {}
+
+    def close(self):
+        if self.pool is not None:
+            self.pool.shutdown(wait=False, cancel_futures=True)
 
     def on_pose(self, conn, aid, x, y, loop, build):
         """Called with the player's position in the active anchor's frame. build(aid, tx, ty) runs in a
         worker and returns the tile's (path, n) or None; its result is announced with conn.send."""
         if aid != self.aid:
-            self.aid, self.sent, self.building = aid, set(), set()
+            for f in self.futs.values():
+                f.cancel()
+            self.aid, self.sent, self.building, self.futs = aid, set(), set(), {}
+        if self.pool is None:
+            from concurrent.futures import ThreadPoolExecutor
+            self.pool = ThreadPoolExecutor(BUILD_PER_POSE, thread_name_prefix="roads-tile")
         want = [k for k in tiles_near(x, y, SEND_M) if k not in self.sent and k not in self.building]
         want.sort(key=lambda k: tile_distance(k[0], k[1], x, y))
         for tx, ty in want[:max(0, BUILD_PER_POSE - len(self.building))]:   # in flight at most (vegetation.Tracker)
             self.building.add((tx, ty))
-            fut = loop.run_in_executor(None, build, aid, tx, ty)
+            fut = self.futs[(tx, ty)] = loop.run_in_executor(self.pool, build, aid, tx, ty)
             fut.add_done_callback(lambda f, k=(tx, ty), a=aid: self._built(conn, a, k, f))
         drop = [k for k in self.sent if tile_distance(k[0], k[1], x, y) > DROP_M]
         for k in drop:
@@ -1932,8 +1943,11 @@ class Tracker:
             conn.send({"type": "roads_drop", "anchorId": aid, "key": f"{k[0]}_{k[1]}"})
 
     def _built(self, conn, aid, key, fut):
+        if aid != self.aid:                 # (an old anchor's: the same key may be in flight for the new one)
+            return
         self.building.discard(key)
-        if aid != self.aid:
+        self.futs.pop(key, None)
+        if fut.cancelled():
             return
         try:
             res = fut.result()

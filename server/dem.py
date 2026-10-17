@@ -46,6 +46,9 @@ GLOBAL_ZOOM = 12            # Mapterhorn is complete on land up to here
 GROUND_MARGIN = 96          # px of the neighbouring z12 tiles the ground filter sees around a tile
 MAX_LAT = 85.0511287798     # Web Mercator limit
 MAX_TILES_PER_SAMPLE = 1024
+SPARSE_MIN_TILES = 16       # a sample's box of more tiles than this with points in fewer than 1 / SPARSE_RATIO of them
+SPARSE_RATIO = 4            # is sampled in groups of SPARSE_GROUP x SPARSE_GROUP tiles (only the tiles near points)
+SPARSE_GROUP = 2
 
 MAPTERHORN = dict(name="mapterhorn", ext="webp", size=512,
                   url="https://tiles.mapterhorn.com/{z}/{x}/{y}.webp")
@@ -426,10 +429,16 @@ class Dem:
         ty0 = max(0, int(math.floor(fy.min())) // TILE)
         ty1 = min(n - 1, int(math.floor(fy.max()) + 1) // TILE)
         nx, ny = tx1 - tx0 + 1, ty1 - ty0 + 1
-        if nx * ny > MAX_TILES_PER_SAMPLE:
+        sparse = False
+        if SPARSE_MIN_TILES < nx * ny <= MAX_TILES_PER_SAMPLE:
+            # points along a line (a road's profile) in a large box: the whole box's tiles were fetched, decoded and
+            # copied into one mosaic (I-80 over the salt flats: a road tile's grading took minutes, 2026-10-17)
+            tid = (np.floor(fx).astype(np.int64) // TILE - tx0) * ny + (np.floor(fy).astype(np.int64) // TILE - ty0)
+            sparse = nx * ny > SPARSE_RATIO * len(np.unique(tid))
+        if nx * ny > MAX_TILES_PER_SAMPLE or sparse:
             # spread-out points (all the roads of a cell with a long highway, 2026-10-12: every road tile of
-            # a session failed on one 53 x 82 box): sample groups of nearby tiles separately
-            g = max(1, int(math.isqrt(MAX_TILES_PER_SAMPLE)) - 1)
+            # a session failed on one 53 x 82 box): sample groups of nearby tiles separately (the same values)
+            g = SPARSE_GROUP if sparse else max(1, int(math.isqrt(MAX_TILES_PER_SAMPLE)) - 1)
             gx = (np.floor(fx).astype(np.int64) // TILE) // g
             gy = (np.floor(fy).astype(np.int64) // TILE) // g
             sub = np.zeros(len(lat), np.float64)

@@ -2226,6 +2226,8 @@ class Connection:
             self.s.connections.discard(self)
             self.s.slots_let_go(list(self.slot_holds))
             self.slot_holds = {}
+            for tr in (self.roads, self.veg, self.bldfar, self.nav):
+                tr.close()
             self.s.drop_claims(self)
             self.streamer.cancel()
             self.credits.close()
@@ -2315,6 +2317,7 @@ class Connection:
         elif kind == "cache":
             self.on_cache(msg)
         elif kind == "roads_reset":             # the mod dropped its roads (settings): send them all again
+            self.roads.close()
             self.roads = roadsmod.Tracker()
         else:
             log.debug("ignoring message type %r", kind)
