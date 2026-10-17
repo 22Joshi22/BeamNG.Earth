@@ -234,10 +234,40 @@ def game_pids():
         exe = args[0].decode(errors="replace") if args else ""
         # by the file name: inside Steam's runtime container (pressure-vessel, a Flatpak Steam) the path differs
         name = exe.replace("\\", "/").rsplit("/", 1)[-1]
-        if name in (os.path.basename(GAME_EXE_LINUX), GAME_EXE_WIN) and \
-                not any(a.startswith(b"--type=") for a in args):
+        names = (os.path.basename(GAME_EXE_LINUX), GAME_EXE_WIN)
+        if name not in names:
+            # ... and argv[0] may not name the game at all: the executable itself (the world server's cpupin found a
+            # Flatpak Steam's game this way while the launcher saw none, a player's video 2026-10-17: the server
+            # stopped ~30 s after the game started, and a second start found no game and launched it again)
+            try:
+                name = os.path.basename(os.readlink(f"/proc/{d}/exe"))
+            except OSError:
+                continue
+        if name in names and not any(b"--type=" in a for a in args):     # (its CEF helpers: one rewritten argv string)
             out.append(int(d))
     return out
+
+
+def game_connected():
+    """The game's mod is connected to the world server (Linux: an established TCP connection to SERVER_PORT in
+    /proc/net/tcp). The game is running however its process looks inside a sandbox."""
+    if IS_WIN:
+        return False
+    for path in ("/proc/net/tcp", "/proc/net/tcp6"):
+        try:
+            with open(path) as f:
+                rows = f.read().splitlines()[1:]
+        except OSError:
+            continue
+        for row in rows:
+            cols = row.split()
+            if len(cols) > 3 and cols[3] == "01" and int(cols[1].rsplit(":", 1)[1], 16) == SERVER_PORT:
+                return True
+    return False
+
+
+def game_alive():
+    return bool(game_pids()) or game_connected()
 
 
 def steam_running():
@@ -425,7 +455,7 @@ def wait_for_game(proc):
         # closed only once no game process was seen for GAME_GONE_S: under Steam's runtime container (a Flatpak
         # Steam's above all) the game's process can end and start again during its start (a player's report,
         # 2026-10-17: the server stopped right after the game launched)
-        if game_pids():
+        if game_alive():
             gone_since = None
         elif gone_since is None:
             gone_since = time.time()
@@ -672,7 +702,7 @@ def run(args):
     else:
         user_dir = user_folder()
     say(f"BeamNG.drive user folder: {user_dir}" + (" (the Windows build, Proton)" if build == "proton" else ""))
-    running = bool(game_pids())
+    running = game_alive()
     if not args.keep_mod:
         if running:
             say("the game is already running: the mod is copied now, the game loads it on its next start")
