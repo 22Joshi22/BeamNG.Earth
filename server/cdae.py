@@ -461,12 +461,15 @@ def encode(positions, tris, normals=None, uvs=None, material="bngEarthDae", uvs2
     bounds = [float(x) for x in lo] + [float(x) for x in hi]
     centre = [float(x) for x in center]
 
-    names = [object_name, "Collision-1" if collision_only else "detail2"]
+    # collision only: a visible detail "detail2" whose mesh is a null mesh (draws nothing), then "Collision-1": with the
+    # collision detail alone the engine logged "Shape with invalid detail levels" for every such shape (2026-10-17;
+    # the buildings' lean collision meshes filled players' logs)
+    names = [object_name, "detail2", "Collision-1"] if collision_only else [object_name, "detail2"]
     shape_vecs = {
         # node: name, parent, firstObject, firstChild, nextSibling
         "nodes": _vec(struct.pack("<5i", 0, -1, 0, -1, -1), 1, 20),
         # object: name, numMeshes, startMeshIndex, node, nextSibling, firstDecal
-        "objects": _vec(struct.pack("<6i", 0, 1, 0, 0, -1, -1), 1, 24),
+        "objects": _vec(struct.pack("<6i", 0, 2 if collision_only else 1, 0, 0, -1, -1), 1, 24),
         "subShapeFirstNode": _vec(struct.pack("<i", 0), 1, 4),
         "subShapeFirstObject": _vec(struct.pack("<i", 0), 1, 4),
         "subShapeNumNodes": _vec(struct.pack("<i", 1), 1, 4),
@@ -477,8 +480,10 @@ def encode(positions, tris, normals=None, uvs=None, material="bngEarthDae", uvs2
         "objectStates": _vec(struct.pack("<fii", 1.0, 0, 0), 1, 12),
         # detail "detail2": name, subShape, objectDetail, size, avgError, maxError, polyCount,
         # billboard dimension/detailLevel/equatorSteps/polarSteps/polarAngle/includePoles
-        "details": _vec(struct.pack("<3i3fi2i2IfI", 1, 0, 0, -1.0 if collision_only else 2.0, -1.0, -1.0, ntri,
-                                    0, 0, 0, 0, 0.0, 0), 1, 52),
+        "details": (_vec(struct.pack("<3i3fi2i2IfI", 1, 0, 0, 2.0, -1.0, -1.0, 0, 0, 0, 0, 0, 0.0, 0)
+                         + struct.pack("<3i3fi2i2IfI", 2, 0, 1, -1.0, -1.0, -1.0, ntri, 0, 0, 0, 0, 0.0, 0), 2, 52)
+                    if collision_only else
+                    _vec(struct.pack("<3i3fi2i2IfI", 1, 0, 0, 2.0, -1.0, -1.0, ntri, 0, 0, 0, 0, 0.0, 0), 1, 52)),
     }
     out = bytearray()
     for v in (2.0, 0, radius, radius, centre, bounds):    # smallestVisibleSize/DL, radius, tubeRadius
@@ -489,7 +494,9 @@ def encode(positions, tris, normals=None, uvs=None, material="bngEarthDae", uvs2
     _pack(out, len(names))
     for s in names:
         _pack(out, s)
-    _pack(out, 1)                                          # one mesh
+    _pack(out, 2 if collision_only else 1)                 # meshes (collision only: first the null mesh, type 4)
+    if collision_only:
+        _pack(out, 4)
     for v in (0, 1, 1, -1, bounds, centre, mesh_radius):  # standard mesh, frames, matFrames, parent
         _pack(out, v)
     UV2 = None if uvs2 is None else np.asarray(uvs2, np.float64).reshape(-1, 2)

@@ -75,7 +75,7 @@ class LeanMeshTest(unittest.TestCase):
             p = os.path.join(d, "walkcol.cdae")
             b.write_collision(p)
             shape = cdae.read(p)
-        self.assertEqual(shape["names"], ["Colmesh", "Collision-1"])
+        self.assertEqual(shape["names"], ["Colmesh", "detail2", "Collision-1"])   # (detail2: a null mesh, cdae.encode)
 
     def test_without_collision_no_lean_builder(self):
         self.assertIsNone(sidewalks.Builder((0.0, 0.0, 0.0)).col)

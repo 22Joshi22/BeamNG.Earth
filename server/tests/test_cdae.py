@@ -160,8 +160,15 @@ class FormatTest(unittest.TestCase):
         # the engine collides only with collision-detail objects named "Col..." (in-game test, 2026-10-16)
         pos, uv, tri = dae.grid(2, 1.0)
         d = cdae.decode(cdae.encode(pos, tri, uvs=uv, object_name="buildings", collision_only=True))
-        self.assertEqual(d["names"], ["Colmesh", "Collision-1"])
+        self.assertEqual(d["names"], ["Colmesh", "detail2", "Collision-1"])
         self.assertEqual(d["header"]["objectNames"], ["Colmesh"])
+        # a visible detail with a null mesh first (no "Shape with invalid detail levels" in the log, 2026-10-17), the
+        # triangles in the collision detail's mesh
+        self.assertEqual([m["type"] for m in d["meshes"]], [4, 0])
+        n, size, raw = d["details"]
+        dets = [struct.unpack_from("<3i3fi", raw, k * size) for k in range(n)]
+        self.assertEqual([(x[1], x[2], x[3]) for x in dets], [(0, 0, 2.0), (0, 1, -1.0)])
+        self.assertEqual(len(cdae.mesh_arrays(d["meshes"][1])["indices"]), np.asarray(tri).size)
         d = cdae.decode(cdae.encode(pos, tri, uvs=uv, object_name="buildings"))
         self.assertEqual(d["names"], ["buildings", "detail2"])
 
