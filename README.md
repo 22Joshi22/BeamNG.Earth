@@ -101,8 +101,8 @@ internet connection (the map is downloaded while you play).
    - **Linux, Windows build under Proton:** the AppImage sees the Proton setting and starts that build through
      Steam (the server runs natively). The `.exe` also works inside the game's Proton prefix (for example with
      protontricks' launcher).
-   - The Windows build starts with DirectX 11, skipping BeamNG's renderer dialog (`--gfx vk` / `--gfx dx12` to
-     change it).
+   - The Windows build shows BeamNG's launch options dialog (renderer, safe mode) as usual; `--gfx dx11` /
+     `--gfx vk` / `--gfx dx12` skip it with that renderer.
 3. **Play:** in the game, go to **Freeroam** and pick the **BeamNG.Earth** level. A welcome page explains the
    basics the first time. Press **M** for the world map: search a place or an address, right-click to teleport,
    left-click to set a GPS route, and **Autodrive** to let the car drive it.

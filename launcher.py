@@ -248,7 +248,7 @@ def windows_game_dir():
     return None
 
 
-def start_game(use_gcpatch, build="native", gfx="dx11"):
+def start_game(use_gcpatch, build="native", gfx=""):
     """Start the game; returns a Popen when this process started it directly, else None (through Steam)."""
     win_args = ["-gfx", gfx] if gfx else []
     if IS_WIN:
@@ -479,8 +479,10 @@ def main():
                     help="Linux: the game is the Windows build under Proton")
     ap.add_argument("--native", dest="build", action="store_const", const="native",
                     help="Linux: the game is the native Linux build")
-    ap.add_argument("--gfx", default="dx11", choices=["dx11", "dx12", "vk", ""],
-                    help="the Windows build's renderer (skips its launcher's dialog; \"\" shows it)")
+    # default: BeamNG's launch options dialog (renderer, safe mode...) shows, as when started from Steam (the user,
+    # 2026-10-16); --gfx skips it
+    ap.add_argument("--gfx", default="", choices=["dx11", "dx12", "vk", ""],
+                    help="the Windows build's renderer, skipping its launch options dialog (default: the dialog)")
     ap.add_argument("--no-terminal", action="store_true", help="Linux: no terminal window (log to a file)")
     ap.add_argument("extra", nargs=argparse.REMAINDER, help="after --: more options for the server")
     args = ap.parse_args()
