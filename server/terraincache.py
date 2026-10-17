@@ -19,6 +19,7 @@ import os
 import struct
 
 import numpy as np
+import staging
 
 import bc7
 
@@ -92,7 +93,8 @@ def base_entry(user_dir, base_vfs, ao_vfs, rgb, ao_value):
     rgb = np.asarray(rgb, np.uint8)
     rgba = np.concatenate([rgb, np.full(rgb.shape[:2] + (1,), ao_value, np.uint8)], 2)
     path = os.path.join(d, base_key(base_vfs, ao_vfs) + ".dds")
-    with open(path + ".tmp", "wb") as f:
+    tmp = staging.tmp_for(path)
+    with open(tmp, "wb") as f:
         f.write(bc7.dds(rgba))
-    os.replace(path + ".tmp", path)
+    os.replace(tmp, path)
     return path

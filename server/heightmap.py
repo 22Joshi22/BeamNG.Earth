@@ -32,6 +32,7 @@ import threading
 from collections import OrderedDict
 
 import numpy as np
+import staging
 from PIL import Image
 
 SIZE = 1024
@@ -225,7 +226,7 @@ def write_png(path, u, q=Q_DEFAULT):
     g = quantise(u, q) - round(z_base / q)          # integer arithmetic on exact floats
     qgrid = np.clip(g, 0, 65535).astype(np.uint16)
     img = Image.fromarray(np.ascontiguousarray(qgrid[::-1]))   # flip: row 0 = north (max gy)
-    tmp = path + ".tmp"
+    tmp = staging.tmp_for(path)
     # Uncompressed: the game decodes it on the main thread during the terrain-follow commit,
     # and level 0 imports ~7 ms faster than level 1 (43 vs 50 ms for 1024², measured in-game).
     img.save(tmp, format="PNG", compress_level=0)
@@ -252,7 +253,7 @@ def write_ter(path, qgrid, idx, materials):
     # the opposite one (in-game 2026-10-13); the edge ring under them (0.3 m lower) shows instead. No
     # collision there: the edge guard keeps the car tens of metres inside.
     lay[0, :] = lay[-1, :] = lay[:, 0] = lay[:, -1] = TER_HOLE
-    tmp = path + ".tmp"
+    tmp = staging.tmp_for(path)
     with open(tmp, "wb") as f:
         f.write(struct.pack("<BI", TER_VERSION, n))
         f.write(np.ascontiguousarray(qgrid, "<u2").tobytes())

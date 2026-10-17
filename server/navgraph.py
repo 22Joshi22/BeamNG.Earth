@@ -14,6 +14,7 @@ import math
 import numpy as np
 
 import roads
+import staging
 
 # classes the AI drives on: drivability (path cost divisor) and a default speed limit (mph, US practice)
 DRIVE = {"motorway": (1.0, 65), "trunk": (1.0, 55), "primary": (1.0, 45), "secondary": (1.0, 40),
@@ -363,9 +364,10 @@ def write(out_dir, vfs_dir, aid, serial, graph):
     import os
     name = f"navgraph_{aid}_{serial}.json"
     path = os.path.join(out_dir, name)
-    with open(path + ".tmp", "w") as f:
+    tmp = staging.tmp_for(path)
+    with open(tmp, "w") as f:
         f.write(json.dumps(graph, separators=(",", ":")))    # the C encoder (json.dump streams in Python)
-    os.replace(path + ".tmp", path)
+    os.replace(tmp, path)
     return f"{vfs_dir}/{name}"
 
 

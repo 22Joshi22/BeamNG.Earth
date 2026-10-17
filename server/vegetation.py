@@ -30,6 +30,7 @@ import fast
 from polygon import Path
 
 import mapcells
+import staging
 
 log = logging.getLogger("earthd.vegetation")
 
@@ -670,7 +671,7 @@ def write_tile(out_dir, vfs_dir, aid, tx, ty, rows):
     import json
     name = f"veg_{aid}_{tx}_{ty}.json"
     path = os.path.join(out_dir, name)
-    tmp = path + ".tmp"
+    tmp = staging.tmp_for(path)
     with open(tmp, "w") as f:
         if isinstance(rows, JsonRows):  # (tile_items as_json: the items' text, as json.dumps writes them)
             f.write(json.dumps({"groups": list(GROUPS), "items": []}, separators=(",", ":"))[:-3] + rows + "}")

@@ -21,6 +21,7 @@ import numpy as np
 
 import fast
 import mapgeom
+import staging
 
 FLOOR_M = 3.0               # m per storey (residential)
 GROUND_FLOOR_SHOP_M = 4.2   # m, a shop's ground floor
@@ -1797,9 +1798,10 @@ def far_tile(frame, tx, ty, md, ground, out_dir, vfs_dir, aid):
         data["pos"] = [x0, y0, 0.0]
     name = f"bldfar_{aid}_{tx}_{ty}.json"
     path = os.path.join(out_dir, name)
-    with open(path + ".tmp", "w") as f:
+    tmp = staging.tmp_for(path)
+    with open(tmp, "w") as f:
         f.write(json.dumps(data))       # (json.dump to a file: the pure-Python encoder)
-    os.replace(path + ".tmp", path)
+    os.replace(tmp, path)
     return f"{vfs_dir}/{name}", len(items)
 
 

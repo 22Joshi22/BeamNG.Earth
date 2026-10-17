@@ -50,6 +50,7 @@ import cache as cachemod
 import dem as demmod
 import netfetch
 import season
+import staging
 
 log = logging.getLogger("earthd.imagery")
 
@@ -1131,7 +1132,7 @@ def encode_dds(rgb):
 def write_dds(path, rgb):
     """encode_dds() to path atomically; returns the file size."""
     data = encode_dds(rgb)
-    tmp = path + ".tmp"
+    tmp = staging.tmp_for(path)
     with open(tmp, "wb") as f:
         f.write(data)
     os.replace(tmp, path)

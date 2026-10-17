@@ -31,6 +31,7 @@ import numpy as np
 import junctions
 import mapcells
 import mapgeom
+import staging
 
 log = logging.getLogger("earthd.roads")
 
@@ -2061,7 +2062,7 @@ def write_tile(out_dir, vfs_dir, aid, tx, ty, chunks, walks=None, road_mesh=None
         data["props"] = {"groups": groups, "items": [[groups.index(r[0])] + r[1:] for r in props]}
     if park:                        # parking.py's spots [x, y, z, heading] for the stock parked cars (parking.lua)
         data["park"] = park
-    tmp = path + ".tmp"
+    tmp = staging.tmp_for(path)
     with open(tmp, "w") as f:
         f.write(json.dumps(data, separators=(",", ":")))    # json.dump to a file streams through the pure-Python encoder
     os.replace(tmp, path)

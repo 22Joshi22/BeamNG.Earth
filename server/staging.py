@@ -1,0 +1,63 @@
+"""Temporary files of the atomic writes into the game's user folder, kept outside it.
+
+The game watches its user folder: every file created or changed there is an onFileChanged event, handled in Lua by
+every loaded extension, and the engine's FileWatchers took up to ~1 s in a frame during a 100 mph drive (2026-10-17).
+A write as "<path>.tmp" then os.replace() made two events per tile file (3,220 in a 3 km drive, 1,079 of them .tmp).
+tmp_for(path) puts the temporary file in "beamngEarth_staging" next to the user folder (the same disk: the rename stays
+atomic), so only the finished file shows up. Paths outside a user folder's "temp" (the download cache) keep
+"<path>.tmp". Pure but for creating that folder.
+"""
+import itertools
+import os
+import threading
+
+STAGING = "beamngEarth_staging"
+_made = set()
+_lock = threading.Lock()
+_serial = itertools.count()
+
+
+SWEEP_AGE_S = 3600
+
+
+def _sweep(d):
+    """Temporary files left by a process that ended mid-write (older than SWEEP_AGE_S), once per process."""
+    import time
+    now = time.time()
+    for name in os.listdir(d):
+        p = os.path.join(d, name)
+        try:
+            if name.endswith(".tmp") and now - os.path.getmtime(p) > SWEEP_AGE_S:
+                os.remove(p)
+        except OSError:
+            pass
+
+
+def staging_dir(path):
+    """The staging folder for a file in a user folder's temp tree, or None."""
+    p = os.path.abspath(path)
+    sep = os.sep
+    i = p.rfind(f"{sep}temp{sep}")
+    if i <= 0:
+        return None
+    user = p[:i]                                        # .../BeamNG.drive/current
+    return os.path.join(os.path.dirname(user), STAGING)
+
+
+def tmp_for(path):
+    """A temporary path to write path's content to before os.replace(tmp, path)."""
+    d = staging_dir(path)
+    if d is not None:
+        with _lock:
+            known = d in _made
+        if not known:
+            try:
+                os.makedirs(d, exist_ok=True)
+                _sweep(d)
+                with _lock:
+                    _made.add(d)
+            except OSError:
+                d = None
+    if d is None:
+        return path + ".tmp"
+    return os.path.join(d, f"{os.getpid()}_{threading.get_ident()}_{next(_serial)}_{os.path.basename(path)}.tmp")

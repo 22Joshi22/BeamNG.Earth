@@ -41,6 +41,7 @@ import struct
 import numpy as np
 
 import fast
+import staging
 
 SHAPE_VERSION = 31
 EXPORTER_VERSION = 0x7C
@@ -542,7 +543,7 @@ def _primitives(TM, nmat):
 def write(path, positions, tris, **kw):
     """encode() to path atomically (tmp + rename: the engine never sees a partial file)."""
     data = encode(positions, tris, **kw)
-    tmp = path + ".tmp"
+    tmp = staging.tmp_for(path)
     with open(tmp, "wb") as f:
         f.write(data)
     os.replace(tmp, path)
