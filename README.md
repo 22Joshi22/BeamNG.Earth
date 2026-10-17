@@ -101,6 +101,8 @@ internet connection (the map is downloaded while you play).
    - **Linux, Windows build under Proton:** the AppImage sees the Proton setting and starts that build through
      Steam (the server runs natively). The `.exe` also works inside the game's Proton prefix (for example with
      protontricks' launcher).
+   - **Linux, Steam as a Flatpak (or snap):** the mod goes into the game's folder inside the Flatpak
+     (`~/.var/app/com.valvesoftware.Steam/...`) and the game starts through Steam (without the grass patch).
    - The Windows build shows BeamNG's launch options dialog (renderer, safe mode) as usual; `--gfx dx11` /
      `--gfx vk` / `--gfx dx12` skip it with that renderer.
 3. **Play:** in the game, go to **Freeroam** and pick the **BeamNG.Earth** level. A welcome page explains the

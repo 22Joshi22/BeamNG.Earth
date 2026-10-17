@@ -87,6 +87,27 @@ def _steam_roots():
     return out
 
 
+FLATPAK_STEAM = "com.valvesoftware.Steam"
+
+
+def native_user_dirs():
+    """Where the native Linux game keeps its user folder: ~/.local/share, or inside the Steam Flatpak's own home
+    (~/.var/app/com.valvesoftware.Steam: the game there never sees ~/.local/share, a player's report 2026-10-17)
+    or the Steam snap's. Default first; not checked for existence."""
+    home = os.path.expanduser("~")
+    tail = ("BeamNG", "BeamNG.drive", "current")
+    return [os.path.join(home, ".local", "share", *tail),
+            os.path.join(home, ".var", "app", FLATPAK_STEAM, ".local", "share", *tail),
+            os.path.join(home, ".var", "app", FLATPAK_STEAM, "data", *tail),
+            os.path.join(home, "snap", "steam", "common", ".local", "share", *tail)]
+
+
+def flatpak_steam():
+    """Steam is the Flatpak (its data folder exists)."""
+    return os.path.isdir(os.path.join(os.path.expanduser("~"), ".var", "app", FLATPAK_STEAM, ".local", "share",
+                                      "Steam"))
+
+
 def candidate_user_dirs():
     """Every BeamNG.drive user folder that exists on this machine, best first."""
     cands = []
@@ -96,7 +117,7 @@ def candidate_user_dirs():
         old = sorted(glob.glob(os.path.join(local, "BeamNG.drive", "[0-9]*")), reverse=True)
         cands += [d for d in old if os.path.isdir(d)]                               # before 0.32: one per version
     else:
-        cands.append(os.path.join(os.path.expanduser("~"), ".local", "share", "BeamNG", "BeamNG.drive", "current"))
+        cands += native_user_dirs()
         for lib in _steam_roots():                                                  # Windows build under Proton
             pfx = os.path.join(lib, "steamapps", "compatdata", STEAM_APP_ID, "pfx", "drive_c", "users", "steamuser",
                                "AppData", "Local")

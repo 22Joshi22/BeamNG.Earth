@@ -42,6 +42,7 @@ GCPATCH_NAME = "libbngearth_gcpatch.so"
 RECOMMENDED = ["--deshadow", "full", "--near-visual", "detail", "--airports", "on", "--sea", "on", "--trees", "on",
                "--buildings", "on"]
 SERVER_PORT = 47613         # earthd's default
+GAME_GONE_S = 30            # no game process this long: the game closed (wait_for_game)
 GAME_START_S = 180          # waiting for the game's process after asking Steam
 DIRECT_FAIL_S = 20          # a direct start that ends this soon did not work (no Steam client): through Steam
 
@@ -189,19 +190,33 @@ def game_pids():
         except OSError:
             continue
         exe = args[0].decode(errors="replace") if args else ""
-        if (exe.endswith("/" + GAME_EXE_LINUX.replace(os.sep, "/")) or exe.endswith(GAME_EXE_WIN)) and \
+        # by the file name: inside Steam's runtime container (pressure-vessel, a Flatpak Steam) the path differs
+        name = exe.replace("\\", "/").rsplit("/", 1)[-1]
+        if name in (os.path.basename(GAME_EXE_LINUX), GAME_EXE_WIN) and \
                 not any(a.startswith(b"--type=") for a in args):
             out.append(int(d))
     return out
 
 
 def steam_running():
-    try:
-        with open(os.path.join(os.path.expanduser("~"), ".steam", "steam.pid")) as f:
-            pid = int(f.read().strip())
-        return os.path.exists(f"/proc/{pid}")
-    except (OSError, ValueError):
-        return False
+    home = os.path.expanduser("~")
+    for pidfile in (os.path.join(home, ".steam", "steam.pid"),
+                    os.path.join(home, ".var", "app", "com.valvesoftware.Steam", ".steam", "steam.pid")):
+        try:
+            with open(pidfile) as f:
+                pid = int(f.read().strip())
+            if os.path.exists(f"/proc/{pid}"):
+                return True
+        except (OSError, ValueError):
+            pass
+    return False
+
+
+def sandboxed_game(exe):
+    """The game is installed by a Flatpak / snap Steam: it only runs inside that sandbox (through Steam)."""
+    home = os.path.expanduser("~")
+    return any(os.path.realpath(exe).startswith(os.path.realpath(os.path.join(home, *p)) + os.sep)
+               for p in ((".var", "app"), ("snap",)))
 
 
 def gcpatch_lib():
@@ -322,6 +337,9 @@ def start_game(use_gcpatch, build="native", gfx=""):
         return None
     if not IS_WIN:
         exe = linux_game_exe()
+        if exe and sandboxed_game(exe):
+            say("Steam is a Flatpak / snap: starting the game through Steam (without the grass patch)")
+            exe = None
         if exe and steam_running():
             env = clean_env()
             env["SteamAppId"] = env["SteamGameId"] = APP_ID
@@ -360,7 +378,17 @@ def wait_for_game(proc):
             while True:
                 time.sleep(3600)
         time.sleep(2)
-    while game_pids():
+    gone_since = None
+    while True:
+        # closed only once no game process was seen for GAME_GONE_S: under Steam's runtime container (a Flatpak
+        # Steam's above all) the game's process can end and start again during its start (a player's report,
+        # 2026-10-17: the server stopped right after the game launched)
+        if game_pids():
+            gone_since = None
+        elif gone_since is None:
+            gone_since = time.time()
+        elif time.time() - gone_since > GAME_GONE_S:
+            return
         time.sleep(3)
 
 
@@ -474,12 +502,29 @@ def last_written(user_dir):
     return max(t) if t else 0.0
 
 
+def native_folder():
+    """The native game's user folder: of those that exist, the one the game wrote its log in last (a Flatpak
+    Steam's game writes inside the Flatpak's home; an earlier launcher may have made ~/.local/share's without the
+    game ever using it); none yet: the Flatpak's when Steam is the Flatpak, else ~/.local/share's."""
+    import install
+    dirs = install.native_user_dirs()
+    found = [d for d in dirs if os.path.isdir(d)]
+    used = [d for d in found if last_written(d) > 0]
+    if used:
+        return max(used, key=last_written)
+    if install.flatpak_steam() and not os.path.isdir(os.path.join(os.path.expanduser("~"), ".local", "share",
+                                                                  "Steam")):
+        return dirs[1]
+    return found[0] if found else dirs[0]
+
+
 def linux_build(force=None):
     """("native" | "proton", the BeamNG.drive user folder of that build) on Linux."""
     import install
-    native = os.path.join(os.path.expanduser("~"), ".local", "share", "BeamNG", "BeamNG.drive", "current")
+    native = native_folder()
+    natives = {os.path.realpath(d) for d in install.native_user_dirs()}
     dirs = install.candidate_user_dirs()
-    proton_dirs = [d for d in dirs if os.path.realpath(d) != os.path.realpath(native)]
+    proton_dirs = [d for d in dirs if os.path.realpath(d) not in natives]
     mode = force
     if mode is None:
         tool = steam_compat_tool()
