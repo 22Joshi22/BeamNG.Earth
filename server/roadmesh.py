@@ -347,7 +347,9 @@ def tunnel(chunks, origin, walls=()):
             o = sec.copy()
             up, side = (LOW_PORTAL_UP, LOW_PORTAL_SIDE) if low else (PORTAL_FRAME, PORTAL_FRAME)
             o[:, 0] = np.sign(o[:, 0]) * (np.abs(o[:, 0]) + side)
-            o[:, 1] = np.where(o[:, 1] > 0.0, o[:, 1] + up, -2.0)
+            # its foot under the ground (2 m into a hillside; a low arch's mouth is flat: just under its floor, or the
+            # face's bottom stood as a dark wedge beside the opening)
+            o[:, 1] = np.where(o[:, 1] > 0.0, o[:, 1] + up, -0.3 if low else -2.0)
             outer = np.empty((m, 3))
             outer[:, :2] = mid[at] + u[at] * o[:, :1]
             outer[:, 2] = z[at] + o[:, 1]

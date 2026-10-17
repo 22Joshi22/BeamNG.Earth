@@ -55,6 +55,7 @@ WALL_T_M = 0.8              # (roadmesh.retaining_walls) and the ground at its n
 WALL_FLAT_M = 2.0           # ... after one terrain grid step at the road's level behind the wall: rising at the wall
                             # itself, the 2 m grid's triangles stood as dark wedges in front of its face; the wall's
                             # top (roadmesh.WALL_THICK_M) covers the strip
+TUNNEL_KEEP_IN_M = 3.0      # (roads.LOW_HOLE_M: a low arch's mouths, flat at its floor)
 TUNNEL_KEEP_M = 3.0         # m beside a covered tunnel's road where the ground over it is left ungraded
 RETRY_S = 60.0              # s before a cell whose road data failed is asked for again
 
@@ -324,9 +325,13 @@ class Grader:
             a, b = xy[:-1], xy[1:]
             ab = b - a
             L2 = np.maximum((ab * ab).sum(1), 1e-12)
+            sj = np.r_[0.0, np.cumsum(np.sqrt(L2))]
             for j in range(len(a)):
                 t = ((e - a[j, 0]) * ab[j, 0] + (n - a[j, 1]) * ab[j, 1]) / L2[j]
-                inside = (t > 0.0) & (t < 1.0)          # over it, not past its portals (the approach grading stays)
+                # over it, from TUNNEL_KEEP_IN_M inside its portals: its mouths graded to the road (a road's last row
+                # at a portal took the hill's height, the road mesh a wedge up into the opening, 2026-10-17)
+                s_ = sj[j] + t * np.sqrt(L2[j])
+                inside = (t > 0.0) & (t < 1.0) & (s_ > TUNNEL_KEEP_IN_M) & (s_ < sj[-1] - TUNNEL_KEEP_IN_M)
                 d = np.abs((e - a[j, 0]) * ab[j, 1] - (n - a[j, 1]) * ab[j, 0]) / np.sqrt(L2[j])
                 m = inside & (d <= hw)
                 mask = m if mask is None else (mask | m)

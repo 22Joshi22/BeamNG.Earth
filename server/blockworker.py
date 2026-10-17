@@ -176,7 +176,18 @@ def build(aid, lat, lon, hm_zoom, q, cx, cy, size, out_dir, name, ter_name=None)
         z = g.apply(la, lo, z, gradingmod.ROAD_LIFT)
         grade_s[0] += time.perf_counter() - t1
         return z
-    info = heightmap.generate(frame, elev, os.path.join(out_dir, name), cx, cy, q=q, size=size, keep=keep,
+    import roads as roadsmod
+    raw = lambda la, lo: ground(frame, la, lo, _s.dem.sample(la, lo, hm_zoom))     # noqa: E731
+    gen = elev
+    if ter_name is not None and getattr(_s, "md", None) is not None:
+        tun = tunnel_profiles(aid, frame, elev, raw)
+        half = size * heightmap.SQUARE / 2
+        cell_fn = lambda key: _s.md.cell(key, layers=("roads",), kind="demand").layers.get("roads")   # noqa: E731
+
+        def gen(la, lo):        # the ground over the low arches raised over their vaults (roads.arch_raise)
+            return roadsmod.block_arch_raise(tun, cell_fn, frame, la, lo, elev(la, lo),
+                                             (cx - half, cy - half, cx + half, cy + half))
+    info = heightmap.generate(frame, gen, os.path.join(out_dir, name), cx, cy, q=q, size=size, keep=keep,
                               chunks=chunks)
     stages = {"heights": time.perf_counter() - t0, "grading": grade_s[0]}
     idx = None
@@ -199,8 +210,7 @@ def build(aid, lat, lon, hm_zoom, q, cx, cy, size, out_dir, name, ter_name=None)
         info["surfaceComplete"] = complete and roads_complete
     if ter_name is not None:
         t1 = time.perf_counter()
-        idx = _tunnel_holes(aid, frame, elev, keep, cx, cy, idx, info,
-                            lambda la, lo: ground(frame, la, lo, _s.dem.sample(la, lo, hm_zoom)))
+        idx = _tunnel_holes(aid, frame, elev, keep, cx, cy, idx, info, raw)
         info["ter"] = surfacemod.write_ter(out_dir, ter_name, keep["qgrid"], idx)
         stages["ter"] = time.perf_counter() - t1
     info["stages"] = stages

@@ -1182,7 +1182,15 @@ class Server:
             z = g.apply(la, lo, z, gradingmod.ROAD_LIFT)
             grade_s[0] += time.perf_counter() - t1
             return z
-        info = heightmap.generate(anchor.frame, elev,
+        gen = elev
+        if self.mapdata is not None and anchor.tunnels is not None:
+            half = self.layout.block * heightmap.SQUARE / 2
+            cell_fn = lambda key: self.mapdata.cell(key, layers=("roads",), kind="demand").layers.get("roads")  # noqa: E731
+
+            def gen(la, lo):        # the ground over the low arches raised over their vaults (roads.arch_raise)
+                return roadsmod.block_arch_raise(anchor.tunnels, cell_fn, anchor.frame, la, lo, elev(la, lo),
+                                                 (cx - half, cy - half, cx + half, cy + half))
+        info = heightmap.generate(anchor.frame, gen,
                                   os.path.join(self.out_dir, self.hm_name((anchor.id, cx, cy))), cx, cy, q=q,
                                   size=self.layout.block, keep=keep, chunks=anchor.chunks)
         stages = {"heights": time.perf_counter() - t0, "grading": grade_s[0]}

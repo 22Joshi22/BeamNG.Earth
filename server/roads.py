@@ -1614,7 +1614,8 @@ class TunnelProfiles(BridgeProfiles):
 
 
 TUNNEL = {"m": "road_asphalt_2lane", "tl": 11.0, "p": 20}     # the road surface in a tunnel (a deck: collides)
-LOW_HOLE_M = 3.0            # m from a low arch's ends its terrain holes reach
+LOW_HOLE_M = 3.0            # m from a low arch's ends: its mouths, flat at its floor (arch_raise) and cut away ...
+LOW_HOLE_STEP = 2.5         # ... the cut a terrain grid step further (the squares from the floor up to the soil)
 TUNNEL_HOLE_MARGIN = 0.5    # m around the tube a portal's terrain hole reaches (above, below and sideways)
 
 
@@ -1659,11 +1660,83 @@ def tunnel_hole_mask(parts, u, cx, cy, square, heights=None):
             g = u[iy0:iy1 + 1, ix0:ix1 + 1]
             hit = inside & (d <= hw) & (g > floor - TUNNEL_HOLE_MARGIN) & \
                 (g < floor + th + TUNNEL_HOLE_MARGIN)
-            if low:     # a low arch: its mouths, and where the ground comes down into the tube (its thin soil cover lies
-                s_ = sj[j] + t * (sj[j + 1] - sj[j])            # within the band all along: cut, the tube was seen
-                hit &= (s_ <= LOW_HOLE_M) | (s_ >= sj[-1] - LOW_HOLE_M) | (g < floor + th - 0.2)   # into from above)
+            if low:     # a low arch: its mouths (arch_raise left them flat at the floor), one grid step past them whatever
+                # the height (the squares up to the raised soil over the vault), and nothing more (its thin soil cover
+                # lay within the band all along: cut, the tube was seen into from above)
+                s_ = sj[j] + t * (sj[j + 1] - sj[j])
+                ends = (s_ <= LOW_HOLE_M + LOW_HOLE_STEP) | (s_ >= sj[-1] - LOW_HOLE_M - LOW_HOLE_STEP)
+                hit = inside & (d <= hw) & ends
             mask[iy0:iy1 + 1, ix0:ix1 + 1] |= hit
     return mask
+
+
+ARCH_SOIL_MIN = 0.6         # m of ground kept over a low arch's vault (arch_raise)
+
+
+def arch_raise(parts, heights, px, py, z):
+    """z (ground heights at the anchor-frame points px, py) raised over the low arches among parts (TunnelProfiles
+    parts; heights: their tubes, TunnelProfiles.heights) to ARCH_SOIL_MIN over the vault, beside it too, but for
+    their mouths (LOW_HOLE_M, cut there by tunnel_hole_mask): the ground dipping into a low tube near its mouths
+    made one-sided terrain triangles from the road's level up to the soil, seen as dark wedges in the opening from
+    outside (Central Park, 2026-10-17). Pure."""
+    import roadmesh
+    z = np.array(z, np.float64, copy=True)
+    for fid, spec, xy, zf, _lon in parts:
+        th = (heights or {}).get(fid)
+        if th is None or th >= roadmesh.TUNNEL_H - 0.05:
+            continue
+        xy = np.asarray(xy, np.float64)
+        zf = np.asarray(zf, np.float64)
+        if len(xy) < 2 or not np.isfinite(zf).all():
+            continue
+        hw = spec.width / 2 + roadmesh.TUNNEL_SHOULDER + 1.0
+        sj = np.r_[0.0, np.cumsum(np.hypot(*np.diff(xy, axis=0).T))]
+        lo = xy.min(0) - hw
+        hi = xy.max(0) + hw
+        near = (px >= lo[0]) & (px <= hi[0]) & (py >= lo[1]) & (py <= hi[1])
+        if not near.any():
+            continue
+        k = np.flatnonzero(near)
+        for j in range(len(xy) - 1):
+            a, b = xy[j], xy[j + 1]
+            ab = b - a
+            L2 = max(float(ab @ ab), 1e-12)
+            t = ((px[k] - a[0]) * ab[0] + (py[k] - a[1]) * ab[1]) / L2
+            d = np.abs((px[k] - a[0]) * ab[1] - (py[k] - a[1]) * ab[0]) / math.sqrt(L2)
+            s_ = sj[j] + np.clip(t, 0, 1) * (sj[j + 1] - sj[j])
+            inside = (t >= 0) & (t <= 1) & (d <= hw)
+            floor = zf[j] + np.clip(t, 0, 1) * (zf[j + 1] - zf[j])
+            mouth = inside & ((s_ <= LOW_HOLE_M) | (s_ >= sj[-1] - LOW_HOLE_M))
+            on = inside & ~mouth
+            if on.any():            # over the vault: soil at least ARCH_SOIL_MIN over it
+                z[k[on]] = np.maximum(z[k[on]], floor[on] + th + ARCH_SOIL_MIN)
+            if mouth.any():         # its mouths: flat at its floor (cut away, tunnel_hole_mask; no slope into the
+                z[k[mouth]] = np.minimum(z[k[mouth]], floor[mouth] - 0.02)    # opening from the soil)
+    return z
+
+
+def block_arch_raise(tunnels, cell_fn, frame, la, lo, z, box):
+    """arch_raise for ground heights at the points (la, lo) of a block in the anchor-frame box (x0, y0, x1, y1),
+    the tunnels from the map cells under it. z as it was when the cells are not at hand."""
+    try:
+        x0, y0, x1, y1 = box
+        cla, clo, _ = frame.enu_to_geodetic(np.array([x0, x1]), np.array([y0, y1]), np.zeros(2))
+        keys = mapcells.cells_for_bbox(float(cla.min()), float(clo.min()), float(cla.max()), float(clo.max()))
+        cells = []
+        for key in keys:
+            try:
+                cells.append(cell_fn(key))
+            except Exception:
+                cells.append(None)
+        parts = tunnels.parts(cells, box)
+        if not parts or not tunnels.heights:
+            return z
+        e, n, _ = frame.geodetic_to_enu(np.asarray(la, np.float64).ravel(), np.asarray(lo, np.float64).ravel(), 0.0)
+        return arch_raise(parts, tunnels.heights, np.asarray(e), np.asarray(n),
+                          np.asarray(z, np.float64).ravel()).reshape(np.shape(z))
+    except Exception as ex:         # no raise rather than no block
+        log.debug("arch raise: %s: %s", type(ex).__name__, ex)
+        return z
 
 
 def block_tunnel_holes(tunnels, cell_fn, frame, keep, cx, cy, square):

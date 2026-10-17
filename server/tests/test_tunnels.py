@@ -152,3 +152,19 @@ class LowArch(unittest.TestCase):
         self.assertIn(roadmesh.TUNNEL_STONE, mats)
         self.assertNotIn(1, set(M.tolist()), "no lamps under an arch")
         self.assertLess(P[:, 2].max(), zs.max() + h + roadmesh.LOW_PORTAL_UP + 0.01)
+
+
+class ArchRaise(unittest.TestCase):
+    def test_ground_over_a_low_arch_stays_over_its_vault(self):
+        xy = np.array([[0.0, 0.0], [30.0, 0.0]])
+        part = ("a", Spec(7.0, "paved", False, "residential"), xy, np.array([10.0, 10.0]), 0.0)
+        px = np.array([1.0, 15.0, 15.0, 15.0, 40.0])
+        py = np.array([0.0, 0.0, 4.0, 20.0, 0.0])
+        z = np.array([10.0, 12.0, 12.0, 12.0, 12.0])
+        out = roads.arch_raise([part], {"a": 4.0}, px, py, z)
+        self.assertAlmostEqual(out[0], 9.98, msg="the mouth: flat at the floor (cut away)")
+        self.assertAlmostEqual(out[1], 10.0 + 4.0 + roads.ARCH_SOIL_MIN)
+        self.assertAlmostEqual(out[2], 10.0 + 4.0 + roads.ARCH_SOIL_MIN, msg="beside the vault too")
+        self.assertEqual(out[3], 12.0, "away from it as it was")
+        self.assertEqual(out[4], 12.0, "past its portal as it was")
+        self.assertTrue(np.array_equal(roads.arch_raise([part], {}, px, py, z), z), "a full tunnel: nothing")
