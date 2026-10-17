@@ -376,6 +376,9 @@ end
 
 function M.onUpdate(dtReal)
   clock = clock + (dtReal or 0)
+  -- other levels keep their own time and clouds, as weather.lua does (GitHub issue #1, 2026-10-17: on Hirochi Raceway
+  -- the time jumped to the real clock every 30 s and the paused clock ran)
+  if not inOurLevel then return end
   local ok, err = pcall(updateClouds, dtReal)
   if not ok then log('W', 'beamngEarth', 'clouds: ' .. tostring(err)) end
   if pending and clock >= pending.at + M.MISSION_SETUP_S then switchToManual() end
