@@ -88,5 +88,30 @@ class GameClosed(unittest.TestCase):
         self.assertGreaterEqual(clock[0], 12 + launcher.GAME_GONE_S)
 
 
+class CaCerts(unittest.TestCase):
+    """The packaged app's OpenSSL looks in /usr/lib/ssl (Ubuntu's): elsewhere SSL_CERT_FILE points at a bundle."""
+    NONE = mock.Mock(cafile="/usr/lib/ssl/cert.pem", capath="/nonexistent/certs")
+
+    def run_it(self, bundles, env=None):
+        with mock.patch.dict(os.environ, env or {}, clear=False), \
+                mock.patch("ssl.get_default_verify_paths", return_value=self.NONE), \
+                mock.patch.object(launcher, "CA_BUNDLES", bundles):
+            if not env:
+                os.environ.pop("SSL_CERT_FILE", None)
+            launcher.ensure_ca_certs()
+            return os.environ.get("SSL_CERT_FILE")
+
+    def test_system_bundle(self):
+        with tempfile.NamedTemporaryFile() as f:
+            self.assertEqual(self.run_it(("/nonexistent/a.crt", f.name)), f.name)
+
+    def test_certifi_fallback(self):
+        import certifi
+        self.assertEqual(self.run_it(("/nonexistent/a.crt",)), certifi.where())
+
+    def test_kept_when_set(self):
+        self.assertEqual(self.run_it((), {"SSL_CERT_FILE": "/mine.pem"}), "/mine.pem")
+
+
 if __name__ == "__main__":
     unittest.main()
