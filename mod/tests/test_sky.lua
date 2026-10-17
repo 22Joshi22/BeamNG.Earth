@@ -226,6 +226,10 @@ run(sky.GRACE_S + 1)
 core_environment.setTimeOfDay({ time = (realTime() + 0.3) % 1 })
 run(sky.MISSION_SETUP_S + 1)
 check(sky.getMode() == 'real' and #toasts == 2, 'other levels: no switch')
+-- ... and their time left alone: a time set there (and a paused clock) stays past the resync interval (issue #1)
+tod.time, tod.play = 0.5, false
+run(sky.RESYNC_S and sky.RESYNC_S + 5 or 40)
+check(tod.time == 0.5 and tod.play == false, 'other levels: their time is not synced to the real clock')
 
 print(string.format('test_sky: %d passed, %d failed', pass, fail))
 os.exit(fail == 0 and 0 or 1)
