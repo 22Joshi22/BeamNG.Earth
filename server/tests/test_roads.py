@@ -280,7 +280,10 @@ class BuildTileTest(unittest.TestCase):
             near_curb = np.abs(np.hypot(*(c[:, :2] - curb[1, :2]).T)) < 15
             o3 = np.r_[out[1], 0.0]
             looks = n[face][near_curb] @ o3
-            self.assertTrue((looks < 0).any() and (looks > 0).any(), "a face toward the road and a back face")
+            self.assertTrue((looks < 0).any(), "a face toward the road")
+            # the back slopes down to the ground (1:2, sidewalks.BACK_RUN): it looks outward and up, a wheel rolls on it
+            back = (M == 0) & (n[:, 2] > 0.5) & (n[:, 2] < 0.95) & ((n[:, :2] @ out[1]) > 0.3)
+            self.assertTrue(back.any(), "a sloped back face")
 
     def test_junction_corners_crosswalks_ramps(self):
         import tempfile
