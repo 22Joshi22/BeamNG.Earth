@@ -271,7 +271,7 @@ def oriented_box(p):
 class Spec:
     """What is built for one footprint (decided by plan())."""
     __slots__ = ("ring", "floors", "floor_h", "height", "roof", "roof_mat", "facade", "band", "shop", "plain", "min_h", "wall", "door", "windows", "front", "steeple", "stoop",
-                 "sign", "porch", "cls", "seed", "deck", "pitch")
+                 "sign", "porch", "cls", "seed", "deck", "pitch", "portal")
 
     def __init__(self, **kw):
         for k in self.__slots__:
@@ -908,6 +908,45 @@ PORCH_H_M = 2.7             # the porch roof's underside above the floor
 PORCH_DECK_M = 0.35         # the deck's top above the ground
 
 
+PORTAL_NEAR_M = 25.0        # m round a building where the road at a tunnel's mouth is looked for
+
+
+def _portal_lift(frame, ring, x0, y0, tunnels_xy, elev):
+    """How far (m) over its lowest ground a building over a tunnel stands: to OVER_TUNNEL_CLEAR_M over the lowest ground
+    along the tunnel lines within PORTAL_NEAR_M of it (the road at the mouth), 0 when its ground is that high."""
+    lo = ring.min(0) - PORTAL_NEAR_M
+    hi = ring.max(0) + PORTAL_NEAR_M
+    pts = []
+    for line in tunnels_xy:
+        ln = np.asarray(line, np.float64)
+        if len(ln) < 2:
+            continue
+        seg = np.hypot(*np.diff(ln, axis=0).T)
+        s = np.r_[0.0, np.cumsum(seg)]
+        t = np.arange(0.0, s[-1] + 1e-9, 2.0)
+        p = np.stack([np.interp(t, s, ln[:, 0]), np.interp(t, s, ln[:, 1])], axis=1)
+        p = p[(p[:, 0] >= lo[0]) & (p[:, 0] <= hi[0]) & (p[:, 1] >= lo[1]) & (p[:, 1] <= hi[1])]
+        if len(p):
+            pts.append(p)
+    if not pts:
+        return 0.0
+    q = np.concatenate(pts + [ring])
+    la, lo_, _ = frame.enu_to_geodetic(q[:, 0] + x0, q[:, 1] + y0, np.zeros(len(q)))
+    z = np.asarray(elev(la, lo_), np.float64)
+    nr = len(ring)
+    road, ground = z[:-nr], z[-nr:]
+    if not len(road) or not np.isfinite(road).any() or not np.isfinite(ground).any():
+        return 0.0
+    return max(0.0, float(np.nanmin(road)) + OVER_TUNNEL_CLEAR_M - float(np.nanmin(ground)))
+
+
+def base_z(spec, gmin, gmax):
+    """The ground a building's floors stand on: the footprint's highest, but the lowest for one over a tunnel's portal
+    (the road at its mouth: from the hill over it, Wabash's portal house floated ~10 m over the portal and
+    Eisenhower's portal building over its frames, 2026-10-17)."""
+    return gmin if spec.portal else gmax
+
+
 def drawn_ring(spec):
     """The footprint its walls are drawn on: a pitched roof's house is its oriented box (build); its door, steps and
     porch go on these walls (on the map's outline they stood off a box wall at an angle, or inside it, only the
@@ -1236,8 +1275,8 @@ def build(specs_and_ground, lite=False):
         mh = spec.min_h or 0.0
         if spec.deck and not lite and _parking_deck(m, spec, gmin, gmax, mat_idx):
             continue
-        z0 = gmin - FOUNDATION_M if mh <= 0.5 else gmax + mh
-        z_eave = gmax + mh + spec.height
+        z0 = gmin - FOUNDATION_M if mh <= 0.5 else base_z(spec, gmin, gmax) + mh
+        z_eave = base_z(spec, gmin, gmax) + mh + spec.height
         _walls(m, spec, ring, z0, z_eave, mat_idx, lite)
         if mh > 0.5:                                  # a part standing on another / over a street: its underside
             m.poly([(p[0], p[1], z0) for p in ring[::-1]], [(0.002, 0.995)] * len(ring), mat_idx[spec.facade])
@@ -1284,8 +1323,8 @@ def collision_mesh(specs_and_ground):
         if _area2(ring) < 0:
             ring = ring[::-1]
         mh = spec.min_h or 0.0
-        z0 = gmin - FOUNDATION_M if mh <= 0.5 else gmax + mh
-        z1 = gmax + mh + spec.height
+        z0 = gmin - FOUNDATION_M if mh <= 0.5 else base_z(spec, gmin, gmax) + mh
+        z1 = base_z(spec, gmin, gmax) + mh + spec.height
         for i in range(len(ring)):
             a, b = ring[i], ring[(i + 1) % len(ring)]
             m.quad((a[0], a[1], z0), (b[0], b[1], z0), (b[0], b[1], z1), (a[0], a[1], z1), zero, zero, zero, zero, tok)
@@ -1581,10 +1620,16 @@ def tile_buildings(frame, x0, y0, x1, y1, layers, elev, water=None, part_layers=
                 if h is None or not np.isfinite(h) or h < mh + 3.0:
                     at = dict(at, height=mh + 3.0)      # keeps its top; at least a slab's worth over the clearance
             if mh < OVER_TUNNEL_CLEAR_M and tunnels_xy and road_through(ring, tunnels_xy) >= TUNNEL_THROUGH_M:
-                mh = OVER_TUNNEL_CLEAR_M
-                h = at.get("height")
-                if h is None or not np.isfinite(h) or h < mh + 3.0:
-                    at = dict(at, height=mh + 3.0)
+                # over a tunnel: its floor OVER_TUNNEL_CLEAR_M over the road at the mouth near it (the lowest ground
+                # along the tunnel's line round it), from its own lowest ground (base_z); none where its ground is
+                # that high already (a house on the hill over the tube: Wabash's floated ~10 m, 2026-10-17)
+                lift = _portal_lift(frame, ring, x0, y0, tunnels_xy, elev)
+                if lift > 0.5:
+                    mh = lift
+                    at = dict(at, portal=True)
+                    h = at.get("height")
+                    if h is None or not np.isfinite(h) or h < mh + 3.0:
+                        at = dict(at, height=mh + 3.0)
             if mh <= 0.5 and garages_xy and _covers_garage(ring, garages_xy):
                 at = dict(at, garage=True)
             attrs.append(at)
@@ -1610,6 +1655,7 @@ def tile_buildings(frame, x0, y0, x1, y1, layers, elev, water=None, part_layers=
             at = dict(at, height=max(2.5, float(at["height"]) - mh))     # a building's own height range
         spec = plan(ring, at, int(sh) if look is None else 0, clat, clon, look, town, dense, west_town, alpine)
         spec.min_h = mh
+        spec.portal = bool(at.get("portal"))
         e = ring[:, 0] + x0
         n = ring[:, 1] + y0
         la, lo, _ = frame.enu_to_geodetic(e, n, np.zeros(len(e)))
