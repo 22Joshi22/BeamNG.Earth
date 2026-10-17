@@ -18,6 +18,8 @@ import queue
 import threading
 import time
 
+import numpy as np
+
 import dem as demmod
 import farfield
 import geodesy
@@ -53,6 +55,7 @@ class _State:
         self.graders = {}           # anchor id -> grading.Grader
         self.chunks = {}            # anchor id -> heightmap.ChunkCache
         self.bridges = {}           # anchor id -> roads.BridgeProfiles (roads_tile)
+        self.tunnels = {}           # anchor id -> roads.TunnelProfiles (roads_tile, the block's holes)
         self.lock = threading.Lock()
         self.want = []              # (grader, cell key) to plan, most urgent first
         self.cv = threading.Condition()
@@ -196,6 +199,7 @@ def build(aid, lat, lon, hm_zoom, q, cx, cy, size, out_dir, name, ter_name=None)
         info["surfaceComplete"] = complete and roads_complete
     if ter_name is not None:
         t1 = time.perf_counter()
+        idx = _tunnel_holes(aid, frame, elev, keep, cx, cy, idx, info)
         info["ter"] = surfacemod.write_ter(out_dir, ter_name, keep["qgrid"], idx)
         stages["ter"] = time.perf_counter() - t1
     info["stages"] = stages
@@ -226,6 +230,7 @@ def roads_tile(aid, lat, lon, zoom, tx, ty, out_dir, vfs_dir, sidewalks, lift, b
                 frame, lambda key: _s.md.cell(key, layers=("roads",), kind="demand").layers.get("roads"), elev)
             for old in sorted(_s.bridges)[:-ANCHORS_KEPT]:
                 del _s.bridges[old]
+    tunnels = tunnel_profiles(aid, frame, elev)
     walks = []
     urban = _s.surface.urban if _s.surface is not None else None
     props = [] if buildings else None
@@ -240,7 +245,8 @@ def roads_tile(aid, lat, lon, zoom, tx, ty, out_dir, vfs_dir, sidewalks, lift, b
         town = buildingsmod.coverage(items) < buildingsmod.POLES_COVERAGE
     chunks = roadsmod.build_tile(frame, tx, ty, cells, elev, urban, walks=walks, bridges=bridges, widths=_s.widths,
                                  props=props, lines=lines, wires=wires, town=town, park=park,
-                                 left_hand=left_hand, mph=mph, structures=buildingsmod.centres(items, tx, ty) if items else ())
+                                 left_hand=left_hand, mph=mph, structures=buildingsmod.centres(items, tx, ty) if items else (),
+                                 tunnels=tunnels)
     if _s.airports is not None:         # runway markings, drawn by the road mesh like the lane lines
         chunks += _s.airports.tile_chunks(frame, tx, ty, elev, roadsmod.tile_bbox)
     x0, y0, _, _ = roadsmod.tile_bbox(tx, ty)
@@ -253,6 +259,7 @@ def roads_tile(aid, lat, lon, zoom, tx, ty, out_dir, vfs_dir, sidewalks, lift, b
         buildingsmod.brick_walks(walks, items, lat, lon)
     mesh = roadmeshmod.build(frame, chunks, elev, (x0, y0, 0.0), lift)
     dmesh = roadmeshmod.deck(chunks, (x0, y0, 0.0))
+    tmesh = roadmeshmod.tunnel(chunks, (x0, y0, 0.0))
     bld = None
     if buildings:
         import buildings as buildingsmod
@@ -260,7 +267,43 @@ def roads_tile(aid, lat, lon, zoom, tx, ty, out_dir, vfs_dir, sidewalks, lift, b
                                      lambda la, lo: ground(frame, la, lo, _s.dem.sample(la, lo, zoom)), None, None,
                                      items)
     return roadsmod.write_tile(out_dir, vfs_dir, aid, tx, ty, chunks, walks if sidewalks else None, mesh, dmesh,
-                               bld, props, wires, park)
+                               bld, props, wires, park, tunnel_mesh=tmesh)
+
+
+def _tunnel_holes(aid, frame, elev, keep, cx, cy, idx, info):
+    """idx with the block's tunnel portals as holes (roads.block_tunnel_holes); info["tunnelHoles"]: how many."""
+    import roads as roadsmod
+    try:
+        holes = roadsmod.block_tunnel_holes(
+            tunnel_profiles(aid, frame, elev),
+            lambda key: _s.md.cell(key, layers=("roads",), kind="demand").layers.get("roads"),
+            frame, keep, cx, cy, heightmap.SQUARE)
+    except Exception:                   # no holes rather than no block
+        log.exception("tunnel holes of block (%s, %s)", cx, cy)
+        return idx
+    if holes is None or not holes.any():
+        return idx
+    idx = np.zeros(holes.shape, np.uint8) if idx is None else idx
+    idx[holes] = heightmap.TER_HOLE
+    info["tunnelHoles"] = int(holes.sum())
+    return idx
+
+
+def tunnel_profiles(aid, frame, elev):
+    """The anchor's roads.TunnelProfiles in this process (road tiles and the block's terrain holes share it)."""
+    import roads as roadsmod
+    with _s.lock:
+        if getattr(_s, "tunnels", None) is None:        # (a state made without it: tests)
+            _s.tunnels = {}
+        t = _s.tunnels.get(aid)
+        if t is None:
+            t = _s.tunnels[aid] = roadsmod.TunnelProfiles(
+                frame, lambda key: _s.md.cell(key, layers=("roads",), kind="demand").layers.get("roads"), elev)
+            sea = getattr(_s, "sea", None)
+            t.wet = sea.depth if sea is not None else None
+            for old in sorted(_s.tunnels)[:-ANCHORS_KEPT]:
+                del _s.tunnels[old]
+        return t
 
 
 def far_buildings_tile(aid, lat, lon, zoom, tx, ty, out_dir, vfs_dir):

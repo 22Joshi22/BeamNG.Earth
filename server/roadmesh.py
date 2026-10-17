@@ -196,6 +196,98 @@ def deck(chunks, origin):
     return (np.concatenate(P), np.concatenate(T), np.concatenate(UV), mats, np.concatenate(M))
 
 
+TUNNEL_SHOULDER = 1.2      # m of concrete floor between the road's edge and the wall
+TUNNEL_WALL_H = 4.6        # m of upright wall before the vault
+TUNNEL_H = 6.8             # m from the floor to the vault's top
+PORTAL_FRAME = 6.0         # m of portal face around the opening (hides the terrain hole's 2 m steps)
+TUNNEL_SIDE = DECK_SIDE    # the tube's concrete
+TUNNEL_OVERLAP = 0.25      # m a tube piece reaches past a tile edge
+
+
+def _tunnel_section(hw):
+    """The tube's cross-section from the left road edge's floor over the vault to the right one: (lateral offset
+    from the centre line, positive = left; height over the floor) for half-width hw (centre to wall)."""
+    vault = [(np.cos(a) * hw, TUNNEL_WALL_H + np.sin(a) * (TUNNEL_H - TUNNEL_WALL_H))
+             for a in np.linspace(0.0, np.pi, 9)]
+    return np.array([(hw - TUNNEL_SHOULDER, 0.0), (hw, 0.0)] + vault + [(-hw, 0.0), (-hw + TUNNEL_SHOULDER, 0.0)],
+                    np.float64)
+
+
+def tunnel(chunks, origin):
+    """The tunnels of a tile as one colliding mesh: around every "tunnel" chunk (its road surface: a deck, deck()
+    makes its slab) a tube of concrete (TUNNEL_SIDE) faced inwards: shoulders, walls and a vault TUNNEL_H over the
+    floor; at a chunk end that is a portal ("portal") a face around the opening, seen from both sides. (positions,
+    tris, uvs, materials, tri material index) or None. Pure."""
+    tc = [c for c in chunks if c.get("tunnel")]
+    rb = [(r, c) for r, c in zip(ribbons(tc), tc) if r[5] is not None]
+    if not rb:
+        return None
+    P, T, UV = [], [], []
+    nv = 0
+    for (left, right, v, _, _, z), c in rb:
+        # a piece ending at a tile edge reaches TUNNEL_OVERLAP past it: the next tile's piece meets it there without a
+        # hairline of daylight (2026-10-17, inside Eisenhower)
+        portal = c.get("portal") or (False, False)
+        left, right, z = left.copy(), right.copy(), z.copy()
+        for at, nb in ((0, 1), (-1, -2)):
+            if portal[0 if at == 0 else 1] or len(left) < 2:
+                continue
+            for arr in (left, right):
+                t = arr[at] - arr[nb]
+                arr[at] += t / max(float(np.hypot(*t)), 1e-9) * TUNNEL_OVERLAP
+        mid = (left + right) / 2
+        lat = left - right
+        lw = np.maximum(np.hypot(lat[:, 0], lat[:, 1]), 1e-9)
+        u = lat / lw[:, None]                               # unit left
+        hw = float(np.median(lw)) / 2 + TUNNEL_SHOULDER
+        sec = _tunnel_section(hw)
+        k, m = len(mid), len(sec)
+        rows = np.empty((m, k, 3))
+        for j, (off, h) in enumerate(sec):
+            rows[j, :, :2] = mid + u * off
+            rows[j, :, 2] = z + h
+        rows -= origin
+        # inward: towards the tube's axis (a point TUNNEL_H / 2 over the floor's centre)
+        axis = np.c_[mid, z + TUNNEL_H / 2] - origin
+        for j in range(m - 1):
+            a, b = rows[j], rows[j + 1]
+            P.append(np.concatenate([a, b]))
+            UV.append(np.c_[np.r_[np.full(k, j / 4.0), np.full(k, (j + 1) / 4.0)], np.r_[v, v]])
+            i = np.arange(k - 1)
+            A, A1, B, B1 = nv + i, nv + i + 1, nv + k + i, nv + k + i + 1
+            tri = np.concatenate([np.stack([A, B, B1], 1), np.stack([A, B1, A1], 1)])
+            pts = np.concatenate(P)
+            nrm = np.cross(pts[tri[:, 1]] - pts[tri[:, 0]], pts[tri[:, 2]] - pts[tri[:, 0]])
+            cen = (pts[tri[:, 0]] + pts[tri[:, 1]] + pts[tri[:, 2]]) / 3
+            ax = np.concatenate([axis[i], axis[i]])
+            flip = (nrm * (ax - cen)).sum(1) < 0
+            tri[flip] = tri[flip][:, ::-1]
+            T.append(tri)
+            nv += 2 * k
+        for end, at in zip(c.get("portal") or (False, False), (0, k - 1)):
+            if not end:
+                continue
+            # the face: from the opening's outline out to a frame PORTAL_FRAME wider and higher, both sides
+            inner = rows[:, at]
+            o = sec.copy()
+            o[:, 0] = np.sign(o[:, 0]) * (np.abs(o[:, 0]) + PORTAL_FRAME)
+            o[:, 1] = np.where(o[:, 1] > 0.0, o[:, 1] + PORTAL_FRAME, -2.0)
+            outer = np.empty((m, 3))
+            outer[:, :2] = mid[at] + u[at] * o[:, :1]
+            outer[:, 2] = z[at] + o[:, 1]
+            outer -= origin
+            P.append(np.concatenate([inner, outer]))
+            UV.append(np.c_[np.r_[sec[:, 0], o[:, 0]] / 4.0, np.r_[sec[:, 1], o[:, 1]] / 4.0])
+            i = np.arange(m - 1)
+            A, A1, B, B1 = nv + i, nv + i + 1, nv + m + i, nv + m + i + 1
+            tri = np.concatenate([np.stack([A, B, B1], 1), np.stack([A, B1, A1], 1)])
+            T.append(np.concatenate([tri, tri[:, ::-1]]))   # seen from outside and from in the tube
+            nv += 2 * m
+    mats = [TUNNEL_SIDE]
+    Tall = np.concatenate(T)
+    return (np.concatenate(P), Tall, np.concatenate(UV), mats, np.zeros(len(Tall), np.int64))
+
+
 def write(path, mesh):
     P, T, UV, mats, M = mesh
     return cdae.write(path, P, T, uvs=UV, material=mats, tri_materials=M, object_name="road")

@@ -356,6 +356,7 @@ class Anchor:
     grader: object = None                          # grading.Grader (--grading on), made on first use
     chunks: object = field(default_factory=heightmap.ChunkCache)   # the physics blocks' heights per 128 m
     bridges: object = None                         # roads.BridgeProfiles: deck heights per chain
+    tunnels: object = None                         # roads.TunnelProfiles: floor heights per chain
 
 
 @dataclass
@@ -973,6 +974,11 @@ class Server:
                 anchor.bridges = roadsmod.BridgeProfiles(
                     anchor.frame, lambda key: self.mapdata.cell(key, layers=("roads",), kind="demand").layers.get("roads"),
                     elev)
+            if anchor.tunnels is None:
+                anchor.tunnels = roadsmod.TunnelProfiles(
+                    anchor.frame, lambda key: self.mapdata.cell(key, layers=("roads",), kind="demand").layers.get("roads"),
+                    elev)
+                anchor.tunnels.wet = self.sea.depth if self.sea is not None else None
         props = [] if self.buildings else None
         lines = [] if self.buildings else None
         wires = [] if self.buildings else None
@@ -986,7 +992,8 @@ class Server:
         chunks = roadsmod.build_tile(anchor.frame, tx, ty, cells, elev, urban, walks=walks, bridges=anchor.bridges,
                                      widths=self.road_widths, props=props, lines=lines, wires=wires, town=town, park=park,
                                      left_hand=self.left_hand(anchor), mph=self.mph(anchor),
-                                     structures=buildingsmod.centres(items, tx, ty) if items else ())
+                                     structures=buildingsmod.centres(items, tx, ty) if items else (),
+                                     tunnels=anchor.tunnels)
         if self.airports is not None:   # runway markings, drawn by the road mesh like the lane lines
             chunks += self.airports.tile_chunks(anchor.frame, tx, ty, elev, roadsmod.tile_bbox)
         x0, y0, _, _ = roadsmod.tile_bbox(tx, ty)
@@ -1000,13 +1007,14 @@ class Server:
         mesh = roadmeshmod.build(anchor.frame, chunks, elev, (x0, y0, 0.0),
                                  DETAIL_ROAD_LIFT if self.near_visual == "detail" else 0.0)
         dmesh = roadmeshmod.deck(chunks, (x0, y0, 0.0))
+        tmesh = roadmeshmod.tunnel(chunks, (x0, y0, 0.0))
         bld = None
         if self.buildings:
             bld = buildingsmod.road_tile(anchor.frame, tx, ty, self.mapdata,
                                          lambda la, lo: self.ground(anchor.frame, la, lo, self.dem.sample(la, lo, zoom)),
                                          None, None, items)
         return roadsmod.write_tile(self.out_dir, self.vfs_dir, aid, tx, ty, chunks, walks if self.sidewalks else None,
-                                   mesh, dmesh, bld, props, wires, park)
+                                   mesh, dmesh, bld, props, wires, park, tunnel_mesh=tmesh)
 
     def ground(self, frame, la, lo, z):
         """blockworker.ground here: runways graded in, the sea floor carved."""
@@ -1191,9 +1199,31 @@ class Server:
             complete = complete and roads_complete
             info["layers"] = surfacemod.write_masks(idx[::-1], self.out_dir, self.hm_name((anchor.id, cx, cy))[:-4])
             info["surfaceComplete"] = complete
+        idx = self._tunnel_holes(anchor, elev, keep, cx, cy, idx, info)
         info["ter"] = surfacemod.write_ter(self.out_dir, self.ter_name((anchor.id, cx, cy)), keep["qgrid"], idx)
         info["stages"] = stages
         return self._finish_heightmap(anchor, cx, cy, info, t0)
+
+    def _tunnel_holes(self, anchor, elev, keep, cx, cy, idx, info):
+        """idx with the block's tunnel portals as holes (roads.block_tunnel_holes; blockworker._tunnel_holes)."""
+        if self.mapdata is None:
+            return idx
+        cell_fn = lambda key: self.mapdata.cell(key, layers=("roads",), kind="demand").layers.get("roads")   # noqa: E731
+        try:
+            with self.grader_lock:
+                if anchor.tunnels is None:
+                    anchor.tunnels = roadsmod.TunnelProfiles(anchor.frame, cell_fn, elev)
+                    anchor.tunnels.wet = self.sea.depth if self.sea is not None else None
+            holes = roadsmod.block_tunnel_holes(anchor.tunnels, cell_fn, anchor.frame, keep, cx, cy, heightmap.SQUARE)
+        except Exception:
+            log.exception("tunnel holes of block (%s, %s)", cx, cy)
+            return idx
+        if holes is None or not holes.any():
+            return idx
+        idx = np.zeros(holes.shape, np.uint8) if idx is None else idx
+        idx[holes] = heightmap.TER_HOLE
+        info["tunnelHoles"] = int(holes.sum())
+        return idx
 
     def _finish_heightmap(self, anchor, cx, cy, info, t0, pool=None):
         """The base photo (detail mode; rendered here: the imagery corrections live in this process),
