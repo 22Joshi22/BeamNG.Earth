@@ -985,6 +985,7 @@ class Server:
                     anchor.frame, lambda key: self.mapdata.cell(key, layers=("roads",), kind="demand").layers.get("roads"),
                     elev)
                 anchor.tunnels.wet = self.sea.depth if self.sea is not None else None
+                anchor.tunnels.raw = lambda la, lo: self.ground(anchor.frame, la, lo, self.dem.sample(la, lo, anchor.zooms[0]))
         props = [] if self.buildings else None
         lines = [] if self.buildings else None
         wires = [] if self.buildings else None
@@ -995,11 +996,12 @@ class Server:
                 anchor.frame, tx, ty, self.mapdata,
                 lambda la, lo: self.ground(anchor.frame, la, lo, self.dem.sample(la, lo, zoom)))
             town = buildingsmod.coverage(items) < buildingsmod.POLES_COVERAGE
+        rwalls = []
         chunks = roadsmod.build_tile(anchor.frame, tx, ty, cells, elev, urban, walks=walks, bridges=anchor.bridges,
                                      widths=self.road_widths, props=props, lines=lines, wires=wires, town=town, park=park,
                                      left_hand=self.left_hand(anchor), mph=self.mph(anchor),
                                      structures=buildingsmod.centres(items, tx, ty) if items else (),
-                                     tunnels=anchor.tunnels)
+                                     tunnels=anchor.tunnels, walls=rwalls)
         if self.airports is not None:   # runway markings, drawn by the road mesh like the lane lines
             chunks += self.airports.tile_chunks(anchor.frame, tx, ty, elev, roadsmod.tile_bbox)
         x0, y0, _, _ = roadsmod.tile_bbox(tx, ty)
@@ -1013,7 +1015,7 @@ class Server:
         mesh = roadmeshmod.build(anchor.frame, chunks, elev, (x0, y0, 0.0),
                                  DETAIL_ROAD_LIFT if self.near_visual == "detail" else 0.0)
         dmesh = roadmeshmod.deck(chunks, (x0, y0, 0.0))
-        tmesh = roadmeshmod.tunnel(chunks, (x0, y0, 0.0))
+        tmesh = roadmeshmod.tunnel(chunks, (x0, y0, 0.0), rwalls)
         bld = None
         if self.buildings:
             bld = buildingsmod.road_tile(anchor.frame, tx, ty, self.mapdata,
@@ -1220,6 +1222,8 @@ class Server:
                 if anchor.tunnels is None:
                     anchor.tunnels = roadsmod.TunnelProfiles(anchor.frame, cell_fn, elev)
                     anchor.tunnels.wet = self.sea.depth if self.sea is not None else None
+                    anchor.tunnels.raw = lambda la, lo: self.ground(anchor.frame, la, lo,
+                                                                    self.dem.sample(la, lo, anchor.zooms[0]))
             holes = roadsmod.block_tunnel_holes(anchor.tunnels, cell_fn, anchor.frame, keep, cx, cy, heightmap.SQUARE)
         except Exception:
             log.exception("tunnel holes of block (%s, %s)", cx, cy)
@@ -2745,12 +2749,20 @@ class Connection:
                         log.debug("river road clearance: %s", e)
                         return None
 
+                grader = self.s.grader_for(self.s.anchors[aid])
+
+                def lake_ground(la, lo):
+                    # the ground as graded under the roads (the terrain block's): a reservoir's tile kept over the
+                    # raw DEM flooded Central Park's sunken transverse, graded 1.6 m under its water (2026-10-17)
+                    z = dem.sample(la, lo, seatilesmod.LAKE_DEM_ZOOM)
+                    return grader.apply(la, lo, z) if grader is not None else z
+
                 def plan():
                     # with the cells at hand (the others are built in the background and used by the
                     # next plan, SEA_CHECK_S later): water appears at once at a new place
                     tiles = (seatilesmod.plan(frame, x, y, lambda la, lo, size: sea.sea_at(dem, la, lo, size, False))
                              + seatilesmod.plan_lakes(frame, x, y, lambda la, lo: sea.lake_at(la, lo, False),
-                                                      lambda la, lo: dem.sample(la, lo, seatilesmod.LAKE_DEM_ZOOM)))
+                                                      lake_ground))
                     def carved(la, lo):     # the river beds' level (seacarve), NaN elsewhere
                         lv = sea.water(la, lo, wait=False)[1]
                         return np.where(sea.outline_at(la, lo), lv, np.nan)

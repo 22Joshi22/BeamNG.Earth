@@ -126,3 +126,29 @@ class OpenUnderpass(unittest.TestCase):
             return 10.0 + np.maximum(0.0, 40.0 - np.abs(e) * 0.4)
         ch = self.chunks(hill)
         self.assertTrue(any(c.get("tunnel") for c in ch))
+
+
+class LowArch(unittest.TestCase):
+    def test_a_park_bridge_is_a_low_stone_arch(self):
+        # 5 m of ground over a short 'tunnel' (Central Park's West Drive over the 86th Street Transverse): a tube that
+        # fits under it (ground - TUNNEL_SOIL_M), of stone, straight between its portals; no lamps
+        from test_roads import features, FRAME, LON, M_LON
+        f = features([[(-20, 0), (20, 0)]], ["residential"], flags=[(0, "is_tunnel")])
+
+        def arch(la, lo):
+            e = (np.asarray(lo) - LON) * M_LON
+            return 10.0 + np.where(np.abs(e) < 15.0, 5.0, 0.0)
+        tp = roads.TunnelProfiles(FRAME, lambda key: f, arch)
+        ch = roads._tunnel_chunks(tp, [f], (-128.0, -128.0, 128.0, 128.0))
+        tube = [c for c in ch if c.get("tunnel")]
+        self.assertTrue(tube)
+        h = tube[0]["tunnel_h"]
+        self.assertAlmostEqual(h, 5.0 - roads.TUNNEL_SOIL_M, delta=0.3)
+        zs = np.concatenate([np.asarray(c["n"])[:, 2] for c in tube])
+        self.assertLess(np.ptp(zs), 0.1, "straight, no dip")
+        for c in tube:
+            c["portal"] = [True, True]
+        P, T, UV, mats, M = roadmesh.tunnel(tube, (0.0, 0.0, 0.0))
+        self.assertIn(roadmesh.TUNNEL_STONE, mats)
+        self.assertNotIn(1, set(M.tolist()), "no lamps under an arch")
+        self.assertLess(P[:, 2].max(), zs.max() + h + roadmesh.LOW_PORTAL_UP + 0.01)

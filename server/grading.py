@@ -48,6 +48,14 @@ PAIR_BATCH = 2_000_000      # (segment, point) pairs graded at once (bounds the 
 ROAD_LIFT = 0.04            # m the physics ground is raised under roads (see Grader.apply)
 BLEND_R = 4.0               # m: roads near each other blend their targets by 1 / (1 + (d / BLEND_R)^2)
 PROFILE_ZOOM = 15           # DEM zoom of the profiles (one zoom for every caller)
+WALL_CUT_M = 2.0            # a road cut deeper than this into the ground: a retaining wall at the core's edge
+WALL_T_M = 0.8              # (roadmesh.retaining_walls) and the ground at its natural height right behind it, over
+                            # this; on a 1:2 slope Central Park's sunken transverse was a grassy ditch between its
+                            # stone walls (the user, 2026-10-17)
+WALL_FLAT_M = 2.0           # ... after one terrain grid step at the road's level behind the wall: rising at the wall
+                            # itself, the 2 m grid's triangles stood as dark wedges in front of its face; the wall's
+                            # top (roadmesh.WALL_THICK_M) covers the strip
+TUNNEL_KEEP_M = 3.0         # m beside a covered tunnel's road where the ground over it is left ungraded
 RETRY_S = 60.0              # s before a cell whose road data failed is asked for again
 
 
@@ -155,6 +163,7 @@ class Grader:
         self.failed = {}        # cell key -> monotonic time of the last failed fetch
         self.lock = threading.Lock()
         self.key_locks = {}     # cell key -> Lock: one thread plans a cell, the others wait for it
+        self.covers = {}        # cell key -> [(xy (k, 2), half width)]: the tunnels whose ground over them stays
 
     def _cell_plans(self, key):
         with self.lock:
@@ -193,9 +202,64 @@ class Grader:
             for fid, p in zip(ids, plan_roads(self.frame, parts, self.elev)):
                 if p is not None:
                     plans.append((fid, p))
+            plans.extend(self._open_tunnels(feats))
+            covers = self._covered_tunnels(feats)
+        else:
+            covers = []
         with self.lock:
             self.cells.setdefault(key, plans)
+            self.covers.setdefault(key, covers)
             return self.cells[key]
+
+    def _covered_tunnels(self, feats):
+        """[(xy, half width)] of the tunnel parts with ground over them (not open underpasses): the grading leaves
+        that ground as it is (apply): the approaches' grading reached up to T_MAX past a portal and cut a park
+        bridge's soil down under its arch's vault, the terrain then cut away over it (2026-10-17)."""
+        out = []
+        ts = roadsmod.tunnel_specs(feats)
+        for i in range(len(feats)):
+            if ts[i] is None:
+                continue
+            for ring in roadsmod.tunnel_parts(feats, i):
+                ll = np.asarray(ring, np.float64)
+                if len(ll) < 2:
+                    continue
+                E, N, _ = self.frame.geodetic_to_enu(ll[:, 1], ll[:, 0], 0.0)
+                xy = np.stack([np.asarray(E), np.asarray(N)], axis=1)
+                xs, s = resample(xy, VERTEX_STEP)
+                if len(xs) >= 2 and s[-1] > 0:
+                    la, lo, _ = self.frame.enu_to_geodetic(xs[:, 0], xs[:, 1], 0.0)
+                    g = np.asarray(self.elev(la, lo), np.float64)
+                    if float(np.max(g - (g[0] + (g[-1] - g[0]) * s / s[-1]))) < roadsmod.TUNNEL_OPEN_COVER:
+                        continue            # an open underpass: graded (_open_tunnels)
+                out.append((xy, ts[i].width / 2 + TUNNEL_KEEP_M))
+        return out
+
+    def _open_tunnels(self, feats):
+        """(fid, Plan) of the tunnel parts that are open underpasses (roads.TUNNEL_OPEN_COVER): the ground graded to
+        the straight line between their ends, as the road is drawn (roads._tunnel_chunks): over a footbridge's hump
+        in the DEM the road climbed it, the ground over the road (Central Park's transverse, 2026-10-17)."""
+        out = []
+        ts = roadsmod.tunnel_specs(feats)
+        for i in range(len(feats)):
+            if ts[i] is None:
+                continue
+            for ring in roadsmod.tunnel_parts(feats, i):
+                ll = np.asarray(ring, np.float64)
+                if len(ll) < 2:
+                    continue
+                E, N, _ = self.frame.geodetic_to_enu(ll[:, 1], ll[:, 0], 0.0)
+                xy, s = resample(np.stack([np.asarray(E), np.asarray(N)], axis=1), VERTEX_STEP)
+                if len(xy) < 2 or s[-1] <= 0:
+                    continue
+                la, lo, _ = self.frame.enu_to_geodetic(xy[:, 0], xy[:, 1], 0.0)
+                g = np.asarray(self.elev(la, lo), np.float64)
+                z = g[0] + (g[-1] - g[0]) * s / s[-1]
+                if float(np.max(g - z)) >= roadsmod.TUNNEL_OPEN_COVER:
+                    continue                    # a real tunnel: the ground over it stays
+                spec = ts[i]
+                out.append((str(feats.ids[i]), Plan(xy, z, spec.width / 2 + shoulder(spec))))
+        return out
 
     def planned(self, key):
         """True once cell key's plans exist (made, or failed recently)."""
@@ -239,7 +303,34 @@ class Grader:
         if not plans:
             return base
         e, n, _ = self.frame.geodetic_to_enu(lat.ravel(), lon.ravel(), 0.0)
-        return grade_points(np.asarray(e), np.asarray(n), base.ravel(), plans, lift).reshape(shape)
+        e, n = np.asarray(e), np.asarray(n)
+        out = grade_points(e, n, base.ravel(), plans, lift)
+        keep = self._over_tunnels(e, n)
+        if keep is not None:
+            out[keep] = base.ravel()[keep]
+        return out.reshape(shape)
+
+    def _over_tunnels(self, e, n):
+        """Which points lie over a covered tunnel (its half width + TUNNEL_KEEP_M), or None."""
+        with self.lock:
+            zones = [z for v in self.covers.values() for z in v]
+        if not zones or not len(e):
+            return None
+        x0, y0, x1, y1 = e.min(), n.min(), e.max(), n.max()
+        mask = None
+        for xy, hw in zones:
+            if xy[:, 0].max() + hw < x0 or xy[:, 0].min() - hw > x1 or xy[:, 1].max() + hw < y0 or xy[:, 1].min() - hw > y1:
+                continue
+            a, b = xy[:-1], xy[1:]
+            ab = b - a
+            L2 = np.maximum((ab * ab).sum(1), 1e-12)
+            for j in range(len(a)):
+                t = ((e - a[j, 0]) * ab[j, 0] + (n - a[j, 1]) * ab[j, 1]) / L2[j]
+                inside = (t > 0.0) & (t < 1.0)          # over it, not past its portals (the approach grading stays)
+                d = np.abs((e - a[j, 0]) * ab[j, 1] - (n - a[j, 1]) * ab[j, 0]) / np.sqrt(L2[j])
+                m = inside & (d <= hw)
+                mask = m if mask is None else (mask | m)
+        return mask
 
 
 def grade_points(px, py, base, plans, lift=0.0):
@@ -273,13 +364,14 @@ def grade_points(px, py, base, plans, lift=0.0):
         return out
     A, B, ZA, ZB, H = (np.concatenate(v) for v in (A, B, ZA, ZB, H))
     import fast
-    if fast.AVAILABLE:          # the Rust loop: the same pairs in the same order, no temporaries (~3x less CPU)
+    if fast.AVAILABLE and getattr(fast._ef, "VERSION", 0) >= 26:   # the Rust loop: the same pairs in the same order
         f64 = np.float64
         return fast._ef.grade_points(np.ascontiguousarray(px, f64), np.ascontiguousarray(py, f64),
                                      np.ascontiguousarray(base, f64), np.ascontiguousarray(A[:, :2], f64),
                                      np.ascontiguousarray(B[:, :2], f64), np.ascontiguousarray(ZA, f64),
                                      np.ascontiguousarray(ZB, f64), np.ascontiguousarray(H, f64), float(lift),
-                                     float(SLOPE_RUN), float(T_MIN), float(T_MAX), float(BLEND_R), float(BUCKET))
+                                     float(SLOPE_RUN), float(T_MIN), float(T_MAX), float(BLEND_R), float(BUCKET),
+                                     float(WALL_CUT_M), float(WALL_T_M), float(WALL_FLAT_M))
     reach = H + T_MAX
     lo_x = np.minimum(A[:, 0], B[:, 0]) - reach
     hi_x = np.maximum(A[:, 0], B[:, 0]) + reach
@@ -320,8 +412,13 @@ def grade_points(px, py, base, plans, lift=0.0):
         t = np.where(long_, np.clip((qx * ab[:, 0] + qy * ab[:, 1]) / np.where(long_, L2, 1.0), 0.0, 1.0), 0.0)
         d = np.hypot(qx - t * ab[:, 0], qy - t * ab[:, 1])
         target = ZA[s_] + (ZB[s_] - ZA[s_]) * t
-        T = np.clip(SLOPE_RUN * np.abs(target - base[idx]), T_MIN, T_MAX)
-        u = np.clip((d - H[s_]) / T, 0.0, 1.0)
+        Lab = np.sqrt(np.maximum(L2, 1e-24))
+        side = np.abs(qx * ab[:, 1] - qy * ab[:, 0]) / Lab
+        along = (qx * ab[:, 0] + qy * ab[:, 1]) / Lab
+        ahead = np.maximum(np.maximum(-along, along - Lab), 0.0)
+        wall = (base[idx] - target > WALL_CUT_M) & (ahead < side)
+        T = np.where(wall, WALL_T_M, np.clip(SLOPE_RUN * np.abs(target - base[idx]), T_MIN, T_MAX))
+        u = np.clip((d - H[s_] - np.where(wall, WALL_FLAT_M, 0.0)) / T, 0.0, 1.0)
         w = 1.0 - u * u * (3.0 - 2.0 * u)           # 1 on the core, smooth to 0 over T
         m = w > 0
         i = idx[m]

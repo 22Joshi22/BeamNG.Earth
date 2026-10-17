@@ -789,7 +789,8 @@ fn measure_row(line: PyReadonlyArray2<f64>, keys: PyReadonlyArray1<i64>, first: 
 fn grade_points<'py>(py: Python<'py>, px: PyReadonlyArray1<'py, f64>, pyy: PyReadonlyArray1<'py, f64>,
                      base: PyReadonlyArray1<'py, f64>, a: PyReadonlyArray2<'py, f64>, b: PyReadonlyArray2<'py, f64>,
                      za: PyReadonlyArray1<'py, f64>, zb: PyReadonlyArray1<'py, f64>, h: PyReadonlyArray1<'py, f64>,
-                     lift: f64, slope_run: f64, t_min: f64, t_max: f64, blend_r: f64, bucket: f64)
+                     lift: f64, slope_run: f64, t_min: f64, t_max: f64, blend_r: f64, bucket: f64,
+                     wall_cut: f64, wall_t: f64, wall_flat: f64)
                      -> Bound<'py, PyArray1<f64>> {
     let (px, pyy, base) = (px.as_array(), pyy.as_array(), base.as_array());
     let (a, b, za, zb, h) = (a.as_array(), b.as_array(), za.as_array(), zb.as_array(), h.as_array());
@@ -836,8 +837,18 @@ fn grade_points<'py>(py: Python<'py>, px: PyReadonlyArray1<'py, f64>, pyy: PyRea
                 let t = if l2 > 1e-12 { ((qx * abx + qy * aby) / l2).clamp(0.0, 1.0) } else { 0.0 };
                 let d = (qx - t * abx).hypot(qy - t * aby);
                 let target = za[s] + (zb[s] - za[s]) * t;
-                let tt = (slope_run * (target - base[idx]).abs()).clamp(t_min, t_max);
-                let u = ((d - h[s]) / tt).clamp(0.0, 1.0);
+                // a cut deeper than wall_cut: a retaining wall at the core's edge, the ground right behind it
+                // (for a point more beside the segment than ahead of it: ahead, the road's own next segments blend
+                // in along it, and cutting those off made a kink on every crest)
+                let side = if l2 > 1e-12 { (qx * aby - qy * abx).abs() / l2.sqrt() } else { d };
+                let ahead = if l2 > 1e-12 {
+                    let along = (qx * abx + qy * aby) / l2.sqrt();
+                    (-along).max(along - l2.sqrt()).max(0.0)
+                } else { 0.0 };
+                let wall = base[idx] - target > wall_cut && ahead < side;
+                let tt = if wall { wall_t } else { (slope_run * (target - base[idx]).abs()).clamp(t_min, t_max) };
+                // a wall: flat on one terrain step behind it (no slope in front of its face), then up
+                let u = ((d - h[s] - if wall { wall_flat } else { 0.0 }) / tt).clamp(0.0, 1.0);
                 let w = 1.0 - u * u * (3.0 - 2.0 * u);
                 if w > 0.0 {
                     let r = d / blend_r;
@@ -2305,6 +2316,6 @@ fn earthfast(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(horizon_steps, m)?)?;
     m.add_function(wrap_pyfunction!(points_near_segments, m)?)?;
     m.add_function(wrap_pyfunction!(veg_rows_json, m)?)?;
-    m.add("VERSION", 24)?;
+    m.add("VERSION", 26)?;
     Ok(())
 }

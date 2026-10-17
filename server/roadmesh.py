@@ -203,6 +203,10 @@ TUNNEL_WALL_H = 4.6        # m of upright wall before the vault
 TUNNEL_H = 6.8             # m from the floor to the vault's top
 PORTAL_FRAME = 6.0         # m of portal face around the opening (hides the terrain hole's 2 m steps)
 TUNNEL_SIDE = DECK_SIDE    # the tube's concrete
+TUNNEL_STONE = "bne_bld_stone"     # a low arch's tube and portal (a park's stone bridge; buildings' dressed stone)
+STONE_UV_M = 2.0           # m per repeat of the stone on a low arch
+LOW_PORTAL_UP = 1.4        # m a low arch's portal face reaches over the vault (to the ground over it) ...
+LOW_PORTAL_SIDE = 3.0      # ... and beside the opening
 TUNNEL_OVERLAP = 0.25      # m a tube piece reaches past a tile edge
 TUNNEL_LIGHT = "bne_tunnel_light"   # the lamps' emissive material (levels/beamng_earth/art/shapes/beamngEarth)
 TUNNEL_LAMP_OFF = 0.35     # two lamp lines, this share of the half-width either side of the centre, ...
@@ -210,26 +214,77 @@ TUNNEL_LAMP_W = 0.25       # ... this wide, ...
 TUNNEL_LAMP_DROP = 0.05    # ... this far under the vault, lit along every other profile step (2-4 m lamps and gaps)
 
 
-def _tunnel_section(hw):
+def _tunnel_section(hw, th=TUNNEL_H):
     """The tube's cross-section from the left road edge's floor over the vault to the right one: (lateral offset
-    from the centre line, positive = left; height over the floor) for half-width hw (centre to wall)."""
-    vault = [(np.cos(a) * hw, TUNNEL_WALL_H + np.sin(a) * (TUNNEL_H - TUNNEL_WALL_H))
+    from the centre line, positive = left; height over the floor) for half-width hw (centre to wall) and a vault
+    th over the floor (its walls in proportion)."""
+    wall = TUNNEL_WALL_H * th / TUNNEL_H
+    vault = [(np.cos(a) * hw, wall + np.sin(a) * (th - wall))
              for a in np.linspace(0.0, np.pi, 9)]
     return np.array([(hw - TUNNEL_SHOULDER, 0.0), (hw, 0.0)] + vault + [(-hw, 0.0), (-hw + TUNNEL_SHOULDER, 0.0)],
                     np.float64)
 
 
-def tunnel(chunks, origin):
+WALL_THICK_M = 2.4         # a retaining wall's top: over the grading's flat strip behind it (grading.WALL_FLAT_M)
+
+
+def _retaining_walls(walls, origin, P, T, UV, M, nv):
+    """roads.retaining_walls' walls as stone (material index 2): the face toward the road, the top, the ends;
+    appended to P, T, UV, M. Returns the new vertex count."""
+    for w in walls:
+        b = np.asarray(w["base"], np.float64)
+        top, foot, tw = np.asarray(w["top"]), np.asarray(w["foot"]), np.asarray(w["toward"], np.float64)
+        k = len(b)
+        if k < 2:
+            continue
+        s = np.r_[0.0, np.cumsum(np.hypot(*np.diff(b, axis=0).T))]
+        back = b - tw * WALL_THICK_M
+        face_lo = np.c_[b, foot] - origin
+        face_hi = np.c_[b, top] - origin
+        back_hi = np.c_[back, top] - origin
+        for lo_, hi_, vlo, vhi in ((face_lo, face_hi, foot, top), (face_hi, back_hi, None, None)):
+            P.append(np.concatenate([lo_, hi_]))
+            if vlo is not None:
+                UV.append(np.c_[np.r_[s, s] / STONE_UV_M, np.r_[vlo, vhi] / STONE_UV_M])
+            else:
+                UV.append(np.c_[np.r_[s, s] / STONE_UV_M, np.r_[np.zeros(k), np.full(k, WALL_THICK_M)] / STONE_UV_M])
+            i = np.arange(k - 1)
+            A, A1, B, B1 = nv + i, nv + i + 1, nv + k + i, nv + k + i + 1
+            tri = np.concatenate([np.stack([A, B, B1], 1), np.stack([A, B1, A1], 1)])
+            pts = np.concatenate([lo_, hi_])
+            nrm = np.cross(pts[tri[:, 1] - nv] - pts[tri[:, 0] - nv], pts[tri[:, 2] - nv] - pts[tri[:, 0] - nv])
+            # the face looks toward the road, the top up
+            if vlo is not None:
+                look = np.c_[np.concatenate([tw[i], tw[i]]), np.zeros(2 * (k - 1))]
+            else:
+                look = np.tile([0.0, 0.0, 1.0], (2 * (k - 1), 1))
+            flip = (nrm * look).sum(1) < 0
+            tri[flip] = tri[flip][:, ::-1]
+            T.append(tri)
+            M.append(2)
+            nv += 2 * k
+        for at in (0, k - 1):           # the ends: from the face over to the back, foot to top
+            q = np.array([[*b[at], foot[at]], [*b[at], top[at]], [*back[at], top[at]], [*back[at], foot[at]]]) - origin
+            P.append(q)
+            UV.append(np.array([[0, 0], [0, 1], [0.25, 1], [0.25, 0]], np.float64))
+            T.append(np.array([[nv, nv + 1, nv + 2], [nv, nv + 2, nv + 3], [nv, nv + 2, nv + 1], [nv, nv + 3, nv + 2]],
+                              np.int64))
+            M.append(2)
+            nv += 4
+    return nv
+
+
+def tunnel(chunks, origin, walls=()):
     """The tunnels of a tile as one colliding mesh: around every "tunnel" chunk (its road surface: a deck, deck()
     makes its slab) a tube of concrete (TUNNEL_SIDE) faced inwards: shoulders, walls and a vault TUNNEL_H over the
     floor; at a chunk end that is a portal ("portal") a face around the opening, seen from both sides. (positions,
     tris, uvs, materials, tri material index) or None. Pure."""
     tc = [c for c in chunks if c.get("tunnel")]
-    rb = [(r, c) for r, c in zip(ribbons(tc), tc) if r[5] is not None]
-    if not rb:
+    rb = [(r, c) for r, c in zip(ribbons(tc), tc) if r[5] is not None] if tc else []
+    if not rb and not walls:
         return None
-    P, T, UV, M = [], [], [], []           # M: per T entry its material index (0 the concrete, 1 the lamps)
-    nv = 0
+    P, T, UV, M = [], [], [], []           # M: per T entry its material index (0 concrete, 1 lamps, 2 stone)
+    nv = _retaining_walls(walls, np.asarray(origin, np.float64), P, T, UV, M, 0) if walls else 0
     for (left, right, v, _, _, z), c in rb:
         # a piece ending at a tile edge reaches TUNNEL_OVERLAP past it: the next tile's piece meets it there without a
         # hairline of daylight (2026-10-17, inside Eisenhower)
@@ -246,19 +301,28 @@ def tunnel(chunks, origin):
         lw = np.maximum(np.hypot(lat[:, 0], lat[:, 1]), 1e-9)
         u = lat / lw[:, None]                               # unit left
         hw = float(np.median(lw)) / 2 + TUNNEL_SHOULDER
-        sec = _tunnel_section(hw)
+        th = float(c.get("tunnel_h") or TUNNEL_H)
+        low = th < TUNNEL_H - 0.05                          # a low arch: stone, a short portal face
+        mat = 2 if low else 0
+        sec = _tunnel_section(hw, th)
         k, m = len(mid), len(sec)
         rows = np.empty((m, k, 3))
         for j, (off, h) in enumerate(sec):
             rows[j, :, :2] = mid + u * off
             rows[j, :, 2] = z + h
         rows -= origin
-        # inward: towards the tube's axis (a point TUNNEL_H / 2 over the floor's centre)
-        axis = np.c_[mid, z + TUNNEL_H / 2] - origin
+        # inward: towards the tube's axis (a point th / 2 over the floor's centre)
+        axis = np.c_[mid, z + th / 2] - origin
         for j in range(m - 1):
             a, b = rows[j], rows[j + 1]
             P.append(np.concatenate([a, b]))
-            UV.append(np.c_[np.r_[np.full(k, j / 4.0), np.full(k, (j + 1) / 4.0)], np.r_[v, v]])
+            if low:                                         # the stone at its scale: around the section, along
+                sj = float(np.hypot(*(sec[min(j + 1, m - 1)] - sec[j])))
+                s0 = float(np.sum(np.hypot(*np.diff(sec[:j + 1], axis=0).T))) if j else 0.0
+                along = np.r_[0.0, np.cumsum(np.hypot(*np.diff(mid, axis=0).T))]
+                UV.append(np.c_[np.r_[np.full(k, s0), np.full(k, s0 + sj)] / STONE_UV_M, np.r_[along, along] / STONE_UV_M])
+            else:
+                UV.append(np.c_[np.r_[np.full(k, j / 4.0), np.full(k, (j + 1) / 4.0)], np.r_[v, v]])
             i = np.arange(k - 1)
             A, A1, B, B1 = nv + i, nv + i + 1, nv + k + i, nv + k + i + 1
             tri = np.concatenate([np.stack([A, B, B1], 1), np.stack([A, B1, A1], 1)])
@@ -268,32 +332,36 @@ def tunnel(chunks, origin):
             ax = np.concatenate([axis[i], axis[i]])
             flip = (nrm * (ax - cen)).sum(1) < 0
             tri[flip] = tri[flip][:, ::-1]
-            T.append(tri)
-            M.append(0)
+            # a low arch is seen from outside too (where its thin cover is cut away: its stone, not a hole)
+            T.append(np.concatenate([tri, tri[:, ::-1]]) if low and j >= 2 and j < m - 3 else tri)
+            M.append(mat)
             nv += 2 * k
-        # the lamps: under the vault along both lines, every other step, faced down
-        nv = _tunnel_lamps(P, T, UV, M, nv, mid, u, z, hw, origin)
+        # the lamps: under the vault along both lines, every other step, faced down (a long tunnel's; not under an arch)
+        if not low:
+            nv = _tunnel_lamps(P, T, UV, M, nv, mid, u, z, hw, origin)
         for end, at in zip(c.get("portal") or (False, False), (0, k - 1)):
             if not end:
                 continue
             # the face: from the opening's outline out to a frame PORTAL_FRAME wider and higher, both sides
             inner = rows[:, at]
             o = sec.copy()
-            o[:, 0] = np.sign(o[:, 0]) * (np.abs(o[:, 0]) + PORTAL_FRAME)
-            o[:, 1] = np.where(o[:, 1] > 0.0, o[:, 1] + PORTAL_FRAME, -2.0)
+            up, side = (LOW_PORTAL_UP, LOW_PORTAL_SIDE) if low else (PORTAL_FRAME, PORTAL_FRAME)
+            o[:, 0] = np.sign(o[:, 0]) * (np.abs(o[:, 0]) + side)
+            o[:, 1] = np.where(o[:, 1] > 0.0, o[:, 1] + up, -2.0)
             outer = np.empty((m, 3))
             outer[:, :2] = mid[at] + u[at] * o[:, :1]
             outer[:, 2] = z[at] + o[:, 1]
             outer -= origin
             P.append(np.concatenate([inner, outer]))
-            UV.append(np.c_[np.r_[sec[:, 0], o[:, 0]] / 4.0, np.r_[sec[:, 1], o[:, 1]] / 4.0])
+            sc = STONE_UV_M if low else 4.0
+            UV.append(np.c_[np.r_[sec[:, 0], o[:, 0]] / sc, np.r_[sec[:, 1], o[:, 1]] / sc])
             i = np.arange(m - 1)
             A, A1, B, B1 = nv + i, nv + i + 1, nv + m + i, nv + m + i + 1
             tri = np.concatenate([np.stack([A, B, B1], 1), np.stack([A, B1, A1], 1)])
             T.append(np.concatenate([tri, tri[:, ::-1]]))   # seen from outside and from in the tube
-            M.append(0)
+            M.append(mat)
             nv += 2 * m
-    mats = [TUNNEL_SIDE, TUNNEL_LIGHT]
+    mats = [TUNNEL_SIDE, TUNNEL_LIGHT] + ([TUNNEL_STONE] if any(mm == 2 for mm in M) else [])
     Tall = np.concatenate(T)
     Mall = np.concatenate([np.full(len(t), m, np.int64) for t, m in zip(T, M)]) if M else np.zeros(len(Tall), np.int64)
     return (np.concatenate(P), Tall, np.concatenate(UV), mats, Mall)
