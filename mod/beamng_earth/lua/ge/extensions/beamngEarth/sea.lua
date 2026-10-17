@@ -25,7 +25,7 @@ local FIELDS = {
   { 'baseColor', 0, '46 98 96 255' }, { 'underwaterColor', 0, '60 96 88 240' },
   { 'clarity', 0, '0.15' }, { 'fresnelBias', 0, '-0.5' }, { 'fresnelPower', 0, '0.2' },
   { 'specularPower', 0, '1000' }, { 'reflectDetailAdjust', 0, '0' }, { 'reflectMaxRateMs', 0, '1' },
-  { 'fullReflect', 0, '0' }, { 'gridSize', 0, '220' }, { 'gridElementSize', 0, '0.8' },
+  { 'fullReflect', 0, '0' }, { 'gridElementSize', 0, '0.8' },
   { 'depthGradientMax', 0, '5' }, { 'distortEndDist', 0, '15' }, { 'distortFullDepth', 0, '5' },
   { 'waterFogDensity', 0, '0.4' }, { 'waterFogDensityOffset', 0, '0.1' },
   { 'wetDarkening', 0, '0.3' }, { 'wetDepth', 0, '0.5' }, { 'viscosity', 0, '0.001' },
@@ -164,6 +164,12 @@ local function tileAt(p)
   return best
 end
 
+-- gridSize (220, the East Coast ocean's) after the scale and at most the block's size: the engine logs a warning
+-- each time gridSize is set larger than the scale, and a new block's scale is 100 m until setScale
+local function setGridSize(o, size)
+  o:setField('gridSize', 0, tostring(math.max(1, math.floor(math.min(220, size)))))
+end
+
 local function makePhys(p, z)
   removePhys()
   local o = createObject('WaterBlock')
@@ -171,6 +177,7 @@ local function makePhys(p, z)
   o:setField('gridElementSize', 0, tostring(M.PHYS_SIZE / 16))
   o:setPosition(vec3(p.x, p.y, z))
   o:setScale(vec3(M.PHYS_SIZE, M.PHYS_SIZE, M.DEPTH_M))
+  setGridSize(o, M.PHYS_SIZE)
   o.canSave = false
   o:registerObject(M.PHYS_NAME)
   if scenetree.MissionGroup then scenetree.MissionGroup:addObject(o) end
@@ -196,6 +203,7 @@ local function create(key, t)
   o:setPosition(vec3(t.x, t.y, t.z))
   -- a little larger than its square: tilted neighbours meet without a hairline gap (2026-10-13)
   o:setScale(vec3(t.size + M.TILE_OVERLAP_M, t.size + M.TILE_OVERLAP_M, M.DEPTH_M))
+  setGridSize(o, t.size)
   o.canSave = false
   o:registerObject(M.PREFIX .. key)
   if scenetree.MissionGroup then scenetree.MissionGroup:addObject(o) end
