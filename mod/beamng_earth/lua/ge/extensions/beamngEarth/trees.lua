@@ -161,7 +161,10 @@ local MATERIALS = {
   UT .. 'ut_roadsigns', '/levels/driver_training/art/shapes/race',
 }
 
+local stopwatch = require('beamngEarth/stopwatch')
 local tiles = {}        -- key "a:tx_ty" -> { anchor, cx, cy, rows, made = { i -> item }, shown = rank }
+local lastTileAt = stopwatch.new()   -- since a tile last arrived
+local ghostSince = nil               -- since the last rebase that left ghost tiles (M.transform)
 local types = {}        -- "shape" / "shape#n" (not solid) -> TSForestItemData
 local pop = {}          -- shape -> its items in the level
 local ready = false
@@ -179,7 +182,10 @@ end
 -- The tile's Forest: its own, else one from the pool, else a new one.
 local function forest(t)
   local f = t.forestId and scenetree.findObjectById(t.forestId)
-  while not f and #pool > 0 do f = scenetree.findObjectById(table.remove(pool)) end
+  while not f and #pool > 0 do
+    f = scenetree.findObjectById(table.remove(pool))
+    if f then f:setPosRot(0, 0, 0, 0, 0, 0, 1) end       -- a ghost's (M.transform) had the rebase's transform
+  end
   if not f then
     forestCount = forestCount + 1
     f = createObject('Forest')
@@ -256,6 +262,7 @@ function M.pick(group, h, rank)
 end
 
 local GROUPS = { 'deciduous', 'conifer', 'shrub', 'rock' }
+local releaseGhosts
 local groupBand
 
 -- Pure: the variant v's spelling of a shape path (0: itself).
@@ -325,6 +332,7 @@ end
 
 -- Rows of a tile from elsewhere (a road tile's street furniture: roads.lua, key "p<tx>_<ty>").
 function M.onRows(anchorId, tileKey, rows, groups)
+  lastTileAt = stopwatch.new()
   local key = anchorId .. ':' .. tostring(tileKey)
   local old = tiles[key]
   local tx, ty = tostring(tileKey):match('(%-?%d+)_(%-?%d+)$')
@@ -369,6 +377,68 @@ groupBand = function(t, d)
   return k
 end
 
+-- Origin rebase (core.lua finishRebase): each shown tile's Forest takes the rebase's transform (p_new = R*p + t), so
+-- its items show where they belong in the new frame at once, and the tile stays as a "ghost" until the new anchor's
+-- tiles over it are filled (or GHOST_QUIET_S without a new tile, or GHOST_MAX_S). Before, every tree went at the
+-- rebase and came back over ~25 s (2026-10-17, the user: "trees take several seconds to regenerate after a rebase").
+-- A Forest's transform moves its items' rendering but not their collision (probe 2026-10-17: castRayStatic still hit
+-- the old spot), which stays in the old frame's place, ~15 km from the player after a rebase, until the ghost goes.
+M.GHOST_MAX_S = 60
+M.GHOST_QUIET_S = 6
+
+function M.transform(xf, geodesy)
+  local bx, by, bz, bw = xf:beamngQuat()
+  local any = false
+  for _, t in pairs(tiles) do
+    if not t.drop then
+      local q = t.fq or { 0, 0, 0, 1 }
+      local x, y, z, w = geodesy.quatMul(q[1], q[2], q[3], q[4], bx, by, bz, bw)
+      t.fq = { x, y, z, w }
+      local o = t.ft or { 0, 0, 0 }
+      local ox, oy, oz = xf:apply(o[1], o[2], o[3])
+      t.ft = { ox, oy, oz }
+      local f = t.forestId and scenetree.findObjectById(t.forestId)
+      if f then f:setPosRot(ox, oy, oz, x, y, z, w) end
+      t.cx, t.cy = xf:apply(t.cx, t.cy, 0)
+      t.ghost = true
+      t.pending = false
+      any = true
+    end
+  end
+  if any then ghostSince = stopwatch.new(); lastTileAt = stopwatch.new() end
+end
+
+-- Ghost tiles whose square the current anchor's filled tiles cover go (emptied by update's first loop).
+releaseGhosts = function(anchorId)
+  if not ghostSince then return end
+  local all = ghostSince() > M.GHOST_MAX_S * 1000 or lastTileAt() > M.GHOST_QUIET_S * 1000
+  local done = {}
+  if not all then
+    for _, t in pairs(tiles) do
+      if t.anchor == anchorId and not t.ghost and not t.drop then
+        local k = math.floor(t.cx / 256) .. '_' .. math.floor(t.cy / 256)
+        done[k] = (done[k] ~= false) and not t.pending and (t.shown or 0) > 0
+      end
+    end
+  end
+  local left = false
+  for _, t in pairs(tiles) do
+    if t.ghost and not t.drop then
+      local ok = all
+      if not ok then
+        ok = true
+        for gx = math.floor((t.cx - 128) / 256), math.floor((t.cx + 128 - 1e-6) / 256) do
+          for gy = math.floor((t.cy - 128) / 256), math.floor((t.cy + 128 - 1e-6) / 256) do
+            if not done[gx .. '_' .. gy] then ok = false end
+          end
+        end
+      end
+      if ok then t.drop = true else left = true end
+    end
+  end
+  if not left then ghostSince = nil end
+end
+
 -- Every frame: tiles of other anchors and dropped ones emptied, the others filled / thinned to their
 -- distance's rank, M.PER_FRAME items at most.
 -- Tree work every EVERY_N-th frame, N times the items: a frame with any Forest change costs the engine's tick a few
@@ -383,8 +453,9 @@ function M.update(anchorId, player)
   local budget = M.PER_FRAME * M.EVERY_N
   M.lastShapeItems = touchedItems        -- the previous frame's (diagnostics)
   touched, touchedItems = {}, 0
+  releaseGhosts(anchorId)
   for key, t in pairs(tiles) do
-    if t.anchor ~= anchorId or t.drop then
+    if (t.anchor ~= anchorId and not t.ghost) or t.drop then
       local f = t.forestId and scenetree.findObjectById(t.forestId)
       local fd = f and f:getData()
       local left = false

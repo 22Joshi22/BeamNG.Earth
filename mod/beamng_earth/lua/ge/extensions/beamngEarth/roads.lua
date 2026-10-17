@@ -214,10 +214,10 @@ local function switchAnchor(aid)
   if aid == anchorId then return end
   anchorId = aid
   for key, t in pairs(tiles) do
-    if t.anchor ~= aid then dropTile(key) end
+    if t.anchor ~= aid and not t.ghost then dropTile(key) end
   end
   for key, f in pairs(far) do
-    if f.anchor ~= aid then
+    if f.anchor ~= aid and not f.ghost then
       if f.id then deleteQ[#deleteQ + 1] = f.id end
       slotDrop(f.slot)
       far[key] = nil
@@ -273,7 +273,7 @@ local function updateCollideRange()
     if t.cq and not M.collideNear(t, M.UNCOLLIDE_M) then
       for what, q in pairs(t.cq) do
         if t[what] then deleteQ[#deleteQ + 1] = t[what]; t[what] = nil end
-        parked[#parked + 1] = q
+        if not t.ghost then parked[#parked + 1] = q end   -- a ghost's queue entries are the old frame's
       end
       t.cq = nil
     end
@@ -402,6 +402,7 @@ end
 function M.onFarDrop(msg)
   local key = tileKey(msg.anchorId, msg.key)
   local f = far[key]
+  if f and f.ghost then return end
   if f and f.id then deleteQ[#deleteQ + 1] = f.id end
   if f then slotDrop(f.slot) end
   far[key] = nil
@@ -432,15 +433,121 @@ local function updateFar(gov)
   end
 end
 
--- Server message `roads_drop` {anchorId, key}.
+-- Server message `roads_drop` {anchorId, key}. (A ghost goes when covered: releaseGhosts.)
 function M.onDrop(msg)
+  local t = tiles[tileKey(msg.anchorId, msg.key)]
+  if t and t.ghost then return end
   dropTile(tileKey(msg.anchorId, msg.key))
   sinceChange = stopwatch.new()
+end
+
+-- Origin rebase (core.lua finishRebase): the shown tiles move into the new frame (p_new = R*p + t: their TSStatics
+-- turned by R, as farfield.transform) and stay as "ghosts" until the new anchor's tiles over them are made
+-- (ghostsCovered). Before (2026-10-17, forced rebase at Fells Point) every building, road mesh and sidewalk went at
+-- once and came back over ~26 s as the server re-sent the tiles. DecalRoads (no rotation) and anything still queued go
+-- now: their positions are the old frame's. A ghost's colliders are not made again (updateCollideRange).
+M.GHOST_MAX_S = 60          -- ghosts left after this long go anyway
+M.GHOST_QUIET_S = 6         -- ... or once no new tile arrived for this long (places with no tile over a ghost)
+local ghostSince = nil      -- stopwatch since the last rebase that left ghosts
+
+local WHATS = { 'walk', 'road', 'deck', 'bld', 'bld2', 'bld3', 'bld4', 'bldcol', 'walkcol', 'wire' }
+
+function M.transform(xf, geodesy)
+  local bx, by, bz, bw = xf:beamngQuat()
+  local function moveObj(id, q)
+    local o = id and scenetree.findObjectById(id)
+    if not o then return end
+    local p = o:getPosition()
+    local x, y, z = xf:apply(p.x, p.y, p.z)
+    o:setPosRot(x, y, z, q[1], q[2], q[3], q[4])
+  end
+  local function newQ(q)
+    local x, y, z, w = geodesy.quatMul(q[1], q[2], q[3], q[4], bx, by, bz, bw)
+    return { x, y, z, w }
+  end
+  local any = false
+  for key, t in pairs(tiles) do
+    t.q = newQ(t.q or { 0, 0, 0, 1 })
+    for _, what in ipairs(WHATS) do moveObj(t[what], t.q) end
+    for _, id in ipairs(t.objs) do deleteQ[#deleteQ + 1] = id end
+    t.objs, t.queued, t.cq = {}, 0, nil
+    if t.cx then t.cx, t.cy = xf:apply(t.cx, t.cy, 0) end
+    t.ghost = true
+    any = true
+  end
+  for _, f in pairs(far) do
+    if f.id then
+      f.q = newQ(f.q or { 0, 0, 0, 1 })
+      moveObj(f.id, f.q)
+      f.ghost = true
+      any = true
+    end
+  end
+  local function keepNew(list)
+    local keep = {}
+    for _, q in ipairs(list) do if tiles[q.key] and not tiles[q.key].ghost then keep[#keep + 1] = q end end
+    return keep
+  end
+  walkQ, createQ, parked = keepNew(walkQ), keepNew(createQ), keepNew(parked)
+  local fq = {}
+  for _, k in ipairs(farQ) do if far[k] and not far[k].ghost then fq[#fq + 1] = k end end
+  farQ = fq
+  if any then ghostSince = stopwatch.new(); sinceChange = stopwatch.new(); collisionDirty = true end
+end
+
+-- Is the square of side M.TILE_M around (cx, cy) covered by made tiles of the current anchor (every one of the new
+-- grid's squares it overlaps has a tile with nothing queued)?
+-- done: the new grid's squares whose tile is made (madeSquares).
+local function madeSquares(aid, busy)
+  local n, done = M.TILE_M, {}
+  for key, t in pairs(tiles) do
+    if t.anchor == aid and not t.ghost and t.cx then
+      done[math.floor(t.cx / n) .. '_' .. math.floor(t.cy / n)] = t.queued <= 0 and not busy[key]
+    end
+  end
+  return done
+end
+local function covered(done, cx, cy)
+  local h, n = M.TILE_M / 2, M.TILE_M
+  for gx = math.floor((cx - h) / n), math.floor((cx + h - 1e-6) / n) do
+    for gy = math.floor((cy - h) / n), math.floor((cy + h - 1e-6) / n) do
+      if not done[gx .. '_' .. gy] then return false end
+    end
+  end
+  return true
+end
+
+local function releaseGhosts()
+  if not ghostSince then return end
+  local busyKeys = {}
+  for _, q in ipairs(walkQ) do busyKeys[q.key] = true end
+  local all = ghostSince() > M.GHOST_MAX_S * 1000 or (sinceChange() > M.GHOST_QUIET_S * 1000 and #walkQ == 0)
+  local left = false
+  local done = madeSquares(anchorId, busyKeys)
+  for key, t in pairs(tiles) do
+    if t.ghost then
+      if all or (t.cx and covered(done, t.cx, t.cy)) then
+        dropTile(key)
+        collisionDirty = true
+      else left = true end
+    end
+  end
+  for key, f in pairs(far) do
+    if f.ghost then
+      if all then
+        if f.id then deleteQ[#deleteQ + 1] = f.id end
+        slotDrop(f.slot)
+        far[key] = nil
+      else left = true end
+    end
+  end
+  if not left then ghostSince = nil end
 end
 
 -- Once per frame (core onUpdate): deletions, then creations, within the governor's budget.
 function M.update(gov, currentAnchor)
   if currentAnchor then switchAnchor(currentAnchor) end
+  releaseGhosts()
   while #deleteQ > 0 and gov:try('roadDelete') do
     local t0 = now()
     local did = table.remove(deleteQ)

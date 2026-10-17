@@ -139,4 +139,24 @@ sea.update(3, player)
 sea.clear()
 T.check(next(rivers()) == nil, 'clear: removed')
 
+-- origin rebase: the water moves into the new frame at once and stays under the new anchor (no gap until the server's
+-- next 'sea' message)
+local shift = { apply = function(_, x, y, z) return x - 1000, y + 500, z end }      -- a pure translation
+local p4 = { x = 1100, y = -400, z = -1, vx = 0, vy = 0, vz = 0 }
+sea.onMessage({ type = 'sea', anchorId = 4, tiles = { tile('a', 1024, -512, 0, 512) } })
+sea.update(4, p4); sea.update(4, p4)
+local made4 = blocks()[sea.PREFIX .. 'a']
+T.check(made4 and made4.pos.x == 1024 and physBlock() ~= nil, 'a tile and the physics block under the player')
+local created4 = sea.created
+sea.transform(shift, 5)
+T.check(made4.pos.x == 24 and made4.pos.y == -12, 'the made tile moved by the rebase')
+T.check(physBlock().pos.x == 100 and physBlock().pos.y == 100, 'the physics block too')
+p4 = { x = 100, y = 100, z = -1, vx = 0, vy = 0, vz = 0 }
+sea.update(5, p4)
+T.check(blocks()[sea.PREFIX .. 'a'] == made4 and sea.created == created4, 'kept under the new anchor: nothing removed or made')
+T.check(physBlock() ~= nil, 'still water under the player')
+sea.onMessage({ type = 'sea', anchorId = 5, tiles = { tile('b', 0, 0, 0, 512) } })
+sea.update(5, p4); sea.update(5, p4)
+T.check(blocks()[sea.PREFIX .. 'a'] == nil and blocks()[sea.PREFIX .. 'b'] ~= nil, 'the server\'s new set replaces it')
+
 T.done('test_sea')

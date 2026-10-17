@@ -217,6 +217,31 @@ roads.onDrop({ anchorId = 2, key = '6_6' })
 roads.update(gov, 2)
 T.check(#statics() == 0 and S.calls.reloadCollision == 0, 'dropped without a collision reload')
 
+-- origin rebase: the shown tiles move into the new frame and stay ("ghosts") until the new anchor's made tiles cover
+-- them; the server's drop of a ghost does not remove it early
+local shift = { apply = function(_, x, y, z) return x, y - 20, z end, beamngQuat = function() return 0, 0, 0, 1 end }
+local geo = { quatMul = function(ax, ay, az, aw) return ax, ay, az, aw end }
+roads.onTile({ anchorId = 2, key = '0_0', path = '/t/r.json', n = 2 }, 2)
+roads.update(gov, 2)
+local g0 = statics()[1]
+T.check(#statics() == 1 and g0.pos.x == 0, 'a road mesh at its place')
+roads.transform(shift, geo)
+T.check(g0.pos.x == 0 and g0.pos.y == -20 and g0.rot ~= nil, 'moved (and turned) by the rebase')
+roads.update(gov, 3)
+T.check(#statics() == 1 and roads.status().tiles == 1, 'kept under the new anchor')
+roads.onDrop({ anchorId = 2, key = '0_0' })
+roads.update(gov, 3)
+T.check(#statics() == 1, 'the server\'s drop of a ghost waits for its cover')
+-- its square (centre 128, 128-20) overlaps the new grid's 0_0 and 0_-1: covered once both are made
+roads.onTile({ anchorId = 3, key = '0_0', path = '/t/r.json', n = 2 }, 3)
+roads.update(gov, 3); roads.update(gov, 3)
+T.check(#statics() == 2, 'half covered: the ghost stays')
+roads.onTile({ anchorId = 3, key = '0_-1', path = '/t/r.json', n = 2 }, 3)
+roads.update(gov, 3); roads.update(gov, 3); roads.update(gov, 3)
+T.check(#statics() == 2 and roads.status().tiles == 2, 'covered: the ghost goes, the two new tiles stay')
+roads.onDrop({ anchorId = 3, key = '0_0' }); roads.onDrop({ anchorId = 3, key = '0_-1' })
+roads.update(gov, 3)
+
 -- a Lua reload: the new module state deletes the objects the old one left
 roads.onTile({ anchorId = 2, key = '0_0', path = '/t/a.json', n = 2 }, 2)
 roads.update(gov, 2)

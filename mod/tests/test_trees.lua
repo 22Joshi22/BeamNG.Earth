@@ -163,4 +163,31 @@ for i = 1, 3 do trees.update(9, { x = 50, y = 50 }); seen[i] = count() end
 T.check(seen[1] == 0 and seen[2] == 0 and seen[3] == 1, 'the third update makes the item')
 trees.EVERY_N = 1
 trees.clear()
+
+-- origin rebase: a tile's Forest takes the rebase's transform and its items stay until the new anchor's tiles over it
+-- are filled (2026-10-17: every tree went at a rebase and came back over ~25 s)
+local shift = { apply = function(_, x, y, z) return x, y - 20, z end, beamngQuat = function() return 0, 0, 0, 1 end }
+local geo = { quatMul = function(ax, ay, az, aw) return ax, ay, az, aw end }
+trees.onTile({ anchorId = 5, key = '0_0', path = '/t/v.json', n = 100 }, 5)
+trees.update(5, { x = 50, y = 50 })
+T.check(count() == 100, 'shown')
+trees.transform(shift, geo)
+local moved = 0
+for _, o in pairs(S.objects) do if o.class == 'Forest' and o.pos and o.pos.y == -20 then moved = moved + 1 end end
+T.check(moved == 1, 'its Forest moved by the rebase')
+trees.update(6, { x = 50, y = 30 })
+T.check(count() == 100, 'kept under the new anchor')
+trees.onTile({ anchorId = 6, key = '0_0', path = '/t/v.json', n = 100 }, 6)
+trees.update(6, { x = 50, y = 30 })
+T.check(count() == 200, 'half covered (its square overlaps 0_-1 too): the ghost stays')
+trees.onTile({ anchorId = 6, key = '0_-1', path = '/t/v.json', n = 100 }, 6)
+trees.update(6, { x = 50, y = 30 }); trees.update(6, { x = 50, y = 30 }); trees.update(6, { x = 50, y = 30 })
+T.check(count() == 200 and trees.status().tiles == 2, 'covered: the ghost goes')
+local reused
+trees.clear()
+trees.onTile({ anchorId = 7, key = '0_0', path = '/t/v.json', n = 100 }, 7)
+trees.update(7, { x = 50, y = 50 })
+for _, o in pairs(S.objects) do if o.class == 'Forest' and o.pos and o.pos.y == 0 and o.rot then reused = true end end
+T.check(reused, 'a pooled Forest is reset to no transform when reused')
+trees.clear()
 T.done('test_trees')
