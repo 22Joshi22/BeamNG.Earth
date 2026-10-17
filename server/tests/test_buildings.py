@@ -287,6 +287,32 @@ class ParkingDeckTest(unittest.TestCase):
         self.assertFalse(len(self.tops(P, T, 7.03)), "on a slope: the closed box")
 
 
+    def test_ramp_along_another_edge_when_the_longest_is_a_thin_leg(self):
+        # an L whose longest edge runs along a 6 m leg: the ramp goes along the 50 m side (2026-10-17: 3 of
+        # downtown Baltimore's 15 garages were boxes)
+        ring = np.array([(0, 0), (80, 0), (80, 6), (20, 6), (20, 50), (0, 50)], np.float64)
+        lay = bld._deck_layout(ring, 3.0)
+        self.assertIsNotNone(lay)
+        self.assertEqual(lay[0], 5)
+
+    def test_mapped_multi_storey_car_park_is_a_garage(self):
+        r = rect(0, 0, 60, 40)
+        self.assertTrue(bld.plan(r, {"class": "commercial", "garage": True}, 0, 39.28, -76.59).deck)
+        self.assertTrue(bld.plan(r, {"class": "garage", "garage": True, "num_floors": 4}, 0, 39.28, -76.59).deck)
+        self.assertFalse(bld.plan(r, {"class": "commercial"}, 0, 39.28, -76.59).deck)
+        # apartments over a car park podium stay apartments
+        self.assertFalse(bld.plan(r, {"class": "apartments", "garage": True}, 0, 39.28, -76.59).deck)
+        self.assertTrue(bld._covers_garage(r, [rect(-5, -5, 70, 50)]))
+        self.assertTrue(bld._covers_garage(rect(0, 0, 100, 100), [rect(40, 40, 10, 10)]))
+        self.assertFalse(bld._covers_garage(r, [rect(200, 0, 60, 40)]))
+
+    def test_split_levels_counted_as_floors_still_make_decks(self):
+        spec = bld.plan(rect(0, 0, 60, 40), {"class": "parking", "num_floors": 10, "height": 20.8}, 0, 39.28, -76.59)
+        p = bld.deck_plan(spec, 0.0, 0.0)
+        self.assertIsNotNone(p)
+        self.assertEqual(p[1], 6)
+
+
 class SplitTest(unittest.TestCase):
     def test_split_under_the_index_limit(self):
         items = [(bld.plan(rect(x * 30, 0, 20, 12), {"class": ""}), 0.0, 0.0) for x in range(30)]

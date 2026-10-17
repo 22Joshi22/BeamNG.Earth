@@ -77,8 +77,13 @@ whatever order tiles loaded, after any number of rebases, on any machine.
    rebase, or gusts changing its speed every frame. *Fixed in 1.4.30: the drops' rotateWithCamVel drew them
    as screen-wide streaks even with the car still; off now, drops 0.2 m as west_coast_usa.*
 5. **Coarse ground tiles over roads** 150-300 m from the car: sink coarse tiles under roads, or draw far
-   roads into the tile imagery.
+   roads into the tile imagery. *Not seen since the terrain block and its fine edge ring (2026-10-13); not
+   reproduced 2026-10-17 (San Francisco, Pittsburgh street views). Re-open with a screenshot if seen.*
 6. **Parking garages are solid boxes**: an open ground storey (columns, a slab) where the map has an entrance.
+   *Open decks with a ramp shipped in 1.4.5; 1.4.31: the ramp tries the four longest walls (an L-shaped
+   garage's longest wall can be a thin leg), split levels counted as floors make whole decks, and a building
+   under a mapped multi-storey car park is a garage whatever its building tag (all 18 downtown Baltimore
+   garages are decks now, 15 of 16 in downtown Denver).*
 7. **Huts above the tree line are grey boxes** (Mount Whitney summit shelter): a stone wall look. *Fixed in
    1.4.30: a small isolated hut above the tree line (by latitude) gets stone walls.*
 

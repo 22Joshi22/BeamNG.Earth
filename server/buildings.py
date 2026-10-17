@@ -391,7 +391,8 @@ def tree_line_m(lat):
 def plan(ring, attrs, neighbours=0, lat=None, lon=None, look=None, town=False, dense=False, west_town=False,
          alpine=False):
     """The Spec of a footprint (local ring (n, 2) in metres, counter-clockwise) from its Overture attributes
-    (dict: class, height, num_floors, min_height, roof_shape, roof_height) and the number of buildings
+    (dict: class, height, num_floors, min_height, roof_shape, roof_height; garage: a mapped multi-storey car park
+    covers it, garage_rings) and the number of buildings
     sharing a wall with it. Height and roof are predicted when not given. west_town: a small town of the
     arid West (district_town): single-storey main streets and ranch houses."""
     area = _area2(ring) / 2
@@ -409,7 +410,7 @@ def plan(ring, attrs, neighbours=0, lat=None, lon=None, look=None, town=False, d
     # a parking structure (a small "parking" building is a carport or a booth: a shed); "parking" is also a
     # shed class, which made big garages barns in barn-red siding (Columbia, 2026-10-14)
     garage = (cls in ("parking", "parking_garage") and area >= GARAGE_MIN_M2) or "parking garage" in name or (
-        "garage" in name and area > 800)
+        "garage" in name and area > 800) or (bool(attrs.get("garage")) and cls in GARAGE_TAG_CLASSES)
     narrow = hw < 4.2 and hl > 2.2 * hw                 # a row house: ~4-8 m wide, deep
     # in a dense core small buildings are row houses even where the footprints leave gaps (Fells Point)
     row = cls in ROW_CLASSES or (not west_town and ((narrow and (neighbours >= 1 or dense)) or (
@@ -1055,26 +1056,31 @@ DECK_COLUMN_M = 9.0         # perimeter column spacing
 DECK_LEVEL_M = 3.5          # ground this uneven (max - min) under the footprint: no deck (up to it: the ground deck
                             # level at the highest ground on a plinth, driven into from the uphill side)
 DECK_HEADROOM_M = 2.6       # the lowest storey height that still drives
+DECK_STOREY_M = 3.0         # a deck's storey where the mapped floors are too many for the height
+
+
+DECK_RAMP_EDGES = 4         # the longest edges tried for the ramp, longest first
 
 
 def _deck_layout(ring, storey):
-    """The ramp's frame on the longest edge of the counter-clockwise ring: (edge index i, A, along unit u, inward
-    unit n, s0, s1), the ramps between arc lengths s0 and s1; None when they do not fit (too short for DECK_SLOPE,
-    or the well outside the ring)."""
-    i = max(range(len(ring)), key=lambda k: float(np.hypot(*(ring[(k + 1) % len(ring)] - ring[k]))))
-    a, b = ring[i], ring[(i + 1) % len(ring)]
-    L = float(np.hypot(*(b - a)))
-    u = (b - a) / L
-    n = np.array([-u[1], u[0]])                 # the inside is on the left
-    s0, s1 = 0.5 + DECK_LANDING_M, L - 0.5 - DECK_LANDING_M
-    if s1 - s0 < storey / DECK_SLOPE:
-        return None
+    """The ramp's frame on the longest edge of the counter-clockwise ring it fits along: (edge index i, A, along
+    unit u, inward unit n, s0, s1), the ramps between arc lengths s0 and s1; None when it fits along none of the
+    DECK_RAMP_EDGES longest (too short for DECK_SLOPE, or the well outside the ring: the longest edge of an
+    L-shaped garage can be the short leg's, 3 of downtown Baltimore's 15 garages were boxes, 2026-10-17)."""
+    lens = [float(np.hypot(*(ring[(k + 1) % len(ring)] - ring[k]))) for k in range(len(ring))]
     depth = DECK_EDGE_M + 2 * DECK_LANE_M
-    for s in np.linspace(0.5, L - 0.5, 9):
-        for d in (0.3, depth / 2, depth + 0.5, depth + DECK_LANDING_M / 2):
-            if not _inside(ring, a + u * s + n * d):
-                return None
-    return i, a, u, n, s0, s1
+    for i in sorted(range(len(ring)), key=lambda k: -lens[k])[:DECK_RAMP_EDGES]:
+        a, b = ring[i], ring[(i + 1) % len(ring)]
+        L = lens[i]
+        s0, s1 = 0.5 + DECK_LANDING_M, L - 0.5 - DECK_LANDING_M
+        if s1 - s0 < storey / DECK_SLOPE:
+            return None                         # the rest are shorter
+        u = (b - a) / L
+        n = np.array([-u[1], u[0]])             # the inside is on the left
+        if all(_inside(ring, a + u * s + n * d) for s in np.linspace(0.5, L - 0.5, 9)
+               for d in (0.3, depth / 2, depth + 0.5, depth + DECK_LANDING_M / 2)):
+            return i, a, u, n, s0, s1
+    return None
 
 
 def _deck_wall(m, p, q, z0, z1, mat, t=0.2):
@@ -1092,6 +1098,9 @@ def deck_plan(spec, gmin, gmax):
         return None
     floors = max(1, int(spec.floors or 1))
     storey = spec.height / floors
+    if storey < DECK_HEADROOM_M:                # split levels counted as floors (10 in 20.8 m): whole decks
+        floors = max(1, int(spec.height // DECK_STOREY_M))
+        storey = spec.height / floors
     if storey < DECK_HEADROOM_M:
         return None
     ring = np.asarray(spec.ring, np.float64)
@@ -1336,6 +1345,59 @@ def tunnel_lines(frame, road_layers, x0, y0, margin=50.0, size=256.0):
     return out
 
 
+GARAGE_TAGS = ("multi-storey", "multistorey", "multi_storey", "multi-level")
+GARAGE_TAG_CLASSES = {"", "yes", "commercial", "garage", "garages", "parking", "parking_garage", "carport",
+                      "service", "transportation", "industrial", "retail"}     # (not the apartments on a car park podium)
+
+
+def garage_rings(frame, infra_layers, x0, y0, margin=50.0, size=256.0):
+    """Outer rings (k, 2) relative to (x0, y0) of the mapped multi-storey car parks near the tile (Overture
+    infrastructure, class parking, OSM parking=multi-storey). OSM often keeps the car park's tags on its own area
+    and the building beside it as building=yes or =garage (a shed), so the class alone missed 25 of downtown
+    Baltimore's 40 garages (2026-10-17, the user's 'parking garages are solid boxes')."""
+    import json
+    out, seen = [], set()
+    for f in infra_layers:
+        if f is None or len(f.kind) == 0:
+            continue
+        a = f.attrs
+        cls, tags = a.get("class"), a.get("tags")
+        if cls is None or tags is None:
+            continue
+        for i in np.flatnonzero((cls.astype(str) == "parking") & (f.kind == 3)):
+            t = str(tags[i])
+            if '"parking"' not in t:
+                continue
+            try:
+                if str(json.loads(t).get("parking", "")).lower() not in GARAGE_TAGS:
+                    continue
+            except (ValueError, AttributeError):
+                continue
+            fid = f.ids[i]
+            if fid in seen:
+                continue
+            seen.add(fid)
+            for part in f.parts(i):
+                if not part or len(part[0]) < 3:
+                    continue
+                e, n = mapgeom.enu_xy(f, frame, part[0])
+                xy = np.stack([e - x0, n - y0], 1)
+                if xy[:, 0].max() < -margin or xy[:, 0].min() > size + margin or xy[:, 1].max() < -margin \
+                        or xy[:, 1].min() > size + margin:
+                    continue
+                out.append(xy)
+    return out
+
+
+def _covers_garage(ring, garages):
+    """A footprint inside a mapped car park's area (its centre in it) or holding the car park's centre."""
+    c = ring.mean(0)
+    for g in garages:
+        if _inside(g, c) or _inside(ring, g.mean(0)):
+            return True
+    return False
+
+
 TUNNEL_THROUGH_M = 5.0      # a footprint a road tunnel runs into this far: its portal building, lifted over the tube
 OVER_TUNNEL_CLEAR_M = 7.5   # (the tube's vault is roadmesh.TUNNEL_H = 6.8 m over the floor; 2026-10-17: Eisenhower's
                             # east portal building closed the tunnel)
@@ -1386,12 +1448,13 @@ CENTRE_PREFILTER_M = 1.0       # m of slack for Features.outer_centres (cumulati
 
 
 def tile_buildings(frame, x0, y0, x1, y1, layers, elev, water=None, part_layers=(), west_town=False, roads_xy=None,
-                   tunnels_xy=None):
+                   tunnels_xy=None, garages_xy=None):
     """[(Spec, gmin, gmax)] of the buildings whose footprint centroid is in the tile [x0, x1) x [y0, y1)
     (anchor frame), rings relative to (x0, y0). layers: mapgeom.Features of buildings (one per map cell; a
     building in two cells is taken once, by id); elev(lat, lon) the physics ground. part_layers: the
     building parts of the same cells: a building whose parts all have heights is drawn as its parts
-    (each from its bottom to its top, the building's look)."""
+    (each from its bottom to its top, the building's look). garages_xy: garage_rings (a building one covers, or
+    covering one's centre, is a parking structure)."""
     parts_of = {}                       # building id -> [(ring in the anchor frame, own height, bottom)]
     pseen = set()
     for f in part_layers:
@@ -1488,6 +1551,8 @@ def tile_buildings(frame, x0, y0, x1, y1, layers, elev, water=None, part_layers=
                 h = at.get("height")
                 if h is None or not np.isfinite(h) or h < mh + 3.0:
                     at = dict(at, height=mh + 3.0)
+            if mh <= 0.5 and garages_xy and _covers_garage(ring, garages_xy):
+                at = dict(at, garage=True)
             attrs.append(at)
             looks.append(None)
             mins.append(mh)
@@ -1751,13 +1816,14 @@ def road_tile_items(frame, tx, ty, md, ground):
     """tile_buildings of road tile (tx, ty), from the map cells under it."""
     import roads
     x0, y0, x1, y1 = roads.tile_bbox(tx, ty)
-    cds = [md.cell(k, layers=("buildings", "building_parts", "roads"), kind="demand")
+    cds = [md.cell(k, layers=("buildings", "building_parts", "roads", "infrastructure"), kind="demand")
            for k in roads.cells_of_tile(frame, tx, ty, margin=0.0)]
     return tile_buildings(frame, x0, y0, x1, y1, [c.layers.get("buildings") for c in cds], ground,
                           part_layers=[c.layers.get("building_parts") for c in cds],
                           west_town=district_town(frame, tx, ty, md),
                           roads_xy=road_lines(frame, [c.layers.get("roads") for c in cds], x0, y0),
-                          tunnels_xy=tunnel_lines(frame, [c.layers.get("roads") for c in cds], x0, y0))
+                          tunnels_xy=tunnel_lines(frame, [c.layers.get("roads") for c in cds], x0, y0),
+                          garages_xy=garage_rings(frame, [c.layers.get("infrastructure") for c in cds], x0, y0))
 
 
 TOWN_COVERAGE = 0.16        # a tile whose footprints cover less than this share is a town / suburb (heights)
@@ -1808,11 +1874,12 @@ def far_tile(frame, tx, ty, md, ground, out_dir, vfs_dir, aid):
     import os
     import roads
     x0, y0, x1, y1 = roads.tile_bbox(tx, ty)
-    cds = [md.cell(k, layers=("buildings", "building_parts"), kind="demand")
+    cds = [md.cell(k, layers=("buildings", "building_parts", "infrastructure"), kind="demand")
            for k in roads.cells_of_tile(frame, tx, ty, margin=0.0)]
     items = tile_buildings(frame, x0, y0, x1, y1, [c.layers.get("buildings") for c in cds], ground,
                            part_layers=[c.layers.get("building_parts") for c in cds],
-                           west_town=district_town(frame, tx, ty, md))
+                           west_town=district_town(frame, tx, ty, md),
+                           garages_xy=garage_rings(frame, [c.layers.get("infrastructure") for c in cds], x0, y0))
     mesh = build(items, lite=True)
     data = {"v": 1}
     if mesh is not None:
