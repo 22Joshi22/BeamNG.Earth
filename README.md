@@ -86,8 +86,9 @@ roads, water, navigation, traffic, cities).
   [docs/V1_4_SPEC.md](docs/V1_4_SPEC.md), research notes in [docs/research/](docs/research/).
 
 ## Install and play
-**You need:** BeamNG.drive (tested with 0.39.x) on Steam, about 2 GB of free disk space for the map cache, and an
-internet connection (the map is downloaded while you play).
+**You need:** BeamNG.drive (tested with 0.39.x) on Steam, free disk space for the map download cache (it grows
+as you visit places, up to 20 GB by default; settings page > "Download cache size" sets 5-50 GB), and an internet
+connection (the map is downloaded while you play).
 
 1. **Download** the file for your system from the [Releases](https://github.com/TecnaGamer/BeamNG.Earth/releases)
    page:
