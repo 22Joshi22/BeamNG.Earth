@@ -25,6 +25,9 @@ import cdae
 
 CURB_H = 0.15           # m above the road (US curbs: 0.15)
 SINK = 0.10             # m the faces reach below the road / ground
+BACK_RUN = 2.0          # the slab's back falls to the ground at 1:2, not straight down: the ground behind a sidewalk is
+                        # graded at road level (grading.SIDEWALK_MARGIN_M), so a vertical back was a ~20 cm ledge that
+                        # caught a wheel leaving the sidewalk for the verge ("pulling the car down", user 2026-10-14)
 BATTER = 0.02           # m the face leans back over its height
 NOSE = 0.025            # m: the bevelled nose, down from the top ...
 NOSE_W = 0.045          # ... and in from the face
@@ -82,15 +85,16 @@ PAD_W = 0.6             # m of a ramp's slope from the curb that is the tactile 
 
 def profile(h=CURB_H, w=2.5, hr=None):
     """The cross-section points (offset from the curb line outwards, height above the road): face
-    bottom, face top, nose end, curb top end, ramp end, slab outer top, back bottom. hr: the curb's
+    bottom, face top, nose end, curb top end, ramp end, slab outer top, back bottom (BACK_RUN out). hr: the curb's
     height (h, or lower at a curb ramp: the slab then climbs from hr at the curb top to h at
     RAMP_RUN)."""
     hr = h if hr is None else hr
     f = hr / h if h > 0 else 0.0
     zr = h + RAMP_RUN * CROSS_SLOPE
     zp = hr + (zr - hr) * PAD_W / (RAMP_RUN - CURB_W)       # on the ramp's slope, PAD_W past the curb top
+    top = h + w * CROSS_SLOPE
     return np.array([[0.0, -SINK], [BATTER * f, hr - NOSE * f], [NOSE_W * f, hr], [CURB_W, hr],
-                     [CURB_W + PAD_W, zp], [RAMP_RUN, zr], [w, h + w * CROSS_SLOPE], [w, -SINK]])
+                     [CURB_W + PAD_W, zp], [RAMP_RUN, zr], [w, top], [w + BACK_RUN * (top + SINK), -SINK]])
 
 
 # strips: (from profile point, to point, material index, v at from, v at to); material 1 on the
@@ -308,8 +312,14 @@ class Builder:
         self.T.append(base + _orient(fan, poly, np.array([0.0, 0.0, 1.0])))
         self.M.append(np.full(len(fan), 1))
         c = poly[:, :2].mean(axis=0)
-        for a, b in ((out[0], out[1]), (out[1], out[2])):  # back faces down to the ground
-            P = np.array([a, b, b - [0, 0, h + SINK + 2.5 * CROSS_SLOPE], a - [0, 0, h + SINK + 2.5 * CROSS_SLOPE]])
+        drop = h + SINK + 2.5 * CROSS_SLOPE
+        for a, b in ((out[0], out[1]), (out[1], out[2])):  # back faces down to the ground, sloping out (BACK_RUN)
+            t = b[:2] - a[:2]
+            nrm = np.array([t[1], -t[0]]) / max(float(np.hypot(*t)), 1e-9)
+            if nrm @ (0.5 * (a[:2] + b[:2]) - c) < 0:
+                nrm = -nrm
+            run = np.r_[nrm * BACK_RUN * drop, -drop]
+            P = np.array([a, b, b + run, a + run])
             L = float(np.hypot(*(b[:2] - a[:2]))) / CURB_REPEAT_M
             UV = np.array([[0, V_LIGHT_LOW], [L, V_LIGHT_LOW], [L, V_BAND_LOW], [0, V_BAND_LOW]])
             mid = 0.5 * (a[:2] + b[:2])
