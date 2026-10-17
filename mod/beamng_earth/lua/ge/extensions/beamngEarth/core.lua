@@ -842,7 +842,10 @@ local function updateWorld(dt)
   st.poseTimer = st.poseTimer + dt
   -- no pose before the resync with a restarted server commits (anchorKnown; hello named the
   -- session folders meanwhile)
-  if st.poseTimer >= POSE_INTERVAL and net.isConnected() and anchorKnown() then
+  -- nor between a rebase's two phases (st.rebasing): the car is already in the new frame while st.anchorId is still the
+  -- old one, and the server, reading that position in the old frame, dropped every road tile around the car at each
+  -- rebase (2026-10-17, 100 mph on the salt flats: 42 road tiles -> 0 at the rebase)
+  if st.poseTimer >= POSE_INTERVAL and net.isConnected() and anchorKnown() and not st.rebasing then
     st.poseTimer = 0
     local c = st.cam
     -- held: previous anchors of this server's session only (the far field's older sessions' anchor
@@ -1204,7 +1207,7 @@ local function onUpdate(dtReal, dtSim)
     -- the roads before the far tiles: they share the governor's budget and the first to ask gets it; after a
     -- teleport the far field's hundreds of tiles took it frame after frame and the road meshes under the car
     -- came after it had passed (Brasov, Sinaia 2026-10-15: the car drove bare ground)
-    roads.update(gov, st.anchorId)
+    roads.update(gov, st.anchorId, st.player)
     t = mark('roads', t)
     farfield.update(gov, (gov.w1 or dtReal * 1000) / 1000, st.cam, st.player)
     t = mark('far', t)
