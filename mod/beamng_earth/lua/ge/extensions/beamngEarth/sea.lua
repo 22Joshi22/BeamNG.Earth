@@ -164,20 +164,21 @@ local function tileAt(p)
   return best
 end
 
--- gridSize (220, the East Coast ocean's) after the scale and at most the block's size: the engine logs a warning
--- each time gridSize is set larger than the scale, and a new block's scale is 100 m until setScale
+-- gridSize, set first: the engine logs a warning when gridSize exceeds the scale, checked against the scale the block
+-- has at that moment (100 m until setScale; and the default gridSize, 128, warned at our setScale)
 local function setGridSize(o, size)
-  o:setField('gridSize', 0, tostring(math.max(1, math.floor(math.min(220, size)))))
+  -- (at most 100 m, that default scale; the surface mesh's density is gridElementSize)
+  o:setField('gridSize', 0, tostring(math.max(1, math.floor(math.min(100, size)))))
 end
 
 local function makePhys(p, z)
   removePhys()
   local o = createObject('WaterBlock')
+  setGridSize(o, M.PHYS_SIZE)
   for _, f in ipairs(FIELDS) do o:setField(f[1], f[2], f[3]) end
   o:setField('gridElementSize', 0, tostring(M.PHYS_SIZE / 16))
   o:setPosition(vec3(p.x, p.y, z))
   o:setScale(vec3(M.PHYS_SIZE, M.PHYS_SIZE, M.DEPTH_M))
-  setGridSize(o, M.PHYS_SIZE)
   o.canSave = false
   o:registerObject(M.PHYS_NAME)
   if scenetree.MissionGroup then scenetree.MissionGroup:addObject(o) end
@@ -188,13 +189,13 @@ end
 
 local function create(key, t)
   local o = createObject('WaterBlock')
+  setGridSize(o, t.size)
   for _, f in ipairs(FIELDS) do o:setField(f[1], f[2], f[3]) end
   if key:sub(1, 1) == 'L' then
     for _, f in ipairs(INLAND) do o:setField(f[1], f[2], f[3]) end
   end
   for _, x in ipairs(TEXTURES) do o:setField(x[1], 0, exists(x[2]) and x[2] or x[3]) end
   o:setField('cubemap', 0, 'BNG_Sky_01_cubemap')
-  o:setField('gridElementSize', 0, tostring(math.max(4, t.size / 64)))
   -- the local vertical: a tilt of |n| radians about (-ny, nx, 0)
   local n = math.sqrt(t.nx * t.nx + t.ny * t.ny)
   if n > 1e-9 then
@@ -203,7 +204,9 @@ local function create(key, t)
   o:setPosition(vec3(t.x, t.y, t.z))
   -- a little larger than its square: tilted neighbours meet without a hairline gap (2026-10-13)
   o:setScale(vec3(t.size + M.TILE_OVERLAP_M, t.size + M.TILE_OVERLAP_M, M.DEPTH_M))
-  setGridSize(o, t.size)
+  -- after the scale: the engine warns ("gridSize cannot be > scale", meaning this one) when it exceeds the scale, 100 m
+  -- before setScale (an 8 km tile's 128 m, 2026-10-17)
+  o:setField('gridElementSize', 0, tostring(math.max(4, t.size / 64)))
   o.canSave = false
   o:registerObject(M.PREFIX .. key)
   if scenetree.MissionGroup then scenetree.MissionGroup:addObject(o) end
