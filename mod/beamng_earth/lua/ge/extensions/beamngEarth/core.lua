@@ -1130,7 +1130,9 @@ local function mark(name, t0)
 end
 local function noteHitch(frameMs)
   local h = { ms = math.floor(frameMs + 0.5), at = math.floor(st.clock * 10 + 0.5) / 10, mod = {} }
-  for k, v in pairs(prevMarks) do if v >= 1 then h.mod[k] = math.floor(v * 10 + 0.5) / 10 end end
+  -- marks: the mod's parts in the frame that just ended (onUpdate swaps them to prevMarks after this call; reading
+  -- prevMarks named the frame before it, and most Lua-led hitches showed no part at all, 2026-10-18)
+  for k, v in pairs(marks) do if v >= 1 then h.mod[k] = math.floor(v * 10 + 0.5) / 10 end end
   if Engine and Engine.Debug and Engine.Debug.getLastPerformanceMetrics then
     local m = {}
     if pcall(Engine.Debug.getLastPerformanceMetrics, m) then
