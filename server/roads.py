@@ -138,7 +138,7 @@ def level_ranges(feats, i):
 
 
 def _level_ranges(feats, i):
-    out = []
+    got = {"flags": [], "level": []}
     for name in ("flags", "level"):
         t = feats.rules.get(name)
         if t is None or len(t.feature) == 0:
@@ -154,15 +154,44 @@ def _level_ranges(feats, i):
                     lv = 0.0
                 kind = "bridge" if lv > 0 else "tunnel" if lv < 0 else None
             if kind is not None and t.end[j] > t.start[j]:
-                out.append((float(t.start[j]), float(t.end[j]), kind))
+                got[name].append((float(t.start[j]), float(t.end[j]), kind))
+    # the flags first; a level range only where no flag says otherwise (Tower Bridge: level 1 over 0.03-0.88 of its
+    # segment, flags bridge / tunnel (through a tower) / bridge / tunnel / bridge: merged, tunnel winning, the whole
+    # bridge was a tunnel, under water for most of it, and left out, 2026-10-18)
+    out = sorted(got["flags"])
+    for a, b, k in sorted(got["level"]):
+        for fa, fb, _ in out[:]:
+            if fb <= a or fa >= b:
+                continue
+            if fa > a:
+                out.append((a, fa, k))
+            a = max(a, fb)
+            if a >= b:
+                break
+        if a < b:
+            out.append((a, b, k))
     out.sort()
-    merged = []                                 # overlapping ranges merged (a tunnel wins over a bridge)
-    for a, b, k in out:
-        if merged and a <= merged[-1][1] + 1e-9:
+    merged = []                                 # overlapping ranges merged (a tunnel wins over a bridge); touching
+    for a, b, k in out:                         # ones of the same kind joined, of different kinds kept apart
+        if merged and (a < merged[-1][1] - 1e-9 or (a <= merged[-1][1] + 1e-9 and k == merged[-1][2])):
             pa, pb, pk = merged[-1]
             merged[-1] = (pa, max(pb, b), "tunnel" if "tunnel" in (pk, k) else "bridge")
         else:
             merged.append((a, b, k))
+    if len(merged) >= 3:                        # a short tunnel between two bridge ranges: a passage through a
+        L = _feature_length_m(feats, i)         # bridge's tower (Tower Bridge's): the bridge goes on
+        for n in range(1, len(merged) - 1):
+            a, b, k = merged[n]
+            if k == "tunnel" and (b - a) * L < PASSAGE_M and merged[n - 1][2] == "bridge" and \
+                    merged[n + 1][2] == "bridge" and abs(merged[n - 1][1] - a) < 1e-6 and abs(b - merged[n + 1][0]) < 1e-6:
+                merged[n] = (a, b, "bridge")
+        joined = []
+        for a, b, k in merged:
+            if joined and k == joined[-1][2] and a <= joined[-1][1] + 1e-9:
+                joined[-1] = (joined[-1][0], b, k)
+            else:
+                joined.append((a, b, k))
+        merged = joined
     if sum(1 for _, _, k in merged if k == "tunnel") > 1:
         # one tunnel, not several: Overture splits a tunnel's range (0.08-0.09, 0.10-0.13, 0.14-0.69 of the Fort
         # McHenry Tunnel's segment), and each gap would be a few metres of ground road inside the mountain
@@ -177,6 +206,7 @@ def _level_ranges(feats, i):
     return merged
 
 
+PASSAGE_M = 40.0        # m: a tunnel range this short between two bridge ranges is a passage through a tower
 TUNNEL_GAP_M = 30.0     # m: tunnel ranges of a segment this close together are one tunnel
 
 

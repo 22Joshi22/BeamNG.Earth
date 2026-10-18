@@ -154,6 +154,8 @@ BANDS = 4
 # glass tower the decks ran through (the user's report, 2026-10-17)
 BRIDGE_CLASSES = {"bridge_structure"}
 BRIDGE_PIER_M = 12.0        # a bridge structure's height when not mapped
+STEEL_MATERIALS = ("", "steel", "metal", "iron")     # a part over a bridge support of these (or none mapped): steel
+MASONRY_MATERIALS = ("concrete", "stone", "brick", "masonry", "granite")
 STEEL = "bne_bridge_steel"  # (a LOOKS name: the corrugated-metal material, painted steel grey)
 # a bridge structure in its mapped paint (bridgetypes.PAINTS: the Golden Gate Bridge's towers, building:colour #bf4e3b,
 # were steel grey beside its orange cables, 2026-10-18)
@@ -458,6 +460,13 @@ def plan(ring, attrs, neighbours=0, lat=None, lon=None, look=None, town=False, d
                     shop=False, plain=True,
                     seed=seed, min_h=0.0, wall=None, windows=False, steeple=False, porch=False, cls="bridge_part",
                     deck=False, pitch=None)
+    mat_ = str(attrs.get("facade_material") or "").lower()
+    if cls in BRIDGE_CLASSES and mat_ in MASONRY_MATERIALS:
+        # a mapped masonry pier (Tower Bridge's 9 m concrete piers under its stone towers): a solid block, not a frame
+        look = f"{STONE}|0" if mat_ in ("stone", "brick") else "bne_precast"
+        return Spec(ring=ring, floors=1, floor_h=h or BRIDGE_PIER_M, height=h or BRIDGE_PIER_M, roof="flat",
+                    roof_mat=look, facade=look, band=None, shop=False, plain=True, seed=seed, min_h=0.0, wall=None,
+                    windows=False, steeple=False, porch=False, cls="bridge_pier", deck=False, pitch=None)
     if cls in BRIDGE_CLASSES:       # a bridge's tower or pier: an open steel frame (_steel_frame), the decks through it
         import bridgetypes
         pt = bridgetypes.paint(attrs.get("facade_color"))
@@ -1855,7 +1864,7 @@ def tile_buildings(frame, x0, y0, x1, y1, layers, elev, water=None, part_layers=
             if not (x0 <= cx < x1 and y0 <= cy < y1):
                 continue
             at = {k: (a[k][i] if k in a else None) for k in
-                  ("class", "height", "num_floors", "min_height", "roof_shape", "roof_height", "name")}
+                  ("class", "height", "num_floors", "min_height", "roof_shape", "roof_height", "name", "facade_material")}
             bparts = parts_of.get(str(key)) if key is not None else None
             if bparts and any(h is not None for _, h in bparts):
                 # drawn as its parts, with the building's class and one look for all of them; a part
@@ -1872,7 +1881,9 @@ def tile_buildings(frame, x0, y0, x1, y1, layers, elev, water=None, part_layers=
                         continue
                     rings.append(r)
                     attrs.append({"class": at["class"], "height": ph, "num_floors": None, "roof_shape": "flat",
-                                  "building_height": top, "bridge_part": _on_support(r, supports)})
+                                  "building_height": top, "facade_material": at.get("facade_material"),
+                                  "bridge_part": _on_support(r, supports) if str(at.get("facade_material") or "")
+                                  .lower() in STEEL_MATERIALS else None})
                     looks.append(look)
                     mins.append(pmh)
                 if key is not None:
@@ -1905,7 +1916,7 @@ def tile_buildings(frame, x0, y0, x1, y1, layers, elev, water=None, part_layers=
             if mh <= 0.5 and garages_xy and _covers_garage(ring, garages_xy):
                 at = dict(at, garage=True)
             on = _on_support(ring, supports)
-            if on is not None:
+            if on is not None and str(at.get("facade_material") or "").lower() in STEEL_MATERIALS:
                 at = dict(at, bridge_part=on)
             attrs.append(at)
             looks.append(None)

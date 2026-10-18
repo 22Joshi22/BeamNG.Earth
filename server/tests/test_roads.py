@@ -416,6 +416,21 @@ class BuildTileTest(unittest.TestCase):
         self.assertTrue(any(c["m"] == roads.SIDEWALK["m"] for c in chunks), "cobbled city streets keep sidewalks")
         self.assertFalse(any(c["m"].startswith("line_") for c in chunks), "no lines painted on cobbles")
 
+    def test_tower_passages_stay_bridge(self):
+        """Tower Bridge: level 1 over 0.03-0.88, flags bridge / tunnel (through a tower, ~10 m) / bridge / tunnel /
+        bridge: one bridge (the touching ranges merged, tunnel winning, made it a tunnel left out under water)."""
+        fl = [(0, "is_bridge", 0.03, 0.34), (0, "is_tunnel", 0.34, 0.37), (0, "is_bridge", 0.37, 0.56),
+              (0, "is_tunnel", 0.56, 0.59), (0, "is_bridge", 0.59, 0.88)]
+        f = features([[(-190, 0), (190, 0)]], ["trunk"], levels=[(0, 1.0, 0.03, 0.88)], flags=fl)
+        (a, b, k), = roads.level_ranges(f, 0)
+        self.assertEqual(k, "bridge")
+        self.assertAlmostEqual(a, 0.03, places=5)
+        self.assertAlmostEqual(b, 0.88, places=5)
+        # a real tunnel next to a bridge stays a tunnel; a level range where no flag is keeps its kind
+        f2 = features([[(-500, 0), (500, 0)]], ["trunk"], levels=[(0, -1.0, 0.0, 0.2)],
+                      flags=[(0, "is_bridge", 0.2, 0.3), (0, "is_tunnel", 0.3, 0.8)])
+        self.assertEqual([k for _, _, k in roads.level_ranges(f2, 0)], ["tunnel", "bridge", "tunnel"])
+
     def test_partial_bridge_kept_and_decked(self):
         # 400 m street; level 1 on 40-60 % of it (a bridge in the middle): ground parts drawn, the
         # bridge part a deck between the two abutments' heights (the ground slopes 5 % east)
