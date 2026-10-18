@@ -712,6 +712,7 @@ def deck_profile(lines, ground_fn, crossings=(), clear=None, grade=None, lift=No
     different levels cross, the higher one clears the lower one's deck by `clear` (2026-10-11: crossing
     decks clipped into each other). Pure given ground_fn."""
     zs = deck_profile_once(lines, ground_fn, crossings, clear, grade, lift)
+    n_road = len(crossings)
     if levels is None or len(lines) < 2:
         return zs
     over = _deck_crossings(lines)
@@ -730,7 +731,7 @@ def deck_profile(lines, ground_fn, crossings=(), clear=None, grade=None, lift=No
             extra.append((hi, sh, float(np.interp(sl, arcs[lo], zs[lo]))))
         if not extra:
             break
-        new = deck_profile_once(lines, ground_fn, list(crossings) + extra, clear, grade, lift)
+        new = deck_profile_once(lines, ground_fn, list(crossings) + extra, clear, grade, lift, n_road=n_road)
         if all(np.allclose(a, b, atol=0.02, equal_nan=True) for a, b in zip(new, zs)):
             zs = new
             break
@@ -823,11 +824,13 @@ WATER_CAUSEWAY_CLEAR = 5.0
 WATER_STEP_M = 16.0         # m between a wet run's clearance points
 
 
-def deck_profile_once(lines, ground_fn, crossings=(), clear=None, grade=None, lift=None):
+def deck_profile_once(lines, ground_fn, crossings=(), clear=None, grade=None, lift=None, n_road=None):
     """Deck heights (one array per part) of a bridge chain: deck_heights between the abutments, at
     least `lift` over the ground under it, and at least `clear` over each crossing road below
     ((part index, arc m, road height)), the requirement falling at `grade` along the chain; then
-    smoothed per part with its end heights kept. Pure given ground_fn(xy (m, 2)) -> heights."""
+    smoothed per part with its end heights kept. A road crossing (the first n_road crossings, default all, without
+    their own clearance) by an abutment the deck cannot get AT_GRADE_M over is a junction at grade: the deck
+    meets the road's height there. Pure given ground_fn(xy (m, 2)) -> heights."""
     clear = DECK_ROAD_CLEAR if clear is None else clear
     grade = DECK_GRADE if grade is None else grade
     lift = DECK_CLEAR if lift is None else lift
@@ -837,18 +840,6 @@ def deck_profile_once(lines, ground_fn, crossings=(), clear=None, grade=None, li
     nodes, edges, adj = _chain_graph(lines)
     allxy = np.concatenate([ln[:, :2] for ln in lines])
     gz = np.asarray(ground_fn(allxy), np.float64)
-    req = [np.full(len(ln), -np.inf) for ln in lines]
-    for cr in crossings:            # (part, arc, height under it[, its own clearance: over water])
-        pi, sc, zc = cr[:3]
-        cl = cr[3] if len(cr) > 3 else clear
-        a, b, s = edges[pi]
-        d = _dijkstra(adj, {a: sc, b: s[-1] - sc})
-        for k, (ea, eb, es) in enumerate(edges):
-            dk = np.minimum(d[ea] + es, d[eb] + (es[-1] - es))
-            if k == pi:
-                dk = np.minimum(dk, np.abs(es - sc))
-            req[k] = np.maximum(req[k], zc + cl - grade * dk)
-    out, k0 = [], 0
     deg = np.zeros(len(nodes), int)
     for a, b, _ in edges:
         deg[a] += 1
@@ -856,6 +847,7 @@ def deck_profile_once(lines, ground_fn, crossings=(), clear=None, grade=None, li
     # no steeper than DECK_MAX_GRADE from an abutment: a short bridge over a road cannot reach full
     # headroom (2026-10-11: such decks became steep wedges, "walls" in the user's screenshot)
     cap = [np.full(len(ln), np.inf) for ln in lines]
+    dab = [np.full(len(ln), np.inf) for ln in lines]      # m to the nearest abutment
     for k, (a, b, s) in enumerate(edges):
         for node, zend in ((a, zs[k][0]), (b, zs[k][-1])):
             if deg[node] != 1 or not np.isfinite(zend):
@@ -864,6 +856,27 @@ def deck_profile_once(lines, ground_fn, crossings=(), clear=None, grade=None, li
             for k2, (ea, eb, es) in enumerate(edges):
                 dk = np.minimum(d[ea] + es, d[eb] + (es[-1] - es))
                 cap[k2] = np.minimum(cap[k2], zend + DECK_MAX_GRADE * dk)
+                dab[k2] = np.minimum(dab[k2], dk)
+    n_road = len(crossings) if n_road is None else n_road
+    req = [np.full(len(ln), -np.inf) for ln in lines]
+    for ci, cr in enumerate(crossings):     # (part, arc, height under it[, its own clearance: over water])
+        pi, sc, zc = cr[:3]
+        cl = cr[3] if len(cr) > 3 else clear
+        a, b, s = edges[pi]
+        d = _dijkstra(adj, {a: sc, b: s[-1] - sc})
+        # a junction at grade (Queens Plaza, the user's report #55, 2026-10-17: a ramp's map line starts in the
+        # intersection it climbs from; its deck rose 0.8 m over the cross street there, a hump across it)
+        flat = (ci < n_road and len(cr) == 3 and float(np.interp(sc, s, dab[pi])) <= AT_GRADE_REACH_M
+                and float(np.interp(sc, s, cap[pi])) < zc + AT_GRADE_M)
+        for k, (ea, eb, es) in enumerate(edges):
+            dk = np.minimum(d[ea] + es, d[eb] + (es[-1] - es))
+            if k == pi:
+                dk = np.minimum(dk, np.abs(es - sc))
+            if flat:
+                cap[k] = np.minimum(cap[k], zc + DECK_MAX_GRADE * dk)
+            else:
+                req[k] = np.maximum(req[k], zc + cl - grade * dk)
+    out, k0 = [], 0
     for k, (z, (a, b, s)) in enumerate(zip(zs, edges)):
         g = gz[k0:k0 + len(z)] + lift
         k0 += len(z)
@@ -877,8 +890,8 @@ def deck_profile_once(lines, ground_fn, crossings=(), clear=None, grade=None, li
             zz[-1] = z[-1]
         if len(zz) > 3:
             step = s[-1] / (len(s) - 1)
-            sm = _smooth_pinned(zz, step, DECK_SIGMA)
-            zz = np.maximum(sm, g)
+            sm = np.minimum(_smooth_pinned(zz, step, DECK_SIGMA), cap[k])    # (no hump back over a
+            zz = np.maximum(sm, g)                                                          # junction at grade)
             zz[0], zz[-1] = sm[0], sm[-1]
         out.append(zz)
     return out
@@ -1499,6 +1512,8 @@ DECK_CLEAR = 0.05       # m a deck stays above the ground under it (no z-fightin
 DECK_ROAD_CLEAR = 6.5   # m a deck's top stays over a road crossing under it (5 m headroom + the slab)
 DECK_GRADE = 0.05       # that requirement falls 5 % along the deck from the crossing
 DECK_MAX_GRADE = 0.06   # a deck climbs no steeper than this from an abutment
+AT_GRADE_M = 3.0        # m: a road crossing a deck within AT_GRADE_REACH_M of an abutment that cannot get this
+AT_GRADE_REACH_M = 12.0     # high over it is a junction at grade (the intersection a ramp starts from)
 CHAIN_CELLS = 12        # map cells read at most to close one bridge chain
 
 

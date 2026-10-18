@@ -218,6 +218,10 @@ class BridgeProfilesTest(unittest.TestCase):
         s = ln[:, 0]
         self.assertLessEqual(np.abs(np.diff(z) / np.diff(s)).max(), roads.DECK_MAX_GRADE + 0.02)
         self.assertLess(z.max(), 10.0 + 0.06 * 30 + 0.1)
+        # a ramp starting in the intersection it climbs from (Queens Plaza, report #55): flush with the cross street
+        (z,) = roads.deck_profile([ln], flat, [(0, 6.0, 10.0), (0, 30.0, 10.0)])
+        self.assertLess(float(np.interp(6.0, s, z)), 10.0 + 0.15, "no hump across the cross street")
+        self.assertGreater(z.max(), 10.0 + 0.06 * 18 - 0.3, "the crossing farther on still lifts the deck")
         # a mainline at 18 m with a ramp leaving it at a shallow angle: heights match where they overlap
         main = np.c_[np.arange(0.0, 201.0, 4.0), np.zeros(51)]
         ramp = np.c_[np.arange(100.0, 301.0, 4.0), (np.arange(100.0, 301.0, 4.0) - 100.0) * 0.12]
