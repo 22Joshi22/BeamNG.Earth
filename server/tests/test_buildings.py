@@ -527,6 +527,20 @@ class PhotoFillTest(unittest.TestCase):
         self.assertTrue(np.allclose(out[mask].astype(int), (40, 160, 60), atol=4), "no black holes, no roof colour")
 
 
+class StoopStreetTest(unittest.TestCase):
+    def test_steps_reach_the_street(self):
+        # the house's floor 1 m over the sidewalk (its highest ground): steps all the way down, no white block
+        ring = np.array([[0.0, 0.0], [6.0, 0.0], [6.0, 12.0], [0.0, 12.0]])
+        spec = bld.plan(ring, {"class": "house"})
+        spec.stoop = (0, 3.0)
+        m = bld.Mesh()
+        bld._stoop(m, spec, ring, 10.0, 11.0, bld._Looks(spec.seed))
+        P = m.arrays()[0]
+        tops = sorted({round(float(z), 3) for z in P[:, 2] if z > 10.0})
+        self.assertAlmostEqual(tops[-1], 11.0 + bld.STOOP_H)
+        self.assertLessEqual(tops[0] - 10.0, bld.STOOP_RISE_MAX + 1e-6, "the bottom step one riser over the street")
+
+
 class BridgeStructureTest(unittest.TestCase):
     """A bridge's tower (Overture bridge_structure: the Queensboro Bridge's, 33 x 4.6 x 110 m) is an open steel frame
     the decks run through, not a glass tower (2026-10-17)."""
@@ -553,9 +567,6 @@ class BridgeStructureTest(unittest.TestCase):
         self.assertAlmostEqual(P[:, 2].max(), 12.0, places=3)
 
 
-if __name__ == "__main__":
-    unittest.main()
-
 
 class StoopTest(unittest.TestCase):
     def test_steps_reach_the_lowest_ground(self):
@@ -566,3 +577,7 @@ class StoopTest(unittest.TestCase):
         front = (P[:, 1] < 0.0) & (P[:, 1] > -2.0)          # out from the wall y = 0 (edge 0 runs along +x)
         self.assertTrue(front.any())
         self.assertLessEqual(P[front, 2].min(), 10.0 - 0.3 + 1e-6)
+
+
+if __name__ == "__main__":
+    unittest.main()

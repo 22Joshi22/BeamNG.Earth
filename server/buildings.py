@@ -282,7 +282,7 @@ def oriented_box(p):
 class Spec:
     """What is built for one footprint (decided by plan())."""
     __slots__ = ("ring", "floors", "floor_h", "height", "roof", "roof_mat", "facade", "band", "shop", "plain", "min_h", "wall", "door", "windows", "front", "steeple", "stoop",
-                 "sign", "porch", "cls", "seed", "deck", "pitch", "portal")
+                 "sign", "porch", "cls", "seed", "deck", "pitch", "portal", "gring")
 
     def __init__(self, **kw):
         for k in self.__slots__:
@@ -998,6 +998,20 @@ def _porch(m, spec, base, mat_idx):
     _box(m, c + out * (D / 2 + 0.1), d, w / 2 + 0.15, D / 2 + 0.1, top, top + 0.18, roof)          # roof
 
 
+def door_ground(spec, edge, along, gmax):
+    """The ground at a point `along` m on edge `edge` of the footprint (its corners' ground, spec.gring), or gmax
+    when not known: a row house's door and steps (from the footprint's highest ground, its back yard's on a slope,
+    the steps on Bradford Street stood 1.5 m over the sidewalk, five or six of them; Mapillary: one or two)."""
+    g = getattr(spec, "gring", None)
+    ring = spec.ring
+    if g is None or len(g) != len(ring):
+        return gmax
+    a, b = ring[edge], ring[(edge + 1) % len(ring)]
+    L = float(math.hypot(*(b - a)))
+    t = 0.0 if L < 1e-6 else min(max(along / L, 0.0), 1.0)
+    return float(g[edge] + t * (g[(edge + 1) % len(ring)] - g[edge]))
+
+
 def _stoop(m, spec, ring, gmin, base, mat_idx):
     """Marble steps up to the front door (spec.stoop: (edge, distance along it); base: the ground there, the door
     STOOP_H over it): STOOP_STEPS treads to a landing, each block down under the footprint's lowest ground (they floated where the street falls away, Fells Point, 2026-10-17)."""
@@ -1010,10 +1024,15 @@ def _stoop(m, spec, ring, gmin, base, mat_idx):
     out = np.array([d[1], -d[0]])
     c = a + d * sd
     mat = mat_idx[MARBLE_LOOK]
+    base = door_ground(spec, edge, sd, base)     # (the ground at the door)
     top = base + STOOP_H
     z0 = min(gmin, base) - 0.3
-    rise = STOOP_H / STOOP_STEPS
-    for k in range(STOOP_STEPS):
+    # as many steps as it takes down to the street (the footprint's lowest ground): from the highest one only the
+    # bottom step stood a metre over the sidewalk on a white block (Bradford Street, Mapillary 2026-10-17)
+    n = int(np.clip(round((top - min(gmin, base)) / STOOP_RISE), STOOP_STEPS - 1, STOOP_MAX_STEPS))
+    rise = min((top - min(gmin, base)) / n, STOOP_RISE_MAX)    # (n risers: the landing's and n - 1 steps' fronts;
+                                                                # higher, the bottom step on a plinth)
+    for k in range(n):
         depth = STOOP_LANDING + k * STOOP_TREAD
         zt = top - k * rise
         _box_tiled(m, c + out * depth / 2, d, STOOP_W / 2, depth / 2, z0, zt, mat)
@@ -1743,6 +1762,7 @@ def tile_buildings(frame, x0, y0, x1, y1, layers, elev, water=None, part_layers=
             cla, clo, _ = frame.enu_to_geodetic(c[0] + x0, c[1] + y0, 0.0)
             if water(float(cla), float(clo)):
                 continue
+        spec.gring = g              # the ground at each corner (door_ground: the door's, not the footprint's highest)
         out.append((spec, float(g.min()), float(g.max())))
     return out
 
@@ -1780,6 +1800,9 @@ STOOP_SHARE = 0.8           # row houses with a front stoop (Baltimore's white m
 # treads and risers up to a landing between stepped side walls); their own models carry race-track paint and logos
 STOOP_H = 0.54              # m: three steps up to the door (Fells Point's on Mapillary, 2026-10-17: low white marble
 STOOP_STEPS = 3             # steps, no side walls; ours were four between walls, big white blocks)
+STOOP_RISE = 0.18           # m a step (more of them where the street falls away from the house)
+STOOP_MAX_STEPS = 7
+STOOP_RISE_MAX = 0.23       # m: the steepest outdoor step
 STOOP_TREAD = 0.3           # m deep each step
 STOOP_LANDING = 0.6         # m deep the landing at the door
 STOOP_W = 1.3               # m wide the steps
@@ -1906,7 +1929,8 @@ def doors(items, lines, x0, y0, drives=None):
             rows.extend(_front_fence(spec, a, d, Le, f, A[kseg], D[kseg], L2[kseg], SHALF[kseg], gmin,
                                      drives is not None and spec.wall and Le >= 7.0))
         p = a + d * (Le * f) + out * DOOR_OUT_M
-        base = gmax + (STOOP_H if spec.stoop else 0.0) + (PORCH_DECK_M if spec.porch else 0.0)   # (the deck / stoop)
+        gd = door_ground(spec, edge, Le * f, gmax) if spec.stoop else gmax     # a stoop's door: over its own ground
+        base = gd + (STOOP_H if spec.stoop else 0.0) + (PORCH_DECK_M if spec.porch else 0.0)   # (the deck / stoop)
         rows.append([G_DOOR, round(float(p[0]), 2), round(float(p[1]), 2), round(base, 2),
                      round(math.degrees(math.atan2(d[1], d[0])) % 360.0, 1), 1.0, 2.2,
                      round(_hash01(spec.seed, "dv"), 3)])
