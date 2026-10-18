@@ -173,14 +173,15 @@ PIER_BENT_W = 16.0      # a deck wider than this stands on columns (a bent) rath
 PIER_COLUMN = 1.6       # m square columns of a bent
 
 
-def deck(chunks, origin, piers=(), context=()):
+def deck(chunks, origin, piers=(), context=(), beams=()):
     """The bridge decks of a tile as one colliding mesh: per "deck" chunk a slab of opaque concrete
     (DECK_SIDE) whose top is at the chunk's fixed heights (the road surface, drawn DECK_SKIN above it
-    by build()), with sides and underside DECK_DEPTH below. (positions, tris, uvs, materials, tri
+    by build()), with sides and underside DECK_DEPTH below; the piers, and the truss beams (p, q, width, height:
+    bridgetypes.truss_members) in painted steel (TRUSS_STEEL). (positions, tris, uvs, materials, tri
     material index) or None. Pure."""
     dch = [c for c in chunks if c.get("deck")]
     rb = [(r, c) for r, c in zip(ribbons(dch), dch) if r[5] is not None]
-    if not rb and not piers:
+    if not rb and not piers and not beams:
         return None
     mats, P, UV, T, M = [], [], [], [], []
     nv = 0
@@ -259,7 +260,53 @@ def deck(chunks, origin, piers=(), context=()):
     for p in _piers_clear(piers, rb):
         _pier(p, origin, P, T, UV, M, side)
         nv = sum(len(a) for a in P)
+    if len(beams):
+        mats.append(TRUSS_STEEL)
+        _beams(beams, origin, P, T, UV, M, len(mats) - 1)
+    if not P:
+        return None
     return (np.concatenate(P), np.concatenate(T), np.concatenate(UV), mats, np.concatenate(M))
+
+
+TRUSS_STEEL = "bne_truss_steel"     # painted steel (the stock metal_paint, grey: tunnel.materials.json)
+
+
+def _beams(beams, origin, P, T, UV, M, mat):
+    """Box beams [(p (3,), q (3,), width, height)] appended to P, T, UV, M (all at once: a truss has hundreds)."""
+    b = list(beams)
+    p = np.array([x[0] for x in b], np.float64) - np.asarray(origin, np.float64)
+    q = np.array([x[1] for x in b], np.float64) - np.asarray(origin, np.float64)
+    w = np.array([x[2] for x in b], np.float64)[:, None] / 2
+    h = np.array([x[3] for x in b], np.float64)[:, None] / 2
+    d = q - p
+    ln = np.maximum(np.linalg.norm(d, axis=1), 1e-9)
+    d = d / ln[:, None]
+    a = np.cross(d, [0.0, 0.0, 1.0])
+    vert = np.linalg.norm(a, axis=1) < 1e-3                 # a vertical post: its width along x
+    a[vert] = [1.0, 0.0, 0.0]
+    a /= np.linalg.norm(a, axis=1)[:, None]
+    c = np.cross(a, d)
+    corners = [(-1, -1), (1, -1), (1, 1), (-1, 1)]
+    V = np.stack([e + a * (sa * w) + c * (sc * h) for e in (p, q) for sa, sc in corners], 1)    # (n, 8, 3)
+    nv0 = sum(len(x) for x in P)
+    n = len(b)
+    P.append(V.reshape(-1, 3))
+    u = np.r_[0, 0.25, 0.5, 0.75, 0, 0.25, 0.5, 0.75]
+    UV.append(np.stack([np.broadcast_to(u, (n, 8)), np.c_[np.zeros((n, 4)), np.repeat(ln[:, None] / 4.0, 4, 1)]],
+                       -1).reshape(-1, 2))
+    tri = []
+    for i in range(4):                          # the four sides (ends left open: they meet other beams)
+        j = (i + 1) % 4
+        tri += [(i, j, j + 4), (i, j + 4, i + 4)]
+    tri = np.array(tri, np.int64)
+    Tn = (tri[None] + (np.arange(n) * 8)[:, None, None]).reshape(-1, 3)
+    pts = np.concatenate([V.reshape(-1, 3)])
+    cen = np.repeat(((p + q) / 2), len(tri), 0)
+    nrm = np.cross(pts[Tn[:, 1]] - pts[Tn[:, 0]], pts[Tn[:, 2]] - pts[Tn[:, 0]])
+    flip = (nrm * (pts[Tn].mean(1) - cen)).sum(1) < 0
+    Tn[flip] = Tn[flip][:, ::-1]
+    T.append(Tn + nv0)
+    M.append(np.full(len(Tn), mat))
 
 
 def _piers_clear(piers, rb):

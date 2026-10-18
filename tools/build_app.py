@@ -138,7 +138,8 @@ def pyinstaller(work, ico, onefile, ver=None, boot=None):
            "--collect-submodules", "fsspec",
            "--hidden-import", "certifi", "--collect-data", "certifi",   # CA bundle fallback (launcher.ensure_ca_certs)
            "--add-data", f"{os.path.join(ROOT, 'mod', 'beamng_earth')}{SEP}mod/beamng_earth",
-           "--add-data", f"{os.path.join(ROOT, 'VERSION')}{SEP}."]
+           "--add-data", f"{os.path.join(ROOT, 'VERSION')}{SEP}.",
+           "--add-data", f"{os.path.join(server, 'bridges_us.npz')}{SEP}."]     # (bridgetypes.DB_PATH: beside the modules)
     cmd += ["--onefile"] if onefile else ["--onedir"]
     if IS_WIN:
         vf, mf = version_files(work, ver)

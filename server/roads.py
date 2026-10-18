@@ -1667,11 +1667,13 @@ class BridgeProfiles:
     the physics elevation. Worker threads."""
 
     wet = None      # wet(lat, lon) -> water depth (m) or None: decks clear the water (water_clear)
+    infra_fn = None     # infra_fn(cell key) -> the infrastructure Features (bridge:structure tags: bridgetypes)
 
     def __init__(self, frame, cell_fn, elev):
         self.frame, self.cell_fn, self.elev = frame, cell_fn, elev
         self.done = {}                          # (fid, j) -> (spec, xy (k, 2), z (k,), lon)
         self.piers = {}                         # (fid, j) -> pier_sites of its deck
+        self.trusses = {}                       # a chain's first part key -> its truss beams (bridgetypes)
         self.lock = threading.Lock()
 
     def _water(self, lines):
@@ -1837,7 +1839,17 @@ class BridgeProfiles:
                         if old is None or len(xy) > len(old[1]):
                             self.done[k] = (spec, xy, z, lon)
                             self._commit(k, ground)
+                    chain = [(self.done[k][1], self.done[k][2], self.done[k][0].width) for k in comp
+                             if k in self.done]
+                    ck = min(comp) if comp else None
+                    fresh = ck is not None and ck not in self.trusses
+                    if fresh:
+                        self.trusses[ck] = []
                     got = self.done.get(key)
+                if fresh:
+                    beams = self._structure(chain)
+                    with self.lock:
+                        self.trusses[ck] = beams
             if got is not None:
                 spec, xy, z, lon = got
                 out.append((self._part_id(key), spec, xy, z, lon))
@@ -1859,6 +1871,31 @@ class BridgeProfiles:
             return np.zeros(len(xy), bool)
         la, lo, _ = self.frame.enu_to_geodetic(xy[:, 0], xy[:, 1], 0.0)
         return np.asarray(self.wet(la, lo), np.float64) > 0.5
+
+    def _structure(self, chain):
+        """The truss beams of a solved chain [(xy, z, width)] (bridgetypes); [] for a plain deck."""
+        import bridgetypes
+        try:
+            infra = []
+            if self.infra_fn is not None:
+                pts = np.concatenate([np.asarray(xy, np.float64) for xy, _, _ in chain])
+                la, lo, _ = self.frame.enu_to_geodetic(pts[:, 0], pts[:, 1], 0.0)
+                infra = [self.infra_fn(k) for k in mapcells.cells_for_bbox(float(la.min()), float(lo.min()),
+                                                                           float(la.max()), float(lo.max()))]
+            info = bridgetypes.chain_structure(self.frame, chain, self._wet_at if self.wet is not None else None,
+                                               infra)
+            return bridgetypes.truss_members(chain, info, self._ground,
+                                             self._wet_at if self.wet is not None else None)
+        except Exception as ex:             # a plain deck rather than no bridge
+            log.debug("bridge structure: %s: %s", type(ex).__name__, ex)
+            return []
+
+    def beams_in(self, box):
+        """The truss beams (p, q, w, h) of the chains solved so far whose middle lies in box (each in one tile)."""
+        x0, y0, x1, y1 = box
+        with self.lock:
+            allb = [b for v in self.trusses.values() for b in v]
+        return [b for b in allb if x0 <= (b[0][0] + b[1][0]) / 2 < x1 and y0 <= (b[0][1] + b[1][1]) / 2 < y1]
 
     def piers_in(self, box):
         """The piers (pier_sites) of the parts solved so far standing in box (x0, y0, x1, y1): x0 <= x < x1, y0 <= y
@@ -1937,6 +1974,9 @@ class TunnelProfiles(BridgeProfiles):
     specs_of = staticmethod(lambda feats: tunnel_specs(feats))
     parts_of = staticmethod(lambda feats, i: tunnel_parts(feats, i))
     levels_of = staticmethod(lambda feats, i: [-1.0] * len(tunnel_parts(feats, i)))
+
+    def _structure(self, chain):                # (no truss over a tunnel)
+        return []
 
     wet = None      # wet(lat, lon) -> water depth (m): tunnels under water are left out (the sea's WaterBlocks reach
                     # 100 m down: a car in the tube would float; earthd / blockworker set the sea's depth)

@@ -136,5 +136,31 @@
     ],
     "groundType": "CONCRETE",
     "translucent": false
+  },
+  "bne_truss_steel": {
+    "name": "bne_truss_steel",
+    "mapTo": "bne_truss_steel",
+    "class": "Material",
+    "version": 1.5,
+    "persistentId": "ad3581d8-d936-5215-8d12-3fd09a53eb6b",
+    "Stages": [
+      {
+        "baseColorMap": "/assets/materials/tileable/metal/metal_paint/metal_paint_d.color.dds",
+        "normalMap": "/assets/materials/tileable/metal/metal_paint/metal_paint_nm.normal.dds",
+        "roughnessFactor": 0.6,
+        "metallicFactor": 0.3,
+        "baseColorFactor": [
+          0.62,
+          0.63,
+          0.62,
+          1
+        ]
+      },
+      {},
+      {},
+      {}
+    ],
+    "groundType": "METAL",
+    "translucent": false
   }
 }
