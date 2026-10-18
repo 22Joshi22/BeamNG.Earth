@@ -235,22 +235,27 @@ def chain_structures(frame, parts, wet_fn=None, infra=()):
     lines = [np.asarray(xy, np.float64) for xy, _, _ in parts if len(xy) >= 2]
     if not lines:
         return []
-    out, taken = [], []
+    out, taken, used, osm_sites = [], [], set(), []
     for tags, outline in (_osm_outlines(frame, parts, infra) if infra else []):
         taken.append(outline)
         code = OSM_TYPES.get(str(tags.get("bridge:structure")), 0)
         if code == 0:
             continue                        # tagged a plain kind: nothing drawn there
-        path = Path(outline)
-        inner = [ln[path.contains_points(ln)] for ln in lines]
+        inner = [ln[_in_rings(outline, ln)] for ln in lines]
         found = matches(frame, [ln for ln in inner if len(ln) >= 2])
+        if not found:                       # (the record's point can lie outside the outline: Golden Gate's)
+            found = matches(frame, [ln for ln in lines if _in_rings(outline, ln).any()])
         info = ({**record(found[0][1]), "src": "osm+nbi"} if found else
                 {"span": 0.0, "length": 0.0, "width": 0.0, "src": "osm"})
+        if found:
+            used.add(found[0][1])
         info.update(type=code, paint=paint(tags.get("colour")) or "grey", outline=outline)
         out.append(info)
+        rings = outline if isinstance(outline, list) else [outline]
+        osm_sites.append((np.concatenate(rings).mean(0), max(float(info["length"]), 300.0)))
     chain_paint = (osm_colour(frame, parts, infra) if infra else None) or "grey"
     db = _load()
-    seen = set()
+    seen, nbi_sites = set(used), []
     for _, i in matches(frame, lines):
         t = int(db["type"][i])
         if not NBI_DECK_TRUSS <= t <= NBI_SWING or i in seen:
@@ -258,9 +263,15 @@ def chain_structures(frame, parts, wet_fn=None, infra=()):
         seen.add(i)
         e, n, _ = frame.geodetic_to_enu(np.array([float(db["lat"][i])]), np.array([float(db["lon"][i])]), 0.0)
         c = np.array([float(e[0]), float(n[0])])
-        if any(Path(o).contains_points(c[None])[0] for o in taken):
-            continue                        # (a tagged outline's own record)
-        r = max(float(db["length"][i]) / 2, 100.0) + MATCH_M
+        if any(_in_rings(o, c[None])[0] for o in taken) or \
+                any(float(np.hypot(*(c - oc))) < oL / 2 for oc, oL in osm_sites):
+            continue                        # (a tagged bridge's own record)
+        L = float(db["length"][i])
+        if any(t == t2 and float(np.hypot(*(c - c2))) < max(L, L2) / 2 for t2, c2, L2 in nbi_sites):
+            continue                        # a bridge's second record (the Queensboro Bridge's upper and lower
+                                            # roadways: two trusses drawn)
+        nbi_sites.append((t, c, L))
+        r = max(L / 2, 100.0) + MATCH_M
         ang = np.linspace(0, 2 * np.pi, 33)
         out.append({**record(i), "src": "nbi", "paint": chain_paint,
                     "outline": np.c_[c[0] + r * np.cos(ang), c[1] + r * np.sin(ang)]})
@@ -285,7 +296,7 @@ def _osm_outlines(frame, parts, feats_list):
     import json
     from polygon import Path
     lines = [np.asarray(xy, np.float64) for xy, _, _ in parts if len(xy) >= 2]
-    out, seen = [], set()
+    out, seen, groups = [], set(), {}
     for f in feats_list:
         if f is None or not len(f):
             continue
@@ -304,21 +315,34 @@ def _osm_outlines(frame, parts, feats_list):
                 td = json.loads(t)
             except ValueError:
                 continue
+            name = str(f.attrs["name"][i]) if "name" in f.attrs else ""
+            key = (name, str(td.get("bridge:structure"))) if name else ("#" + str(fid), "")
             for part in f.parts(i):
                 ring = np.asarray(part[0], np.float64)
                 if len(ring) < 4:
                     continue
                 e, n, _ = frame.geodetic_to_enu(ring[:, 1], ring[:, 0], 0.0)
-                ol = np.c_[e, n]
-                path = Path(ol)
-                held = 0.0
-                for ln in lines:
-                    m = path.contains_points(ln)
-                    seg = np.hypot(*np.diff(ln, axis=0).T)
-                    held += float(seg[m[1:] & m[:-1]].sum())
-                if held >= OSM_MIN_M:
-                    out.append((td, ol))
+                groups.setdefault(key, (td, []))[1].append(np.c_[e, n])
+    for td, rings in groups.values():   # one site per bridge: its outline's parts, its namesakes' (Sydney Harbour
+        held = 0.0                      # Bridge's three outlines were three arches)
+        for ln in lines:
+            m = _in_rings(rings, ln)
+            seg = np.hypot(*np.diff(ln, axis=0).T)
+            held += float(seg[m[1:] & m[:-1]].sum())
+        if held >= OSM_MIN_M:
+            out.append((td, rings))
     return out
+
+
+def _in_rings(rings, pts):
+    """Which points lie in any of the rings (an outline: one ring (k, 2) or a list of them)."""
+    from polygon import Path
+    if isinstance(rings, np.ndarray):
+        rings = [rings]
+    m = np.zeros(len(pts), bool)
+    for r in rings:
+        m |= np.asarray(Path(r).contains_points(pts), bool)
+    return m
 
 
 def _longest_wet(parts, wet_fn):
@@ -568,9 +592,7 @@ def _inside(P, info):
     ol = info.get("outline") if info else None
     if ol is None:
         return None
-    from polygon import Path
-    path = Path(ol)
-    return [np.asarray(path.contains_points(xy), bool) for xy, _, _ in P]
+    return [_in_rings(ol, xy) for xy, _, _ in P]
 
 
 def main_span(P, arcs, info, ground_fn, wet_fn=None):
