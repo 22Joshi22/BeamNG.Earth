@@ -160,7 +160,7 @@ def snapper(lat, lon, radius):
     import mapdata
     md = mapdata.MapData()
     d = (radius + 100) / M_PER_DEG
-    blds, roads, bridges, tunnels = [], [], [], []
+    blds, roads, bridges, tunnels, others = [], [], [], [], []
     import roads as roadsmod
 
     def is_tunnel(f, i):
@@ -186,10 +186,12 @@ def snapper(lat, lon, radius):
                 b = f.coord_off[f.ring_off[f.part_off[i] + 1]] if layer == "buildings" else \
                     f.coord_off[f.ring_off[f.part_off[i + 1]]]
                 out.append(np.asarray(f.lonlat[a:b], np.float64))
-                if layer == "roads" and is_bridge(f, i):
-                    bridges.append(out[-1])
-                if layer == "roads" and is_tunnel(f, i):
-                    tunnels.append(out[-1])
+                if layer == "roads":    # (by their ranges: a segment can be half bridge, half tunnel: Genoa's A10)
+                    if is_bridge(f, i):
+                        bridges.extend(np.asarray(r, np.float64) for r in roadsmod.bridge_parts(f, i) if len(r) >= 2)
+                    if is_tunnel(f, i):
+                        tunnels.extend(np.asarray(r, np.float64) for r in roadsmod.tunnel_parts(f, i) if len(r) >= 2)
+                    others.extend(np.asarray(r, np.float64) for r in roadsmod.ground_parts(f, i) if len(r) >= 2)
     mx = M_PER_DEG * math.cos(math.radians(lat))
 
     def in_tunnel(la, lo, heading):
@@ -214,9 +216,7 @@ def snapper(lat, lon, radius):
             return None
         # only when no other road is nearer (Tower Bridge's photos, beside the short passages through its towers, were
         # shot from the Thames' bed)
-        for ln in roads:
-            if any(ln is t for t in tunnels):
-                continue
+        for ln in others + bridges:
             q = (ln - p) * [mx, M_PER_DEG]
             for u, v in zip(q[:-1], q[1:]):
                 w = v - u
