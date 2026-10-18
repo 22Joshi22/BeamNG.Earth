@@ -34,7 +34,7 @@ import staging
 
 log = logging.getLogger("earthd.vegetation")
 
-VERSION = 10
+VERSION = 11
 TREE_MIN_M = 3.0
 CROWN_SPACING = 0.5          # tops kept this many crown radii apart (0.8 looked sparse: the user, 2026-10-13)
 BUSH_MIN_M = 1.0
@@ -44,6 +44,11 @@ GROUPS = ("deciduous", "conifer", "shrub", "rock", "pine_west", "palm", "juniper
 (G_DECIDUOUS, G_CONIFER, G_SHRUB, G_ROCK, G_PINE_WEST, G_PALM, G_JUNIPER, G_DESERT_SHRUB, G_DESERT_ROCK,
  G_OAK_WEST, G_TROPICAL) = range(len(GROUPS))
 ROAD_CLEAR_M = 1.5          # trees kept this far off a road's edge (its width by class below)
+TREE_PIT_M = 0.4            # m past a road's edge (+ the push's 0.6) where a top over the road lands: a sidewalk's
+                            # tree pit by the curb (pushed out of the full corridor, Boston Street's trees landed on the
+                            # row houses at the back of the sidewalk and all went; Mapillary: one every ~8 m, 2026-10-17)
+PATH_CLASSES = {"footway", "path", "steps", "cycleway", "bridleway", "pedestrian"}   # no corridor: street trees
+                            # stand in the sidewalk (mapped as a footway: Boston Street's row sat on its line)
 ROAD_HALF_WIDTH_M = {"motorway": 7.0, "trunk": 6.0, "primary": 5.5, "secondary": 5.0, "tertiary": 4.5,
                      "residential": 4.0, "service": 3.0, "unclassified": 3.5, "living_street": 3.0}
 ROAD_HALF_DEFAULT_M = 2.5
@@ -290,6 +295,7 @@ class Vegetation:
         # the blocked pixels: buildings, roads, water (on the CHM grid, with the neighbours' features)
         blocked = np.zeros(h.shape, bool)
         road = np.zeros(h.shape, bool)
+        curb = np.zeros(h.shape, bool)      # the roads themselves (+ TREE_PIT_M): where a street tree may not land
         push = np.zeros((3,) + h.shape, np.float32)
         push[2] = np.inf
         for dy in (-1, 0, 1):
@@ -302,7 +308,8 @@ class Vegetation:
                     continue
                 _mask_polys(c2.layers.get("buildings"), blocked, chm, 1.0)
                 _mask_polys(c2.layers.get("water"), blocked, chm, 0.0, kind=3)
-                _mask_roads(c2.layers.get("roads"), road, chm, push)
+                _mask_roads(c2.layers.get("roads"), road, chm)
+                _mask_roads(c2.layers.get("roads"), curb, chm, push, clear=TREE_PIT_M)
         # smoothed heights (3 x 3 mean), then the local maxima by height band
         p = np.pad(h, 1, mode="edge")
         hs = sum(p[a:a + n_r, b:b + n_c] for a in range(3) for b in range(3)) / 9.0
@@ -315,7 +322,7 @@ class Vegetation:
         tops[~rj, :] = False
         tops[:, ~ci] = False
         # street trees: a top over a road corridor (its crown overhangs the street) moves just out of it,
-        # onto the verge / sidewalk, unless that lands on a building, water or another road
+        # onto the verge / sidewalk by the curb, unless that lands on a building, water or another road
         on_road = tops & road
         tops &= ~road
         rj_, ri_ = np.nonzero(on_road)
@@ -323,7 +330,7 @@ class Vegetation:
             nc = np.rint(ri_ + push[0, rj_, ri_]).astype(np.int64)
             nr = np.rint(rj_ + push[1, rj_, ri_]).astype(np.int64)
             ok = (nc >= 0) & (nc < n_c) & (nr >= 0) & (nr < n_r)
-            ok[ok] &= ~blocked[nr[ok], nc[ok]] & ~road[nr[ok], nc[ok]]
+            ok[ok] &= ~blocked[nr[ok], nc[ok]] & ~curb[nr[ok], nc[ok]]
             moved = np.zeros(h.shape, bool)
             moved[nr[ok], nc[ok]] = True
             moved[~rj, :] = False
@@ -550,8 +557,8 @@ def _mask_polys(f, mask, chm, grow_m, kind=3, select=None):
             mask[r0:r1, c0:c1] |= inside.reshape(r1 - r0, c1 - c0)
 
 
-def _mask_roads(f, mask, chm, push=None):
-    """Mark road corridors (half width by class + ROAD_CLEAR_M) on the CHM-grid mask. push (optional, (3, rows,
+def _mask_roads(f, mask, chm, push=None, clear=ROAD_CLEAR_M):
+    """Mark road corridors (half width by class + clear) on the CHM-grid mask (footpaths left out). push (optional, (3, rows,
     cols) float32: dx, dy in px and the distance to the nearest road, inf where none) gets, per corridor
     pixel, the move that takes it just out of its nearest road's corridor (street trees: vegetation._build)."""
     if f is None:
@@ -561,7 +568,9 @@ def _mask_roads(f, mask, chm, push=None):
     rust = fast._ef is not None and hasattr(fast._ef, "road_corridors")
     segs, hws = [], []                  # (Rust) every segment in order: one call at the end
     for i in np.flatnonzero(f.kind == 2):
-        hw_m = ROAD_HALF_WIDTH_M.get(str(cls[i]), ROAD_HALF_DEFAULT_M) + ROAD_CLEAR_M
+        if str(cls[i]) in PATH_CLASSES:
+            continue
+        hw_m = ROAD_HALF_WIDTH_M.get(str(cls[i]), ROAD_HALF_DEFAULT_M) + clear
         for part in f.parts(i):
             for ring in part:
                 # ground metres to Web-Mercator pixels (a 3857 metre is 1 / cos(lat) of a ground metre)

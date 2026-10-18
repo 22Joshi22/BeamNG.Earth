@@ -88,8 +88,17 @@ class VegetationTest(unittest.TestCase):
         rlon, rlat = md.lonlat(100, 400)                   # on the residential road's centreline
         street = 1 - free
         off = abs(trees.lat[street] - rlat) * 111000
-        self.assertGreater(off, veg.ROAD_HALF_WIDTH_M["residential"] + veg.ROAD_CLEAR_M - 1.0, "beside the road")
-        self.assertLess(off, veg.ROAD_HALF_WIDTH_M["residential"] + veg.ROAD_CLEAR_M + 3.0)
+        curb = veg.ROAD_HALF_WIDTH_M["residential"] + veg.TREE_PIT_M + 0.6     # a tree pit just past the curb
+        self.assertGreater(off, curb - 1.0, "beside the road")
+        self.assertLess(off, curb + 3.0)                   # (whole CHM pixels, ~2 m here)
+
+    def test_footway_keeps_its_tree(self):
+        md = FakeMapData()
+        md.cd.layers["roads"].attrs["class"][:] = "footway"   # a sidewalk mapped as a line: street trees stand on it
+        it = veg.Vegetation(md, None).cell(KEY)
+        trees = it.take(it.kind == veg.KIND_TREE)
+        rlon, rlat = md.lonlat(100, 400)
+        self.assertLess((np.hypot((trees.lon - rlon) * 85000, (trees.lat - rlat) * 111000)).min(), 4.0)
 
     def test_deterministic(self):
         a = veg.Vegetation(FakeMapData(), None).cell(KEY)
