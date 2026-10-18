@@ -555,6 +555,21 @@ class StoopStreetTest(unittest.TestCase):
         self.assertLessEqual(tops[0] - 10.0, bld.STOOP_RISE_MAX + 1e-6, "the bottom step one riser over the street")
 
 
+class MachineLearnedFootprintTest(unittest.TestCase):
+    """Microsoft's machine-learned footprints on a road bridge or on water are its deck or a boat (Tower Bridge's
+    river, 2026-10-18); on an island in the river, a building."""
+
+    def test_deck_boat_island(self):
+        sq = lambda cx, cy: np.array([[cx - 5, cy - 5], [cx + 5, cy - 5], [cx + 5, cy + 5], [cx - 5, cy + 5]], float)
+        bridge = [np.array([[0.0, 50.0], [100.0, 50.0]])]
+        river = [(np.array([[0, 0], [100, 0], [100, 100], [0, 100]], float),
+                  [np.array([[60, 60], [90, 60], [90, 90], [60, 90]], float)])]
+        self.assertTrue(bld._ml_false(sq(20, 50), bridge, None))
+        self.assertTrue(bld._ml_false(sq(20, 20), None, river))
+        self.assertFalse(bld._ml_false(sq(75, 75), bridge, river))
+        self.assertFalse(bld._ml_false(sq(150, 20), bridge, river))
+
+
 class BridgeStructureTest(unittest.TestCase):
     """A bridge's tower (Overture bridge_structure: the Queensboro Bridge's, 33 x 4.6 x 110 m) is an open steel frame
     the decks run through, not a glass tower (2026-10-17)."""

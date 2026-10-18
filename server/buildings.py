@@ -1793,6 +1793,71 @@ def road_lines(frame, road_layers, x0, y0, margin=50.0, size=256.0):
     return out
 
 
+ML_BRIDGE_M = 6.0          # m of a road bridge's line through a machine-learned footprint: the deck, not a building
+
+
+def _ml_false(ring, bridges_xy, water_xy):
+    """A machine-learned footprint (Microsoft's, Google's) that is a bridge deck or a boat: a road bridge runs
+    through it, or its centre lies on mapped water (Tower Bridge's river: barges as brick buildings, 2026-10-18)."""
+    if bridges_xy and road_through(ring, bridges_xy) >= ML_BRIDGE_M:
+        return True
+    if water_xy:
+        from polygon import Path
+        c = ring.mean(0)
+        for w, holes in water_xy:
+            if w[:, 0].min() <= c[0] <= w[:, 0].max() and w[:, 1].min() <= c[1] <= w[:, 1].max() \
+                    and Path(w).contains_points(c[None])[0] \
+                    and not any(Path(h).contains_points(c[None])[0] for h in holes):    # (an island: land)
+                return True
+    return False
+
+
+def bridge_lines(frame, road_layers, x0, y0, margin=50.0, size=256.0):
+    """Polylines (k, 2) relative to (x0, y0) of the road bridges near the tile (their bridge ranges)."""
+    import roads as roadsmod
+    out = []
+    for f in road_layers:
+        if f is None or len(f.kind) == 0:
+            continue
+        bs = roadsmod.bridge_specs(f)
+        for i in range(len(f.kind)):
+            if bs[i] is None:
+                continue
+            for ring in roadsmod.bridge_parts(f, i):
+                e, n = mapgeom.enu_xy(f, frame, ring)
+                xy = np.stack([e - x0, n - y0], 1)
+                if len(xy) < 2 or xy[:, 0].max() < -margin or xy[:, 0].min() > size + margin or \
+                        xy[:, 1].max() < -margin or xy[:, 1].min() > size + margin:
+                    continue
+                out.append(xy)
+    return out
+
+
+def water_rings(frame, water_layers, x0, y0, margin=50.0, size=256.0):
+    """[(outer ring (k, 2), [hole rings])] relative to (x0, y0) of the mapped water areas (sea, rivers, lakes, docks)
+    near the tile (their holes: islands)."""
+    out = []
+    for f in water_layers:
+        if f is None or len(f.kind) == 0:
+            continue
+        for i in np.flatnonzero(f.kind == 3):
+            for part in f.parts(i):
+                if not part or len(part[0]) < 4:
+                    continue
+                e, n = mapgeom.enu_xy(f, frame, part[0])
+                xy = np.stack([e - x0, n - y0], 1)
+                if xy[:, 0].max() < -margin or xy[:, 0].min() > size + margin or xy[:, 1].max() < -margin \
+                        or xy[:, 1].min() > size + margin:
+                    continue
+                holes = []
+                for h in part[1:]:
+                    if len(h) >= 4:
+                        he, hn = mapgeom.enu_xy(f, frame, h)
+                        holes.append(np.stack([he - x0, hn - y0], 1))
+                out.append((xy, holes))
+    return out
+
+
 def road_through(ring, lines, step=2.0):
     """Metres of the polylines lines (k, 2) inside ring (sampled every step m)."""
     lo, hi = ring.min(0), ring.max(0)
@@ -1813,14 +1878,15 @@ CENTRE_PREFILTER_M = 1.0       # m of slack for Features.outer_centres (cumulati
 
 
 def tile_buildings(frame, x0, y0, x1, y1, layers, elev, water=None, part_layers=(), west_town=False, roads_xy=None,
-                   tunnels_xy=None, garages_xy=None, supports=None):
+                   tunnels_xy=None, garages_xy=None, supports=None, bridges_xy=None, water_xy=None):
     """[(Spec, gmin, gmax)] of the buildings whose footprint centroid is in the tile [x0, x1) x [y0, y1)
     (anchor frame), rings relative to (x0, y0). layers: mapgeom.Features of buildings (one per map cell; a
     building in two cells is taken once, by id); elev(lat, lon) the physics ground. part_layers: the
     building parts of the same cells: a building whose parts all have heights is drawn as its parts
     (each from its bottom to its top, the building's look). garages_xy: garage_rings (a building one covers, or
     covering one's centre, is a parking structure). supports: support_rings (a building or part on one is the
-    bridge's painted steel)."""
+    bridge's painted steel). bridges_xy / water_xy (bridge_lines, water_rings): a machine-learned footprint (not
+    OSM) on a road bridge or over water is a deck or a boat, left out (_ml_false)."""
     parts_of = {}                       # building id -> [(ring in the anchor frame, own height, bottom)]
     pseen = set()
     for f in part_layers:
@@ -1903,6 +1969,9 @@ def tile_buildings(frame, x0, y0, x1, y1, layers, elev, water=None, part_layers=
                 continue
             ring = clean_ring(np.stack([e - x0, n - y0], 1))
             if ring is None or _area2(ring) / 2 < MIN_AREA_M2:
+                continue
+            if "src_dataset" in a and str(a["src_dataset"][i]) != "OpenStreetMap" and \
+                    _ml_false(ring, bridges_xy, water_xy):
                 continue
             if key is not None:
                 seen.add(key)
@@ -2231,7 +2300,7 @@ def road_tile_items(frame, tx, ty, md, ground):
     """tile_buildings of road tile (tx, ty), from the map cells under it."""
     import roads
     x0, y0, x1, y1 = roads.tile_bbox(tx, ty)
-    cds = [md.cell(k, layers=("buildings", "building_parts", "roads", "infrastructure"), kind="demand")
+    cds = [md.cell(k, layers=("buildings", "building_parts", "roads", "infrastructure", "water"), kind="demand")
            for k in roads.cells_of_tile(frame, tx, ty, margin=0.0)]
     return tile_buildings(frame, x0, y0, x1, y1, [c.layers.get("buildings") for c in cds], ground,
                           part_layers=[c.layers.get("building_parts") for c in cds],
@@ -2239,7 +2308,9 @@ def road_tile_items(frame, tx, ty, md, ground):
                           roads_xy=road_lines(frame, [c.layers.get("roads") for c in cds], x0, y0),
                           tunnels_xy=tunnel_lines(frame, [c.layers.get("roads") for c in cds], x0, y0),
                           garages_xy=garage_rings(frame, [c.layers.get("infrastructure") for c in cds], x0, y0),
-                          supports=support_rings(frame, [c.layers.get("infrastructure") for c in cds], x0, y0))
+                          supports=support_rings(frame, [c.layers.get("infrastructure") for c in cds], x0, y0),
+                          bridges_xy=bridge_lines(frame, [c.layers.get("roads") for c in cds], x0, y0),
+                          water_xy=water_rings(frame, [c.layers.get("water") for c in cds], x0, y0))
 
 
 TOWN_COVERAGE = 0.16        # a tile whose footprints cover less than this share is a town / suburb (heights)
@@ -2290,13 +2361,15 @@ def far_tile(frame, tx, ty, md, ground, out_dir, vfs_dir, aid):
     import os
     import roads
     x0, y0, x1, y1 = roads.tile_bbox(tx, ty)
-    cds = [md.cell(k, layers=("buildings", "building_parts", "infrastructure"), kind="demand")
+    cds = [md.cell(k, layers=("buildings", "building_parts", "infrastructure", "roads", "water"), kind="demand")
            for k in roads.cells_of_tile(frame, tx, ty, margin=0.0)]
     items = tile_buildings(frame, x0, y0, x1, y1, [c.layers.get("buildings") for c in cds], ground,
                            part_layers=[c.layers.get("building_parts") for c in cds],
                            west_town=district_town(frame, tx, ty, md),
                            garages_xy=garage_rings(frame, [c.layers.get("infrastructure") for c in cds], x0, y0),
-                           supports=support_rings(frame, [c.layers.get("infrastructure") for c in cds], x0, y0))
+                           supports=support_rings(frame, [c.layers.get("infrastructure") for c in cds], x0, y0),
+                           bridges_xy=bridge_lines(frame, [c.layers.get("roads") for c in cds], x0, y0),
+                           water_xy=water_rings(frame, [c.layers.get("water") for c in cds], x0, y0))
     mesh = build(items, lite=True)
     data = {"v": 1}
     if mesh is not None:
