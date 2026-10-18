@@ -62,10 +62,12 @@ CHURCH_CLASSES = ("church", "chapel", "cathedral")
 BARN_CLASSES = {"barn", "farm_auxiliary", "stable", "cowshed"}
 # The mesh's materials (vertColor: each building's colours are its vertices'); the names above are the
 # looks plan() picks, each one of these with a colour (LOOKS).
+MARBLE = "bne_bld_marble"   # cut white marble (the stock m_marble_cut): Baltimore's row house steps
 MATERIALS = (FACADE, SHOP, OFFICE, ROOF_FLAT, ROOF_SLATE, ROOF_SHINGLE, SIDING, STUCCO, ROOF_METAL, PANEL, METALWALL,
-             STONE)
+             STONE, MARBLE)
 LOOKS = {
     "bne_bridge_steel": (METALWALL, (0.50, 0.52, 0.54)),
+    "bne_marble": (MARBLE, (1.0, 1.0, 1.0)),
     "bne_bld_fac_white": (FACADE, (1.0, 1.0, 1.0)), "bne_bld_fac_cream": (FACADE, (1.0, 0.93, 0.80)),
     "bne_bld_fac_sand": (FACADE, (0.92, 0.82, 0.68)), "bne_bld_fac_grey": (FACADE, (0.80, 0.82, 0.84)),
     "bne_bld_fac_brickdark": (FACADE, (0.78, 0.72, 0.70)), "bne_bld_fac_brickwarm": (FACADE, (1.0, 0.88, 0.80)),
@@ -997,9 +999,8 @@ def _porch(m, spec, base, mat_idx):
 
 
 def _stoop(m, spec, ring, gmin, base, mat_idx):
-    """Two white steps out from the front door (spec.stoop: (edge, distance along it)), down to the footprint's
-    lowest ground: from the highest one only, they floated where the street falls away (Fells Point, the user's
-    report 2026-10-17)."""
+    """Marble steps up to the front door (spec.stoop: (edge, distance along it); base: the ground there, the door
+    STOOP_H over it): STOOP_STEPS treads to a landing, each block down under the footprint's lowest ground (they floated where the street falls away, Fells Point, 2026-10-17)."""
     edge, sd = spec.stoop
     a, b = ring[edge], ring[(edge + 1) % len(ring)]
     L = float(math.hypot(*(b - a)))
@@ -1008,10 +1009,30 @@ def _stoop(m, spec, ring, gmin, base, mat_idx):
     d = (b - a) / L
     out = np.array([d[1], -d[0]])
     c = a + d * sd
-    white = mat_idx["bne_bld_fac_white"]
-    for k, (depth, z1) in enumerate(((0.9, STOOP_H), (0.45, STOOP_H / 2))):
-        p = c + out * (0.9 + depth / 2) if k == 1 else c + out * depth / 2
-        _box(m, p, d, 0.8, depth / 2, min(gmin, base) - 0.3, base + z1, white)
+    mat = mat_idx[MARBLE_LOOK]
+    top = base + STOOP_H
+    z0 = min(gmin, base) - 0.3
+    rise = STOOP_H / STOOP_STEPS
+    for k in range(STOOP_STEPS):
+        depth = STOOP_LANDING + k * STOOP_TREAD
+        zt = top - k * rise
+        _box_tiled(m, c + out * depth / 2, d, STOOP_W / 2, depth / 2, z0, zt, mat)
+
+
+MARBLE_LOOK = "bne_marble"
+
+
+def _box_tiled(m, c, u, hx, hy, z0, z1, mat, tile=1.0):
+    """_box with the material tiled at `tile` m per repeat (a stone texture, not the facade sheets' colour patches)."""
+    v = np.array([-u[1], u[0]])
+    k = [c + u * sx * hx + v * sy * hy for sx, sy in ((-1, -1), (1, -1), (1, 1), (-1, 1))]
+    for i in range(4):
+        p, q = k[i], k[(i + 1) % 4]
+        w = float(math.hypot(*(q - p))) / tile
+        hz0, hz1 = z0 / tile, z1 / tile
+        m.quad((p[0], p[1], z0), (q[0], q[1], z0), (q[0], q[1], z1), (p[0], p[1], z1),
+               (0.0, hz0), (w, hz0), (w, hz1), (0.0, hz1), mat)
+    m.quad(*[(p[0], p[1], z1) for p in k], *[(p[0] / tile, p[1] / tile) for p in k], mat)
 
 
 def _steeple(m, spec, z_eave, mat_idx):
@@ -1754,7 +1775,14 @@ DOOR_OUT_M = 0.09            # m the door model's origin stands off the wall: it
                              # (both Building Architect doors), so at 3 cm it was inside the wall, only the frame
                              # showing (Fells Point, 2026-10-17)
 STOOP_SHARE = 0.8           # row houses with a front stoop (Baltimore's white marble steps)
-STOOP_H = 0.36              # m: two steps up to the door
+# A row house's marble stoop (the user's report #47, 2026-10-17: "the steps model isnt good. Try and find one from the
+# offical maps"): built as the official maps' stair blocks are (West Coast USA's stairblock1, Italy's old stairs:
+# treads and risers up to a landing between stepped side walls); their own models carry race-track paint and logos
+STOOP_H = 0.54              # m: three steps up to the door (Fells Point's on Mapillary, 2026-10-17: low white marble
+STOOP_STEPS = 3             # steps, no side walls; ours were four between walls, big white blocks)
+STOOP_TREAD = 0.3           # m deep each step
+STOOP_LANDING = 0.6         # m deep the landing at the door
+STOOP_W = 1.3               # m wide the steps
 DOOR_ROAD_M = 30.0          # a front door on the wall facing the nearest road within this
 DOOR_CLASSES_SKIP = SHED_CLASSES | INDUSTRIAL_CLASSES
 G_DOOR = "door"

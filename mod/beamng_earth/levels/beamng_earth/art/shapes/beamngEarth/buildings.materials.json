@@ -363,5 +363,32 @@
       {}
     ],
     "translucent": false
+  },
+  "bne_bld_marble": {
+    "name": "bne_bld_marble",
+    "mapTo": "bne_bld_marble",
+    "class": "Material",
+    "version": 1.5,
+    "persistentId": "94a751bd-8e62-5646-be56-5c31f71bb9bc",
+    "Stages": [
+      {
+        "baseColorMap": "/assets/materials/tileable/stone/m_marble_cut/t_marble_cut_b.color.png",
+        "normalMap": "/assets/materials/tileable/stone/m_marble_cut/t_marble_cut_nm.normal.png",
+        "roughnessMap": "/assets/materials/tileable/stone/m_marble_cut/t_marble_cut_r.data.png",
+        "ambientOcclusionMap": "/assets/materials/tileable/stone/m_marble_cut/t_marble_cut_ao.data.png",
+        "metallicFactor": 0,
+        "baseColorFactor": [
+          1,
+          1,
+          1,
+          1
+        ],
+        "vertColor": true
+      },
+      {},
+      {},
+      {}
+    ],
+    "translucent": false
   }
 }

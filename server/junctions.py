@@ -33,7 +33,12 @@ STOP_LINE = {"m": "line_white", "tl": 6.4, "p": 2, "w": 0.45}   # 1 m before the
 STOP_GAP = 1.0
 BULB_M = 6.0                    # m a curb extension runs along the street past the corner
 TAPER_M = 3.0                   # m over which it returns to the parking curb
-CORNER_ANGLES = (35.0, 150.0)   # degrees between two branches for a curb return
+CORNER_ANGLES = (15.0, 150.0)   # degrees between two branches for a curb return (an acute one under ACUTE_DEG:
+                                # its sidewalks met in a sharp wedge, the user's report #46, Fells Point 2026-10-17)
+RADIUS_TRIES = (1.0, 0.5, 0.25)  # a corner's radius tried at these shares of it until it fits
+ACUTE_DEG = 50.0                # under this the return's radius shrinks so it starts within ACUTE_T_M of the
+ACUTE_T_M = 9.0                 # carriageways' corner (radius / tan(theta / 2) from it), at least ACUTE_R_MIN,
+ACUTE_R_MIN = 0.8               # and the corner gets no curb extension
 BRANCH_M = 10.0                 # m of a branch used for its direction
 CROSSWALK = {"m": "crossing_white", "tl": 4.8, "p": 3, "w": 3.0}
 CW_GAP = 0.5                    # m between a corner's tangent point and its crosswalk
@@ -366,84 +371,96 @@ def find(roads, has_walk, walk_w, parking_m=0.0, has_parking=lambda spec: False,
             # curb extensions: on a two-way street with parking the corner's curb is the driving
             # lanes' edge, BULB_M along the street, then back to the parking curb over TAPER_M
             # (Fells Point aerials, 2026-10-11: bulb-outs at most corners)
-            pi_ = parking_m if has_parking(spi) else 0.0
-            pj_ = parking_m if has_parking(spj) else 0.0
+            acute = theta < ACUTE_DEG
+            pi_ = parking_m if has_parking(spi) and not acute else 0.0
+            pj_ = parking_m if has_parking(spj) and not acute else 0.0
             di, dj = wi - pi_, wj - pj_
             bi, bj = (BULB_M if pi_ else 0.0), (BULB_M if pj_ else 0.0)
-            radius = max(RADII.get(spi.cls, RADIUS), RADII.get(spj.cls, RADIUS))
-            Z = _line_x(Pi + ni * (di + radius), ui, Pj - nj * (dj + radius), uj)
-            if Z is None:
+            # a smaller radius where the corner does not fit (its street bending on past it put the curb on
+            # its own carriageway: no corner, bare ground in the angle, the user's report #46, 2026-10-17)
+            for rscale in RADIUS_TRIES:
+                radius = max(RADII.get(spi.cls, RADIUS), RADII.get(spj.cls, RADIUS)) * rscale
+                if acute:
+                    radius = min(radius, max(ACUTE_R_MIN, ACUTE_T_M * math.tan(math.radians(theta / 2))))
+                Z = _line_x(Pi + ni * (di + radius), ui, Pj - nj * (dj + radius), uj)
+                if Z is None:
+                    continue
+                Ti, Tj = Z - ni * radius, Z + nj * radius
+                ti, tj = float((Ti - Pi) @ ui), float((Tj - Pj) @ uj)
+                if ti <= 0 or tj <= 0 or ti > 40 or tj > 40:
+                    if debug is not None:
+                        debug.append(('t range', round(ti, 1), round(tj, 1), X.round(1).tolist()))
+                    continue
+                ci = ti + (bi + TAPER_M if pi_ else 0.0)            # where the sidewalk runs resume
+                cj = tj + (bj + TAPER_M if pj_ else 0.0)
+                # the branches must go on past the corner (a short connector between two close
+                # junctions cannot carry a curb return: 2026-10-11 survey, slabs on carriageways)
+                if _branch_len(roads[ri][2], vi, si) < ci + 1.0 or _branch_len(roads[rj][2], vj, sj) < cj + 1.0:
+                    if debug is not None:
+                        debug.append(('short branch', round(_branch_len(roads[ri][2], vi, si), 1), round(ci, 1), round(_branch_len(roads[rj][2], vj, sj), 1), round(cj, 1), X.round(1).tolist()))
+                    continue
+                wki = spi.walk if walk_w is None else walk_w
+                wkj = spj.walk if walk_w is None else walk_w
+                O = _line_x(Pi + ni * (wi + wki), ui, Pj - nj * (wj + wkj), uj)
+                if O is None:
+                    continue
+                a0 = math.atan2(*(Ti - Z)[::-1])
+                a1 = math.atan2(*(Tj - Z)[::-1])
+                da = (a1 - a0 + math.pi) % (2 * math.pi) - math.pi      # the short way round
+                k = max(3, int(abs(da) * radius / 0.75) + 1)
+                ang = a0 + da * np.linspace(0.0, 1.0, k)
+                arc2 = np.c_[Z[0] + radius * np.cos(ang), Z[1] + radius * np.sin(ang)]
+                pre = ([Pi + ui * ci + ni * wi, Pi + ui * (ti + bi) + ni * di] if pi_ else [])
+                post = ([Pj + uj * (tj + bj) - nj * dj, Pj + uj * cj - nj * wj] if pj_ else [])
+                curb2 = np.vstack(pre + [arc2] + post)
+                # heights: the branch's road height at each point's distance along it
+                tpar = np.r_[[ci, ti + bi][:len(pre)], np.full(k, np.nan), [tj + bj, cj][:len(post)]]
+                zi0 = _z_along(roads[ri][2], vi, si, ti)
+                zj0 = _z_along(roads[rj][2], vj, sj, tj)
+                z = np.r_[[_z_along(roads[ri][2], vi, si, t) for t in tpar[:len(pre)]], np.linspace(zi0, zj0, k),
+                          [_z_along(roads[rj][2], vj, sj, t) for t in tpar[len(pre) + k:]]]
+                curb = np.c_[curb2, z]
+                # inward (toward the sidewalk): the polyline's normals, oriented by the arc's centre
+                d = np.gradient(curb2, axis=0)
+                nrm = np.stack([-d[:, 1], d[:, 0]], axis=1)
+                nrm /= np.maximum(np.hypot(*nrm.T), 1e-9)[:, None]
+                mid = len(pre) + k // 2
+                if (nrm[mid] @ (Z - curb2[mid])) < 0:
+                    nrm = -nrm
+                zo = 0.5 * (zi0 + zj0)
+                zci = _z_along(roads[ri][2], vi, si, ci)
+                zcj = _z_along(roads[rj][2], vj, sj, cj)
+                outer = [(*(Pj + uj * cj - nj * (wj + wkj)), zcj), (*O, zo), (*(Pi + ui * ci + ni * (wi + wki)), zci)]
+                Cc = _line_x(Pi + ni * di, ui, Pj - nj * dj, uj)
+                fill = np.vstack([[*Cc, zo]] + [np.r_[arc2[m], z[len(pre) + m]] for m in range(k)]) if Cc is not None else None
+                if fill is not None and math.hypot(*(Cc - X)) > 20.0 + MERGE_M:
+                    if debug is not None:
+                        debug.append(('needle', X.round(1).tolist()))
+                    continue                        # a needle of asphalt at a very sharp corner
+                # nothing of the corner on any road: other roads at their width, its own two at their
+                # driving width (a bulb-out covers the parking lane)
+                probe = np.vstack([curb2 + nrm * 0.8, curb2 + nrm * 2.0])
+                own = {ri: di, rj: dj}
+                hit = _on_carriageway(probe, roads, (X, 60.0), half={roads[r][0]: h for r, h in own.items()})
+                if hit is None:     # the slab's outer corner: on other roads only (its own street bending on past the
+                    # corner took it for its carriageway, the whole corner went and left bare ground, report #46)
+                    outer_p = np.vstack([[(np.array(o[:2]) + O) / 2 for o in (outer[0], outer[2])], [O]])
+                    hit = _on_carriageway(outer_p, roads, (X, 60.0), skip={roads[ri][0], roads[rj][0]})
+                if hit is not None:
+                    if debug is not None:
+                        debug.append(('on carriageway', hit[:8], hit in internal, roads[ri][0][:8], roads[rj][0][:8], round(theta), X.round(1).tolist()))
+                    continue
+                corner = {"arc": curb, "inward": nrm, "outer": outer, "fill": fill, "ramps": []}
+                corners.append(corner)
+                cuts.setdefault((roads[ri][0], li), []).append((Pi.copy(), ui, ci))
+                cuts.setdefault((roads[rj][0], -lj), []).append((Pj.copy(), uj, cj))
+                seg = np.r_[0.0, np.cumsum(np.hypot(*np.diff(curb2, axis=0).T))]
+                # arc length along the curb of a point t m along each branch (for the crosswalk's ramp)
+                side_t[(i, "L")] = (ti, corner, ("dec", seg[len(pre) - 1] if pi_ else None, ti + bi), bi)
+                side_t[(j, "R")] = (tj, corner, ("inc", seg[len(pre) + k - 1] if pj_ else None, tj), bj)
+                break
+            else:
                 continue
-            Ti, Tj = Z - ni * radius, Z + nj * radius
-            ti, tj = float((Ti - Pi) @ ui), float((Tj - Pj) @ uj)
-            if ti <= 0 or tj <= 0 or ti > 40 or tj > 40:
-                if debug is not None:
-                    debug.append(('t range', round(ti, 1), round(tj, 1), X.round(1).tolist()))
-                continue
-            ci = ti + (bi + TAPER_M if pi_ else 0.0)            # where the sidewalk runs resume
-            cj = tj + (bj + TAPER_M if pj_ else 0.0)
-            # the branches must go on past the corner (a short connector between two close
-            # junctions cannot carry a curb return: 2026-10-11 survey, slabs on carriageways)
-            if _branch_len(roads[ri][2], vi, si) < ci + 1.0 or _branch_len(roads[rj][2], vj, sj) < cj + 1.0:
-                if debug is not None:
-                    debug.append(('short branch', round(_branch_len(roads[ri][2], vi, si), 1), round(ci, 1), round(_branch_len(roads[rj][2], vj, sj), 1), round(cj, 1), X.round(1).tolist()))
-                continue
-            wki = spi.walk if walk_w is None else walk_w
-            wkj = spj.walk if walk_w is None else walk_w
-            O = _line_x(Pi + ni * (wi + wki), ui, Pj - nj * (wj + wkj), uj)
-            if O is None:
-                continue
-            a0 = math.atan2(*(Ti - Z)[::-1])
-            a1 = math.atan2(*(Tj - Z)[::-1])
-            da = (a1 - a0 + math.pi) % (2 * math.pi) - math.pi      # the short way round
-            k = max(3, int(abs(da) * radius / 0.75) + 1)
-            ang = a0 + da * np.linspace(0.0, 1.0, k)
-            arc2 = np.c_[Z[0] + radius * np.cos(ang), Z[1] + radius * np.sin(ang)]
-            pre = ([Pi + ui * ci + ni * wi, Pi + ui * (ti + bi) + ni * di] if pi_ else [])
-            post = ([Pj + uj * (tj + bj) - nj * dj, Pj + uj * cj - nj * wj] if pj_ else [])
-            curb2 = np.vstack(pre + [arc2] + post)
-            # heights: the branch's road height at each point's distance along it
-            tpar = np.r_[[ci, ti + bi][:len(pre)], np.full(k, np.nan), [tj + bj, cj][:len(post)]]
-            zi0 = _z_along(roads[ri][2], vi, si, ti)
-            zj0 = _z_along(roads[rj][2], vj, sj, tj)
-            z = np.r_[[_z_along(roads[ri][2], vi, si, t) for t in tpar[:len(pre)]], np.linspace(zi0, zj0, k),
-                      [_z_along(roads[rj][2], vj, sj, t) for t in tpar[len(pre) + k:]]]
-            curb = np.c_[curb2, z]
-            # inward (toward the sidewalk): the polyline's normals, oriented by the arc's centre
-            d = np.gradient(curb2, axis=0)
-            nrm = np.stack([-d[:, 1], d[:, 0]], axis=1)
-            nrm /= np.maximum(np.hypot(*nrm.T), 1e-9)[:, None]
-            mid = len(pre) + k // 2
-            if (nrm[mid] @ (Z - curb2[mid])) < 0:
-                nrm = -nrm
-            zo = 0.5 * (zi0 + zj0)
-            zci = _z_along(roads[ri][2], vi, si, ci)
-            zcj = _z_along(roads[rj][2], vj, sj, cj)
-            outer = [(*(Pj + uj * cj - nj * (wj + wkj)), zcj), (*O, zo), (*(Pi + ui * ci + ni * (wi + wki)), zci)]
-            Cc = _line_x(Pi + ni * di, ui, Pj - nj * dj, uj)
-            fill = np.vstack([[*Cc, zo]] + [np.r_[arc2[m], z[len(pre) + m]] for m in range(k)]) if Cc is not None else None
-            if fill is not None and math.hypot(*(Cc - X)) > 20.0 + MERGE_M:
-                if debug is not None:
-                    debug.append(('needle', X.round(1).tolist()))
-                continue                        # a needle of asphalt at a very sharp corner
-            # nothing of the corner on any road: other roads at their width, its own two at their
-            # driving width (a bulb-out covers the parking lane)
-            probe = np.vstack([curb2 + nrm * 0.8, curb2 + nrm * 2.0,
-                               [(np.array(o[:2]) + O) / 2 for o in (outer[0], outer[2])], [O]])
-            own = {ri: di, rj: dj}
-            hit = _on_carriageway(probe, roads, (X, 60.0), half={roads[r][0]: h for r, h in own.items()})
-            if hit is not None:
-                if debug is not None:
-                    debug.append(('on carriageway', hit[:8], hit in internal, roads[ri][0][:8], roads[rj][0][:8], round(theta), X.round(1).tolist()))
-                continue
-            corner = {"arc": curb, "inward": nrm, "outer": outer, "fill": fill, "ramps": []}
-            corners.append(corner)
-            cuts.setdefault((roads[ri][0], li), []).append((Pi.copy(), ui, ci))
-            cuts.setdefault((roads[rj][0], -lj), []).append((Pj.copy(), uj, cj))
-            seg = np.r_[0.0, np.cumsum(np.hypot(*np.diff(curb2, axis=0).T))]
-            # arc length along the curb of a point t m along each branch (for the crosswalk's ramp)
-            side_t[(i, "L")] = (ti, corner, ("dec", seg[len(pre) - 1] if pi_ else None, ti + bi), bi)
-            side_t[(j, "R")] = (tj, corner, ("inc", seg[len(pre) + k - 1] if pj_ else None, tj), bj)
         for i in range(n):                      # crosswalk + ramps on a branch with both corners
             if (i, "L") in side_t and (i, "R") in side_t:
                 ai, ri, vi, si, ui, li, Pi = branches[i]

@@ -427,6 +427,8 @@ def place(roads, walks, box, curb_h=0.15, wires=None, town=False, left_hand=Fals
         fid = wk.get("fid")
         if fid is None or "pts" not in wk or fid not in by_fid:
             continue
+        if wk.get("median"):        # a divided road's median: no lamps, poles, benches or bins on it (Boston
+            continue                # Street's is a bare curb, Mapillary 2026-10-17)
         spec, line = by_fid[fid]
         run = np.asarray(wk["pts"], np.float64)
         if len(run) < 2:

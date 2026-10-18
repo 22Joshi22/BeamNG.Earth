@@ -67,7 +67,8 @@ LOOK = {
     "gravel": {"m": "m_dirt_road", "tl": 88.0, "p": 21},
     "dirt": {"m": "m_dirt_road", "tl": 88.0, "p": 21},
 }
-Spec = namedtuple("Spec", "width kind urban cls oneway walk dir kmh gap", defaults=(False, 2.5, 0, None, None))
+Spec = namedtuple("Spec", "width kind urban cls oneway walk dir kmh gap median",
+                  defaults=(False, 2.5, 0, None, None, None))   # median: m to the other carriageway's centre line
 # road_specs' result per feature (walk: the sidewalk width, measured from the buildings where known: roadwidth.py;
 # dir: a one-way road's direction along its geometry, +1 / -1, 0 two-way; kmh: its speed limit, None unknown;
 # gap: m of road per junction along it (its connectors), None unknown)
@@ -404,7 +405,7 @@ def dual_carriageways(feats, specs, left_hand=False):
     if names is None:
         return specs
     for i, sp in enumerate(specs):
-        if sp is None or sp.oneway or sp.cls not in DUAL_CLASSES:
+        if sp is None or sp.cls not in DUAL_CLASSES:     # (one-way already: paired for its median only)
             continue
         nm = str(names[i] or "").strip()
         if nm and nm != "None":
@@ -429,17 +430,53 @@ def dual_carriageways(feats, specs, left_hand=False):
                 if i == j:
                     continue
                 share, side = _dual_side(xy[i], xy[j])
-                if share >= DUAL_SHARE and abs(side) > 0.5 and (best is None or share > best[0]):
-                    best = (share, side)
+                if share >= DUAL_SHARE and abs(side) > 0.5:
+                    # the nearest of the carriageways beside it (by share, cells holding different neighbours
+                    # paired one piece of Boston Street 20 m and 38 m away: a sidewalk on its median in one tile)
+                    gap = _centre_gap(xy[i], xy[j])
+                    if best is None or gap < best[3]:
+                        best = (share, side, j, gap)
             if best is None:
                 continue
             sp = out[i]
             # driving on the right the other carriageway is on the left
+            gap = best[3]
+            if sp.oneway:               # the map's own one-way carriageway: its direction stands
+                out[i] = sp._replace(median=gap, width=_dual_width(sp, sp.width, gap, feats, i))
+                continue
             d = (1 if best[1] > 0 else -1) * (-1 if left_hand else 1)
             w = sp.width if _rule_value(feats.rules.get("width"), i) is not None else \
                 carriageway(sp.cls, sp.kind, sp.urban, None, True)
-            out[i] = sp._replace(oneway=True, dir=d, width=w)
+            out[i] = sp._replace(oneway=True, dir=d, width=_dual_width(sp, w, gap, feats, i), median=gap)
     return out
+
+
+URBAN_MEDIAN_M = 1.5    # m: a city's divided road (centre lines within URBAN_MEDIAN_GAP_M): a narrow concrete median,
+URBAN_MEDIAN_GAP_M = 24.0   # its carriageways out to it (Boston Street, Mapillary 2026-10-17: two lanes and parking
+URBAN_DUAL_MAX_W = 12.0     # each way either side of a ~1.5 m curb; we drew 6.5 m carriageways and a 4.5 m strip)
+
+
+def _dual_width(sp, w, gap, feats, i):
+    """A divided road carriageway's width: a mapped width stands; in a city with its centre lines within
+    URBAN_MEDIAN_GAP_M, out to an URBAN_MEDIAN_M median (at most URBAN_DUAL_MAX_W); else w."""
+    if _rule_value(feats.rules.get("width"), i) is not None or not sp.urban or gap > URBAN_MEDIAN_GAP_M:
+        return w
+    return float(np.clip(gap - URBAN_MEDIAN_M, w, URBAN_DUAL_MAX_W))
+
+
+def _centre_gap(a, b):
+    """The median distance (m) from polyline a's points to polyline b (both (k, 2) in metres) where b is beside it
+    (within DUAL_GAP_M): a divided road's centre lines apart."""
+    import fast
+    if fast.AVAILABLE and hasattr(fast._ef, "polyline_dist"):
+        d = np.asarray(fast._ef.polyline_dist(np.ascontiguousarray(b, np.float64), np.ascontiguousarray(a, np.float64)))
+    else:
+        bs, b0 = np.diff(b, axis=0), b[:-1]
+        L2 = np.maximum((bs * bs).sum(1), 1e-12)
+        t = np.clip(((a[:, None, :] - b0[None]) * bs[None]).sum(2) / L2[None], 0, 1)
+        d = np.hypot(*(a[:, None, :] - (b0[None] + t[..., None] * bs[None])).transpose(2, 0, 1)).min(1)
+    beside = d[d <= DUAL_GAP_M[1]]       # where it runs beside the other (a longer piece's far end inflated it 2x)
+    return float(np.median(beside)) if len(beside) else float(np.median(d))
 
 
 def road_specs(feats, urban_fn=None, widths=None, left_hand=False):
@@ -501,6 +538,8 @@ def _road_specs(feats, urban_fn, widths, left_hand):
                 continue
             if _rule_value(rules.get("width"), j) is not None:
                 continue
+            if sp.median:       # one carriageway of a divided road: the width between the buildings is both of them
+                continue        # and the median (each took all of it, one wide road over Boston Street's median)
             a = feats.coord_off[feats.ring_off[feats.part_off[j]]]
             b = feats.coord_off[feats.ring_off[feats.part_off[j + 1]]]
             m = widths(str(feats.ids[j]), feats.lonlat[a:b]) if b > a else None
@@ -1100,10 +1139,36 @@ def walk_sides(spec, left_hand=False):
     """The sides (+1 left of the geometry, -1 right) of a road with sidewalks that get one: both, or a
     divided trunk carriageway's outer side only (the curb on the driver's right, left where they drive on
     the left; the other side is the median)."""
-    if spec.cls == "trunk" and spec.oneway:
+    if (spec.cls == "trunk" or has_median(spec)) and spec.oneway:     # (a divided road's median: its curbed band)
         right = -1 if spec.dir >= 0 else 1
         return (-right,) if left_hand else (right,)
     return (1, -1)
+
+
+MEDIAN_SLAB_M = 6.0     # m: a divided road's median up to this wide is one raised island, curb to curb (each
+                        # carriageway's half of it); wider, ...
+MEDIAN_CURB_W = 0.6     # ... a curbed band this wide along each carriageway, ...
+MEDIAN_MIN_M = 0.8      # ... where its ground between them is this wide or more (Boston Street's is ~1.5 m of concrete
+                        # curb, Mapillary 2026-10-17), lawn on one wider than MEDIAN_SLAB_M (surface.paint_roads), ...
+MEDIAN_MAX_M = 16.0     # ... and no wider (two one-way streets a block apart are not one road with a median)
+
+
+def has_median(spec):
+    """A divided road's carriageway with a median of MEDIAN_MIN_M..MEDIAN_MAX_M of ground beside it."""
+    return bool(spec.median) and spec.oneway and MEDIAN_MIN_M <= median_width(spec) <= MEDIAN_MAX_M
+
+
+def median_side(spec, left_hand=False):
+    """The side (+1 left / -1 right of the geometry) of a divided road's carriageway that faces its median, or None."""
+    if not has_median(spec):
+        return None
+    return -walk_sides(spec, left_hand)[0]
+
+
+def median_width(spec):
+    """m of ground between a divided road's two carriageways (its centre lines' distance less both halves; the
+    other's width taken as this one's), or 0."""
+    return max(0.0, float(spec.median or 0.0) - spec.width) if spec.median else 0.0
 
 
 def sidewalk_stop(spec, fid, other, ofid):
@@ -1128,6 +1193,21 @@ def extras(spec, pts, lon, left_hand=False):
             out.append(({**SIDEWALK, "side": side}, spec.walk,
                         offset_polyline(pts, side * (w / 2 + spec.walk / 2))))
             out.append(({**GUTTER, "side": side}, GUTTER["w"], offset_polyline(pts, side * (w / 2 - GUTTER["w"] / 2))))
+        ms = median_side(spec, left_hand)
+        if ms is not None:
+            # the median: a curbed band, lawn beyond it (two sidewalks back to back made a concrete strip, the user's
+            # report #48 on Boston Street, 2026-10-17: "Improve how medians are made")
+            mw = median_width(spec)
+            # (each carriageway's half, a hair short of the middle: touching the other's carriageway where the gap
+            # narrows, the band was cut away)
+            band = max(0.3, mw / 2 - 0.15) if mw <= MEDIAN_SLAB_M else MEDIAN_CURB_W
+            out.append(({**SIDEWALK, "side": ms, "median": True}, band, offset_polyline(pts, ms * (w / 2 + band / 2))))
+            if kind == "paved":     # a double yellow line along it (Boston Street, Mapillary 2026-10-17)
+                look = {"m": centre_colour(lon), "tl": CENTRE["tl"], "p": CENTRE["p"]}
+                for k in (0, 1):
+                    out.append((look, CENTRE["w"], offset_polyline(
+                        pts, ms * (w / 2 - EDGE_LINE["inset"] - 2 * k * CENTRE["gap"]))))
+            out.append(({**GUTTER, "side": ms}, GUTTER["w"], offset_polyline(pts, ms * (w / 2 - GUTTER["w"] / 2))))
     if kind == "paved" and cls in CENTRE_CLASSES and w >= 6.0 and not spec.oneway:   # no paint on cobbles
         look = {"m": centre_colour(lon), "tl": CENTRE["tl"], "p": CENTRE["p"]}
         for side in (1, -1):
@@ -2512,22 +2592,27 @@ def build_tile(frame, tx, ty, cells, elev, urban_fn=None, walks=None, bridges=No
         blockers = [(p2[:, :2], s2.width / 2 + CUT_MARGIN) for f2, s2, p2, _ in roads if f2 != fid]
         walk_blockers = [(p2[:, :2], s2.width / 2 if (fid, f2) in cornered else sidewalk_stop(spec, fid, s2, f2))
                          for f2, s2, p2, _ in roads if f2 != fid]
+        # a median's band stops at the other carriageways' curbs only (their sidewalk is on their far side: it cut
+        # one carriageway's half of Boston Street's median away)
+        curb_blockers = [(p2[:, :2], s2.width / 2) for f2, s2, p2, _ in roads if f2 != fid]
         for look, w, line in ex:
             walk = look["m"] == SIDEWALK["m"]
             side = look.get("side")
+            wb = curb_blockers if look.get("median") else walk_blockers
             if (walk or look["m"] == GUTTER["m"]) and (fid, side) in inner:
                 continue                        # facing a traffic island: no sidewalk there
             if walk and walks is not None:
                 # whole runs near the tile first (joined across tile borders below), clipped to the tile after
                 for piece in clip_polyline(line, *near):
                     for cpiece, (j0, j1) in junctions.apply_cuts(piece, jcuts.get((fid, side), [])):
-                        for run in cut_outside(cpiece, walk_blockers, 0.5):
+                        for run in cut_outside(cpiece, wb, 0.5):
                             run = densify(simplify(run))
                             if len(run) < 2:
                                 continue
                             at_j0 = j0 and np.hypot(*(run[0, :2] - cpiece[0, :2])) < 0.6
                             at_j1 = j1 and np.hypot(*(run[-1, :2] - cpiece[-1, :2])) < 0.6
                             runs_near.append({"pts": run, "side": side, "w": w, "fid": fid, "j": (at_j0, at_j1),
+                                              "median": bool(look.get("median")),
                                               "open": (not _on_box(run[0], near), not _on_box(run[-1], near))})
                 continue
             if walks is not None and look["m"] == GUTTER["m"]:     # gutters end where their curb turns
@@ -2538,7 +2623,7 @@ def build_tile(frame, tx, ty, cells, elev, urban_fn=None, walks=None, bridges=No
             else:
                 pieces = clip_polyline(line, *box)
             for piece in pieces:
-                for run in cut_outside(piece, walk_blockers if walk else blockers, 0.5 if walk else 2.0):
+                for run in cut_outside(piece, wb if walk else blockers, 0.5 if walk else 2.0):
                     for c in split(densify(simplify(run))):
                         if len(c) >= 2:
                             chunks.append(_chunk(look, w, c))
@@ -2557,8 +2642,10 @@ def build_tile(frame, tx, ty, cells, elev, urban_fn=None, walks=None, bridges=No
                         last and not at_j1 and not _on_box(run[-1], exact))
                 rl = [r for key in rn.get("ramp_keys", [(fid, side)]) for r in jramps.get(key, [])]
                 ramps = junctions.ramp_ranges(run, rl)
-                walks.append({"pts": run, "side": side, "caps": caps, "ramps": ramps, "w": w, "fid": fid})
-                chunks.extend(drains(run, side, (caps[0] or at_j0, caps[1] or at_j1), w))
+                walks.append({"pts": run, "side": side, "caps": caps, "ramps": ramps, "w": w, "fid": fid,
+                              "median": rn.get("median", False)})
+                if not rn.get("median"):                # (a median: a bare curb, no storm drains)
+                    chunks.extend(drains(run, side, (caps[0] or at_j0, caps[1] or at_j1), w))
     if lines is not None:                           # the centrelines near the tile (buildings' front doors)
         lines.extend((pts[:, :2], spec.width / 2, spec.cls, spec.urban) for _, spec, pts, _ in roads)
     if props is not None and walks is not None:     # street lights and utility poles (furniture.py)

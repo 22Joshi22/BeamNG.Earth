@@ -197,6 +197,8 @@ def paint_roads(idx, lat, lon, feats_list, square, urban_fn=None, widths=None, e
     to_px = grid_affine(lat, lon)
     layers = {k: Image.new("L", (w, h), 0) for k in ROAD_ORDER}
     draws = {k: ImageDraw.Draw(im) for k, im in layers.items()}
+    lawn = Image.new("L", (w, h), 0)            # divided roads' medians (under the roads: they paint over it)
+    lawn_draw = ImageDraw.Draw(lawn)
     seen = set()
 
     def line(x, y, spec, aisle):
@@ -224,11 +226,23 @@ def paint_roads(idx, lat, lon, feats_list, square, urban_fn=None, widths=None, e
             seen.add(fid)
             aisle = specs[i].kind == "paved" and \
                 roadsmod._rule_value(feats.rules.get("subclass"), i) == "parking_aisle"
+            mw = roadsmod.median_width(specs[i])
+            ms = roadsmod.median_side(specs[i])
             for ring in roadsmod.ground_parts(feats, i):      # not bridges / tunnels
                 line(ring[:, 0], ring[:, 1], specs[i], aisle)
+                if ms is not None and mw > roadsmod.MEDIAN_SLAB_M and len(ring) >= 2:
+                    # the median's ground: lawn (report #48, Boston Street, 2026-10-17)
+                    sc = np.array([111320.0 * math.cos(math.radians(float(ring[0, 1]))), 110540.0])
+                    xy = (ring[:, :2] - ring[0, :2]) * sc
+                    off = roadsmod.offset_polyline(np.c_[xy, np.zeros(len(xy))],
+                                                   ms * (specs[i].width / 2 + mw / 2))[:, :2] / sc + ring[0, :2]
+                    c, r = to_px(off[:, 0], off[:, 1])
+                    lawn_draw.line(list(zip(c.tolist(), r.tolist())), fill=255,
+                                   width=max(1, int(round(mw / square))), joint="curve")
     for la, lo, spec in extra:
         line(np.asarray(lo), np.asarray(la), spec, False)
     out = idx.copy()
+    out[np.asarray(lawn) > 0] = LAWN
     for k in ROAD_ORDER:
         m = np.asarray(layers[k]) > 0
         out[m] = ROAD_MATERIAL[k]

@@ -6,6 +6,7 @@ import json
 import os
 import sys
 import tempfile
+import math
 import unittest
 
 import numpy as np
@@ -341,6 +342,24 @@ class BuildTileTest(unittest.TestCase):
             shape = cdae.read(os.path.join(d, "walks_1_0_0.cdae"))
             self.assertEqual([m["name"] for m in shape["materials"]], list(sidewalks.MATERIALS))
 
+    def test_acute_corner_is_rounded(self):
+        # two streets leaving a junction 30 degrees apart (a triangular block's tip, Fells Point, report #46): a curb
+        # return round the tip, not the sidewalks meeting in a wedge
+        import junctions
+        X = (120.0, 120.0)
+        c30 = (120 + 180 * math.cos(math.radians(30)), 120 + 180 * math.sin(math.radians(30)))
+        arms = [[X, (300, 120)], [X, c30], [X, (-60, 120)]]
+        f = features(arms, ["residential"] * 3)
+        walks = []
+        roads.build_tile(FRAME, 0, 0, [f], flat, lambda la, lo: np.ones(np.shape(la), bool), walks=walks)
+        corners = [w["corner"] for w in walks if "corner" in w]
+        tips = [c for c in corners if np.mean(c["arc"][:, 1]) > 120 and np.mean(c["arc"][:, 0]) > 125
+                and np.mean(c["arc"][:, 1]) < 120 + (np.mean(c["arc"][:, 0]) - 120) * 0.6]
+        self.assertEqual(len(tips), 1, "the tip has its curb return")
+        arc = tips[0]["arc"][:, :2]
+        self.assertLess(float(np.hypot(*(arc - np.array(X)).T).min()), 40.0)
+        self.assertLessEqual(junctions.ACUTE_R_MIN, junctions.RADII["residential"])
+
     def test_junction_short_connector_no_corner_on_roads(self):
         import junctions
         # two parallel streets joined by an 8 m connector (two junctions 8 m apart): no curb return
@@ -568,6 +587,38 @@ class PaintRoadsTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class MedianTest(unittest.TestCase):
+    def test_divided_road_has_a_median(self):
+        # report #48 (Boston Street): the carriageways' inner sides a curbed band and lawn, not two sidewalks
+        sp = roads.Spec(7.0, "paved", True, "secondary", True, 2.5, 1, None, None, 19.0)
+        self.assertTrue(roads.has_median(sp))
+        self.assertEqual(roads.walk_sides(sp), (-1,), "the sidewalk on the outer (right) side only")
+        self.assertEqual(roads.median_side(sp), 1)
+        pts = np.c_[np.arange(0.0, 50.1, 5.0), np.zeros(11), np.zeros(11)]
+        walks = [(lk, w) for lk, w, _ in roads.extras(sp, pts, -76.6) if lk["m"] == roads.SIDEWALK["m"]]
+        self.assertEqual(sorted(w for _, w in walks), [roads.MEDIAN_CURB_W, sp.walk], "a wide median: curb bands")
+        narrow = sp._replace(median=11.0)           # Boston Street: 4.5 m of median, one island curb to curb
+        walks = [w for lk, w, _ in roads.extras(narrow, pts, -76.6) if lk["m"] == roads.SIDEWALK["m"]]
+        self.assertIn(1.85, walks)
+        # two one-way streets a block apart: not a median
+        far = sp._replace(median=60.0)
+        self.assertFalse(roads.has_median(far))
+        self.assertEqual(roads.walk_sides(far), (1, -1))
+
+    def test_median_painted_lawn(self):
+        import surface as sf
+        n = 128
+        rows = np.arange(n)[:, None]
+        cols = np.arange(n)[None, :]
+        lat = LAT + (n / 2 - rows) * 2 / M_LAT + np.zeros((1, n))
+        lon = LON + (cols - n / 2) * 2 / M_LON + np.zeros((n, 1))
+        f = features([[(-200, 0), (200, 0)], [(200, 22), (-200, 22)]], ["secondary", "secondary"])
+        f.attrs["name"] = np.array(["Boston Street", "Boston Street"], object)
+        out = sf.paint_roads(np.full(lat.shape, sf.GRASS, np.uint8), lat, lon, [f], 2.0)
+        self.assertEqual(int(out[64 - 5, 64]), sf.LAWN, "between the carriageways (a wide median): lawn")
+        self.assertEqual(int(out[64, 64]), sf.ASPHALT)
 
 
 class WallRunsTest(unittest.TestCase):
