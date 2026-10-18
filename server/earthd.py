@@ -462,6 +462,7 @@ class Server:
         size cap, the page's 'cache' messages; None = no bookkeeping and no 'cache' message, Server()'s
         default); retex_rate: --retex-rate (live retextures per second, 0 = none)."""
         self.sid = time.strftime("%Y%m%d-%H%M%S-") + secrets.token_hex(2)
+        self.user_dir = user_dir           # the game's user folder (detail mode fills its terrain texture cache)
         root = self.root = os.path.join(user_dir, "temp", "beamngEarth")
         self.cdae_root = os.path.join(user_dir, *CDAE_ROOT)
         # earlier runs' session folders a game may still show: sid -> monotonic time found / released
@@ -471,7 +472,6 @@ class Server:
         self.heartbeat_at = time.monotonic()
         self._scan_sessions()
         self.out_dir = os.path.join(root, self.sid)
-        self.user_dir = user_dir           # the game's user folder (detail mode fills its terrain texture cache)
         self.cdae_dir = os.path.join(user_dir, *CDAE_ROOT, self.sid.lower())
         self.vfs_dir = f"/temp/beamngEarth/{self.sid}"
         self.matslots = matslotsmod.MatSlots(self.sid[-4:], held=self.slot_held)    # pooled names and shape files
@@ -659,6 +659,15 @@ class Server:
                          "shows its tiles", sid, age / 60)
 
     def _rmtree_session(self, sid):
+        # detail mode's packed copies of its base photos in the game's terrain texture cache (terraincache.py) go
+        # with it: blocks evicted during a run took theirs (prune), but whatever a run left behind stayed for good,
+        # ~1.4 MB a block, 3.9 GB of them by 2026-10-18
+        for path in glob.glob(os.path.join(self.root, sid, "*_base*.png")):
+            key = terraincache.base_key(f"/temp/beamngEarth/{sid}/{os.path.basename(path)}", BASE_AO_VFS)
+            try:
+                os.remove(os.path.join(terraincache.cache_dir(self.user_dir), key + ".dds"))
+            except OSError:
+                pass
         shutil.rmtree(os.path.join(self.root, sid), ignore_errors=True)
         shutil.rmtree(os.path.join(self.cdae_root, sid.lower()), ignore_errors=True)
 
