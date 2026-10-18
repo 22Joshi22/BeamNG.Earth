@@ -454,6 +454,14 @@ class BuildTileTest(unittest.TestCase):
         self.assertTrue(np.allclose(o[1], [9, 1, 5]), "mitred corner")
         self.assertEqual(roads.centre_colour(-76.6), "line_yellow")
         self.assertEqual(roads.centre_colour(12.5), "line_white")
+        # the Americas' double yellow line; elsewhere one broken white line (the Gotthard road, 2026-10-18)
+        sp = roads.Spec(7.0, "paved", False, "primary", False)
+        line = np.array([[0.0, 0, 5], [100, 0, 5]])
+        us = [lk for lk, w, ln in roads.extras(sp, line, -76.6) if lk["m"] == "line_yellow"]
+        eu = [lk for lk, w, ln in roads.extras(sp, line, 8.6) if lk["m"] in ("line_white", roads.LANE_LINE["m"])
+              and lk is not roads.EDGE_LINE]
+        self.assertEqual(len(us), 2)
+        self.assertEqual([lk["m"] for lk in eu], [roads.LANE_LINE["m"]])
 
     def test_feature_in_two_cells_once_and_deterministic(self):
         f = features([[(-300, 50), (300, 50)]], ["primary"])

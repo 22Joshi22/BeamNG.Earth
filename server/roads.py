@@ -1278,9 +1278,14 @@ def extras(spec, pts, lon, left_hand=False):
                         pts, ms * (w / 2 - EDGE_LINE["inset"] - 2 * k * CENTRE["gap"]))))
             out.append(({**GUTTER, "side": ms}, GUTTER["w"], offset_polyline(pts, ms * (w / 2 - GUTTER["w"] / 2))))
     if kind == "paved" and cls in CENTRE_CLASSES and w >= 6.0 and not spec.oneway:   # no paint on cobbles
-        look = {"m": centre_colour(lon), "tl": CENTRE["tl"], "p": CENTRE["p"]}
-        for side in (1, -1):
-            out.append((look, CENTRE["w"], offset_polyline(pts, side * CENTRE["gap"])))
+        if centre_colour(lon) == "line_white":
+            # outside the Americas one broken white line (the Gotthard road on Mapillary, 2026-10-18: ours had the
+            # Americas' double line in white)
+            out.append((LANE_LINE, LANE_LINE["w"], pts.copy()))
+        else:
+            look = {"m": centre_colour(lon), "tl": CENTRE["tl"], "p": CENTRE["p"]}
+            for side in (1, -1):
+                out.append((look, CENTRE["w"], offset_polyline(pts, side * CENTRE["gap"])))
     if kind == "paved" and cls in LANE_CLASSES:
         # lane lines (white dashes) where the driving width holds two or more lanes a direction
         parked = urban and cls in PARKING_CLASSES and not (not spec.oneway and cls in URBAN_ARTERIAL)
