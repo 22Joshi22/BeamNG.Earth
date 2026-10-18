@@ -109,5 +109,32 @@
     ],
     "groundType": "GRASS",
     "translucent": false
+  },
+  "bne_bridge_concrete": {
+    "name": "bne_bridge_concrete",
+    "mapTo": "bne_bridge_concrete",
+    "class": "Material",
+    "version": 1.5,
+    "persistentId": "5b4d08dc-d5e1-5360-878b-21c4c0b4fe26",
+    "Stages": [
+      {
+        "baseColorMap": "/assets/materials/tileable/concrete/concrete_plain/t_concrete_plain_b.color.png",
+        "normalMap": "/assets/materials/tileable/concrete/concrete_plain/t_concrete_plain_nm.normal.png",
+        "roughnessMap": "/assets/materials/tileable/concrete/concrete_plain/t_concrete_plain_r.data.png",
+        "ambientOcclusionMap": "/assets/materials/tileable/concrete/concrete_plain/t_concrete_plain_ao.data.png",
+        "metallicFactor": 0,
+        "baseColorFactor": [
+          0.82,
+          0.8,
+          0.77,
+          1
+        ]
+      },
+      {},
+      {},
+      {}
+    ],
+    "groundType": "CONCRETE",
+    "translucent": false
   }
 }

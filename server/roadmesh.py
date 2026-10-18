@@ -151,7 +151,9 @@ def build(frame, chunks, elev, origin, lift=0.0):
 DECK_DEPTH = 1.2        # m of deck slab under the surface
 DECK_SKIN = 0.01        # m the road mesh lies over a deck's top (the decal materials are translucent:
                         # 2026-10-11 a deck topped with road_asphalt_2lane was see-through)
-DECK_SIDE = "sidewalk1" # the slab's sides and underside (West Coast USA concrete)
+DECK_SIDE = "bne_bridge_concrete"  # the slab, girders, parapets, piers and tunnel tubes: plain concrete (the stock
+                        # concrete_plain textures; West Coast USA's "sidewalk1" had drain covers in it, round marks
+                        # along every parapet next to Mapillary's Queensboro Bridge, 2026-10-17)
 # A bridge as the official maps build theirs (Italy's road bridges on tapered wall piers, East Coast's): girders under
 # the slab, a parapet along each free edge, piers (roads.pier_sites); ours was a bare floating slab (the user,
 # 2026-10-17: "Bridges need a lot of work in general")
@@ -160,7 +162,9 @@ GIRDER_W = 0.6          # m wide each
 GIRDER_EVERY = 3.0      # m between girders across the deck
 PARAPET_W = 0.45        # m: the slab reaches this far past the road's edge, a parapet on it ...
 PARAPET_H = 0.9         # ... this high over the road
-PARAPET_COVER_DZ = 1.2  # m: another deck's surface within this height at an edge point: no parapet there
+PARAPET_COVER_DZ = 2.0  # m: another deck's surface within this height at an edge point: no parapet there
+PARAPET_MIN_M = 8.0     # m: a parapet run shorter than this is left out (stubs stood in the Queensboro Bridge's lanes
+                        # where its two directions' decks meet and the cover test missed a few points, 2026-10-17)
 FOOTING_M = 2.0         # m a pier reaches into the ground
 PIER_T = 1.8            # m: a wall pier's thickness along the deck (at its top; FOOTING tapers wider)
 PIER_TAPER = 0.012      # its width grows this much per m down (each side)
@@ -169,7 +173,7 @@ PIER_BENT_W = 16.0      # a deck wider than this stands on columns (a bent) rath
 PIER_COLUMN = 1.6       # m square columns of a bent
 
 
-def deck(chunks, origin, piers=()):
+def deck(chunks, origin, piers=(), context=()):
     """The bridge decks of a tile as one colliding mesh: per "deck" chunk a slab of opaque concrete
     (DECK_SIDE) whose top is at the chunk's fixed heights (the road surface, drawn DECK_SKIN above it
     by build()), with sides and underside DECK_DEPTH below. (positions, tris, uvs, materials, tri
@@ -202,7 +206,8 @@ def deck(chunks, origin, piers=()):
     if DECK_SIDE not in mats:
         mats.append(DECK_SIDE)
     side = mats.index(DECK_SIDE)                # opaque concrete; the asphalt is the road mesh's
-    covered = _parapet_cover([(r, c) for r, c in rb])
+    cr = [r for r in ribbons(list(context)) if r[5] is not None]
+    covered = _parapet_cover([(r, c) for r, c in rb], [(r, c) for r, c in zip(cr, context)])
     for n, ((left, right, v, m, layer, z), c) in enumerate(rb):
         k = len(z)
         lat = left - right
@@ -240,7 +245,8 @@ def deck(chunks, origin, piers=()):
                 j = i
                 while j + 1 < k and not cov[j + 1]:
                     j += 1
-                if j > i:
+                run_len = float(np.hypot(*np.diff(edge[i:j + 1], axis=0).T).sum()) if j > i else 0.0
+                if j > i and (run_len >= PARAPET_MIN_M or i == 0 or j == k - 1):    # (a piece's ends: tile seams)
                     sl = slice(i, j + 1)
                     zz = z[sl]
                     Eo, Ei = np.c_[edge[sl], zz] - origin, np.c_[inner[sl], zz] - origin
@@ -250,13 +256,37 @@ def deck(chunks, origin, piers=()):
                     quads(Ei, Ti, 0.0, 0.1, v[sl], v[sl], side, -o)         # road face
                     quads(Ti, To, 0.0, 0.05, v[sl], v[sl], side, np.array([0.0, 0.0, 1.0]))
                 i = j + 1
-    for p in piers:
+    for p in _piers_clear(piers, rb):
         _pier(p, origin, P, T, UV, M, side)
         nv = sum(len(a) for a in P)
     return (np.concatenate(P), np.concatenate(T), np.concatenate(UV), mats, np.concatenate(M))
 
 
-def _parapet_cover(rb):
+def _piers_clear(piers, rb):
+    """The piers that cross no other deck under their top: a pier of the Queensboro Bridge's upper roadway stood on
+    the ground through the lower one, across its lanes (the user, 2026-10-17: "objects blocking the bridge road")."""
+    if not piers or not rb:
+        return list(piers)
+    lines = [(((l + r) / 2), float(np.median(np.hypot(*(l - r).T))) / 2 + PARAPET_W, z) for (l, r, v, m, layer, z), c in rb
+             if not c.get("tunnel")]
+    out = []
+    for p in piers:
+        x, y, ux, uy, zt, zb, width = p
+        q = np.array([x, y])
+        reach = float(np.clip(0.7 * width, 2.5, 14.0)) / 2 + PIER_T
+        hit = False
+        for mid, hw, z in lines:
+            d = np.hypot(*(mid - q).T)
+            k = int(np.argmin(d))
+            if d[k] < hw + reach and z[k] < zt - 1.0:       # a deck below the pier's top, across its footprint
+                hit = True
+                break
+        if not hit:
+            out.append(p)
+    return out
+
+
+def _parapet_cover(rb, context=()):
     """Per deck ribbon (left, right edge points) whether another deck's surface lies there (no parapet):
     earthfast.deck_edges_covered over every ribbon's centre line, its half width + PARAPET_W; Python else."""
     import fast
@@ -273,6 +303,15 @@ def _parapet_cover(rb):
         for e in (left + u * PARAPET_W / 2, right - u * PARAPET_W / 2):
             pts.append(np.c_[e, z])
             own.append(np.full(len(z), oid))
+        A.append(np.c_[mid[:-1], z[:-1]])
+        B.append(np.c_[mid[1:], z[1:]])
+        HW.append(np.full(len(z) - 1, hw))
+        OS.append(np.full(len(z) - 1, oid))
+    for (left, right, v, m, layer, z), c in context:     # the decks around the tile: surfaces only
+        lat = left - right
+        mid = (left + right) / 2
+        hw = float(np.median(np.hypot(lat[:, 0], lat[:, 1]))) / 2 + PARAPET_W
+        oid = hash(c.get("fid", "ctx")) & 0x3FFFFFFF
         A.append(np.c_[mid[:-1], z[:-1]])
         B.append(np.c_[mid[1:], z[1:]])
         HW.append(np.full(len(z) - 1, hw))

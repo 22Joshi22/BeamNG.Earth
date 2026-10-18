@@ -629,6 +629,10 @@ def _dijkstra(adj, seeds):
     return d
 
 
+MERGE_TOUCH_M = 1.5     # m: decks side by side this close (edge to edge) are pulled together too (the Queensboro
+                        # Bridge's upper roadway's two directions met at a 0.5-2 m step, a wall and stubs on it)
+
+
 def _merge_overlaps(lines, zs, widths, levels, rounds=3):
     """Heights of decks lying over each other (a ramp leaving the mainline, parallel carriageways of
     one level) pulled to their mean where their surfaces overlap, so a split is one surface until the
@@ -683,7 +687,7 @@ def _merge_overlaps(lines, zs, widths, levels, rounds=3):
             cos = np.abs((ta * tb).sum(1)) / (np.hypot(*ta.T) * np.hypot(*tb.T) + 1e-12)
             # soft: full weight 2 m into the overlap and when parallel, none at its edge (a hard mask
             # made 4 m steps mid-viaduct where a neighbour's footprint started)
-            depth = np.clip(((widths[i] + widths[j]) / 2 - dmin) / 2.0, 0.0, 1.0)
+            depth = np.clip(((widths[i] + widths[j]) / 2 + MERGE_TOUCH_M - dmin) / 2.0, 0.0, 1.0)
             w = depth * np.clip((cos - 0.85) / 0.1, 0.0, 1.0) * np.isfinite(zj)
             acc[i] += w * np.nan_to_num(zj)
             cnt[i] += w
@@ -770,6 +774,35 @@ def _deck_stacks(lines, levels, widths, step=STACK_STEP_M):
                 k = m[a]
                 sl = arcs[j][k] + t[a, k] * (arcs[j][k + 1] - arcs[j][k])
                 out.append((i, float(s[a]), j, float(sl)))
+    return out
+
+
+def _deck_beside(lines, widths, step=STACK_STEP_M):
+    """(i, j), i < j: deck parts whose surfaces come within MERGE_TOUCH_M of each other in plan (side by side or one
+    over the other: solved together). Pure."""
+    out = []
+    n = len(lines)
+    pts = [np.asarray(ln, np.float64)[:, :2] for ln in lines]
+    lo_b = [p.min(0) if len(p) else np.zeros(2) for p in pts]
+    hi_b = [p.max(0) if len(p) else np.zeros(2) for p in pts]
+    for i in range(n):
+        if len(pts[i]) < 2:
+            continue
+        si = np.r_[0.0, np.cumsum(np.hypot(*np.diff(pts[i], axis=0).T))]
+        t = np.arange(0.0, si[-1] + 1e-9, step)
+        q = np.c_[np.interp(t, si, pts[i][:, 0]), np.interp(t, si, pts[i][:, 1])]
+        for j in range(i + 1, n):
+            if len(pts[j]) < 2:
+                continue
+            reach = (float(widths[i]) + float(widths[j])) / 2 + MERGE_TOUCH_M
+            if (hi_b[i] + reach < lo_b[j]).any() or (hi_b[j] + reach < lo_b[i]).any():
+                continue
+            P, ab = pts[j][:-1], np.diff(pts[j], axis=0)
+            L2 = np.maximum((ab * ab).sum(1), 1e-12)
+            tt = np.clip(((q[:, None, :] - P[None]) * ab[None]).sum(2) / L2[None], 0.0, 1.0)
+            d = np.hypot(*(q[:, None, :] - (P[None] + tt[..., None] * ab[None])).transpose(2, 0, 1)).min(1)
+            if (d < reach).sum() >= 2:
+                out.append((i, j))
     return out
 
 
@@ -1703,6 +1736,11 @@ class BridgeProfiles:
             for a, b, _, _ in over:
                 crossing.setdefault(keys[a], set()).add(keys[b])
                 crossing.setdefault(keys[b], set()).add(keys[a])
+            # and side by side / one over the other (solved apart, the Queensboro Bridge's two upper roadways met at
+            # a 0.5 m step and its tiles' decks at different heights stood as blocks in the lanes, 2026-10-17)
+            for a, b in _deck_beside([pool[k][1] for k in keys], [pool[k][0].width for k in keys]):
+                crossing.setdefault(keys[a], set()).add(keys[b])
+                crossing.setdefault(keys[b], set()).add(keys[a])
             comp, stack = {start}, [start]
             while stack:                        # joined at nodes, or crossing (solved together)
                 k = stack.pop()
@@ -2424,9 +2462,24 @@ def _bridge_chunks(frame, bseen, elev, exact, bridges=None, cells=None):
     return _deck_chunks(decks, exact)
 
 
+DECK_CONTEXT_M = 24.0   # m around a tile its bridges' decks are passed as context (roadmesh.deck: whether an edge has
+                        # another deck beside it; a parapet stood across the lanes at a tile seam, the deck beside it
+                        # in the next tile, Queensboro Bridge 2026-10-17)
+
+
 def _deck_chunks(decks, exact):
-    """Deck + line chunks of bridge parts [(fid, spec, pts (k, 3), lon)] clipped to the box `exact`."""
+    """Deck + line chunks of bridge parts [(fid, spec, pts (k, 3), lon)] clipped to the box `exact`, and their decks
+    within DECK_CONTEXT_M of it as "ctx" chunks (not drawn: build_tile's caller hands them to roadmesh.deck)."""
     out = []
+    x0, y0, x1, y1 = exact
+    wide = (x0 - DECK_CONTEXT_M, y0 - DECK_CONTEXT_M, x1 + DECK_CONTEXT_M, y1 + DECK_CONTEXT_M)
+    for fid, spec, pts, lon in decks:
+        for piece in clip_polyline(pts, *wide):
+            for c in split(densify(simplify(piece))):
+                if len(c) >= 2:
+                    ch = _chunk({**DECK, "deck": True}, spec.width, c)
+                    ch.update(fixed=True, deck=True, fid=fid, ctx=True)
+                    out.append(ch)
     for fid, spec, pts, lon in decks:
         lines = [({**DECK, "deck": True}, spec.width, pts)]
         for look, w, line in extras(spec, pts, lon):
@@ -2480,7 +2533,7 @@ def drains(run, side, caps, walk_w=None):
 
 def build_tile(frame, tx, ty, cells, elev, urban_fn=None, walks=None, bridges=None, widths=None, props=None,
                lines=None, wires=None, town=None, park=None, left_hand=False, structures=(), mph=True, tunnels=None,
-               walls=None):
+               walls=None, deck_context=None):
     """The chunks of one tile. cells: the mapgeom.Features of the "roads" layer of every cell touching
     the tile; elev(lat, lon) -> metres (the DEM); urban_fn: as road_specs. Features in several cells are
     taken once (by id). The carriageways, then each road's sidewalks / gutters / markings (extras), cut
@@ -2538,7 +2591,11 @@ def build_tile(frame, tx, ty, cells, elev, urban_fn=None, walks=None, bridges=No
                 for c in split(densify(simplify(piece))):
                     if len(c) >= 2:
                         chunks.append(_chunk(look, lw, c))
-    chunks.extend(_bridge_chunks(frame, bseen, elev, (x0, y0, x1, y1), bridges, cells))
+    for ch in _bridge_chunks(frame, bseen, elev, (x0, y0, x1, y1), bridges, cells):
+        if not ch.get("ctx"):
+            chunks.append(ch)
+        elif deck_context is not None:          # the decks around the tile (roadmesh.deck's parapet test)
+            deck_context.append(ch)
     if tunnels is not None:                     # TunnelProfiles: road surfaces and lines through tunnels
         chunks.extend(_tunnel_chunks(tunnels, cells, (x0, y0, x1, y1)))
     exact = (x0, y0, x1, y1)
