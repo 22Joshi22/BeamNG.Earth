@@ -77,6 +77,26 @@ class ClassifyTest(unittest.TestCase):
             self.assertEqual(lawn_mask[-2, 8], 0)
 
 
+class PhotoSnowTest(unittest.TestCase):
+    def test_snow_only_where_the_photo_is_white(self):
+        # WorldCover "snow and ice" on the Stelvio Pass's summit where the orthophoto has grey-brown scree (#40/#44)
+        import tempfile
+        n = 16
+        idx = np.full((n, n), sf.SNOW, np.uint8)
+        rgb = np.zeros((64, 64, 3), np.uint8)
+        rgb[:] = (128, 118, 100)                    # scree ...
+        rgb[:32] = (235, 238, 242)                  # ... the north half snow
+        with tempfile.TemporaryDirectory() as d:
+            sf.write_ter(d, "b.ter", np.zeros((n, n), np.uint16), idx)
+            names = sf.write_masks(idx[::-1], d, "b")
+            sf.photo_lawns(d, "b.ter", names, rgb)
+            with open(os.path.join(d, "b.ter"), "rb") as f:
+                lay = np.frombuffer(f.read()[5 + 2 * n * n:5 + 3 * n * n], np.uint8).reshape(n, n)
+            inner = lay[1:-1, 1:-1]
+            self.assertTrue((inner[: n // 2 - 1] == sf.LOOSE).all(), "south half: scree")
+            self.assertTrue((inner[n // 2:] == sf.SNOW).all(), "north half: snow")
+
+
 class WarpTest(unittest.TestCase):
     """Organic class borders: the land cover is read a few metres off, by smooth world-fixed noise."""
 

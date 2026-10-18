@@ -322,6 +322,8 @@ def write_masks(idx, out_dir, stem):
     return names
 
 
+SNOW_BRIGHT = 165           # mean of r, g, b of the ground photo (0-255) from which a snow candidate stays snow, ...
+SNOW_GREY = 40              # ... with at most this spread between its channels (white, not pale scree)
 LAWN_GREEN = 10             # 2g - r - b of the ground photo above which a lawn candidate stays a lawn
 
 
@@ -329,7 +331,9 @@ def photo_lawns(out_dir, ter_name, mask_names_, rgb):
     """Detail mode: the block's LAWN samples where the ground photo (rgb (px, px, 3), row 0 = north, the
     block's footprint) is not green turn DIRT (paved yards, lots and driveways: the grass layer's blades
     over a pale photo looked like snow, Lancaster 2026-10-14). Patches the .ter's layer map and the two
-    masks in place, atomically. Returns the number of samples changed."""
+    masks in place, atomically. Returns the number of samples changed. Likewise SNOW (WorldCover "snow and ice")
+    where the photo is not snow-white turns LOOSE scree (the Stelvio Pass's summit in late summer: the snow layer's
+    white blur where the orthophoto has grey-brown gravel, the user's reports #40 / #44, 2026-10-17)."""
     path = os.path.join(out_dir, ter_name)
     with open(path, "rb") as f:
         data = bytearray(f.read())
@@ -337,27 +341,31 @@ def photo_lawns(out_dir, ter_name, mask_names_, rgb):
     off = 5 + 2 * n * n
     lay = np.frombuffer(bytes(data[off:off + n * n]), np.uint8).reshape(n, n)       # row 0 = south
     lawn = lay == LAWN
-    if not lawn.any():
+    snow = lay == SNOW
+    if not lawn.any() and not snow.any():
         return 0
     px = rgb.shape[0]
     rows = np.clip(((n - 1 - np.arange(n)) + 0.5) * px / n, 0, px - 1).astype(np.int64)
     cols = np.clip((np.arange(n) + 0.5) * px / n, 0, px - 1).astype(np.int64)
-    c = rgb.astype(np.int32)
+    c = rgb.astype(np.int32)[rows[:, None], cols[None, :]]
     exg = 2 * c[:, :, 1] - c[:, :, 0] - c[:, :, 2]
-    green = exg[rows[:, None], cols[None, :]] > LAWN_GREEN
+    green = exg > LAWN_GREEN
+    white = (c.mean(2) >= SNOW_BRIGHT) & (c.max(2) - c.min(2) <= SNOW_GREY)
     bare = lawn & ~green
-    k = int(bare.sum())
+    scree = snow & ~white
+    k = int(bare.sum() + scree.sum())
     if not k:
         return 0
     lay = lay.copy()
     lay[bare] = DIRT
+    lay[scree] = LOOSE
     data[off:off + n * n] = lay.tobytes()
     tmp = staging.tmp_for(path)
     with open(tmp, "wb") as f:
         f.write(data)
     os.replace(tmp, path)
     north = lay[::-1]
-    for i in (LAWN, DIRT):
+    for i in (LAWN, DIRT, SNOW, LOOSE):
         p = os.path.join(out_dir, mask_names_[i])
         tmp = staging.tmp_for(p)
         Image.fromarray(np.where(north == i, 255, 0).astype(np.uint8), "L").save(tmp, format="PNG", compress_level=1)
