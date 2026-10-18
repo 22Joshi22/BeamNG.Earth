@@ -22,6 +22,7 @@ NBI_DECK_TRUSS, NBI_THROUGH_TRUSS = 9, 10
 NBI_DECK_ARCH, NBI_THROUGH_ARCH, NBI_SUSPENSION, NBI_STAYED = 11, 12, 13, 14
 NBI_LIFT, NBI_BASCULE, NBI_SWING = 15, 16, 17
 ARCH_ANY = 111          # (not NBI) an arch over or under its deck as its height allows: OSM's bridge:structure=arch
+PLAIN = 2               # NBI's stringer / girder: a plain deck (Wikidata's beam and girder bridges)
 TRUSS_TYPES = (NBI_DECK_TRUSS, NBI_THROUGH_TRUSS)
 
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "bridges_us.npz")
@@ -66,6 +67,53 @@ NETWORK_M = 3000.0      # the size rule: a chain no longer than this ...
 NETWORK_SHARE = 4.0     # ... or this many times its run over water (not a city's elevated network)        # this share of a chain's deck points inside a tagged outline: the chain is that bridge
 
 _db = None
+_wd = None
+WD_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "bridges_wd.npz")
+WD_MATCH_M = 150.0      # a Wikidata bridge's point this close to the decks is theirs (its points sit on the bridge)
+
+
+def _load_wd():
+    global _wd
+    if _wd is None:
+        try:
+            d = np.load(WD_PATH)
+            _wd = {k: d[k] for k in d.files}
+        except OSError:
+            _wd = {"lat": np.zeros(0, np.float32)}
+    return _wd
+
+
+def wd_matches(frame, lines):
+    """[(distance m, index, point (2,) in the frame)] of Wikidata's typed bridges (bridges_wd.npz,
+    tools/build_bridge_wikidata.py) within WD_MATCH_M of the deck lines, nearest first."""
+    lines = [np.asarray(ln, np.float64)[:, :2] for ln in lines if len(ln) >= 2]
+    wd = _load_wd()
+    if not lines or not len(wd["lat"]):
+        return []
+    pts = np.concatenate(lines)
+    c = pts.mean(0)
+    la, lo, _ = frame.enu_to_geodetic(np.array([c[0]]), np.array([c[1]]), 0.0)
+    reach = float(np.hypot(*(pts.max(0) - pts.min(0)))) / 2 + WD_MATCH_M
+    dlat = reach / 110540.0
+    i0, i1 = np.searchsorted(wd["lat"], float(la[0]) - dlat), np.searchsorted(wd["lat"], float(la[0]) + dlat)
+    idx = np.arange(i0, i1)
+    if not len(idx):
+        return []
+    e, n, _ = frame.geodetic_to_enu(wd["lat"][idx].astype(np.float64), wd["lon"][idx].astype(np.float64), 0.0)
+    out = []
+    for i, q in zip(idx, np.c_[e, n]):
+        if abs(q[0] - c[0]) > reach or abs(q[1] - c[1]) > reach:
+            continue
+        d = min(_seg_dist(q, ln) for ln in lines)
+        if d <= WD_MATCH_M:
+            out.append((d, int(i), q))
+    return sorted(out, key=lambda r: r[0])
+
+
+def wd_record(i):
+    wd = _load_wd()
+    return {"type": int(wd["type"][i]), "span": float(wd["span"][i]), "length": float(wd["length"][i]),
+            "width": 0.0}
 
 
 def paint(colour):
@@ -235,13 +283,23 @@ def chain_structures(frame, parts, wet_fn=None, infra=()):
     lines = [np.asarray(xy, np.float64) for xy, _, _ in parts if len(xy) >= 2]
     if not lines:
         return []
-    out, taken, used, osm_sites = [], [], set(), []
+    out, taken, used, osm_sites, wd_used = [], [], set(), [], set()
+    wdm = wd_matches(frame, lines)
     for tags, outline in (_osm_outlines(frame, parts, infra) if infra else []):
         taken.append(outline)
         code = OSM_TYPES.get(str(tags.get("bridge:structure")), 0)
-        if code == 0:
-            continue                        # tagged a plain kind: nothing drawn there
         inner = [ln[_in_rings(outline, ln)] for ln in lines]
+        # Wikidata's type where it has the bridge: the map's tags can be wrong (OSM calls Tokyo's Rainbow Bridge, a
+        # suspension bridge, cable-stayed: drawn with stays, 2026-10-18)
+        wdi = [w for w in wdm if w[1] not in wd_used and (_in_rings(outline, w[2][None])[0] or any(
+            len(ln) >= 2 and _seg_dist(w[2], ln) <= WD_MATCH_M for ln in inner))]
+        wdr = wd_record(wdi[0][1]) if wdi else None
+        if wdi:
+            wd_used.add(wdi[0][1])
+            if not (wdr["type"] == ARCH_ANY and code in (NBI_DECK_ARCH, NBI_THROUGH_ARCH)):
+                code = wdr["type"]          # (an arch the map places over or under its deck keeps that)
+        if code in (0, PLAIN):
+            continue                        # a plain kind: nothing drawn there
         found = matches(frame, [ln for ln in inner if len(ln) >= 2])
         if not found:                       # (the record's point can lie outside the outline: Golden Gate's)
             found = matches(frame, [ln for ln in lines if _in_rings(outline, ln).any()])
@@ -249,6 +307,8 @@ def chain_structures(frame, parts, wet_fn=None, infra=()):
                 {"span": 0.0, "length": 0.0, "width": 0.0, "src": "osm"})
         if found:
             used.add(found[0][1])
+        elif wdr is not None and wdr["span"] > 0:
+            info.update(span=wdr["span"], length=wdr["length"], src="osm+wd")
         info.update(type=code, paint=paint(tags.get("colour")) or "grey", outline=outline)
         out.append(info)
         rings = outline if isinstance(outline, list) else [outline]
@@ -275,6 +335,21 @@ def chain_structures(frame, parts, wet_fn=None, infra=()):
         ang = np.linspace(0, 2 * np.pi, 33)
         out.append({**record(i), "src": "nbi", "paint": chain_paint,
                     "outline": np.c_[c[0] + r * np.cos(ang), c[1] + r * np.sin(ang)]})
+    for d, i, c in wdm:                     # Wikidata's typed bridges the map and the inventory did not give
+        if i in wd_used or any(_in_rings(o, c[None])[0] for o in taken) or \
+                any(float(np.hypot(*(c - oc))) < oL / 2 for oc, oL in osm_sites) or \
+                any(float(np.hypot(*(c - c2))) < max(L2 / 2, 150.0) for _, c2, L2 in nbi_sites):
+            continue
+        wd_used.add(i)
+        r = wd_record(i)
+        L = r["length"]
+        ang = np.linspace(0, 2 * np.pi, 33)
+        rad = max(L / 2, 150.0) + 60.0
+        circle = np.c_[c[0] + rad * np.cos(ang), c[1] + rad * np.sin(ang)]
+        taken.append(circle)
+        if r["type"] == PLAIN or not (NBI_DECK_TRUSS <= r["type"] <= NBI_SWING or r["type"] == ARCH_ANY):
+            continue                        # a girder bridge: a plain deck (and no size rule there)
+        out.append({**r, "src": "wd", "paint": chain_paint, "outline": circle})
     if out or taken:
         return out
     pts = np.concatenate(lines)
@@ -631,7 +706,7 @@ def main_span(P, arcs, info, ground_fn, wet_fn=None):
         run = (s[i], s[j])
     c = (run[0] + run[1]) / 2
     share = ARCH_SPAN_SHARE if info["type"] in ARCH_TYPES else SPAN_SHARE
-    span = (info["span"] if str(info.get("src", "")).endswith("nbi") and info.get("span")
+    span = (info["span"] if str(info.get("src", "")).endswith(("nbi", "wd")) and info.get("span")
             else share * (run[1] - run[0]))
     span = float(min(span, SPAN_MAX, s[-1] * 0.9))
     if span < SPAN_MIN:

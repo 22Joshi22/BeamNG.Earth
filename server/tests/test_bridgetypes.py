@@ -75,6 +75,23 @@ class StructureTest(unittest.TestCase):
         wet = lambda xy: np.abs(xy[:, 0]) < 200
         self.assertEqual(bt.chain_structures(FRAME, [deck(-5000.0, 5000.0)], wet), [])
 
+    def test_wikidata_corrects_the_tag(self):
+        """OSM calls Tokyo's Rainbow Bridge cable-stayed; Wikidata, a suspension bridge with a 570 m span."""
+        bt._db = db_with((90000.0, 0.0, 1, 0.0))
+        la, lo, _ = FRAME.enu_to_geodetic(np.array([0.0, 5000.0]), np.array([0.0, 0.0]), np.zeros(2))
+        bt._wd = {"lat": np.asarray(la, np.float32), "lon": np.asarray(lo, np.float32),
+                  "type": np.array([bt.NBI_SUSPENSION, bt.PLAIN], np.uint8),
+                  "span": np.array([570.0, 0.0], np.float32), "length": np.array([800.0, 0.0], np.float32)}
+        try:
+            o = Outline((-160, -10, 160, 10), {"bridge:structure": "cable-stayed"})
+            got = bt.chain_structures(FRAME, [deck()], None, [o])
+            self.assertEqual([(g["type"], g["span"]) for g in got], [(bt.NBI_SUSPENSION, 570.0)])
+            # a Wikidata girder bridge: a plain deck, and no size rule there
+            wet = lambda xy: np.abs(xy[:, 0] - 5000.0) < 200
+            self.assertEqual(bt.chain_structures(FRAME, [deck(4700.0, 5300.0)], wet), [])
+        finally:
+            bt._wd = None
+
     def test_each_tagged_outline_its_own_site(self):
         bt._db = db_with((90000.0, 0.0, 1, 0.0))
         a = Outline((-1900, -10, -1500, 10), {"bridge:structure": "suspension", "colour": "orange"})
