@@ -285,33 +285,43 @@ def chain_structures(frame, parts, wet_fn=None, infra=()):
         return []
     out, taken, used, osm_sites, wd_used = [], [], set(), [], set()
     wdm = wd_matches(frame, lines)
+    # Wikidata's type where it has the bridge: the map's tags can be wrong (OSM calls Tokyo's Rainbow Bridge, a
+    # suspension bridge, cable-stayed: drawn with stays, 2026-10-18); a bridge's outlines that hold the same Wikidata
+    # bridge are one site (the Rainbow Bridge has a second, unnamed one)
+    groups = {}
     for tags, outline in (_osm_outlines(frame, parts, infra) if infra else []):
         taken.append(outline)
+        rings = outline if isinstance(outline, list) else [outline]
+        inner = [ln[_in_rings(rings, ln)] for ln in lines]
+        wdi = [w for w in wdm if _in_rings(rings, w[2][None])[0] or any(
+            len(ln) >= 2 and _seg_dist(w[2], ln) <= WD_MATCH_M for ln in inner)]
+        key = ("wd", wdi[0][1]) if wdi else ("osm", len(groups))
+        g = groups.setdefault(key, {"tags": tags, "rings": [], "wd": wdi[0][1] if wdi else None})
+        g["rings"] += rings
+        if tags.get("colour") and not g["tags"].get("colour"):
+            g["tags"] = {**g["tags"], "colour": tags["colour"]}
+    for g in groups.values():
+        tags, rings = g["tags"], g["rings"]
         code = OSM_TYPES.get(str(tags.get("bridge:structure")), 0)
-        inner = [ln[_in_rings(outline, ln)] for ln in lines]
-        # Wikidata's type where it has the bridge: the map's tags can be wrong (OSM calls Tokyo's Rainbow Bridge, a
-        # suspension bridge, cable-stayed: drawn with stays, 2026-10-18)
-        wdi = [w for w in wdm if w[1] not in wd_used and (_in_rings(outline, w[2][None])[0] or any(
-            len(ln) >= 2 and _seg_dist(w[2], ln) <= WD_MATCH_M for ln in inner))]
-        wdr = wd_record(wdi[0][1]) if wdi else None
-        if wdi:
-            wd_used.add(wdi[0][1])
+        wdr = wd_record(g["wd"]) if g["wd"] is not None else None
+        if wdr is not None:
+            wd_used.add(g["wd"])
             if not (wdr["type"] == ARCH_ANY and code in (NBI_DECK_ARCH, NBI_THROUGH_ARCH)):
                 code = wdr["type"]          # (an arch the map places over or under its deck keeps that)
         if code in (0, PLAIN):
             continue                        # a plain kind: nothing drawn there
+        inner = [ln[_in_rings(rings, ln)] for ln in lines]
         found = matches(frame, [ln for ln in inner if len(ln) >= 2])
         if not found:                       # (the record's point can lie outside the outline: Golden Gate's)
-            found = matches(frame, [ln for ln in lines if _in_rings(outline, ln).any()])
+            found = matches(frame, [ln for ln in lines if _in_rings(rings, ln).any()])
         info = ({**record(found[0][1]), "src": "osm+nbi"} if found else
                 {"span": 0.0, "length": 0.0, "width": 0.0, "src": "osm"})
         if found:
             used.add(found[0][1])
         elif wdr is not None and wdr["span"] > 0:
             info.update(span=wdr["span"], length=wdr["length"], src="osm+wd")
-        info.update(type=code, paint=paint(tags.get("colour")) or "grey", outline=outline)
+        info.update(type=code, paint=paint(tags.get("colour")) or "grey", outline=rings)
         out.append(info)
-        rings = outline if isinstance(outline, list) else [outline]
         osm_sites.append((np.concatenate(rings).mean(0), max(float(info["length"]), 300.0)))
     chain_paint = (osm_colour(frame, parts, infra) if infra else None) or "grey"
     db = _load()
