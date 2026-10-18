@@ -325,9 +325,9 @@
         "roughnessFactor": 0.9,
         "metallicFactor": 0,
         "baseColorFactor": [
-          0.92,
-          0.88,
-          0.86,
+          0.7,
+          0.55,
+          0.5,
           1
         ]
       },

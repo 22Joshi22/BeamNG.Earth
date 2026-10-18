@@ -2053,6 +2053,45 @@ fn points_near_segments<'py>(py: Python<'py>, p: PyReadonlyArray2<'py, f64>, a: 
     numpy::ndarray::Array1::from(out).into_pyarray(py)
 }
 
+/// plazas.mesh: triangles (t, 3) over points (n, 2) split at their edges' midpoints (each edge's midpoint shared by
+/// both its triangles: no cracks) until every edge is at most max_edge long; returns (points, triangles). The split
+/// is by the longest edge first, deterministic.
+#[pyfunction]
+fn subdivide_tris<'py>(py: Python<'py>, pts: PyReadonlyArray2<'py, f64>, tris: PyReadonlyArray2<'py, i64>, max_edge: f64)
+                       -> (Bound<'py, PyArray2<f64>>, Bound<'py, PyArray2<i64>>) {
+    let (pv, tv) = (pts.as_array(), tris.as_array());
+    let (p_out, t_out) = py.allow_threads(|| {
+        let mut p: Vec<[f64; 2]> = (0..pv.shape()[0]).map(|i| [pv[[i, 0]], pv[[i, 1]]]).collect();
+        let mut stack: Vec<[usize; 3]> = (0..tv.shape()[0]).rev()
+            .map(|i| [tv[[i, 0]] as usize, tv[[i, 1]] as usize, tv[[i, 2]] as usize]).collect();
+        let mut mids: std::collections::HashMap<(usize, usize), usize> = std::collections::HashMap::new();
+        let mut out: Vec<[usize; 3]> = Vec::new();
+        let max2 = max_edge * max_edge;
+        let mut guard = 0usize;
+        while let Some(t) = stack.pop() {
+            guard += 1;
+            if guard > 4_000_000 { out.push(t); continue; }
+            let d = |a: usize, b: usize| { let (x, y) = (p[a][0] - p[b][0], p[a][1] - p[b][1]); x * x + y * y };
+            let e = [d(t[0], t[1]), d(t[1], t[2]), d(t[2], t[0])];
+            let (k, &m) = e.iter().enumerate().fold((0, &e[0]), |acc, (i, v)| if *v > *acc.1 { (i, v) } else { acc });
+            if m <= max2 { out.push(t); continue; }
+            let (a, b, c) = (t[k], t[(k + 1) % 3], t[(k + 2) % 3]);
+            let key = if a < b { (a, b) } else { (b, a) };
+            let mi = *mids.entry(key).or_insert_with(|| {
+                p.push([(p[a][0] + p[b][0]) / 2.0, (p[a][1] + p[b][1]) / 2.0]);
+                p.len() - 1
+            });
+            stack.push([mi, b, c]);
+            stack.push([a, mi, c]);
+        }
+        (p, out)
+    });
+    let pa = numpy::ndarray::Array2::from_shape_vec((p_out.len(), 2), p_out.into_iter().flatten().collect()).unwrap();
+    let ta = numpy::ndarray::Array2::from_shape_vec((t_out.len(), 3),
+        t_out.into_iter().flat_map(|t| t.into_iter().map(|v| v as i64)).collect()).unwrap();
+    (pa.into_pyarray(py), ta.into_pyarray(py))
+}
+
 /// roadmesh.deck's parapet test: for each deck edge point p (m, 3) of deck owner op (m,), does another deck's surface
 /// lie there: a centre-line segment a -> b (s, 3) of another owner (os, (s,)) nearer in plan than its half width hw (s,)
 /// with its height there within dz of the point's (a ramp leaving the mainline, the carriageways of one road side by
@@ -2409,9 +2448,10 @@ fn earthfast(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(view_distances, m)?)?;
     m.add_function(wrap_pyfunction!(road_corridors, m)?)?;
     m.add_function(wrap_pyfunction!(horizon_steps, m)?)?;
+    m.add_function(wrap_pyfunction!(subdivide_tris, m)?)?;
     m.add_function(wrap_pyfunction!(deck_edges_covered, m)?)?;
     m.add_function(wrap_pyfunction!(points_near_segments, m)?)?;
     m.add_function(wrap_pyfunction!(veg_rows_json, m)?)?;
-    m.add("VERSION", 29)?;
+    m.add("VERSION", 30)?;
     Ok(())
 }

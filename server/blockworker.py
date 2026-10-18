@@ -273,6 +273,7 @@ def roads_tile(aid, lat, lon, zoom, tx, ty, out_dir, vfs_dir, sidewalks, lift, b
         park = parkingmod.tile_lot_spots(frame, tx, ty, _s.md, elev, items, park)
         buildingsmod.brick_walks(walks, items, lat, lon)
     mesh = roadmeshmod.build(frame, chunks, elev, (x0, y0, 0.0), lift)
+    mesh = _with_plazas(mesh, frame, tx, ty, elev, (x0, y0, 0.0), getattr(_s, "surface", None))
     dmesh = roadmeshmod.deck(chunks, (x0, y0, 0.0), bridges.piers_in(roadsmod.tile_bbox(tx, ty)), ctx)
     tmesh = roadmeshmod.tunnel(chunks, (x0, y0, 0.0), rwalls)
     bld = None
@@ -283,6 +284,23 @@ def roads_tile(aid, lat, lon, zoom, tx, ty, out_dir, vfs_dir, sidewalks, lift, b
                                      items)
     return roadsmod.write_tile(out_dir, vfs_dir, aid, tx, ty, chunks, walks if sidewalks else None, mesh, dmesh,
                                bld, props, wires, park, tunnel_mesh=tmesh)
+
+
+def _with_plazas(mesh, frame, tx, ty, elev, origin, surface):
+    """The road mesh with the tile's squares and pedestrian areas paved (plazas.py), from the cached land use (none
+    when it is not cached yet: surface.Surface.lots never waits)."""
+    if surface is None or not hasattr(surface, "lots"):
+        return mesh
+    import plazas
+    import roads as roadsmod
+    try:
+        box = roadsmod.tile_bbox(tx, ty)
+        la, lo, _ = frame.enu_to_geodetic(np.array([box[0], box[2]]), np.array([box[1], box[3]]), np.zeros(2))
+        rings = plazas.polygons(surface.lots(la, lo))
+        return plazas.merge(mesh, plazas.mesh(frame, box, rings, elev, origin)) if rings else mesh
+    except Exception:                   # no plazas rather than no road tile
+        log.exception("plazas of tile %s_%s", tx, ty)
+        return mesh
 
 
 def _open_tunnels(g, keep):
