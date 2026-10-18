@@ -38,12 +38,14 @@ CLASSES = [
     ("Q1055465", bt.PLAIN),             # girder bridge
     ("Q158626", bt.PLAIN),              # beam bridge
 ]
-QUERY = """SELECT ?item ?c ?span ?len WHERE {{
+QUERY = """SELECT ?item ?c ?span ?len ?col WHERE {{
   ?item wdt:P31/wdt:P279* wd:{cls} .
   ?item wdt:P625 ?c .
   OPTIONAL {{ ?item p:P2787/psn:P2787/wikibase:quantityAmount ?span . }}
   OPTIONAL {{ ?item p:P2043/psn:P2043/wikibase:quantityAmount ?len . }}
+  OPTIONAL {{ ?item wdt:P462 ?ci . ?ci rdfs:label ?col . FILTER(lang(?col) = "en") }}
 }}"""
+PAINT_NAMES = list(bt.PAINTS)       # the paint column: an index into these, 255 without a colour (P462)
 
 
 def query(cls):
@@ -80,19 +82,23 @@ def main():
                 continue
             span = float(b["span"]["value"]) if "span" in b else 0.0
             length = float(b["len"]["value"]) if "len" in b else 0.0
+            pt = bt.paint(b["col"]["value"]) if "col" in b else None
+            pi = PAINT_NAMES.index(pt) if pt else 255
             old = items.get(q)
             if old is None or rank < old[2]:
-                items[q] = (p, code, rank, max(span, old[3] if old else 0.0), max(length, old[4] if old else 0.0))
+                items[q] = (p, code, rank, max(span, old[3] if old else 0.0), max(length, old[4] if old else 0.0),
+                            pi if pi != 255 else (old[5] if old else 255))
                 n += 1
             else:
-                items[q] = old[:3] + (max(span, old[3]), max(length, old[4]))
+                items[q] = old[:3] + (max(span, old[3]), max(length, old[4]), old[5] if old[5] != 255 else pi)
         print(f"{cls}: {len(rows)} rows, {n} kept")
         time.sleep(2)
-    rows = sorted((p[0], p[1], code, span, length) for p, code, _, span, length in items.values())
+    rows = sorted((p[0], p[1], code, span, length, pi) for p, code, _, span, length, pi in items.values())
     a = np.array(rows, np.float64)
     np.savez_compressed(OUT, lat=a[:, 0].astype(np.float32), lon=a[:, 1].astype(np.float32),
                         type=a[:, 2].astype(np.uint8), span=a[:, 3].astype(np.float32),
-                        length=a[:, 4].astype(np.float32))
+                        length=a[:, 4].astype(np.float32), paint=a[:, 5].astype(np.uint8),
+                        paints=np.array(PAINT_NAMES))
     print(len(a), "bridges ->", os.path.normpath(OUT), os.path.getsize(OUT), "bytes")
 
 

@@ -112,8 +112,10 @@ def wd_matches(frame, lines):
 
 def wd_record(i):
     wd = _load_wd()
-    return {"type": int(wd["type"][i]), "span": float(wd["span"][i]), "length": float(wd["length"][i]),
-            "width": 0.0}
+    out = {"type": int(wd["type"][i]), "span": float(wd["span"][i]), "length": float(wd["length"][i]), "width": 0.0}
+    if "paint" in wd and int(wd["paint"][i]) < len(wd.get("paints", ())):
+        out["wd_paint"] = str(wd["paints"][int(wd["paint"][i])])   # (its colour, P462: the Rainbow Bridge's white)
+    return out
 
 
 def paint(colour):
@@ -320,7 +322,7 @@ def chain_structures(frame, parts, wet_fn=None, infra=()):
             used.add(found[0][1])
         elif wdr is not None and wdr["span"] > 0:
             info.update(span=wdr["span"], length=wdr["length"], src="osm+wd")
-        info.update(type=code, paint=paint(tags.get("colour")) or "grey", outline=rings)
+        info.update(type=code, paint=paint(tags.get("colour")) or (wdr or {}).get("wd_paint") or "grey", outline=rings)
         out.append(info)
         osm_sites.append((np.concatenate(rings).mean(0), max(float(info["length"]), 300.0)))
     chain_paint = (osm_colour(frame, parts, infra) if infra else None) or "grey"
@@ -359,7 +361,7 @@ def chain_structures(frame, parts, wet_fn=None, infra=()):
         taken.append(circle)
         if r["type"] == PLAIN or not (NBI_DECK_TRUSS <= r["type"] <= NBI_SWING or r["type"] == ARCH_ANY):
             continue                        # a girder bridge: a plain deck (and no size rule there)
-        out.append({**r, "src": "wd", "paint": chain_paint, "outline": circle})
+        out.append({**r, "src": "wd", "paint": r.get("wd_paint") or chain_paint, "outline": circle})
     if out or taken:
         return out
     pts = np.concatenate(lines)
