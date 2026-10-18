@@ -768,12 +768,13 @@ def deck_profile(lines, ground_fn, crossings=(), clear=None, grade=None, lift=No
             if levels[i] == levels[j]:
                 continue
             hi, lo, sh, sl = (i, j, si, sj) if levels[i] > levels[j] else (j, i, sj, si)
-            extra.append((hi, sh, float(np.interp(sl, arcs[lo], zs[lo]))))
+            extra.append((hi, sh, float(np.interp(sl, arcs[lo], zs[lo])), None, levels[hi]))
         for hi, sh, lo, sl in stacks:               # a deck over another along it (an upper roadway)
-            extra.append((hi, sh, float(np.interp(sl, arcs[lo], zs[lo]))))
+            extra.append((hi, sh, float(np.interp(sl, arcs[lo], zs[lo])), None, levels[hi]))
         if not extra:
             break
-        new = deck_profile_once(lines, ground_fn, list(crossings) + extra, clear, grade, lift, n_road=n_road)
+        new = deck_profile_once(lines, ground_fn, list(crossings) + extra, clear, grade, lift, n_road=n_road,
+                                levels=levels)
         if all(np.allclose(a, b, atol=0.02, equal_nan=True) for a, b in zip(new, zs)):
             zs = new
             break
@@ -867,7 +868,7 @@ WATER_STEP_M = 16.0         # m between a wet run's clearance points
 NAV_RUN_M = 100.0           # a wet run this long takes the bridge's navigation clearance (NBI item 39)
 
 
-def deck_profile_once(lines, ground_fn, crossings=(), clear=None, grade=None, lift=None, n_road=None):
+def deck_profile_once(lines, ground_fn, crossings=(), clear=None, grade=None, lift=None, n_road=None, levels=None):
     """Deck heights (one array per part) of a bridge chain: deck_heights between the abutments, at
     least `lift` over the ground under it, and at least `clear` over each crossing road below
     ((part index, arc m, road height)), the requirement falling at `grade` along the chain; then
@@ -904,7 +905,11 @@ def deck_profile_once(lines, ground_fn, crossings=(), clear=None, grade=None, li
     req = [np.full(len(ln), -np.inf) for ln in lines]
     for ci, cr in enumerate(crossings):     # (part, arc, height under it[, its own clearance: over water])
         pi, sc, zc = cr[:3]
-        cl = cr[3] if len(cr) > 3 else clear
+        cl = cr[3] if len(cr) > 3 and cr[3] is not None else clear
+        # a deck-over-deck requirement (its 5th element: the upper part's level) lifts the parts of that level and
+        # above only: falling along the chain it reached the lower deck it was measured on, lifting it, and so the
+        # upper again each round (the Tsing Ma Bridge's upper deck 33 m over its lower one, 7 m in life, 2026-10-18)
+        min_lv = cr[4] if len(cr) > 4 and levels is not None else None
         a, b, s = edges[pi]
         d = _dijkstra(adj, {a: sc, b: s[-1] - sc})
         # a junction at grade (Queens Plaza, the user's report #55, 2026-10-17: a ramp's map line starts in the
@@ -917,7 +922,7 @@ def deck_profile_once(lines, ground_fn, crossings=(), clear=None, grade=None, li
                 dk = np.minimum(dk, np.abs(es - sc))
             if flat:
                 cap[k] = np.minimum(cap[k], zc + DECK_MAX_GRADE * dk)
-            else:
+            elif min_lv is None or levels[k] >= min_lv:
                 req[k] = np.maximum(req[k], zc + cl - grade * dk)
     out, k0 = [], 0
     for k, (z, (a, b, s)) in enumerate(zip(zs, edges)):
