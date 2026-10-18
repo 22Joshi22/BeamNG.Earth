@@ -2167,10 +2167,12 @@ def collider_boxes(items, x0, y0):
     return out
 
 
-# px: a near tile's buildings drawn as the lite mesh (the far tiles' one: no window bays, steps, porches, signs or
-# cornices) while the tile spans fewer pixels than this: the engine's own camera LOD (cdae lods), the tile's whole
-# shape at once. A 256 m tile (radius ~190 m) at 1080p switches ~600 m out.
-BLD_LOD_PX = 300.0
+# The engine's LOD size of a near tile's shape below which its buildings are drawn as the lite mesh (the far tiles' one:
+# no window bays, steps, porches, signs, cornices or roof clutter): the engine's own camera LOD (cdae lods), the tile's
+# whole shape at once. Calibrated in game (2026-10-18, 1440p, the game's mesh detail at its default 2): a 21 m radius
+# probe switched between 450 and 550 m, so a tile of ~190 m radius switches ~500 m from its centre (less with a lower
+# mesh detail or screen resolution, as the stock shapes do).
+BLD_LOD_PX = 2700.0
 
 
 def write(path, mesh, collision_only=False):
