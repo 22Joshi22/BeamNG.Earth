@@ -29,7 +29,8 @@ COVER_M = 25000.0       # an NBI record (any notable type) this close: the inven
 MATCH_M = 200.0         # an NBI record's point this close to a chain's deck lines may be that chain's (the points are
                         # rough: Golden Gate's lies 140 m off its deck) ...
 MATCH_LEN_M = 150.0     # ... the best by distance + this many m per factor e of length mismatch
-WET_SPAN_M = 150.0      # (size rule, outside the inventory) a run over water this long: a through truss
+WET_SPAN_M = 300.0      # (size rule, outside the inventory) a run over water this long: a through truss (150 m made
+                        # trusses of Tokyo's expressways over the bay, girders in life, 2026-10-18)
 PANEL_M = 14.0          # m between a truss's verticals
 ANCHOR_ARM = 0.75       # a big truss reaches this share of its main span past the water (the Queensboro Bridge's
                         # anchor arms: 143 and 140 m for its 182 and 299 m channel spans)
@@ -59,7 +60,10 @@ PAINTS = {"grey": (150, 152, 150), "orange": (240, 74, 0), "red": (150, 25, 20),
 COLOUR_NAMES = {"gray": "grey", "silver": "grey", "darkgreen": "green", "navy": "blue", "gold": "yellow",
                 "maroon": "red", "darkred": "red", "orangered": "orange", "rust": "brown", "beige": "white",
                 "cream": "white"}
-OSM_INSIDE = 0.2        # this share of a chain's deck points inside a tagged outline: the chain is that bridge
+OSM_INSIDE = 0.2        # (osm_colour) this share of the chain's points in the outline
+OSM_MIN_M = 80.0        # a tagged outline holding this much of the chain's deck is a structure's site
+NETWORK_M = 3000.0      # the size rule: a chain no longer than this ...
+NETWORK_SHARE = 4.0     # ... or this many times its run over water (not a city's elevated network)        # this share of a chain's deck points inside a tagged outline: the chain is that bridge
 
 _db = None
 
@@ -86,8 +90,9 @@ def osm_colour(frame, parts, feats_list):
     return paint(got) if got is not None else None
 
 
-def _osm_tagged(frame, parts, feats_list, key):
-    """The value of tag key on the bridge outline (infrastructure, kind 3) covering most of the chain, else None."""
+def _osm_tagged(frame, parts, feats_list, key, with_outline=False):
+    """The value of tag key on the bridge outline (infrastructure, kind 3) covering most of the chain, else None;
+    with_outline: (value, outline (k, 2) in the frame)."""
     import json
     from polygon import Path
     pts = np.concatenate([np.asarray(xy, np.float64) for xy, _, _ in parts])
@@ -113,15 +118,24 @@ def _osm_tagged(frame, parts, feats_list, key):
                 e, n, _ = frame.geodetic_to_enu(ring[:, 1], ring[:, 0], 0.0)
                 share = float(Path(np.c_[e, n]).contains_points(pts).mean())
                 if share >= OSM_INSIDE and (best is None or share > best[0]):
-                    best = (share, val)
-    return None if best is None else best[1]
+                    best = (share, val, np.c_[e, n])
+    if best is None:
+        return None
+    return (best[1], best[2]) if with_outline else best[1]
 
 
 def osm_structure(frame, parts, feats_list):
     """The NBI-style type code of a chain from the bridge outlines tagged bridge:structure among the infrastructure
     Features (feats_list), 0 for one tagged a plain kind (beam, ...), None if none covers the chain."""
-    kind = _osm_tagged(frame, parts, feats_list, "bridge:structure")
-    return None if kind is None else OSM_TYPES.get(str(kind), 0)
+    return _osm_structure(frame, parts, feats_list)[0]
+
+
+def _osm_structure(frame, parts, feats_list):
+    """(osm_structure's code, the tagged outline (k, 2) in the frame) or (None, None)."""
+    got = _osm_tagged(frame, parts, feats_list, "bridge:structure", with_outline=True)
+    if got is None:
+        return None, None
+    return OSM_TYPES.get(str(got[0]), 0), got[1]
 
 
 def _load():
@@ -204,39 +218,107 @@ def _seg_dist(q, xy):
 
 
 def chain_structure(frame, parts, wet_fn=None, infra=()):
-    """The structure of a chain of deck parts [(xy (k, 2), z (k,), width)]: {"type": NBI code, "span": m, "length":
-    m, "width": m, "src": "osm" | "nbi" | "size"} or None (a plain deck). wet_fn(xy) -> bool per point; infra: the
-    infrastructure Features around it (osm_structure); "paint": the tagged colour (osm_colour) or grey."""
-    osm = osm_structure(frame, parts, infra) if infra else None
-    if osm == 0:
-        return None
-    info = _chain_structure(frame, parts, wet_fn, osm)
-    if info is not None:
-        info["paint"] = (osm_colour(frame, parts, infra) if infra else None) or "grey"
-    return info
+    """The first of chain_structures, or None (a plain deck)."""
+    got = chain_structures(frame, parts, wet_fn, infra)
+    return got[0] if got else None
 
 
-def _chain_structure(frame, parts, wet_fn, osm):
-    pts = np.concatenate([np.asarray(xy, np.float64) for xy, _, _ in parts])
+def chain_structures(frame, parts, wet_fn=None, infra=()):
+    """The structures on a chain of deck parts [(xy (k, 2), z (k,), width)]: [{"type": NBI code, "span": m, "length":
+    m, "width": m, "src": "osm" | "osm+nbi" | "nbi" | "size", "paint": a PAINTS name, "outline": (k, 2) or absent}].
+    A chain can be a city's whole elevated network (Tokyo's: 163 parts, 76 km), so each structure keeps to its site:
+    a bridge outline tagged bridge:structure covering OSM_MIN_M of deck (OSM, in Overture's infrastructure: its
+    colour= its paint, the inventory's record inside it its span), else each notable inventory record on the decks
+    (a circle round its point), else, outside the inventory, a run of WET_SPAN_M over water on a chain no longer
+    than NETWORK_M or NETWORK_SHARE times that run: a through truss. wet_fn(xy) -> bool per point."""
+    from polygon import Path
+    lines = [np.asarray(xy, np.float64) for xy, _, _ in parts if len(xy) >= 2]
+    if not lines:
+        return []
+    out, taken = [], []
+    for tags, outline in (_osm_outlines(frame, parts, infra) if infra else []):
+        taken.append(outline)
+        code = OSM_TYPES.get(str(tags.get("bridge:structure")), 0)
+        if code == 0:
+            continue                        # tagged a plain kind: nothing drawn there
+        path = Path(outline)
+        inner = [ln[path.contains_points(ln)] for ln in lines]
+        found = matches(frame, [ln for ln in inner if len(ln) >= 2])
+        info = ({**record(found[0][1]), "src": "osm+nbi"} if found else
+                {"span": 0.0, "length": 0.0, "width": 0.0, "src": "osm"})
+        info.update(type=code, paint=paint(tags.get("colour")) or "grey", outline=outline)
+        out.append(info)
+    chain_paint = (osm_colour(frame, parts, infra) if infra else None) or "grey"
+    db = _load()
+    seen = set()
+    for _, i in matches(frame, lines):
+        t = int(db["type"][i])
+        if not NBI_DECK_TRUSS <= t <= NBI_SWING or i in seen:
+            continue
+        seen.add(i)
+        e, n, _ = frame.geodetic_to_enu(np.array([float(db["lat"][i])]), np.array([float(db["lon"][i])]), 0.0)
+        c = np.array([float(e[0]), float(n[0])])
+        if any(Path(o).contains_points(c[None])[0] for o in taken):
+            continue                        # (a tagged outline's own record)
+        r = max(float(db["length"][i]) / 2, 100.0) + MATCH_M
+        ang = np.linspace(0, 2 * np.pi, 33)
+        out.append({**record(i), "src": "nbi", "paint": chain_paint,
+                    "outline": np.c_[c[0] + r * np.cos(ang), c[1] + r * np.sin(ang)]})
+    if out or taken:
+        return out
+    pts = np.concatenate(lines)
+    cc = pts.mean(0)
+    la, lo, _ = frame.enu_to_geodetic(np.array([cc[0]]), np.array([cc[1]]), 0.0)
+    if len(nbi_near(float(la[0]), float(lo[0]), COVER_M)[0]):
+        return []                           # inside the inventory: no notable record, a plain deck
     longest = _longest_wet(parts, wet_fn)
-    c = pts.mean(0)
-    la, lo, _ = frame.enu_to_geodetic(np.array([c[0]]), np.array([c[1]]), 0.0)
-    lat, lon = float(la[0]), float(lo[0])
-    found = matches(frame, [xy for xy, _, _ in parts])
-    notable = [m for m in found if NBI_DECK_TRUSS <= int(_load()["type"][m[1]]) <= NBI_SWING]
-    best = notable[0] if notable else (found[0] if found else None)
-    if osm is not None:                         # the map's tag; the inventory's span if it has the bridge
-        if best is not None:
-            return {**record(best[1]), "type": osm, "src": "osm+nbi"}
-        return {"type": osm, "span": min(longest, 250.0) or 100.0, "length": 0.0, "width": 0.0, "src": "osm"}
-    if best is not None:
-        return {**record(best[1]), "src": "nbi"}
-    if len(nbi_near(lat, lon, COVER_M)[0]):
-        return None                             # inside the inventory: no notable record, a plain deck
-    if longest >= WET_SPAN_M:
-        return {"type": NBI_THROUGH_TRUSS, "span": float(min(longest, 250.0)), "length": 0.0, "width": 0.0,
-                "src": "size"}
-    return None
+    total = sum(float(np.hypot(*np.diff(ln, axis=0).T).sum()) for ln in lines)
+    if longest >= WET_SPAN_M and total <= max(NETWORK_M, NETWORK_SHARE * longest):
+        return [{"type": NBI_THROUGH_TRUSS, "span": float(min(longest, 250.0)), "length": 0.0, "width": 0.0,
+                 "src": "size", "paint": chain_paint}]
+    return []
+
+
+def _osm_outlines(frame, parts, feats_list):
+    """[(tags dict, outline (k, 2) in the frame)] of the bridge outlines tagged bridge:structure (infrastructure, kind
+    3) holding at least OSM_MIN_M of the chain's deck."""
+    import json
+    from polygon import Path
+    lines = [np.asarray(xy, np.float64) for xy, _, _ in parts if len(xy) >= 2]
+    out, seen = [], set()
+    for f in feats_list:
+        if f is None or not len(f):
+            continue
+        tags, sub = f.attrs.get("tags"), f.attrs.get("subtype")
+        if tags is None:
+            continue
+        for i in range(len(f.kind)):
+            t = str(tags[i])
+            if "bridge:structure" not in t or (sub is not None and str(sub[i]) != "bridge") or f.kind[i] != 3:
+                continue
+            fid = str(f.ids[i]) if hasattr(f, "ids") else (id(f), i)
+            if fid in seen:
+                continue
+            seen.add(fid)
+            try:
+                td = json.loads(t)
+            except ValueError:
+                continue
+            for part in f.parts(i):
+                ring = np.asarray(part[0], np.float64)
+                if len(ring) < 4:
+                    continue
+                e, n, _ = frame.geodetic_to_enu(ring[:, 1], ring[:, 0], 0.0)
+                ol = np.c_[e, n]
+                path = Path(ol)
+                held = 0.0
+                for ln in lines:
+                    m = path.contains_points(ln)
+                    seg = np.hypot(*np.diff(ln, axis=0).T)
+                    held += float(seg[m[1:] & m[:-1]].sum())
+                if held >= OSM_MIN_M:
+                    out.append((td, ol))
+    return out
 
 
 def _longest_wet(parts, wet_fn):
@@ -316,6 +398,7 @@ def truss_members(parts, info, ground_fn, wet_fn=None, with_piers=False, road_li
         t = np.gradient(xy, axis=0)
         tans.append(t / np.maximum(np.hypot(t[:, 0], t[:, 1]), 1e-9)[:, None])
     order = sorted(range(len(P)), key=lambda k: -arcs[k][-1])
+    ins_all = _inside(P, info)
     wets = [np.asarray(wet_fn(xy), bool) if wet_fn is not None else np.zeros(len(xy), bool) for xy, _, _ in P]
     any_wet = any(w.any() for w in wets)
     longest = max(a[-1] for a in arcs)
@@ -327,6 +410,8 @@ def truss_members(parts, info, ground_fn, wet_fn=None, with_piers=False, road_li
         s = arcs[k]
         g = np.asarray(ground_fn(xy), np.float64)
         mask = z - g >= high_m
+        if ins_all is not None:                 # a tagged truss: on its mapped bridge only
+            mask &= ins_all[k]
         if not small:
             if any_wet:
                 ws = s[wets[k]]
@@ -478,19 +563,39 @@ def _prep(parts):
     return P, arcs, tans
 
 
+def _inside(P, info):
+    """Per part, which points lie in the structure's tagged outline (info["outline"]); None without one."""
+    ol = info.get("outline") if info else None
+    if ol is None:
+        return None
+    from polygon import Path
+    path = Path(ol)
+    return [np.asarray(path.contains_points(xy), bool) for xy, _, _ in P]
+
+
 def main_span(P, arcs, info, ground_fn, wet_fn=None):
     """(part index, centre arc, span m) of a chain's main span, or None."""
     if not P:
         return None
-    k = int(np.argmax([a[-1] for a in arcs]))
+    ins = _inside(P, info)
+    if ins is not None:         # a tagged bridge: on the part running furthest inside its outline
+        k = int(np.argmax([float(np.sum(np.diff(a)[m[1:] & m[:-1]])) for a, m in zip(arcs, ins)]))
+        if not ins[k].any():
+            return None
+    else:
+        k = int(np.argmax([a[-1] for a in arcs]))
     xy, z, _ = P[k]
     s = arcs[k]
+    inside = ins[k] if ins is not None else np.ones(len(s), bool)
     run = None
     if wet_fn is not None:
-        runs = _runs(np.asarray(wet_fn(xy), bool), s, 1.0)
+        runs = _runs(np.asarray(wet_fn(xy), bool) & inside, s, 1.0)
         if runs:
             i, j = max(runs, key=lambda r: s[r[1]] - s[r[0]])
             run = (s[i], s[j])
+    if run is None and ins is not None:
+        i, j = max(_runs(inside, s, 0.0), key=lambda r: s[r[1]] - s[r[0]])
+        run = (s[i], s[j])
     if run is None:
         h = z - np.asarray(ground_fn(xy), np.float64)
         m = int(np.argmax(h))

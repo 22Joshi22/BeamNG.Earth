@@ -1940,11 +1940,13 @@ class BridgeProfiles:
                 la, lo, _ = self.frame.enu_to_geodetic(pts[:, 0], pts[:, 1], 0.0)
                 infra = [self.infra_fn(k) for k in mapcells.cells_for_bbox(float(la.min()), float(lo.min()),
                                                                            float(la.max()), float(lo.max()))]
-            info = bridgetypes.chain_structure(self.frame, chain, self._wet_at if self.wet is not None else None,
-                                               infra)
-            return bridgetypes.structure_members(chain, info, self._ground,
-                                                 self._wet_at if self.wet is not None else None,
-                                                 road_lines=self._roads_near)
+            wet = self._wet_at if self.wet is not None else None
+            beams, piers = [], []
+            for info in bridgetypes.chain_structures(self.frame, chain, wet, infra):
+                b, p = bridgetypes.structure_members(chain, info, self._ground, wet, road_lines=self._roads_near)
+                beams += b
+                piers += p
+            return beams, piers
         except Exception as ex:             # a plain deck rather than no bridge
             log.debug("bridge structure: %s: %s", type(ex).__name__, ex)
             return [], []

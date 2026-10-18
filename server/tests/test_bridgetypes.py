@@ -65,9 +65,27 @@ class StructureTest(unittest.TestCase):
 
     def test_size_rule_outside_the_inventory(self):
         bt._db = db_with((90000.0, 0.0, bt.NBI_THROUGH_TRUSS, 180.0))
-        wet = lambda xy: np.abs(xy[:, 0]) < 100                          # 200 m of water
-        self.assertEqual(bt.chain_structure(FRAME, [deck()], wet)["src"], "size")
-        self.assertIsNone(bt.chain_structure(FRAME, [deck()], lambda xy: np.abs(xy[:, 0]) < 40))
+        wet = lambda xy: np.abs(xy[:, 0]) < 200                          # 400 m of water
+        self.assertEqual(bt.chain_structure(FRAME, [deck(-300.0, 300.0)], wet)["src"], "size")
+        self.assertIsNone(bt.chain_structure(FRAME, [deck(-300.0, 300.0)], lambda xy: np.abs(xy[:, 0]) < 100))
+
+    def test_size_rule_not_on_a_network(self):
+        """A city's elevated network is one long chain (Tokyo's: 76 km): no truss for its runs over water."""
+        bt._db = db_with((90000.0, 0.0, bt.NBI_THROUGH_TRUSS, 180.0))
+        wet = lambda xy: np.abs(xy[:, 0]) < 200
+        self.assertEqual(bt.chain_structures(FRAME, [deck(-5000.0, 5000.0)], wet), [])
+
+    def test_each_tagged_outline_its_own_site(self):
+        bt._db = db_with((90000.0, 0.0, 1, 0.0))
+        a = Outline((-1900, -10, -1500, 10), {"bridge:structure": "suspension", "colour": "orange"})
+        b = Outline((1500, -10, 1900, 10), {"bridge:structure": "truss"})
+        got = bt.chain_structures(FRAME, [deck(-2000.0, 2000.0)], None, [a, b])
+        self.assertEqual(sorted(g["type"] for g in got), sorted([bt.NBI_SUSPENSION, bt.NBI_THROUGH_TRUSS]))
+        self.assertEqual({g["type"]: g["paint"] for g in got}[bt.NBI_SUSPENSION], "orange")
+        beams, _ = bt.structure_members([deck(-2000.0, 2000.0)], [g for g in got if g["type"] == bt.NBI_SUSPENSION][0],
+                                        lambda xy: np.zeros(len(xy)))
+        xs = np.array([p[0] for bm in beams for p in bm[:2]])
+        self.assertTrue(len(xs) and xs.max() < -1000.0, "the suspension span on its own outline")
 
     def test_osm_tag_first(self):
         bt._db = db_with((20.0, 5.0, bt.NBI_THROUGH_TRUSS, 180.0))
