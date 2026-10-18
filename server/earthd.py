@@ -1012,6 +1012,7 @@ class Server:
         if items is not None:           # front doors and shopfronts, driveways into the road mesh
             drives = []
             props.extend(buildingsmod.doors(items, lines, x0, y0, drives))
+            drives.extend(buildingsmod.garage_drives(items, lines, x0, y0))
             chunks += drives
             park = parkingmod.clear_of(park, props, drives)
             park = parkingmod.tile_lot_spots(anchor.frame, tx, ty, self.mapdata, elev, items, park)

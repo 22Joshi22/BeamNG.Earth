@@ -248,6 +248,20 @@ class ParkingDeckTest(unittest.TestCase):
                 return True
         return False
 
+    def test_skin_tower_and_entrance(self):
+        # reports #51/#52 (2026-10-17): a brick or precast skin, a stair tower over the roof, a driveway from the road
+        spec, (P, UV, T, M, mats, C) = self.deck(60, 40)
+        used = {mats[k] for k in np.unique(M)}
+        self.assertTrue(used & {bld.BRICK_WALL, bld.CONCRETE}, used)
+        self.assertGreater(P[:, 2].max(), 9.0 + bld.STAIR_TOWER_UP - 0.2, "a stair tower over the top deck")
+        # a road 8 m south of the garage's south edge (y = 0), running east-west
+        road = (np.array([[-50.0, -12.0], [120.0, -12.0]]), 4.0)
+        drives = bld.garage_drives([(spec, 0.0, 0.0)], [road], 0.0, 0.0)
+        self.assertEqual(len(drives), 1)
+        n = np.array(drives[0]["n"])[:, :2]
+        self.assertGreater(n[:, 1].max(), 0.0, "into the ground deck")
+        self.assertAlmostEqual(n[:, 1].min(), -12.0 + 4.1, places=1, msg="to the road's edge")
+
     def test_a_big_garage_is_open_decks_with_a_ramp_well(self):
         # the user, 2026-10-14: "garage buildings ... are solid"
         spec, (P, UV, T, M, mats, C) = self.deck(60, 40)

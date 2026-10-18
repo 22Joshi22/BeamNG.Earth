@@ -390,5 +390,32 @@
       {}
     ],
     "translucent": false
+  },
+  "bne_bld_brick": {
+    "name": "bne_bld_brick",
+    "mapTo": "bne_bld_brick",
+    "class": "Material",
+    "version": 1.5,
+    "persistentId": "b90de9cb-aaa2-557f-a46d-beb6b54c03cc",
+    "Stages": [
+      {
+        "baseColorMap": "/assets/materials/tileable/brick/brick_plain/t_bricks_red_01_b.color.png",
+        "normalMap": "/assets/materials/tileable/brick/brick_plain/t_bricks_red_01_nm.normal.png",
+        "roughnessMap": "/assets/materials/tileable/brick/brick_plain/t_bricks_red_01_r.data.png",
+        "ambientOcclusionMap": "/assets/materials/tileable/brick/brick_plain/t_bricks_red_01_ao.data.png",
+        "metallicFactor": 0,
+        "baseColorFactor": [
+          1,
+          1,
+          1,
+          1
+        ],
+        "vertColor": true
+      },
+      {},
+      {},
+      {}
+    ],
+    "translucent": false
   }
 }
