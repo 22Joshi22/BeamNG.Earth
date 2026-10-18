@@ -257,6 +257,28 @@ class MapData:
         """True when the layer's file exists (not read: cheap enough for the event loop)."""
         return os.path.exists(self.path(key, layer))
 
+    def layer_provenance(self, key, layer):
+        """The provenance dict of a cached layer file, None when it is not cached (or has none): only that entry of
+        the file is read (np.load is lazy per array), and remembered per file (credits.feature_ids asks every second,
+        from the event loop). Never fetches."""
+        path = self.path(_key(key), layer)
+        memo = self.__dict__.setdefault("_prov_memo", {})
+        if path in memo:
+            return memo[path]
+        p = None
+        try:
+            with np.load(path, allow_pickle=False) as z:
+                if "provenance" in z.files:
+                    p = json.loads(str(z["provenance"]))
+        except FileNotFoundError:
+            return None                 # (not remembered: it may be built later)
+        except Exception:
+            p = None
+        if len(memo) > 4096:
+            memo.clear()
+        memo[path] = p
+        return p
+
     def _load(self, path):
         """A layer file's arrays, or None when it is missing or unreadable (truncated, a damaged
         deflate stream, another layout): a miss, rebuilt and written again."""

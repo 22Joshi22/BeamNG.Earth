@@ -67,12 +67,49 @@ ELEVATION = {
     demmod.AWS["name"]: "AWS Terrain Tiles / Mapzen",
 }
 WEATHER_ID = "wx:open-meteo"
-# Display order of the ids (unknown imagery sources follow, by name)
-ORDER = ([f"img:{n}" for n in IMAGERY] + [f"dem:{n}" for n in ELEVATION] + [WEATHER_ID])
+
+# The overlay's short names (the user, 2026-10-18: "trim down the amount of text we use to credit a single source").
+# The full wordings above stay the attribution of record: hello.attribution (the settings page) and CREDITS.md.
+SHORT = {
+    "img:md6in": "MD iMAP", "img:naipusda": "USDA NAIP", "img:naip": "USDA NAIP", "img:usgs": "USGS",
+    "img:eox2023": "EOX Sentinel-2 cloudless 2023 (Copernicus)",
+    "img:eox2016": "EOX Sentinel-2 cloudless 2016 (Copernicus)",
+    "img:ct2023": "CT ECO", "img:ma2025": "MassGIS", "img:dc2025": "DC OCTO", "img:indiana": "Indiana IGIO",
+    "img:ohio": "Ohio OGRIP", "img:ncarolina": "NC OneMap", "img:penn": "PEMA / PASDA", "img:virginia": "VGIN",
+    "img:newyork": "NYS ITS", "img:newjersey": "NJ OGIS", "img:delaware": "Delaware FirstMap", "img:vermont": "VCGI",
+    "img:swiss": "swisstopo", "img:france": "IGN France", "img:spain": "PNOA IGN Spain", "img:netherlands": "PDOK",
+    "img:luxembourg": "geoportail.lu", "img:austria": "basemap.at", "img:it_bolzano": "Prov. Bozen",
+    "img:it_pcn": "Geoportale Nazionale", "img:czechia": "CUZK", "img:estonia": "Maa-amet",
+    "img:flanders": "Digitaal Vlaanderen", "img:de_bayern": "LDBV Bayern", "img:de_nrw": "Geobasis NRW",
+    "img:de_bw": "LGL BW", "img:de_nds": "LGLN", "img:de_berlin": "Geoportal Berlin", "img:de_hessen": "HVBG Hessen",
+    "img:japan": "GSI Japan", "img:au_nsw": "Spatial Services NSW", "img:au_tas": "theLIST Tasmania",
+    "img:ontario": "Ontario GEO",
+    f"dem:{demmod.MAPTERHORN['name']}": "Mapterhorn", f"dem:{demmod.AWS['name']}": "AWS Terrain Tiles / Mapzen",
+    WEATHER_ID: "Open-Meteo",
+}
+# Every other source that built what is near the player (the user, 2026-10-18: "show all sources", not only those
+# that ask for credit): the map data's datasets (the cells' provenance), land cover, canopy, sea depth, bridge types,
+# airports, gravity. id -> short name.
+FEATURES = {
+    "map:Overture": "Overture Maps", "map:OpenStreetMap": "OpenStreetMap", "map:Microsoft ML Buildings": "Microsoft",
+    "map:TomTom": "TomTom", "map:Esri Community Maps": "Esri", "map:Google Open Buildings": "Google",
+    "map:USGS Lidar": "USGS Lidar", "map:doi:10.5281/zenodo.8174931": "Shi et al. (East Asia buildings)",
+    "land:esa-worldcover": "ESA WorldCover", "canopy:meta-wri-chm": "Meta & WRI",
+    "sea:noaa": "NOAA NCEI", "bridge:nbi": "FHWA NBI", "bridge:wikidata": "Wikidata",
+    "air:ourairports": "OurAirports", "grav:egm2008": "NGA EGM2008",
+}
+SHORT.update(FEATURES)
+GROUPS = [("img", "Imagery", "Far imagery"), ("dem", "Elevation", "Far elevation"), ("map", "Map", "Far map"),
+          ("land", "Land cover", "Far land cover"), ("canopy", "Trees", "Far trees"), ("sea", "Sea depth", "Far sea"),
+          ("bridge", "Bridges", "Far bridges"), ("air", "Airports", "Far airports"), ("wx", "Weather", "Far weather"),
+          ("grav", "Gravity", "Far gravity")]
+# Display order of the ids (unknown ones follow, by name)
+ORDER = ([f"img:{n}" for n in IMAGERY] + [f"dem:{n}" for n in ELEVATION] + list(FEATURES) + [WEATHER_ID])
 
 
-# Imagery.render's counts that are no source: the fallback colour, the relit and colour-matched shares
-NOT_SOURCES = ("none", "deshadow", "colormatch")
+# Imagery.render's counts that are no source: the fallback colour, the relit and colour-matched shares, the leaf-off
+# imagery's share (a count of other sources' texels; it showed as "leafon" in the overlay, 2026-10-18)
+NOT_SOURCES = ("none", "deshadow", "colormatch", "leafon")
 
 
 def _rank(i):
@@ -83,7 +120,8 @@ def ordered(ids):
     return sorted(ids, key=_rank)
 
 
-def label(i):
+def full_label(i):
+    """The source's full attribution wording (CREDITS.md)."""
     kind, _, name = i.partition(":")
     if kind == "img":
         return IMAGERY.get(name, name)
@@ -91,22 +129,102 @@ def label(i):
         return ELEVATION.get(name, name)
     if i == WEATHER_ID:
         return weathermod.CREDIT
-    return name
+    return FEATURES.get(i, name)
+
+
+def label(i):
+    """The overlay's short name of a source id."""
+    return SHORT.get(i) or full_label(i)
 
 
 def line(ids, far=False):
-    """'Imagery: a; b | Elevation: c | Weather data by Open-Meteo.com' (far: 'Far imagery: ...
-    | Far elevation: ...'), in ORDER; '' for no ids."""
-    groups = {"img": [], "dem": [], "wx": []}
+    """'Imagery: a, b | Elevation: c | Map: OpenStreetMap, Overture Maps | ... | Weather: Open-Meteo' (far: 'Far
+    imagery: ...'), short names (label), in ORDER, each name once; '' for no ids."""
+    groups = {}
     for i in ordered(ids):
-        groups.setdefault(i.partition(":")[0], []).append(label(i))
+        names = groups.setdefault(i.partition(":")[0], [])
+        n = label(i)
+        if n not in names:
+            names.append(n)
     out = []
-    if groups["img"]:
-        out.append(("Far imagery: " if far else "Imagery: ") + "; ".join(groups["img"]))
-    if groups["dem"]:
-        out.append(("Far elevation: " if far else "Elevation: ") + "; ".join(groups["dem"]))
-    out += groups["wx"]
+    for kind, title, far_title in GROUPS:
+        if groups.get(kind):
+            out.append(f"{far_title if far else title}: " + ", ".join(groups[kind]))
+    for kind, names in groups.items():          # (a kind without a group: its names alone)
+        if kind not in {g[0] for g in GROUPS}:
+            out.append(", ".join(names))
     return " | ".join(out)
+
+
+FEATURE_NEAR_M = 1500.0         # m: the map data, bridges and airports this close to the player are credited
+
+
+def feature_ids(conn):
+    """The ids of the non-tile sources that built what is near the player (FEATURES): the map data's datasets in
+    the cells around it (their provenance: OpenStreetMap, Microsoft's buildings, TomTom, ...) once road tiles are
+    shown, the land cover with the surface on, the canopy with trees shown, NOAA with sea tiles, the bridge
+    inventories with a record near, OurAirports with a runway near, EGM2008 with real gravity. Cheap: cached
+    provenance only (mapdata.layer_provenance), never a download."""
+    import mapcells
+    s = conn.s
+    ids = set()
+    anchor = getattr(s, "anchors", {}).get(conn.active)
+    if anchor is None:
+        return ids
+    fx, fy = conn.focus
+    lat, lon, _ = anchor.frame.enu_to_geodetic(fx, fy, 0.0)
+    lat, lon = float(lat), float(lon)
+    md = getattr(s, "mapdata", None)
+    roads = getattr(conn, "roads", None)
+    roads_on = md is not None and roads is not None and getattr(roads, "aid", None) == conn.active and roads.sent
+    veg = getattr(conn, "veg", None)
+    veg_on = getattr(s, "veg", None) is not None and veg is not None and getattr(veg, "aid", None) == conn.active \
+        and veg.sent
+    if md is not None and hasattr(md, "layer_provenance"):
+        dlat = FEATURE_NEAR_M / 110540.0
+        dlon = FEATURE_NEAR_M / (111320.0 * max(0.1, math.cos(math.radians(lat))))
+        for key in mapcells.cells_for_bbox(lat - dlat, lon - dlon, lat + dlat, lon + dlon):
+            layers = (("roads", "buildings", "water") if roads_on else ()) \
+                + (("landcover",) if getattr(s, "surface", None) is not None else ()) \
+                + (("canopy",) if veg_on else ())
+            for layer in layers:
+                p = md.layer_provenance(key, layer)
+                if not isinstance(p, dict):
+                    continue
+                pid = p.get("id", "")
+                if pid.startswith("overture:"):
+                    ds = [d.get("dataset") for d in p.get("datasets") or [] if d.get("features", 1) > 0]
+                    if ds:
+                        ids.add("map:Overture")
+                        ids |= {f"map:{d}" for d in ds if d}
+                elif pid == "esa-worldcover":
+                    ids.add("land:esa-worldcover")
+                elif pid == "meta-wri-chm":
+                    ids.add("canopy:meta-wri-chm")
+    sea = getattr(conn, "sea_sent", None)
+    if sea and sea[0] == conn.active and sea[1] and sea[1][0]:
+        ids.add("sea:noaa")
+    if roads_on:
+        try:
+            import bridgetypes
+            if len(bridgetypes.nbi_near(lat, lon, FEATURE_NEAR_M)[0]):
+                ids.add("bridge:nbi")
+            if bridgetypes.wd_near(lat, lon, FEATURE_NEAR_M):
+                ids.add("bridge:wikidata")
+        except Exception:           # (the inventories are optional files)
+            pass
+    ap = getattr(s, "airports", None)
+    db = getattr(ap, "db", None)
+    if db is not None:
+        try:
+            if db.near(lat, lon, FEATURE_NEAR_M):
+                ids.add("air:ourairports")
+        except Exception:
+            pass
+    grav = getattr(getattr(conn, "gravity", None), "msg", None)
+    if isinstance(grav, dict) and grav.get("source") == "egm2008":
+        ids.add("grav:egm2008")
+    return ids
 
 
 def dem_keys(frame, bbox, zoom):
@@ -189,6 +307,10 @@ class Credits:
             return None
         if conn.weather.msg is not None:
             near.add(WEATHER_ID)
+        try:
+            near |= feature_ids(conn)
+        except Exception:               # (a bug here must not lose the imagery credits)
+            log.exception("credits: feature sources failed")
         far -= near
         return {"type": "credits", "v": VERSION, "near": line(near), "far": line(far, far=True),
                 "ids": ordered(near), "farIds": ordered(far)}

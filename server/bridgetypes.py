@@ -83,6 +83,17 @@ def _load_wd():
     return _wd
 
 
+def wd_near(lat, lon, r_m):
+    """True when a Wikidata typed bridge (bridges_wd.npz) lies within r_m of (lat, lon) (the credits)."""
+    wd = _load_wd()
+    la = wd["lat"]
+    if not len(la):
+        return False
+    kx = 111320.0 * np.cos(np.radians(lat))
+    d = np.hypot((wd["lon"] - lon) * kx, (la - lat) * 110540.0)
+    return bool((d <= r_m).any())
+
+
 def wd_matches(frame, lines):
     """[(distance m, index, point (2,) in the frame)] of Wikidata's typed bridges (bridges_wd.npz,
     tools/build_bridge_wikidata.py) within WD_MATCH_M of the deck lines, nearest first."""

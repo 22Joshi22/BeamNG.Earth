@@ -41,6 +41,20 @@ player right now, e.g.:
 - The full credit list stays in CREDITS.md and on the settings page.
 - Built after the dev tools branch is merged (shares ui.lua / settings.lua).
 
+### Every source, short names (the user, 2026-10-18)
+- "Show all sources", not only those that ask for credit: besides the tiles' imagery and elevation and the
+  weather, `credits.feature_ids` adds what built the world near the player: the map data's datasets
+  (the cached cells' provenance within 1.5 km once road tiles are shown: OpenStreetMap, Overture,
+  Microsoft's ML buildings, TomTom, Esri, Google, ...; `mapdata.layer_provenance` reads only that entry
+  of the cached file, never fetches), ESA WorldCover (surface on), Meta & WRI canopy (trees shown), NOAA
+  NCEI (sea tiles), FHWA NBI / Wikidata (a typed bridge record near), OurAirports (a runway near) and
+  NGA EGM2008 (real gravity).
+- "Trim the text per source": the overlay names each source by a short name (`credits.SHORT`), once,
+  grouped: `Imagery: USGS, NYS ITS | Elevation: Mapterhorn | Map: Overture Maps, OpenStreetMap, Microsoft
+  | Land cover: ESA WorldCover | Trees: Meta & WRI | Weather: Open-Meteo | Gravity: NGA EGM2008`. The
+  full wordings (`credits.full_label`, CREDITS.md) stay the attribution of record on the settings page.
+- Imagery's leaf-off share ("leafon", a count of other sources' texels) is no source (it showed raw).
+
 ### Built (2026-10-10, merged to main; offline-tested, in-game check pending)
 - **Server** `server/credits.py` + small hooks: `dem.Dem.served` records which provider served each
   DEM tile (Mapterhorn / AWS fallback / none; also when netfetch fails over from Mapterhorn to AWS);
