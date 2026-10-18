@@ -700,6 +700,7 @@ def _merge_overlaps(lines, zs, widths, levels, rounds=3):
         new = [z.copy() for z in zs]
         acc = [np.zeros(len(z)) for z in zs]
         cnt = [np.zeros(len(z)) for z in zs]
+        up = [np.zeros(len(z)) for z in zs]     # twin carriageways: how far up to the other's height
         for i, j in pairs:
             A, B = lines[i][:, :2], lines[j][:, :2]
             P, Q = B[:-1], B[1:]
@@ -721,9 +722,17 @@ def _merge_overlaps(lines, zs, widths, levels, rounds=3):
             w = depth * np.clip((cos - 0.85) / 0.1, 0.0, 1.0) * np.isfinite(zj)
             acc[i] += w * np.nan_to_num(zj)
             cnt[i] += w
+            if levels is not None and levels[i] == levels[j]:
+                # one level's carriageways side by side are one deck (the Tsing Ma Bridge's two directions stood 15 m
+                # apart in height, the one over the lower deck lifted by the stacking, 2026-10-18): the lower lifted
+                # to the higher, fading out from DUAL_DECK_M apart
+                w2 = np.clip((DUAL_DECK_M - dmin) / 10.0, 0.0, 1.0) * np.clip((cos - 0.85) / 0.1, 0.0, 1.0)
+                lift = np.where(np.isfinite(zj), w2 * np.maximum(np.nan_to_num(zj) - zs[i], 0.0), 0.0)
+                up[i] = np.maximum(up[i], lift)
         for i in range(n):
             m = cnt[i] > 0
             new[i][m] = (zs[i][m] + acc[i][m]) / (1 + cnt[i][m])
+            new[i] = np.maximum(new[i], zs[i] + up[i])
             a, b, _ = edges[i]
             if deg[a] == 1:
                 new[i][0] = zs[i][0]
@@ -735,6 +744,9 @@ def _merge_overlaps(lines, zs, widths, levels, rounds=3):
         s = np.r_[0.0, np.cumsum(np.hypot(*np.diff(lines[i][:, :2], axis=0).T))]
         out.append(_smooth_pinned(z, s[-1] / max(len(s) - 1, 1), DECK_SIGMA) if len(z) > 3 else z)
     return out
+
+
+DUAL_DECK_M = 30.0      # m: parts of one level parallel within this are one deck's carriageways (_merge_overlaps)
 
 
 def deck_profile(lines, ground_fn, crossings=(), clear=None, grade=None, lift=None, levels=None, widths=None):
