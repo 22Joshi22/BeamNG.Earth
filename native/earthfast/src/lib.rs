@@ -2053,6 +2053,110 @@ fn points_near_segments<'py>(py: Python<'py>, p: PyReadonlyArray2<'py, f64>, a: 
     numpy::ndarray::Array1::from(out).into_pyarray(py)
 }
 
+/// roads.tunnel_hole_mask for one tunnel part, into mask (n, n) in place: the samples (ix, iy) of the block (heights u,
+/// sample at (x0 + ix * square, y0 + iy * square)) over the tube's footprint (half width hw) beside a segment of xy
+/// (k, 2) whose ground lies between its floor z (k,) and the vault th (+- margin); for a low arch (low) instead its
+/// mouths (arc within end_m of a portal end flagged m0 / m1) out to hw + side_extra, whatever the height. The same
+/// float64 sums as the numpy version, sample for sample.
+#[pyfunction]
+#[allow(clippy::too_many_arguments)]
+fn tunnel_holes(py: Python<'_>, mut mask: numpy::PyReadwriteArray2<'_, bool>, u: PyReadonlyArray2<'_, f64>, x0: f64, y0: f64,
+                square: f64, xy: PyReadonlyArray2<'_, f64>, z: PyReadonlyArray1<'_, f64>, hw: f64, th: f64, low: bool,
+                m0: bool, m1: bool, margin: f64, end_m: f64, side_extra: f64) {
+    let (uv, xv, zv) = (u.as_array(), xy.as_array(), z.as_array());
+    let mut mv = mask.as_array_mut();
+    py.allow_threads(|| {
+        let n = uv.shape()[0] as i64;
+        let k = xv.shape()[0];
+        if k < 2 { return; }
+        let mut sj = vec![0.0f64; k];
+        for j in 1..k { sj[j] = sj[j - 1] + (xv[[j, 0]] - xv[[j - 1, 0]]).hypot(xv[[j, 1]] - xv[[j - 1, 1]]); }
+        let total = sj[k - 1];
+        let reach = if low { hw + side_extra } else { hw };
+        for j in 0..k - 1 {
+            let (ax, ay, bx, by) = (xv[[j, 0]], xv[[j, 1]], xv[[j + 1, 0]], xv[[j + 1, 1]]);
+            let (lox, loy, hix, hiy) = (ax.min(bx) - hw, ay.min(by) - hw, ax.max(bx) + hw, ay.max(by) + hw);
+            let ix0 = (((lox - x0) / square).floor() as i64).max(0);
+            let iy0 = (((loy - y0) / square).floor() as i64).max(0);
+            let ix1 = (((hix - x0) / square).ceil() as i64).min(n - 1);
+            let iy1 = (((hiy - y0) / square).ceil() as i64).min(n - 1);
+            if ix0 > ix1 || iy0 > iy1 { continue; }
+            let (abx, aby) = (bx - ax, by - ay);
+            let l2 = (abx * abx + aby * aby).max(1e-12);
+            for iy in iy0..=iy1 {
+                let yy = y0 + iy as f64 * square;
+                for ix in ix0..=ix1 {
+                    let xx = x0 + ix as f64 * square;
+                    let t0 = ((xx - ax) * abx + (yy - ay) * aby) / l2;
+                    if !(0.0..=1.0).contains(&t0) { continue; }
+                    let t = t0;
+                    let d = (xx - (ax + t * abx)).hypot(yy - (ay + t * aby));
+                    let hit = if low {
+                        let s = sj[j] + t * (sj[j + 1] - sj[j]);
+                        d <= reach && ((s <= end_m && m0) || (s >= total - end_m && m1))
+                    } else {
+                        let floor = zv[j] + t * (zv[j + 1] - zv[j]);
+                        let g = uv[[iy as usize, ix as usize]];
+                        d <= hw && g > floor - margin && g < floor + th + margin
+                    };
+                    if hit { mv[[iy as usize, ix as usize]] = true; }
+                }
+            }
+        }
+    });
+}
+
+/// roads.arch_raise for one low arch, into z (m,) in place at the points (px, py): over the vault (beside a segment of
+/// xy within hw) at least floor + th + soil, at its mouths (arc within mouth_m of an end flagged m0 / m1) at most
+/// floor - 0.02. The numpy version's sums.
+#[pyfunction]
+#[allow(clippy::too_many_arguments)]
+fn arch_raise_part(py: Python<'_>, mut z: numpy::PyReadwriteArray1<'_, f64>, px: PyReadonlyArray1<'_, f64>,
+                   pyy: PyReadonlyArray1<'_, f64>, xy: PyReadonlyArray2<'_, f64>, zf: PyReadonlyArray1<'_, f64>, hw: f64,
+                   th: f64, soil: f64, mouth_m: f64, m0: bool, m1: bool) {
+    let (xv, fv) = (xy.as_array(), zf.as_array());
+    let pxs = px.as_slice().expect("contiguous px");
+    let pys = pyy.as_slice().expect("contiguous py");
+    let zs = z.as_slice_mut().expect("contiguous z");
+    py.allow_threads(|| {
+        let k = xv.shape()[0];
+        if k < 2 { return; }
+        // per segment: start, direction, squared length, its length, arc at its start, floor at both ends
+        let mut seg: Vec<[f64; 8]> = Vec::with_capacity(k - 1);
+        let mut s0 = 0.0;
+        for j in 0..k - 1 {
+            let (ax, ay, abx, aby) = (xv[[j, 0]], xv[[j, 1]], xv[[j + 1, 0]] - xv[[j, 0]], xv[[j + 1, 1]] - xv[[j, 1]]);
+            let l2 = (abx * abx + aby * aby).max(1e-12);
+            let len = abx.hypot(aby);
+            seg.push([ax, ay, abx, aby, l2, s0, fv[j], fv[j + 1]]);
+            s0 += len;
+        }
+        let total = s0;
+        let (mut lox, mut loy, mut hix, mut hiy) = (f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY);
+        for j in 0..k { lox = lox.min(xv[[j, 0]]); loy = loy.min(xv[[j, 1]]); hix = hix.max(xv[[j, 0]]); hiy = hiy.max(xv[[j, 1]]); }
+        let (lox, loy, hix, hiy) = (lox - hw, loy - hw, hix + hw, hiy + hw);
+        // the box test without branches (random points: a branch here mispredicted half the time, 1.5 ms a block)
+        let near: Vec<usize> = pxs.iter().zip(pys.iter()).enumerate()
+            .filter(|(_, (&x, &y))| (x >= lox) & (x <= hix) & (y >= loy) & (y <= hiy)).map(|(i, _)| i).collect();
+        for i in near {
+            let (x, y) = (pxs[i], pys[i]);
+            let zi = &mut zs[i];
+            for (j, g) in seg.iter().enumerate() {
+                let (ax, ay, abx, aby, l2) = (g[0], g[1], g[2], g[3], g[4]);
+                let t = ((x - ax) * abx + (y - ay) * aby) / l2;
+                if !(0.0..=1.0).contains(&t) { continue; }
+                let d = ((x - ax) * aby - (y - ay) * abx).abs() / l2.sqrt();
+                if d > hw { continue; }
+                let send = if j + 1 < seg.len() { seg[j + 1][5] } else { total };
+                let s = g[5] + t * (send - g[5]);
+                let floor = g[6] + t * (g[7] - g[6]);
+                let mouth = (s <= mouth_m && m0) || (s >= total - mouth_m && m1);
+                if mouth { *zi = zi.min(floor - 0.02); } else { *zi = zi.max(floor + th + soil); }
+            }
+        }
+    });
+}
+
 /// plazas.mesh: triangles (t, 3) over points (n, 2) split at their edges' midpoints (each edge's midpoint shared by
 /// both its triangles: no cracks) until every edge is at most max_edge long; returns (points, triangles). The split
 /// is by the longest edge first, deterministic.
@@ -2448,10 +2552,12 @@ fn earthfast(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(view_distances, m)?)?;
     m.add_function(wrap_pyfunction!(road_corridors, m)?)?;
     m.add_function(wrap_pyfunction!(horizon_steps, m)?)?;
+    m.add_function(wrap_pyfunction!(tunnel_holes, m)?)?;
+    m.add_function(wrap_pyfunction!(arch_raise_part, m)?)?;
     m.add_function(wrap_pyfunction!(subdivide_tris, m)?)?;
     m.add_function(wrap_pyfunction!(deck_edges_covered, m)?)?;
     m.add_function(wrap_pyfunction!(points_near_segments, m)?)?;
     m.add_function(wrap_pyfunction!(veg_rows_json, m)?)?;
-    m.add("VERSION", 30)?;
+    m.add("VERSION", 31)?;
     Ok(())
 }

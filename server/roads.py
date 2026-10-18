@@ -2096,11 +2096,15 @@ def tunnel_hole_mask(parts, u, cx, cy, square, heights=None, mouths=None):
     TunnelProfiles' parts): the samples over a tube's footprint whose ground lies between its floor and its
     vault (+- TUNNEL_HOLE_MARGIN): the portals' openings into the hillside (the ground over the vault stays, as
     does ground under a tube crossing a hollow). Pure."""
+    import fast
     import roadmesh
     n = u.shape[0]
     half = n * square / 2
     x0, y0 = cx - half, cy - half
     mask = np.zeros(u.shape, bool)
+    rust = fast.AVAILABLE and hasattr(fast._ef, "tunnel_holes")
+    if rust:
+        u = np.ascontiguousarray(u, np.float64)
     for _fid, spec, xy, z, _lon in parts:
         xy = np.asarray(xy, np.float64)
         z = np.asarray(z, np.float64)
@@ -2109,6 +2113,12 @@ def tunnel_hole_mask(parts, u, cx, cy, square, heights=None, mouths=None):
         hw = spec.width / 2 + roadmesh.TUNNEL_SHOULDER + TUNNEL_HOLE_MARGIN
         th = (heights or {}).get(_fid, roadmesh.TUNNEL_H)       # heights: a low arch's tube (TunnelProfiles.heights)
         low = th < roadmesh.TUNNEL_H - 0.05
+        if rust:                # the Rust kernel (the same sums, per part)
+            m0, m1 = (mouths or {}).get(_fid, (True, True))
+            fast._ef.tunnel_holes(mask, u, float(x0), float(y0), float(square), np.ascontiguousarray(xy),
+                                  np.ascontiguousarray(z), float(hw), float(th), bool(low), bool(m0), bool(m1),
+                                  float(TUNNEL_HOLE_MARGIN), float(LOW_HOLE_M + LOW_HOLE_STEP), float(ARCH_SIDE_M + 1.0))
+            continue
         sj = np.r_[0.0, np.cumsum(np.hypot(*np.diff(xy, axis=0).T))]
         for j in range(len(xy) - 1):
             a, b = xy[j], xy[j + 1]
@@ -2153,8 +2163,13 @@ def arch_raise(parts, heights, px, py, z, mouths=None):
     their mouths (LOW_HOLE_M, cut there by tunnel_hole_mask): the ground dipping into a low tube near its mouths
     made one-sided terrain triangles from the road's level up to the soil, seen as dark wedges in the opening from
     outside (Central Park, 2026-10-17). Pure."""
+    import fast
     import roadmesh
     z = np.array(z, np.float64, copy=True)
+    rust = fast.AVAILABLE and hasattr(fast._ef, "arch_raise_part")
+    if rust:
+        px = np.ascontiguousarray(px, np.float64)
+        py = np.ascontiguousarray(py, np.float64)
     for fid, spec, xy, zf, _lon in parts:
         th = (heights or {}).get(fid)
         if th is None or th >= roadmesh.TUNNEL_H - 0.05:
@@ -2164,6 +2179,17 @@ def arch_raise(parts, heights, px, py, z, mouths=None):
         if len(xy) < 2 or not np.isfinite(zf).all():
             continue
         hw = spec.width / 2 + roadmesh.TUNNEL_SHOULDER + ARCH_SIDE_M
+        if rust:                # the Rust kernel (the same sums, per part) on the points in its box (numpy's test)
+            m0, m1 = (mouths or {}).get(fid, (True, True))
+            lo, hi = xy.min(0) - hw, xy.max(0) + hw
+            k = np.flatnonzero((px >= lo[0]) & (px <= hi[0]) & (py >= lo[1]) & (py <= hi[1]))
+            if len(k):
+                zk = np.ascontiguousarray(z[k])
+                fast._ef.arch_raise_part(zk, np.ascontiguousarray(px[k]), np.ascontiguousarray(py[k]),
+                                         np.ascontiguousarray(xy), np.ascontiguousarray(zf), float(hw), float(th),
+                                         float(ARCH_SOIL_MIN), float(LOW_HOLE_M), bool(m0), bool(m1))
+                z[k] = zk
+            continue
         sj = np.r_[0.0, np.cumsum(np.hypot(*np.diff(xy, axis=0).T))]
         lo = xy.min(0) - hw
         hi = xy.max(0) + hw

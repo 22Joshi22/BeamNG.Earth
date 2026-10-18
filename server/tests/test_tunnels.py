@@ -270,5 +270,49 @@ class SegmentalArch(unittest.TestCase):
         self.assertTrue(np.allclose(d, r))
 
 
+class RustParity(unittest.TestCase):
+    """tunnel_hole_mask and arch_raise in Rust (earthfast.tunnel_holes / arch_raise_part) and numpy, sample for
+    sample (the user, 2026-10-17: move the tunnel code to Rust)."""
+
+    def parts(self, rng):
+        out, heights, mouths = [], {}, {}
+        for k in range(4):
+            xy = np.cumsum(rng.uniform(-8, 12, (rng.integers(3, 9), 2)), axis=0)
+            z = 10 + np.cumsum(rng.normal(0, 0.3, len(xy)))
+            fid = f"p{k}"
+            out.append((fid, Spec(float(rng.uniform(5, 12)), "paved", False, "residential"), xy, z, 0.0))
+            if k % 2:
+                heights[fid] = float(rng.uniform(3.6, 6.0))
+                mouths[fid] = (bool(rng.integers(0, 2)), bool(rng.integers(0, 2)))
+        return out, heights, mouths
+
+    def both(self, f):
+        import fast
+        a = f()
+        ef, avail = fast._ef, fast.AVAILABLE
+        try:
+            fast.AVAILABLE = False
+            b = f()
+        finally:
+            fast._ef, fast.AVAILABLE = ef, avail
+        return a, b
+
+    def test_holes_and_raise_agree(self):
+        import fast
+        if not hasattr(fast._ef, "tunnel_holes"):
+            self.skipTest("no kernel")
+        rng = np.random.default_rng(11)
+        for _ in range(8):
+            parts, heights, mouths = self.parts(rng)
+            n, sq = 64, 2.0
+            u = 10 + rng.normal(0, 3, (n, n))
+            a, b = self.both(lambda: roads.tunnel_hole_mask(parts, u, 20.0, 20.0, sq, heights, mouths))
+            self.assertTrue(np.array_equal(a, b))
+            px, py = rng.uniform(-20, 80, 500), rng.uniform(-20, 80, 500)
+            zz = 10 + rng.normal(0, 3, 500)
+            a, b = self.both(lambda: roads.arch_raise(parts, heights, px, py, zz, mouths))
+            self.assertTrue(np.array_equal(a, b))
+
+
 if __name__ == "__main__":
     unittest.main()
