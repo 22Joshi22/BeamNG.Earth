@@ -78,12 +78,14 @@ class Mesh(unittest.TestCase):
         ch = roads._chunk({**roads.TUNNEL, "deck": True, "tunnel": True}, 7.0, pts)
         ch.update(fixed=True, deck=True, tunnel=True, portal=[True, False])
         P, T, UV, mats, M = roadmesh.tunnel([ch], (0.0, 0.0, 0.0))
-        self.assertEqual(mats, [roadmesh.TUNNEL_SIDE, roadmesh.TUNNEL_LIGHT])
+        self.assertEqual(mats, [roadmesh.TUNNEL_SIDE, roadmesh.TUNNEL_LIGHT, roadmesh.TUNNEL_INNER])   # (the inside darker)
         lamp = T[M == 1]
-        self.assertGreater(len(lamp), 0)                          # the lamps, under the vault, faced down
-        self.assertTrue((P[lamp][:, :, 2] < 5.0 + roadmesh.TUNNEL_H).all())
+        self.assertGreater(len(lamp), 0)                          # the lamps: on both walls, faced into the tube
+        self.assertTrue((P[lamp][:, :, 2] < 5.0 + roadmesh.TUNNEL_WALL_H).all())
         ln = np.cross(P[lamp[:, 1]] - P[lamp[:, 0]], P[lamp[:, 2]] - P[lamp[:, 0]])
-        self.assertTrue((ln[:, 2] < 0).all())
+        cy = P[lamp].mean(1)[:, 1]
+        self.assertTrue((ln[:, 1] * cy < 0).all())               # towards the axis (y = 0)
+        self.assertTrue((cy > 0).any() and (cy < 0).any())
         self.assertAlmostEqual(P[:, 2].max(), 5.0 + roadmesh.TUNNEL_H + roadmesh.PORTAL_FRAME, places=3)
         tube = P[P[:, 0] > 1.0]                                   # past the portal face
         self.assertAlmostEqual(tube[:, 2].max(), 5.0 + roadmesh.TUNNEL_H, places=3)

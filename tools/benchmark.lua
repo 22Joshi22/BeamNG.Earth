@@ -283,14 +283,20 @@ local function flatAt(x, y, z)
   return true
 end
 
-local function groundAt(x, y, zRef)
+-- under: the lowest flat surface instead (a tunnel's floor: the first was its tube's roof, the camera in the rock)
+local function groundAt(x, y, zRef, under)
   local top = zRef + B.RAY_UP
+  local low
   for _ = 1, 24 do
     local okR, hit = pcall(castRay, vec3(x, y, top), vec3(x, y, zRef - B.RAY_LEN), true, true)
     if not (okR and type(hit) == 'table' and hit.pt and hit.pt.z) then break end
-    if flatAt(x, y, hit.pt.z) then return hit.pt.z end
+    if flatAt(x, y, hit.pt.z) then
+      if not under then return hit.pt.z end
+      low = hit.pt.z
+    end
     top = hit.pt.z - 0.3
   end
+  if low then return low end
   local ok, d = pcall(castRayStatic, vec3(x, y, top), vec3(0, 0, -1), B.RAY_LEN)
   if ok and d and d < B.RAY_LEN then return top - d end
 end
@@ -327,7 +333,7 @@ function B.view(cfg)
   if cfg.alt then
     z = zGeo or cfg.alt -- lat/lon/alt: the ENU height (the Earth curves away from the anchor)
   else
-    ground = groundAt(x, y, pz)
+    ground = groundAt(x, y, pz, cfg.under)
     groundFrom = ground and 'ray' or 'player'
     z = (ground or pz) + (cfg.agl or 2)
   end

@@ -146,6 +146,7 @@ DRIVE_CLASSES = {"motorway", "trunk", "primary", "secondary", "tertiary", "resid
                  "living_street", "service"}
 BRIDGE_SNAP_M = 15.0    # a photo this close to a bridge's centreline, heading along it (BRIDGE_ALONG), is on its deck
 BRIDGE_ALONG = 0.9
+TUNNEL_SNAP_M = 40.0
 SNAP_M = 25.0           # a photo inside a building is moved to the nearest road centreline this close
 
 
@@ -159,8 +160,13 @@ def snapper(lat, lon, radius):
     import mapdata
     md = mapdata.MapData()
     d = (radius + 100) / M_PER_DEG
-    blds, roads, bridges = [], [], []
+    blds, roads, bridges, tunnels = [], [], [], []
     import roads as roadsmod
+
+    def is_tunnel(f, i):
+        if not hasattr(f, "_bne_tunnels"):
+            f._bne_tunnels = roadsmod.tunnel_specs(f)
+        return f._bne_tunnels[i] is not None
 
     def is_bridge(f, i):
         if not hasattr(f, "_bne_bridges"):
@@ -182,7 +188,31 @@ def snapper(lat, lon, radius):
                 out.append(np.asarray(f.lonlat[a:b], np.float64))
                 if layer == "roads" and is_bridge(f, i):
                     bridges.append(out[-1])
+                if layer == "roads" and is_tunnel(f, i):
+                    tunnels.append(out[-1])
     mx = M_PER_DEG * math.cos(math.radians(lat))
+
+    def in_tunnel(la, lo, heading):
+        """(la, lo) on the nearest tunnel line within TUNNEL_SNAP_M heading along it (the photo was shot in the
+        tunnel: GPS drifts there, the Caldecott's were 15-17 m off their bores), else None."""
+        if heading is None:
+            return None
+        p = np.array([lo, la])
+        hv = np.array([math.sin(math.radians(heading)), math.cos(math.radians(heading))])
+        best = None
+        for ln in tunnels:
+            q = (ln - p) * [mx, M_PER_DEG]
+            for u, v in zip(q[:-1], q[1:]):
+                w = v - u
+                t = max(0.0, min(1.0, float(-(u @ w) / max(w @ w, 1e-9))))
+                c = u + w * t
+                dd = float(np.hypot(*c))
+                if dd < TUNNEL_SNAP_M and abs(float(hv @ w)) / max(float(np.hypot(*w)), 1e-9) > BRIDGE_ALONG \
+                        and (best is None or dd < best[0]):
+                    best = (dd, c)
+        if best is None:
+            return None
+        return la + best[1][1] / M_PER_DEG, lo + best[1][0] / mx
 
     def snap(la, lo, heading=None):
         p = np.array([lo, la])
@@ -220,6 +250,7 @@ def snapper(lat, lon, radius):
             return la, lo, 0.0
         c = best[1]
         return la + c[1] / M_PER_DEG, lo + c[0] / mx, round(best[0], 1)
+    snap.in_tunnel = in_tunnel
     return snap
 
 
@@ -247,6 +278,9 @@ def cmd_fetch(a):
                        "width": im.get("width"), "height": im.get("height"), "snapped_m": moved})
         views.append({"name": f"mly_{im['id']}", "lat": la, "lon": lo, "agl": CAMERA_AGL, "heading": round(hd, 1),
                       "pitch": 0, "fov": round(hfov(im), 1)})
+        on = snap.in_tunnel(la, lo, hd)
+        if on is not None:
+            views[-1].update(lat=on[0], lon=on[1], under=True)
         time.sleep(0.2)
     with open(os.path.join(d, "photos.json"), "w") as f:
         json.dump({"name": a.name, "lat": a.lat, "lon": a.lon, "radius": a.radius, "found": len(images),

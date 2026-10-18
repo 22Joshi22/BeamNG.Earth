@@ -442,7 +442,10 @@ TUNNEL_SHOULDER = 1.2      # m of concrete floor between the road's edge and the
 TUNNEL_WALL_H = 4.6        # m of upright wall before the vault
 TUNNEL_H = 6.8             # m from the floor to the vault's top
 PORTAL_FRAME = 6.0         # m of portal face around the opening (hides the terrain hole's 2 m steps)
-TUNNEL_SIDE = DECK_SIDE    # the tube's concrete
+TUNNEL_SIDE = DECK_SIDE    # the tube's concrete (portal faces) ...
+TUNNEL_INNER = "bne_tunnel_inner"   # ... and inside a full tube darker (tunnel.materials.json): lit by the sky as the
+                            # engine lights it, the Caldecott's tube was as bright as the day outside (its photos:
+                            # dark, lit by its lamps, 2026-10-18)
 TUNNEL_STONE = "bne_tunnel_stone"  # a low arch's portal faces and the retaining walls: grey coursed rubble (Central
                                     # Park's transverse walls and arches; the buildings' pale dressed stone read as
                                     # concrete, 2026-10-17)
@@ -462,9 +465,11 @@ LOW_CAP_M = 7.0            # m a low arch's stone top runs back from its portal 
                            # above a row of dark terrain teeth behind the face (79th Street Transverse, 2026-10-17)
 TUNNEL_OVERLAP = 0.25      # m a tube piece reaches past a tile edge
 TUNNEL_LIGHT = "bne_tunnel_light"   # the lamps' emissive material (levels/beamng_earth/art/shapes/beamngEarth)
-TUNNEL_LAMP_OFF = 0.35     # two lamp lines, this share of the half-width either side of the centre, ...
-TUNNEL_LAMP_W = 0.25       # ... this wide, ...
-TUNNEL_LAMP_DROP = 0.05    # ... this far under the vault, lit along every other profile step (2-4 m lamps and gaps)
+TUNNEL_LAMP_EVERY = 6.0    # m between the lamp fixtures along each wall ...
+TUNNEL_LAMP_L = 1.2        # ... each this long, ...
+TUNNEL_LAMP_W = 0.3        # ... this tall, ...
+TUNNEL_LAMP_DROP = 0.25    # ... its middle this far under the wall's top, ...
+TUNNEL_LAMP_IN = 0.08      # ... this far in from the wall
 
 
 def _tunnel_section(hw, th=TUNNEL_H, low=False):
@@ -568,7 +573,8 @@ def tunnel(chunks, origin, walls=()):
         hw = float(np.median(lw)) / 2 + TUNNEL_SHOULDER
         th = float(c.get("tunnel_h") or TUNNEL_H)
         low = th < TUNNEL_H - 0.05                          # a low arch: stone, a short portal face
-        mat = 3 if low else 0                               # (its portal faces: 2, the stone in daylight)
+        mat = 3 if low else 5                               # (its portal faces: 2, the stone in daylight; a full
+                                                            # tube's inside: 5, TUNNEL_INNER)
         sec = _tunnel_section(hw, th, low)
         k, m = len(mid), len(sec)
         rows = np.empty((m, k, 3))
@@ -637,10 +643,13 @@ def tunnel(chunks, origin, walls=()):
             nv += 2 * m
             if low:
                 nv = _arch_cap(P, T, UV, M, nv, mid, u, z, at, k, float(np.max(o[:, 0])), float(o[:, 1].max()), th, origin)
-    mats = [TUNNEL_SIDE, TUNNEL_LIGHT] + ([TUNNEL_STONE, TUNNEL_STONE_IN, TUNNEL_SOIL] if any(mm >= 2 for mm in M) else [])
+    allm = [TUNNEL_SIDE, TUNNEL_LIGHT, TUNNEL_STONE, TUNNEL_STONE_IN, TUNNEL_SOIL, TUNNEL_INNER]
     Tall = np.concatenate(T)
     Mall = np.concatenate([np.full(len(t), m, np.int64) for t, m in zip(T, M)]) if M else np.zeros(len(Tall), np.int64)
-    return (np.concatenate(P), Tall, np.concatenate(UV), mats, Mall)
+    used = sorted(set(int(v) for v in np.unique(Mall)) | {0, 1})     # (concrete and lamps first, as before)
+    remap = np.zeros(len(allm), np.int64)
+    remap[used] = np.arange(len(used))
+    return (np.concatenate(P), Tall, np.concatenate(UV), [allm[i] for i in used], remap[Mall])
 
 
 def _arch_cap(P, T, UV, M, nv, mid, u, z, at, k, side, top, th, origin):
@@ -676,25 +685,33 @@ def _arch_cap(P, T, UV, M, nv, mid, u, z, at, k, side, top, th, origin):
 
 
 def _tunnel_lamps(P, T, UV, M, nv, mid, u, z, hw, origin):
-    """Two dashed lamp strips under a tube's vault (material TUNNEL_LIGHT, index 1), appended to P, T, UV, M; returns
-    the new vertex count. Pure but for the lists."""
-    a = math.acos(TUNNEL_LAMP_OFF)
-    h = TUNNEL_WALL_H + math.sin(a) * (TUNNEL_H - TUNNEL_WALL_H) - TUNNEL_LAMP_DROP
+    """Lamp fixtures along both walls of a tube (material TUNNEL_LIGHT, index 1): TUNNEL_LAMP_L long every
+    TUNNEL_LAMP_EVERY m, just under the springing, faced into the tube; appended to P, T, UV, M; returns the new vertex
+    count. (Two dashed strips under the vault read as lane markings on the ceiling: the Caldecott Tunnel on Mapillary
+    has fixtures along its walls, 2026-10-18.) Pure but for the lists."""
     k = len(mid)
-    for side in (-1.0, 1.0):
-        c = side * TUNNEL_LAMP_OFF * hw
-        for i in range(0, k - 1, 2):
-            quad = []
-            for j in (i, i + 1):
-                for off in (c - TUNNEL_LAMP_W / 2, c + TUNNEL_LAMP_W / 2):
-                    xy = mid[j] + u[j] * off
-                    quad.append([xy[0], xy[1], z[j] + h])
+    if k < 2:
+        return nv
+    s = np.r_[0.0, np.cumsum(np.hypot(*np.diff(mid, axis=0).T))]
+    h = TUNNEL_WALL_H - TUNNEL_LAMP_DROP
+    for sc in np.arange(TUNNEL_LAMP_EVERY / 2, s[-1] - TUNNEL_LAMP_L / 2, TUNNEL_LAMP_EVERY):
+        j = min(int(np.searchsorted(s, sc)), k - 1)
+        jj = max(j - 1, 0)
+        t = mid[j] - mid[jj]
+        t = t / max(float(np.hypot(*t)), 1e-9)
+        p = np.array([np.interp(sc, s, mid[:, 0]), np.interp(sc, s, mid[:, 1])])
+        zc = float(np.interp(sc, s, z))
+        uu = u[j]
+        for side in (-1.0, 1.0):
+            e = p + uu * side * (hw - TUNNEL_LAMP_IN)
+            quad = [[*(e + t * a * TUNNEL_LAMP_L / 2), zc + h + b * TUNNEL_LAMP_W / 2] for a in (-1, 1) for b in (-1, 1)]
             q = np.asarray(quad, np.float64) - origin
             P.append(q)
-            UV.append(np.array([[0, 0], [1, 0], [0, 1], [1, 1]], np.float64))
-            tri = np.array([[nv, nv + 1, nv + 3], [nv, nv + 3, nv + 2]], np.int64)
-            nrm = np.cross(q[1] - q[0], q[3] - q[0])
-            if nrm[2] > 0:                  # faced down, into the tube
+            UV.append(np.array([[0, 0], [0, 1], [1, 0], [1, 1]], np.float64))
+            tri = np.array([[nv, nv + 2, nv + 3], [nv, nv + 3, nv + 1]], np.int64)
+            nrm = np.cross(q[2] - q[0], q[1] - q[0])
+            inward = -side * np.r_[uu, 0.0]
+            if float(nrm @ inward) < 0:     # faced into the tube
                 tri = tri[:, ::-1]
             T.append(tri)
             M.append(1)

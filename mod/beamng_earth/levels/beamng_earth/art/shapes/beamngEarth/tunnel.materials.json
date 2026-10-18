@@ -370,5 +370,32 @@
     ],
     "groundType": "METAL",
     "translucent": false
+  },
+  "bne_tunnel_inner": {
+    "name": "bne_tunnel_inner",
+    "mapTo": "bne_tunnel_inner",
+    "class": "Material",
+    "version": 1.5,
+    "persistentId": "d2660d55-7212-555e-83a2-0b6ca50a26b1",
+    "Stages": [
+      {
+        "baseColorMap": "/assets/materials/tileable/concrete/concrete_plain/t_concrete_plain_b.color.png",
+        "normalMap": "/assets/materials/tileable/concrete/concrete_plain/t_concrete_plain_nm.normal.png",
+        "roughnessMap": "/assets/materials/tileable/concrete/concrete_plain/t_concrete_plain_r.data.png",
+        "ambientOcclusionMap": "/assets/materials/tileable/concrete/concrete_plain/t_concrete_plain_ao.data.png",
+        "metallicFactor": 0,
+        "baseColorFactor": [
+          0.36,
+          0.33,
+          0.29,
+          1
+        ]
+      },
+      {},
+      {},
+      {}
+    ],
+    "groundType": "CONCRETE",
+    "translucent": false
   }
 }
