@@ -412,6 +412,14 @@ class Grader:
         if not zones or not len(e):
             return None
         x0, y0, x1, y1 = e.min(), n.min(), e.max(), n.max()
+        import fast
+        if fast.AVAILABLE and hasattr(fast._ef, "over_tunnel"):     # (Rust: the same sums, without the GIL)
+            mask = np.zeros(len(e), bool)
+            ee, nn = np.ascontiguousarray(e, np.float64), np.ascontiguousarray(n, np.float64)
+            for xy, hw in zones:
+                fast._ef.over_tunnel(mask, ee, nn, np.ascontiguousarray(xy[:, :2], np.float64), float(hw),
+                                     float(TUNNEL_KEEP_IN_M))
+            return mask if mask.any() else None
         mask = None
         for xy, hw in zones:
             if xy[:, 0].max() + hw < x0 or xy[:, 0].min() - hw > x1 or xy[:, 1].max() + hw < y0 or xy[:, 1].min() - hw > y1:

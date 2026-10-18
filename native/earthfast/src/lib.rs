@@ -2028,6 +2028,63 @@ fn horizon_steps<'py>(py: Python<'py>, hpad: PyReadonlyArray2<'py, f32>, mut bes
     });
 }
 
+/// grading.Grader._over_tunnels for one covered tunnel, into mask (m,) in place: the points (e, n) over the line xy
+/// (k, 2) within hw of it, along it from keep_in inside its ends. Only segments whose box (+ hw) meets the points' box
+/// are visited (the Gotthard road tunnel: 4,200 segments). The numpy version's float64 sums, point for point.
+#[pyfunction]
+fn over_tunnel(py: Python<'_>, mut mask: numpy::PyReadwriteArray1<'_, bool>, e: PyReadonlyArray1<'_, f64>,
+               n: PyReadonlyArray1<'_, f64>, xy: PyReadonlyArray2<'_, f64>, hw: f64, keep_in: f64) {
+    let (ev, nv, xv) = (e.as_array(), n.as_array(), xy.as_array());
+    let mut mv = mask.as_array_mut();
+    py.allow_threads(|| {
+        let np_ = ev.len();
+        let k = xv.shape()[0];
+        if np_ == 0 || k < 2 {
+            return;
+        }
+        let (mut x0, mut y0, mut x1, mut y1) = (f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY);
+        for i in 0..np_ {
+            x0 = x0.min(ev[i]);
+            x1 = x1.max(ev[i]);
+            y0 = y0.min(nv[i]);
+            y1 = y1.max(nv[i]);
+        }
+        let mut sj = vec![0.0f64; k];
+        let mut l2 = vec![0.0f64; k - 1];
+        for j in 0..k - 1 {
+            let (ab0, ab1) = (xv[[j + 1, 0]] - xv[[j, 0]], xv[[j + 1, 1]] - xv[[j, 1]]);
+            l2[j] = (ab0 * ab0 + ab1 * ab1).max(1e-12);
+            sj[j + 1] = sj[j] + l2[j].sqrt();
+        }
+        let total = sj[k - 1];
+        for j in 0..k - 1 {
+            let (a0, a1, b0, b1) = (xv[[j, 0]], xv[[j, 1]], xv[[j + 1, 0]], xv[[j + 1, 1]]);
+            if a0.min(b0) - hw > x1 || a0.max(b0) + hw < x0 || a1.min(b1) - hw > y1 || a1.max(b1) + hw < y0 {
+                continue;
+            }
+            let (ab0, ab1) = (b0 - a0, b1 - a1);
+            let len = l2[j].sqrt();
+            for i in 0..np_ {
+                if mv[i] {
+                    continue;
+                }
+                let t = ((ev[i] - a0) * ab0 + (nv[i] - a1) * ab1) / l2[j];
+                if !(t > 0.0 && t < 1.0) {
+                    continue;
+                }
+                let s_ = sj[j] + t * len;
+                if !(s_ > keep_in && s_ < total - keep_in) {
+                    continue;
+                }
+                let d = ((ev[i] - a0) * ab1 - (nv[i] - a1) * ab0).abs() / len;
+                if d <= hw {
+                    mv[i] = true;
+                }
+            }
+        }
+    });
+}
+
 /// riverlines._confluences' test: for each point p (m, 2), is any segment a -> b (s, 2) nearer than its hw (s)? float64
 /// as numpy's broadcast (squared length sum, clipped projection, np.hypot), bit for bit.
 #[pyfunction]
@@ -2557,7 +2614,8 @@ fn earthfast(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(subdivide_tris, m)?)?;
     m.add_function(wrap_pyfunction!(deck_edges_covered, m)?)?;
     m.add_function(wrap_pyfunction!(points_near_segments, m)?)?;
+    m.add_function(wrap_pyfunction!(over_tunnel, m)?)?;
     m.add_function(wrap_pyfunction!(veg_rows_json, m)?)?;
-    m.add("VERSION", 31)?;
+    m.add("VERSION", 32)?;
     Ok(())
 }
