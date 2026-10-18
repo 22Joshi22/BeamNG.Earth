@@ -12,6 +12,7 @@ truss_members() builds the truss of one chain of deck parts as beams (p, q, widt
 two vertical Warren trusses (chords, verticals, alternating diagonals) at the outer edges of the decks running side
 by side, cross beams over the top for a through truss; roads.BridgeProfiles hands each tile those whose middle lies
 in it, roadmesh.deck draws them. Pure given the inputs."""
+import math
 import os
 
 import numpy as np
@@ -25,7 +26,9 @@ TRUSS_TYPES = (NBI_DECK_TRUSS, NBI_THROUGH_TRUSS)
 
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "bridges_us.npz")
 COVER_M = 25000.0       # an NBI record (any notable type) this close: the inventory covers here (no size rule)
-MATCH_M = 60.0          # an NBI record's point this close to a chain's deck lines is that chain's
+MATCH_M = 200.0         # an NBI record's point this close to a chain's deck lines may be that chain's (the points are
+                        # rough: Golden Gate's lies 140 m off its deck) ...
+MATCH_LEN_M = 150.0     # ... the best by distance + this many m per factor e of length mismatch
 WET_SPAN_M = 150.0      # (size rule, outside the inventory) a run over water this long: a through truss
 PANEL_M = 14.0          # m between a truss's verticals
 ANCHOR_ARM = 0.75       # a big truss reaches this share of its main span past the water (the Queensboro Bridge's
@@ -48,14 +51,43 @@ BRACE = (0.4, 0.5)      # cross beams over the top
 
 OSM_TYPES = {"truss": NBI_THROUGH_TRUSS, "cantilever": NBI_THROUGH_TRUSS, "arch": ARCH_ANY,
              "suspension": NBI_SUSPENSION, "cable-stayed": NBI_STAYED}    # bridge:structure; others: a plain deck
+# Painted steel (roadmesh.STEEL_PAINTS: one material each): the tagged colour (OSM colour=, a name or #rrggbb) as
+# the nearest of these; grey without a tag (the Golden Gate Bridge is tagged orange / #f04a00)
+PAINTS = {"grey": (150, 152, 150), "orange": (240, 74, 0), "red": (150, 25, 20), "green": (60, 100, 70),
+          "blue": (50, 80, 130), "black": (25, 25, 25), "white": (225, 225, 220), "yellow": (220, 170, 30),
+          "brown": (95, 60, 40)}
+COLOUR_NAMES = {"gray": "grey", "silver": "grey", "darkgreen": "green", "navy": "blue", "gold": "yellow",
+                "maroon": "red", "darkred": "red", "orangered": "orange", "rust": "brown", "beige": "white",
+                "cream": "white"}
 OSM_INSIDE = 0.2        # this share of a chain's deck points inside a tagged outline: the chain is that bridge
 
 _db = None
 
 
-def osm_structure(frame, parts, feats_list):
-    """The NBI-style type code of a chain from the bridge outlines tagged bridge:structure among the infrastructure
-    Features (feats_list), 0 for one tagged a plain kind (beam, ...), None if none covers the chain."""
+def paint(colour):
+    """The PAINTS name nearest to an OSM colour value (a name or #rrggbb), None if it is neither."""
+    c = str(colour or "").strip().lower().replace(" ", "")
+    c = COLOUR_NAMES.get(c, c)
+    if c in PAINTS:
+        return c
+    if c.startswith("#") and len(c) in (4, 7):
+        try:
+            rgb = [int(c[1 + i] * 2, 16) for i in range(3)] if len(c) == 4 else \
+                [int(c[1 + 2 * i:3 + 2 * i], 16) for i in range(3)]
+        except ValueError:
+            return None
+        return min(PAINTS, key=lambda k: sum((a - b) ** 2 for a, b in zip(PAINTS[k], rgb)))
+    return None
+
+
+def osm_colour(frame, parts, feats_list):
+    """The paint (PAINTS name) of the bridge outline tagged colour= covering the chain (OSM_INSIDE), else None."""
+    got = _osm_tagged(frame, parts, feats_list, "colour")
+    return paint(got) if got is not None else None
+
+
+def _osm_tagged(frame, parts, feats_list, key):
+    """The value of tag key on the bridge outline (infrastructure, kind 3) covering most of the chain, else None."""
     import json
     from polygon import Path
     pts = np.concatenate([np.asarray(xy, np.float64) for xy, _, _ in parts])
@@ -68,10 +100,10 @@ def osm_structure(frame, parts, feats_list):
             continue
         for i in range(len(f.kind)):
             t = str(tags[i])
-            if "bridge:structure" not in t or (sub is not None and str(sub[i]) != "bridge") or f.kind[i] != 3:
+            if f'"{key}"' not in t or (sub is not None and str(sub[i]) != "bridge") or f.kind[i] != 3:
                 continue
             try:
-                kind = json.loads(t).get("bridge:structure")
+                val = json.loads(t).get(key)
             except ValueError:
                 continue
             for part in f.parts(i):
@@ -81,8 +113,15 @@ def osm_structure(frame, parts, feats_list):
                 e, n, _ = frame.geodetic_to_enu(ring[:, 1], ring[:, 0], 0.0)
                 share = float(Path(np.c_[e, n]).contains_points(pts).mean())
                 if share >= OSM_INSIDE and (best is None or share > best[0]):
-                    best = (share, OSM_TYPES.get(str(kind), 0))
+                    best = (share, val)
     return None if best is None else best[1]
+
+
+def osm_structure(frame, parts, feats_list):
+    """The NBI-style type code of a chain from the bridge outlines tagged bridge:structure among the infrastructure
+    Features (feats_list), 0 for one tagged a plain kind (beam, ...), None if none covers the chain."""
+    kind = _osm_tagged(frame, parts, feats_list, "bridge:structure")
+    return None if kind is None else OSM_TYPES.get(str(kind), 0)
 
 
 def _load():
@@ -114,7 +153,8 @@ def nbi_near(lat, lon, r_m):
 
 
 def matches(frame, lines):
-    """[(distance m, index)] of the inventory's records within MATCH_M of the deck lines (k, 2+), nearest first."""
+    """[(score, index)] of the inventory's records within MATCH_M of the deck lines (k, 2+), best first: the distance
+    plus MATCH_LEN_M per factor e between the record's length and the longest line's."""
     lines = [np.asarray(ln, np.float64)[:, :2] for ln in lines if len(ln) >= 2]
     if not lines:
         return []
@@ -127,20 +167,26 @@ def matches(frame, lines):
         return []
     db = _load()
     e, n, _ = frame.geodetic_to_enu(db["lat"][idx].astype(np.float64), db["lon"][idx].astype(np.float64), 0.0)
+    longest = max(float(np.hypot(*np.diff(ln, axis=0).T).sum()) for ln in lines)
     out = []
     for i, q in zip(idx, np.c_[e, n]):
         d = min(_seg_dist(q, ln) for ln in lines)
         if d <= MATCH_M:
-            out.append((d, int(i)))
+            rl = float(db["length"][i])
+            mis = abs(math.log(max(rl, 5.0) / max(longest, 5.0))) if rl > 0 else 1.0
+            out.append((d + MATCH_LEN_M * mis, int(i)))
     return sorted(out)
 
 
 def nav_clearance(frame, lines):
-    """m: the largest navigation clearance (NBI item 39) of the inventory's records on these deck lines, 0 if none."""
+    """m: the navigation clearance (NBI item 39) of the best record with one on these deck lines, 0 if none."""
     db = _load()
     if "nav" not in db:
         return 0.0
-    return max((float(db["nav"][i]) for _, i in matches(frame, lines)), default=0.0)
+    for _, i in matches(frame, lines):
+        if db["nav"][i] > 0:
+            return float(db["nav"][i])
+    return 0.0
 
 
 def record(i):
@@ -160,11 +206,18 @@ def _seg_dist(q, xy):
 def chain_structure(frame, parts, wet_fn=None, infra=()):
     """The structure of a chain of deck parts [(xy (k, 2), z (k,), width)]: {"type": NBI code, "span": m, "length":
     m, "width": m, "src": "osm" | "nbi" | "size"} or None (a plain deck). wet_fn(xy) -> bool per point; infra: the
-    infrastructure Features around it (osm_structure)."""
-    pts = np.concatenate([np.asarray(xy, np.float64) for xy, _, _ in parts])
+    infrastructure Features around it (osm_structure); "paint": the tagged colour (osm_colour) or grey."""
     osm = osm_structure(frame, parts, infra) if infra else None
     if osm == 0:
         return None
+    info = _chain_structure(frame, parts, wet_fn, osm)
+    if info is not None:
+        info["paint"] = (osm_colour(frame, parts, infra) if infra else None) or "grey"
+    return info
+
+
+def _chain_structure(frame, parts, wet_fn, osm):
+    pts = np.concatenate([np.asarray(xy, np.float64) for xy, _, _ in parts])
     longest = _longest_wet(parts, wet_fn)
     c = pts.mean(0)
     la, lo, _ = frame.enu_to_geodetic(np.array([c[0]]), np.array([c[1]]), 0.0)
@@ -173,8 +226,9 @@ def chain_structure(frame, parts, wet_fn=None, infra=()):
     notable = [m for m in found if NBI_DECK_TRUSS <= int(_load()["type"][m[1]]) <= NBI_SWING]
     best = notable[0] if notable else (found[0] if found else None)
     if osm is not None:                         # the map's tag; the inventory's span if it has the bridge
-        span = record(best[1])["span"] if best is not None else (min(longest, 250.0) or 100.0)
-        return {"type": osm, "span": span, "length": 0.0, "width": 0.0, "src": "osm"}
+        if best is not None:
+            return {**record(best[1]), "type": osm, "src": "osm+nbi"}
+        return {"type": osm, "span": min(longest, 250.0) or 100.0, "length": 0.0, "width": 0.0, "src": "osm"}
     if best is not None:
         return {**record(best[1]), "src": "nbi"}
     if len(nbi_near(lat, lon, COVER_M)[0]):
@@ -450,7 +504,8 @@ def main_span(P, arcs, info, ground_fn, wet_fn=None):
         run = (s[i], s[j])
     c = (run[0] + run[1]) / 2
     share = ARCH_SPAN_SHARE if info["type"] in ARCH_TYPES else SPAN_SHARE
-    span = info.get("span") if info.get("src") == "nbi" and info.get("span") else share * (run[1] - run[0])
+    span = (info["span"] if str(info.get("src", "")).endswith("nbi") and info.get("span")
+            else share * (run[1] - run[0]))
     span = float(min(span, SPAN_MAX, s[-1] * 0.9))
     if span < SPAN_MIN:
         return None
@@ -593,9 +648,16 @@ def suspension_members(P, arcs, tans, ms, info, ground_fn, stayed=False):
 
 def structure_members(parts, info, ground_fn, wet_fn=None, road_lines=()):
     """(beams, piers) of a chain's structure (chain_structure): a truss (truss_members), an arch, a suspension or a
-    cable-stayed span (one main span: main_span); ([], []) for a plain deck or a movable span."""
+    cable-stayed span (one main span: main_span); ([], []) for a plain deck or a movable span. Each beam carries its
+    paint (p, q, w, h, paint)."""
     if info is None:
         return [], []
+    beams, piers = _structure_members(parts, info, ground_fn, wet_fn, road_lines)
+    pt = info.get("paint") or "grey"
+    return [tuple(b[:4]) + (pt,) for b in beams], piers
+
+
+def _structure_members(parts, info, ground_fn, wet_fn, road_lines):
     if info["type"] in TRUSS_TYPES:
         return truss_members(parts, info, ground_fn, wet_fn, with_piers=True, road_lines=road_lines)
     if info["type"] not in ARCH_TYPES + (NBI_SUSPENSION, NBI_STAYED):

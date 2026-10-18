@@ -261,14 +261,20 @@ def deck(chunks, origin, piers=(), context=(), beams=()):
         _pier(p, origin, P, T, UV, M, side)
         nv = sum(len(a) for a in P)
     if len(beams):
-        mats.append(TRUSS_STEEL)
-        _beams(beams, origin, P, T, UV, M, len(mats) - 1)
+        for pt in sorted({b[4] if len(b) > 4 else "grey" for b in beams}):
+            mats.append(steel(pt))
+            _beams([b for b in beams if (b[4] if len(b) > 4 else "grey") == pt], origin, P, T, UV, M, len(mats) - 1)
     if not P:
         return None
     return (np.concatenate(P), np.concatenate(T), np.concatenate(UV), mats, np.concatenate(M))
 
 
-TRUSS_STEEL = "bne_truss_steel"     # painted steel (the stock metal_paint, grey: tunnel.materials.json)
+TRUSS_STEEL = "bne_truss_steel"     # painted steel (the stock metal_paint, grey: tunnel.materials.json) ...
+
+
+def steel(paint):
+    """... and in the other paints (bridgetypes.PAINTS): bne_steel_<paint>."""
+    return TRUSS_STEEL if paint in (None, "grey") else f"bne_steel_{paint}"
 
 
 def _beams(beams, origin, P, T, UV, M, mat):

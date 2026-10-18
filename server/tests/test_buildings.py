@@ -559,6 +559,18 @@ class BridgeStructureTest(unittest.TestCase):
     """A bridge's tower (Overture bridge_structure: the Queensboro Bridge's, 33 x 4.6 x 110 m) is an open steel frame
     the decks run through, not a glass tower (2026-10-17)."""
 
+    def test_part_on_a_bridge_support_is_painted_steel(self):
+        """A building part over a mapped bridge support (the Golden Gate Bridge's towers): a plain box in the
+        support's paint, not a glass tower; it builds (its roof look too: a KeyError dropped the whole road tile)."""
+        ring = np.array([[0.0, 0.0], [6.0, 0.0], [6.0, 6.0], [0.0, 6.0]])
+        sp = bld.plan(ring, {"class": "", "height": 225.0, "bridge_part": "orange"})
+        self.assertEqual(sp.facade, f"{bld.STEEL}|orange")
+        self.assertFalse(sp.windows)
+        self.assertIsNotNone(bld.build([(sp, 0.0, 0.0)]))
+        sup = [(ring * 2 - 3, "orange")]
+        self.assertEqual(bld._on_support(ring, sup), "orange")
+        self.assertIsNone(bld._on_support(ring + 50, sup))
+
     def ring(self, hl, hw):
         return np.array([[-hl, -hw], [hl, -hw], [hl, hw], [-hl, hw]], np.float64)
 

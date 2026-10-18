@@ -155,6 +155,10 @@ BANDS = 4
 BRIDGE_CLASSES = {"bridge_structure"}
 BRIDGE_PIER_M = 12.0        # a bridge structure's height when not mapped
 STEEL = "bne_bridge_steel"  # (a LOOKS name: the corrugated-metal material, painted steel grey)
+# a bridge structure in its mapped paint (bridgetypes.PAINTS: the Golden Gate Bridge's towers, building:colour #bf4e3b,
+# were steel grey beside its orange cables, 2026-10-18)
+for _k, _c in __import__("bridgetypes").PAINTS.items():
+    LOOKS[f"{STEEL}|{_k}"] = (METALWALL, tuple(v / 255.0 for v in _c))
 STEEL_LEG_MAX = 3.0         # m: a frame's legs at most this thick (a quarter of its short side)
 STEEL_BAY_M = 14.0          # m between a frame's bracing levels
 STEEL_TOP_SHARE = 0.85      # cross beams over the decks only from this share of the height up
@@ -448,9 +452,18 @@ def plan(ring, attrs, neighbours=0, lat=None, lon=None, look=None, town=False, d
         nf = 1                                          # a nave: one tall storey under a steep gable
     h = None if h is None or not np.isfinite(h) or h <= 0 else float(h)
     nf = None if nf is None or not np.isfinite(nf) or nf <= 0 else int(round(nf))
-    if cls in BRIDGE_CLASSES:       # a bridge's tower or pier: an open steel frame (_steel_frame), the decks through it
+    if attrs.get("bridge_part"):    # a mapped part of a bridge's tower (support_rings): a plain box of painted steel
         return Spec(ring=ring, floors=1, floor_h=h or BRIDGE_PIER_M, height=h or BRIDGE_PIER_M, roof="flat",
-                    roof_mat=ROOF_FLAT, facade=STEEL, band=None, shop=False, plain=True, seed=seed, min_h=0.0,
+                    roof_mat=f"{STEEL}|{attrs['bridge_part']}", facade=f"{STEEL}|{attrs['bridge_part']}", band=None,
+                    shop=False, plain=True,
+                    seed=seed, min_h=0.0, wall=None, windows=False, steeple=False, porch=False, cls="bridge_part",
+                    deck=False, pitch=None)
+    if cls in BRIDGE_CLASSES:       # a bridge's tower or pier: an open steel frame (_steel_frame), the decks through it
+        import bridgetypes
+        pt = bridgetypes.paint(attrs.get("facade_color"))
+        return Spec(ring=ring, floors=1, floor_h=h or BRIDGE_PIER_M, height=h or BRIDGE_PIER_M, roof="flat",
+                    roof_mat=ROOF_FLAT, facade=f"{STEEL}|{pt}" if pt else STEEL, band=None, shop=False, plain=True,
+                    seed=seed, min_h=0.0,
                     wall=None, windows=False, steeple=False, porch=False, cls=cls, deck=False, pitch=None)
     floor_h = FLOOR_M
     if industrial:
@@ -1437,7 +1450,7 @@ def build(specs_and_ground, lite=False):
     for spec, gmin, gmax in specs_and_ground:
         mat_idx = _Looks(spec.seed)
         if spec.cls in BRIDGE_CLASSES:
-            _steel_frame(m, spec, gmin, mat_idx[STEEL], lite)
+            _steel_frame(m, spec, gmin, mat_idx[spec.facade if spec.facade in LOOKS else STEEL], lite)
             continue
         ring = drawn_ring(spec)
         mh = spec.min_h or 0.0
@@ -1669,6 +1682,57 @@ def garage_rings(frame, infra_layers, x0, y0, margin=50.0, size=256.0):
     return out
 
 
+def support_rings(frame, infra_layers, x0, y0, margin=50.0, size=256.0):
+    """[(ring (k, 2) relative to (x0, y0), paint)] of the mapped bridge supports near the tile (Overture
+    infrastructure, class bridge_support: OSM bridge:support towers and piers, their building:colour as a
+    bridgetypes paint, grey without one). The Golden Gate Bridge's towers are mapped as building parts over them and
+    were drawn as a 225 m glass tower (2026-10-18)."""
+    import json
+    import bridgetypes
+    out, seen = [], set()
+    for f in infra_layers:
+        if f is None or len(f.kind) == 0:
+            continue
+        a = f.attrs
+        cls, tags = a.get("class"), a.get("tags")
+        if cls is None:
+            continue
+        for i in np.flatnonzero((cls.astype(str) == "bridge_support") & (f.kind == 3)):
+            fid = f.ids[i]
+            if fid in seen:
+                continue
+            seen.add(fid)
+            pt = None
+            if tags is not None and "colour" in str(tags[i]):
+                try:
+                    pt = bridgetypes.paint(json.loads(str(tags[i])).get("building:colour"))
+                except ValueError:
+                    pt = None
+            for part in f.parts(i):
+                if not part or len(part[0]) < 3:
+                    continue
+                e, n = mapgeom.enu_xy(f, frame, part[0])
+                xy = np.stack([e - x0, n - y0], 1)
+                if xy[:, 0].max() < -margin or xy[:, 0].min() > size + margin or xy[:, 1].max() < -margin \
+                        or xy[:, 1].min() > size + margin:
+                    continue
+                out.append((xy, pt or "grey"))
+    return out
+
+
+def _on_support(ring, supports):
+    """The paint of the bridge support (support_rings) holding the footprint's centre, else None."""
+    if not supports:
+        return None
+    from polygon import Path
+    c = ring.mean(0)
+    for r, pt in supports:
+        if r[:, 0].min() <= c[0] <= r[:, 0].max() and r[:, 1].min() <= c[1] <= r[:, 1].max() \
+                and Path(r).contains_points(c[None])[0]:
+            return pt
+    return None
+
+
 def _covers_garage(ring, garages):
     """A footprint inside a mapped car park's area (its centre in it) or holding the car park's centre."""
     c = ring.mean(0)
@@ -1728,13 +1792,14 @@ CENTRE_PREFILTER_M = 1.0       # m of slack for Features.outer_centres (cumulati
 
 
 def tile_buildings(frame, x0, y0, x1, y1, layers, elev, water=None, part_layers=(), west_town=False, roads_xy=None,
-                   tunnels_xy=None, garages_xy=None):
+                   tunnels_xy=None, garages_xy=None, supports=None):
     """[(Spec, gmin, gmax)] of the buildings whose footprint centroid is in the tile [x0, x1) x [y0, y1)
     (anchor frame), rings relative to (x0, y0). layers: mapgeom.Features of buildings (one per map cell; a
     building in two cells is taken once, by id); elev(lat, lon) the physics ground. part_layers: the
     building parts of the same cells: a building whose parts all have heights is drawn as its parts
     (each from its bottom to its top, the building's look). garages_xy: garage_rings (a building one covers, or
-    covering one's centre, is a parking structure)."""
+    covering one's centre, is a parking structure). supports: support_rings (a building or part on one is the
+    bridge's painted steel)."""
     parts_of = {}                       # building id -> [(ring in the anchor frame, own height, bottom)]
     pseen = set()
     for f in part_layers:
@@ -1807,7 +1872,7 @@ def tile_buildings(frame, x0, y0, x1, y1, layers, elev, water=None, part_layers=
                         continue
                     rings.append(r)
                     attrs.append({"class": at["class"], "height": ph, "num_floors": None, "roof_shape": "flat",
-                                  "building_height": top})
+                                  "building_height": top, "bridge_part": _on_support(r, supports)})
                     looks.append(look)
                     mins.append(pmh)
                 if key is not None:
@@ -1839,6 +1904,9 @@ def tile_buildings(frame, x0, y0, x1, y1, layers, elev, water=None, part_layers=
                         at = dict(at, height=mh + 3.0)
             if mh <= 0.5 and garages_xy and _covers_garage(ring, garages_xy):
                 at = dict(at, garage=True)
+            on = _on_support(ring, supports)
+            if on is not None:
+                at = dict(at, bridge_part=on)
             attrs.append(at)
             looks.append(None)
             mins.append(mh)
@@ -2147,7 +2215,8 @@ def road_tile_items(frame, tx, ty, md, ground):
                           west_town=district_town(frame, tx, ty, md),
                           roads_xy=road_lines(frame, [c.layers.get("roads") for c in cds], x0, y0),
                           tunnels_xy=tunnel_lines(frame, [c.layers.get("roads") for c in cds], x0, y0),
-                          garages_xy=garage_rings(frame, [c.layers.get("infrastructure") for c in cds], x0, y0))
+                          garages_xy=garage_rings(frame, [c.layers.get("infrastructure") for c in cds], x0, y0),
+                          supports=support_rings(frame, [c.layers.get("infrastructure") for c in cds], x0, y0))
 
 
 TOWN_COVERAGE = 0.16        # a tile whose footprints cover less than this share is a town / suburb (heights)
@@ -2203,7 +2272,8 @@ def far_tile(frame, tx, ty, md, ground, out_dir, vfs_dir, aid):
     items = tile_buildings(frame, x0, y0, x1, y1, [c.layers.get("buildings") for c in cds], ground,
                            part_layers=[c.layers.get("building_parts") for c in cds],
                            west_town=district_town(frame, tx, ty, md),
-                           garages_xy=garage_rings(frame, [c.layers.get("infrastructure") for c in cds], x0, y0))
+                           garages_xy=garage_rings(frame, [c.layers.get("infrastructure") for c in cds], x0, y0),
+                           supports=support_rings(frame, [c.layers.get("infrastructure") for c in cds], x0, y0))
     mesh = build(items, lite=True)
     data = {"v": 1}
     if mesh is not None:
