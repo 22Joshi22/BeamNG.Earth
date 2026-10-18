@@ -749,7 +749,7 @@ class Tracker:
         skip = set(roadsmod.tiles_near(x, y, self.skip_m)) if self.skip_m else ()
         want = [k for k in roadsmod.tiles_near(x, y, self.send_m)
                 if k not in self.sent and k not in self.building and k not in skip]
-        want.sort(key=lambda k: roadsmod.tile_distance(k[0], k[1], x, y))
+        want.sort(key=roadsmod.view_key(conn, aid, x, y))
         # at most per_pose in flight: each waits in a thread of the loop's shared executor, and a teleport's
         # hundreds (one per pose, uncapped) held every thread while the road tiles under the car waited for one
         # (Sinaia 2026-10-15: bare ground for minutes)

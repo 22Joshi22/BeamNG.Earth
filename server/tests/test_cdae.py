@@ -175,3 +175,18 @@ class FormatTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class LodTest(unittest.TestCase):
+    def test_coarser_details(self):
+        # the engine's camera LOD: the full mesh from 300 px up, a coarser one below, drawn down to 2 px
+        P = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [1, 1, 3]], float)
+        b = cdae.encode(P, [[0, 1, 2], [1, 3, 2]], lods=[(300, {"positions": P[:3] * 2, "tris": [[0, 1, 2]]})])
+        d = cdae.decode(b)
+        self.assertEqual(d["names"], ["tile", "detail300", "detail2"])
+        self.assertEqual((d["smallestVisibleSize"], d["smallestVisibleDL"]), (2.0, 1))
+        n, _, raw = d["details"]
+        sizes = [struct.unpack_from("<3i3fi", raw, 52 * k) for k in range(n)]
+        self.assertEqual([(s[2], s[3], s[6]) for s in sizes], [(0, 300.0, 2), (1, 2.0, 1)])
+        self.assertEqual(len(d["meshes"]), 2)
+        self.assertEqual(d["bounds"][3:5], [2.0, 2.0], "the bounds cover every detail")

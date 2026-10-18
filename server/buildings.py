@@ -1191,23 +1191,41 @@ def _roof(m, spec, ring, z_eave, mat_idx):
 MAX_MESH_VERTS = 60000
 
 
-def build_parts(specs_and_ground, lite=False, max_verts=MAX_MESH_VERTS):
-    """build() split into meshes of at most max_verts vertices each (whole buildings per mesh): a list, [] if empty."""
-    parts, cur, n = [], [], 0
+def _concat(meshes):
+    """build() meshes (the same MATERIALS) as one."""
+    if len(meshes) == 1:
+        return meshes[0]
+    off = np.cumsum([0] + [len(m[0]) for m in meshes[:-1]])
+    return (np.concatenate([m[0] for m in meshes]), np.concatenate([m[1] for m in meshes]),
+            np.concatenate([m[2] + o for m, o in zip(meshes, off)]), np.concatenate([m[3] for m in meshes]),
+            meshes[0][4], np.concatenate([m[5] for m in meshes]))
+
+
+def build_parts(specs_and_ground, lite=False, max_verts=MAX_MESH_VERTS, with_lod=False):
+    """build() split into meshes of at most max_verts vertices each (whole buildings per mesh): a list, [] if empty.
+    Each building is built once (build draws them one by one) and the meshes joined. with_lod: each mesh carries the
+    lite mesh of its buildings as a 7th element (write: the shape's coarse detail)."""
+    parts, cur, cur_lite, n = [], [], [], 0
+
+    def flush():
+        if cur:
+            mesh = _concat(cur)
+            parts.append(mesh + (_concat(cur_lite) if cur_lite else None,) if with_lod and not lite else mesh)
+
     for item in specs_and_ground:
         one = build([item], lite)
-        k = 0 if one is None else len(one[0])
-        if cur and n + k > max_verts:
-            mesh = build(cur, lite)
-            if mesh is not None:
-                parts.append(mesh)
-            cur, n = [], 0
-        cur.append(item)
-        n += k
-    if cur:
-        mesh = build(cur, lite)
-        if mesh is not None:
-            parts.append(mesh)
+        if one is None:
+            continue
+        if cur and n + len(one[0]) > max_verts:
+            flush()
+            cur, cur_lite, n = [], [], 0
+        cur.append(one)
+        n += len(one[0])
+        if with_lod and not lite:
+            o = build([item], lite=True)
+            if o is not None:
+                cur_lite.append(o)
+    flush()
     return parts
 
 
@@ -2149,12 +2167,30 @@ def collider_boxes(items, x0, y0):
     return out
 
 
+# px: a near tile's buildings drawn as the lite mesh (the far tiles' one: no window bays, steps, porches, signs or
+# cornices) while the tile spans fewer pixels than this: the engine's own camera LOD (cdae lods), the tile's whole
+# shape at once. A 256 m tile (radius ~190 m) at 1080p switches ~600 m out.
+BLD_LOD_PX = 300.0
+
+
 def write(path, mesh, collision_only=False):
-    """The tile's .cdae (cdae.encode with one primitive per material; collision_only: a never-drawn collision detail)."""
+    """The tile's .cdae (cdae.encode with one primitive per material; collision_only: a never-drawn collision detail).
+    A mesh with a 7th element (build_parts with_lod) gets that lite mesh as its coarse detail below BLD_LOD_PX."""
     import cdae
-    P, UV, T, M, mats, C = mesh
-    return cdae.write(path, P, T, uvs=UV, material=list(mats), tri_materials=M, object_name="buildings", colors=C,
-                      collision_only=collision_only)
+    P, UV, T, M, mats, C = mesh[:6]
+    mats = list(mats)
+    lods = None
+    lite = mesh[6] if len(mesh) > 6 and not collision_only else None     # (None: no lite mesh)
+    if lite is not None:
+        Pl, UVl, Tl, Ml, matsl, Cl = lite
+        for m in matsl:
+            if m not in mats:
+                mats.append(m)
+        remap = np.array([mats.index(m) for m in matsl], np.int64)
+        lods = [(BLD_LOD_PX, {"positions": Pl, "tris": Tl, "uvs": UVl, "tri_materials": remap[np.asarray(Ml)],
+                              "colors": Cl})]
+    return cdae.write(path, P, T, uvs=UV, material=mats, tri_materials=M, object_name="buildings", colors=C,
+                      collision_only=collision_only, lods=lods)
 
 
 DOOR_OUT_M = 0.09            # m the door model's origin stands off the wall: its panel is 6.9 cm behind the origin
@@ -2445,7 +2481,7 @@ def road_tile(frame, tx, ty, md, ground, lines=None, props=None, items=None):
         items = road_tile_items(frame, tx, ty, md, ground)
     if props is not None and lines:
         props.extend(doors(items, lines, x0, y0))
-    meshes = build_parts(items)
+    meshes = build_parts(items, with_lod=True)
     if not meshes:
         return None
     return meshes, collider_boxes(items, x0, y0), collision_mesh(items)

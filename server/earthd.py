@@ -1233,7 +1233,9 @@ class Server:
             info["layers"] = surfacemod.write_masks(idx[::-1], self.out_dir, self.hm_name((anchor.id, cx, cy))[:-4])
             info["surfaceComplete"] = complete
         idx = self._tunnel_holes(anchor, elev, keep, cx, cy, idx, info)
-        info["ter"] = surfacemod.write_ter(self.out_dir, self.ter_name((anchor.id, cx, cy)), keep["qgrid"], idx)
+        info["ter"], mats = surfacemod.write_ter(self.out_dir, self.ter_name((anchor.id, cx, cy)), keep["qgrid"], idx)
+        if mats is not None:          # the .ter's own material list (MATERIALS indices)
+            info["mats"] = mats
         info["stages"] = stages
         return self._finish_heightmap(anchor, cx, cy, info, t0)
 
@@ -2432,8 +2434,10 @@ class Connection:
                "squareSize": heightmap.SQUARE, "zBase": info["zBase"], "maxHeight": info["maxHeight"],
                "q": info["q"]}
         if info.get("layers"):      # --surface on: one mask per material, MATERIALS order
-            out["layers"] = [f"{self.s.vfs_dir}/{n}" for n in info["layers"]]
-            out["materials"] = [[name, gm] for name, gm in surfacemod.MATERIALS]
+            # only the .ter's own materials, in its order (surface.write_ter; all of them for an older block)
+            use = info.get("mats") or range(len(surfacemod.MATERIALS))
+            out["layers"] = [f"{self.s.vfs_dir}/{info['layers'][i]}" for i in use]
+            out["materials"] = [list(surfacemod.MATERIALS[i]) for i in use]
         if info.get("base"):        # detail mode: the base photo over the block's world size
             out["base"] = f"{self.s.vfs_dir}/{info['base']}"
             out["baseSize"] = self.s.layout.block * heightmap.SQUARE

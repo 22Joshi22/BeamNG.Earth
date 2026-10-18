@@ -650,3 +650,18 @@ class WallRunsTest(unittest.TestCase):
         w = roads._wall_runs(cut)
         self.assertTrue(w[2:11].all(), "one wall from 2 to 10 (the 0.9 / 1.0 dip filled)")
         self.assertFalse(w[:2].any() or w[11:].any(), "no stub for a lone 2.1 m sample")
+
+
+class ViewOrderTest(unittest.TestCase):
+    def test_tiles_in_view_come_first(self):
+        # the camera looks east: a tile 600 m east is built before one 400 m west, the car's own tile first
+        import types
+        import roads as r
+        conn = types.SimpleNamespace(cam={"x": 0.0, "y": 0.0, "fx": 1.0, "fy": 0.0, "fovDeg": 60}, cam_aid=1)
+        key = r.view_key(conn, 1, 128.0, 128.0)
+        want = [(-2, 0), (3, 0), (0, 0)]
+        self.assertEqual(sorted(want, key=key), [(0, 0), (3, 0), (-2, 0)])
+        plain = r.view_key(types.SimpleNamespace(cam=None), 1, 128.0, 128.0)
+        self.assertEqual(sorted(want, key=plain), [(0, 0), (-2, 0), (3, 0)])
+        other = r.view_key(conn, 2, 128.0, 128.0)            # (the camera of another anchor's frame: ignored)
+        self.assertEqual(sorted(want, key=other), [(0, 0), (-2, 0), (3, 0)])

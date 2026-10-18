@@ -1567,6 +1567,28 @@ def tile_distance(tx, ty, x, y):
     return max(x0 - x, x - x1, y0 - y, y - y1, 0.0)
 
 
+def view_key(conn, aid, x, y):
+    """The build order of a tracker's tiles: nearest first, a tile outside the camera's view cone counting
+    farfield.VIEW_PENALTY times as far (the far field's own rule, farfield.view_distance): what the player sees
+    comes first, the tiles behind the car later. Plain distance without the pose's camera."""
+    import farfield
+    cam = getattr(conn, "cam", None)
+    cone = farfield.view_cone(cam) if isinstance(cam, dict) and getattr(conn, "cam_aid", None) == aid else None
+
+    def key(k):
+        d = tile_distance(k[0], k[1], x, y)
+        if cone is None or d <= 0:
+            return d
+        cx, cy, fx, fy, cosmax = cone
+        x0, y0, x1, y1 = tile_bbox(k[0], k[1])
+        dx, dy = (x0 + x1) / 2 - cx, (y0 + y1) / 2 - cy
+        r = math.hypot(dx, dy)
+        if r <= (x1 - x0) or (dx * fx + dy * fy) / r >= cosmax:
+            return d
+        return d * farfield.VIEW_PENALTY
+    return key
+
+
 
 
 def cells_of_tile(frame, tx, ty, margin=OVERLAP):
@@ -2947,7 +2969,7 @@ class Tracker:
             from concurrent.futures import ThreadPoolExecutor
             self.pool = ThreadPoolExecutor(BUILD_PER_POSE, thread_name_prefix="roads-tile")
         want = [k for k in tiles_near(x, y, SEND_M) if k not in self.sent and k not in self.building]
-        want.sort(key=lambda k: tile_distance(k[0], k[1], x, y))
+        want.sort(key=view_key(conn, aid, x, y))
         for tx, ty in want[:max(0, BUILD_PER_POSE - len(self.building))]:   # in flight at most (vegetation.Tracker)
             self.building.add((tx, ty))
             fut = self.futs[(tx, ty)] = loop.run_in_executor(self.pool, build, aid, tx, ty)

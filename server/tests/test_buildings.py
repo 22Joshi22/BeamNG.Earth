@@ -1,6 +1,8 @@
 """buildings: footprints become closed walls and a roof, heights predicted where the data has none,
 deterministic, every triangle facing out."""
+import os
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -8,6 +10,7 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import buildings as bld  # noqa: E402
+import cdae  # noqa: E402
 
 
 def rect(x, y, w, d):
@@ -336,6 +339,18 @@ class SplitTest(unittest.TestCase):
         self.assertTrue(all(len(p[0]) <= len(one[0]) // 3 for p in parts))
         self.assertEqual(sum(len(p[2]) for p in parts), len(one[2]), "every triangle in exactly one part")
         self.assertEqual(len(bld.build_parts(items)), 1, "a small tile stays one mesh")
+
+    def test_parts_carry_their_lite_mesh(self):
+        # a near tile's shape draws the far tiles' lite mesh while it is small on screen (camera LOD)
+        items = [(bld.plan(rect(x * 30, 0, 20, 12), {"class": ""}), 0.0, 0.0) for x in range(4)]
+        (part,) = bld.build_parts(items, with_lod=True)
+        lite = bld.build(items, lite=True)
+        self.assertEqual(len(part[6][2]), len(lite[2]))
+        with tempfile.TemporaryDirectory() as d:
+            bld.write(os.path.join(d, "t.cdae"), part)
+            shape = cdae.read(os.path.join(d, "t.cdae"))
+            self.assertEqual(shape["names"][1:], [f"detail{int(bld.BLD_LOD_PX)}", "detail2"])
+            self.assertEqual(len(shape["meshes"]), 2)
 
 
 class MeshTest(unittest.TestCase):

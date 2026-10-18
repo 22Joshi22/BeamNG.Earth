@@ -340,6 +340,20 @@ def photo_lawns(out_dir, ter_name, mask_names_, rgb):
     n = struct.unpack_from("<I", data, 1)[0]
     off = 5 + 2 * n * n
     lay = np.frombuffer(bytes(data[off:off + n * n]), np.uint8).reshape(n, n)       # row 0 = south
+    # the .ter's layer indices are into its own material list (write_ter: only the used ones): back to MATERIALS
+    o = off + n * n + 4
+    names = []
+    for _ in range(struct.unpack_from("<I", data, off + n * n)[0]):
+        names.append(bytes(data[o + 1:o + 1 + data[o]]).decode())
+        o += 1 + data[o]
+    order = [m for m, _ in MATERIALS]
+    glob = [order.index(m) if m in order else DIRT for m in names]
+    to_glob = np.full(256, heightmap.TER_HOLE, np.uint8)
+    to_glob[:len(glob)] = glob
+    to_local = np.full(256, heightmap.TER_HOLE, np.uint8)
+    for li, gi in enumerate(glob):
+        to_local[gi] = li
+    lay = to_glob[lay]
     lawn = lay == LAWN
     snow = lay == SNOW
     if not lawn.any() and not snow.any():
@@ -353,13 +367,17 @@ def photo_lawns(out_dir, ter_name, mask_names_, rgb):
     white = (c.mean(2) >= SNOW_BRIGHT) & (c.max(2) - c.min(2) <= SNOW_GREY)
     bare = lawn & ~green
     scree = snow & ~white
+    if to_local[DIRT] == heightmap.TER_HOLE:
+        bare[:] = False
+    if to_local[LOOSE] == heightmap.TER_HOLE:
+        scree[:] = False
     k = int(bare.sum() + scree.sum())
     if not k:
         return 0
     lay = lay.copy()
     lay[bare] = DIRT
     lay[scree] = LOOSE
-    data[off:off + n * n] = lay.tobytes()
+    data[off:off + n * n] = to_local[lay].tobytes()
     tmp = staging.tmp_for(path)
     with open(tmp, "wb") as f:
         f.write(data)
@@ -373,12 +391,33 @@ def photo_lawns(out_dir, ter_name, mask_names_, rgb):
     return k
 
 
+def used_materials(idx):
+    """The MATERIALS indices a block's .ter lists: those its samples use (holes aside), plus what photo_lawns may
+    turn them into (LAWN -> DIRT, SNOW -> LOOSE), in MATERIALS order. Each distinct material a .ter lists costs
+    the engine's first draw after the swap ~20 ms (in-game probes 2026-10-18 at Tower Bridge: one material
+    55-80 ms, three 80-180, all ten 250-560 ms in RenderShadows, whether a sample uses them or not)."""
+    u = set(np.unique(np.asarray(idx, np.uint8)).tolist())
+    u.discard(heightmap.TER_HOLE)
+    if LAWN in u:
+        u.add(DIRT)
+    if SNOW in u:
+        u.add(LOOSE)
+    return sorted(u) or [DIRT]
+
+
 def write_ter(out_dir, name, qgrid, idx):
-    """The block's .ter (heightmap.write_ter) with these materials (idx: MATERIALS indices, row 0 =
-    south) or, idx None, the level's single dirt layer (the mod's terrain.MATERIAL). Returns name."""
-    mats = [m for m, _ in MATERIALS] if idx is not None else [MATERIALS[DIRT][0]]
-    heightmap.write_ter(os.path.join(out_dir, name), qgrid, idx, mats)
-    return name
+    """The block's .ter (heightmap.write_ter) with the materials its samples use (idx: MATERIALS indices, row
+    0 = south; used_materials) or, idx None, the level's single dirt layer (the mod's terrain.MATERIAL).
+    Returns (name, the MATERIALS indices listed in order, None for the single dirt layer)."""
+    if idx is None:
+        heightmap.write_ter(os.path.join(out_dir, name), qgrid, None, [MATERIALS[DIRT][0]])
+        return name, None
+    used = used_materials(idx)
+    lut = np.full(256, heightmap.TER_HOLE, np.uint8)
+    lut[used] = np.arange(len(used), dtype=np.uint8)
+    heightmap.write_ter(os.path.join(out_dir, name), qgrid, lut[np.asarray(idx, np.uint8)],
+                        [MATERIALS[i][0] for i in used])
+    return name, used
 
 
 class Surface:
