@@ -256,7 +256,8 @@ def roads_tile(aid, lat, lon, zoom, tx, ty, out_dir, vfs_dir, sidewalks, lift, b
     if buildings:
         import buildings as buildingsmod
         items = buildingsmod.road_tile_items(frame, tx, ty, _s.md,
-                                             lambda la, lo: ground(frame, la, lo, _s.dem.sample(la, lo, zoom)))
+                                             lambda la, lo: ground(frame, la, lo, _s.dem.sample(la, lo, zoom)),
+                                             decks=_tile_decks(bridges, cells, tx, ty))
         town = buildingsmod.coverage(items) < buildingsmod.POLES_COVERAGE
     rwalls = []
     ctx = []
@@ -305,6 +306,21 @@ def _with_plazas(mesh, frame, tx, ty, elev, origin, surface):
     except Exception:                   # no plazas rather than no road tile
         log.exception("plazas of tile %s_%s", tx, ty)
         return mesh
+
+
+def _tile_decks(bridges, cells, tx, ty):
+    """[(xy (k, 2), z (k,))] of the bridge decks over road tile (tx, ty) (the buildings they run through get a way:
+    buildings.road_tile_items), [] without bridge profiles."""
+    if bridges is None:
+        return []
+    import roads as roadsmod
+    x0, y0, x1, y1 = roadsmod.tile_bbox(tx, ty)
+    try:
+        return [(np.asarray(xy, np.float64)[:, :2], np.asarray(z, np.float64))
+                for _, _, xy, z, _ in bridges.parts(cells, (x0 - 20, y0 - 20, x1 + 20, y1 + 20))]
+    except Exception as e:      # no ways cut rather than no buildings
+        log.debug("tile decks: %s: %s", type(e).__name__, e)
+        return []
 
 
 def _open_tunnels(g, keep):

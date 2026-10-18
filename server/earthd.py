@@ -1001,7 +1001,8 @@ class Server:
         if self.buildings:
             items = buildingsmod.road_tile_items(
                 anchor.frame, tx, ty, self.mapdata,
-                lambda la, lo: self.ground(anchor.frame, la, lo, self.dem.sample(la, lo, zoom)))
+                lambda la, lo: self.ground(anchor.frame, la, lo, self.dem.sample(la, lo, zoom)),
+                decks=blockworker._tile_decks(anchor.bridges, cells, tx, ty))
             town = buildingsmod.coverage(items) < buildingsmod.POLES_COVERAGE
         rwalls = []
         ctx = []

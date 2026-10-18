@@ -568,9 +568,16 @@ class BridgePassageTest(unittest.TestCase):
         for r in sides:                 # clear of the road's PASSAGE_W
             self.assertGreaterEqual(np.abs(r[:, 0]).min(), bld.PASSAGE_W / 2 - 1e-6)
         self.assertIn(9.0 + bld.PASSAGE_H, M)
-        # not a building, not a high part
-        R2, *_ = bld._passages([ring], [{"height": 40.0}], [None], [9.0], road)
-        self.assertEqual(len(R2), 1)
+        # another building: only with the deck's height, where the deck passes through it (Southern Gate, 22 m, the
+        # deck 9 m up: solid under it, the sides, the top); under a viaduct (8 m tall, deck 12 m up) it stays whole
+        deck = [(road[0], np.array([12.0, 12.0]))]
+        R2, A2, L2, M2 = bld._passages([ring], [{"height": 22.0}], [None], [0.0], road, deck, lambda c: 3.0)
+        self.assertEqual(len(R2), 4)
+        self.assertIn(9.0 + bld.PASSAGE_CLEAR, M2)
+        R4, *_ = bld._passages([ring], [{"height": 8.0}], [None], [0.0], road, deck, lambda c: 3.0)
+        self.assertEqual(len(R4), 1)
+        R5, *_ = bld._passages([ring], [{"height": 22.0}], [None], [0.0], road)      # (no decks: left whole)
+        self.assertEqual(len(R5), 1)
         R3, *_ = bld._passages([ring], [{"bridge_masonry": "stone", "height": 10.0}], ["k"], [47.0], road)
         self.assertEqual(len(R3), 1)
 

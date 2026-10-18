@@ -1800,6 +1800,7 @@ def road_lines(frame, road_layers, x0, y0, margin=50.0, size=256.0):
 
 PASSAGE_W = 11.0           # m: the passage a bridge's road takes through its tower (Tower Bridge: 2 lanes + walks) ...
 PASSAGE_H = 7.0            # ... this high over the tower's mapped bottom (its deck: the part starts at the road), ...
+PASSAGE_CLEAR = 6.5        # m: the way over a deck through a building (with the decks' heights)
 PASSAGE_BOTTOM_M = 20.0    # ... in a structure whose bottom is this low (not its high walkways or tops)
 
 
@@ -1823,38 +1824,55 @@ def _clip_half(ring, p0, nrm, keep_ge):
     return r if _area2(r) / 2 >= 2.0 else None
 
 
-def _passages(rings, attrs, looks, mins, bridges_xy):
-    """Bridge structures (bridge_part / bridge_masonry) a road bridge runs through split round a PASSAGE_W wide,
-    PASSAGE_H high way from their bottom: the sides under it, the whole footprint over it (Tower Bridge's road ran
-    into its towers' stone at the deck's height, the user 2026-10-18: "the buildings are still in the middle of the
-    bridge")."""
+def _passages(rings, attrs, looks, mins, bridges_xy, decks=None, ground_at=None):
+    """Buildings a road bridge runs through split round a PASSAGE_W wide way (Tower Bridge's road ran into its towers'
+    stone and its Southern Gate, the user 2026-10-18: "the buildings are still in the middle of the bridge", "this
+    building is still blocking the bridge"). With the decks' heights (decks: [(xy (k, 2), z (k,))] relative to the
+    tile, ground_at(c (2,)) -> the ground under a footprint's centre): only where the deck passes through the
+    building's height (a building under a viaduct stays whole): solid under the deck, the way PASSAGE_CLEAR over it,
+    the whole footprint above. Without them, a bridge's own structure (bridge_part / bridge_masonry) starting within
+    PASSAGE_BOTTOM_M gets the way PASSAGE_H over its bottom (its deck: the part starts at the road)."""
     R, A, L, M = [], [], [], []
+    lines = [d[0] for d in decks] if decks else bridges_xy
     for ring, at, look, mh in zip(rings, attrs, looks, mins):
-        if not (at.get("bridge_part") or at.get("bridge_masonry")) or mh > PASSAGE_BOTTOM_M or \
-                road_through(ring, bridges_xy) < 3.0:
+        bridge_own = bool(at.get("bridge_part") or at.get("bridge_masonry"))
+        if not lines or road_through(ring, lines) < 3.0 or (not decks and (not bridge_own or mh > PASSAGE_BOTTOM_M)):
             R.append(ring), A.append(at), L.append(look), M.append(mh)
             continue
         c = ring.mean(0)
         best = None
-        for ln in bridges_xy:
-            for a, b in zip(ln[:-1], ln[1:]):
+        for k, ln in enumerate(lines):
+            for q in range(len(ln) - 1):
+                a, b = ln[q], ln[q + 1]
                 ab = b - a
                 t = float(np.clip((c - a) @ ab / max(ab @ ab, 1e-9), 0, 1))
                 d = float(np.hypot(*(a + t * ab - c)))
                 if best is None or d < best[0]:
-                    best = (d, a + t * ab, ab / max(float(np.hypot(*ab)), 1e-9))
-        _, p0, u = best
+                    zd = None
+                    if decks:
+                        z = decks[k][1]
+                        zd = float(z[q] + t * (z[q + 1] - z[q]))
+                    best = (d, a + t * ab, ab / max(float(np.hypot(*ab)), 1e-9), zd)
+        _, p0, u, zd = best
         nrm = np.array([-u[1], u[0]])
         h = at.get("height")
         own = look is not None          # (a building's part carries its own height over its bottom, a building its top)
         top = (mh + float(h) if own else float(h)) if h is not None and np.isfinite(h) else mh + PASSAGE_H + 3.0
-        cut = mh + PASSAGE_H
-        if top <= cut + 1.0:            # all of it in the passage's height: only the sides stand
-            cut = top
+        if zd is not None and ground_at is not None and np.isfinite(zd):
+            dh = zd - float(ground_at(c))           # the deck's height over the building's ground
+            if top <= dh + 1.0 or mh >= dh + PASSAGE_CLEAR:
+                R.append(ring), A.append(at), L.append(look), M.append(mh)
+                continue                            # under the deck, or over its way
+            low, cut = max(mh, dh - 1.5), dh + PASSAGE_CLEAR
+        else:
+            low, cut = mh, mh + PASSAGE_H
+        cut = min(cut, top)
+        if low > mh + 0.5:                          # solid under the deck
+            R.append(ring), A.append(dict(at, height=(low - mh) if own else low)), L.append(look), M.append(mh)
         for sgn in (1, -1):
             piece = _clip_half(ring, p0 + nrm * sgn * PASSAGE_W / 2, nrm * sgn, True)
-            if piece is not None:
-                R.append(piece), A.append(dict(at, height=(cut - mh) if own else cut)), L.append(look), M.append(mh)
+            if piece is not None and cut > low + 0.5:
+                R.append(piece), A.append(dict(at, height=(cut - low) if own else cut)), L.append(look), M.append(low)
         if top > cut + 1.0:
             R.append(ring), A.append(dict(at, height=(top - cut) if own else top)), L.append(look), M.append(cut)
     return R, A, L, M
@@ -1945,7 +1963,7 @@ CENTRE_PREFILTER_M = 1.0       # m of slack for Features.outer_centres (cumulati
 
 
 def tile_buildings(frame, x0, y0, x1, y1, layers, elev, water=None, part_layers=(), west_town=False, roads_xy=None,
-                   tunnels_xy=None, garages_xy=None, supports=None, bridges_xy=None, water_xy=None):
+                   tunnels_xy=None, garages_xy=None, supports=None, bridges_xy=None, water_xy=None, decks=None):
     """[(Spec, gmin, gmax)] of the buildings whose footprint centroid is in the tile [x0, x1) x [y0, y1)
     (anchor frame), rings relative to (x0, y0). layers: mapgeom.Features of buildings (one per map cell; a
     building in two cells is taken once, by id); elev(lat, lon) the physics ground. part_layers: the
@@ -2075,8 +2093,11 @@ def tile_buildings(frame, x0, y0, x1, y1, layers, elev, water=None, part_layers=
             mins.append(mh)
     if not rings:
         return []
-    if bridges_xy:                      # a road bridge through a bridge's tower: a passage (Tower Bridge's arches)
-        rings, attrs, looks, mins = _passages(rings, attrs, looks, mins, bridges_xy)
+    if bridges_xy or decks:             # a road bridge through a building: a passage (Tower Bridge's towers and gate)
+        def ground_at(c):
+            la, lo, _ = frame.enu_to_geodetic(float(c[0]) + x0, float(c[1]) + y0, 0.0)
+            return float(np.asarray(elev(np.array([float(la)]), np.array([float(lo)])), np.float64)[0])
+        rings, attrs, looks, mins = _passages(rings, attrs, looks, mins, bridges_xy, decks, ground_at)
     shared = _shared_walls(rings)
     cover = sum(_area2(r) / 2 for r, mh in zip(rings, mins) if mh <= 0.5) / ((x1 - x0) * (y1 - y0))
     town, dense = cover < TOWN_COVERAGE, cover > BRICK_WALK_COVERAGE
@@ -2369,8 +2390,9 @@ def _front_fence(spec, a, d, Le, f, A, D, L2, half, z, driveway):
     return rows
 
 
-def road_tile_items(frame, tx, ty, md, ground):
-    """tile_buildings of road tile (tx, ty), from the map cells under it."""
+def road_tile_items(frame, tx, ty, md, ground, decks=None):
+    """tile_buildings of road tile (tx, ty), from the map cells under it. decks: the bridge decks near it
+    [(xy (k, 2), z (k,))] in the anchor frame (roads.BridgeProfiles.parts): buildings they run through get a way."""
     import roads
     x0, y0, x1, y1 = roads.tile_bbox(tx, ty)
     cds = [md.cell(k, layers=("buildings", "building_parts", "roads", "infrastructure", "water"), kind="demand")
@@ -2383,7 +2405,9 @@ def road_tile_items(frame, tx, ty, md, ground):
                           garages_xy=garage_rings(frame, [c.layers.get("infrastructure") for c in cds], x0, y0),
                           supports=support_rings(frame, [c.layers.get("infrastructure") for c in cds], x0, y0),
                           bridges_xy=bridge_lines(frame, [c.layers.get("roads") for c in cds], x0, y0),
-                          water_xy=water_rings(frame, [c.layers.get("water") for c in cds], x0, y0))
+                          water_xy=water_rings(frame, [c.layers.get("water") for c in cds], x0, y0),
+                          decks=[(np.asarray(xy, np.float64)[:, :2] - [x0, y0], np.asarray(z, np.float64))
+                                 for xy, z in decks] if decks else None)
 
 
 TOWN_COVERAGE = 0.16        # a tile whose footprints cover less than this share is a town / suburb (heights)
