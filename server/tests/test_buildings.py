@@ -555,6 +555,26 @@ class StoopStreetTest(unittest.TestCase):
         self.assertLessEqual(tops[0] - 10.0, bld.STOOP_RISE_MAX + 1e-6, "the bottom step one riser over the street")
 
 
+class BridgePassageTest(unittest.TestCase):
+    """A road bridge through a bridge's tower (Tower Bridge): the tower splits round a passage at its bottom."""
+
+    def test_passage(self):
+        ring = np.array([[-10, -10], [10, -10], [10, 10], [-10, 10], [-10, -10]], float)
+        road = [np.array([[0.0, -50.0], [0.0, 50.0]])]
+        R, A, L, M = bld._passages([ring], [{"bridge_masonry": "stone", "height": 40.0}], [None], [9.0], road)
+        self.assertEqual(len(R), 3)
+        sides = [r for r, m in zip(R, M) if m == 9.0]
+        self.assertEqual(len(sides), 2)
+        for r in sides:                 # clear of the road's PASSAGE_W
+            self.assertGreaterEqual(np.abs(r[:, 0]).min(), bld.PASSAGE_W / 2 - 1e-6)
+        self.assertIn(9.0 + bld.PASSAGE_H, M)
+        # not a building, not a high part
+        R2, *_ = bld._passages([ring], [{"height": 40.0}], [None], [9.0], road)
+        self.assertEqual(len(R2), 1)
+        R3, *_ = bld._passages([ring], [{"bridge_masonry": "stone", "height": 10.0}], ["k"], [47.0], road)
+        self.assertEqual(len(R3), 1)
+
+
 class MachineLearnedFootprintTest(unittest.TestCase):
     """Microsoft's machine-learned footprints on a road bridge or on water are its deck or a boat (Tower Bridge's
     river, 2026-10-18); on an island in the river, a building."""

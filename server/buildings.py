@@ -1798,6 +1798,68 @@ def road_lines(frame, road_layers, x0, y0, margin=50.0, size=256.0):
     return out
 
 
+PASSAGE_W = 11.0           # m: the passage a bridge's road takes through its tower (Tower Bridge: 2 lanes + walks) ...
+PASSAGE_H = 7.0            # ... this high over the tower's mapped bottom (its deck: the part starts at the road), ...
+PASSAGE_BOTTOM_M = 20.0    # ... in a structure whose bottom is this low (not its high walkways or tops)
+
+
+def _clip_half(ring, p0, nrm, keep_ge):
+    """The part of the ring (k, 2) on one side of the line through p0 with normal nrm (Sutherland-Hodgman)."""
+    out = []
+    pts = list(ring[:-1]) if np.allclose(ring[0], ring[-1]) else list(ring)
+    side = [float((q - p0) @ nrm) for q in pts]
+    for k in range(len(pts)):
+        a, b = pts[k], pts[(k + 1) % len(pts)]
+        sa, sb = side[k], side[(k + 1) % len(pts)]
+        ina, inb = (sa >= 0) == keep_ge or sa == 0, (sb >= 0) == keep_ge or sb == 0
+        if ina:
+            out.append(a)
+        if (sa > 0) != (sb > 0) and sa != 0 and sb != 0:
+            t = sa / (sa - sb)
+            out.append(a + t * (b - a))
+    if len(out) < 3:
+        return None
+    r = np.array(out + [out[0]], np.float64)
+    return r if _area2(r) / 2 >= 2.0 else None
+
+
+def _passages(rings, attrs, looks, mins, bridges_xy):
+    """Bridge structures (bridge_part / bridge_masonry) a road bridge runs through split round a PASSAGE_W wide,
+    PASSAGE_H high way from their bottom: the sides under it, the whole footprint over it (Tower Bridge's road ran
+    into its towers' stone at the deck's height, the user 2026-10-18: "the buildings are still in the middle of the
+    bridge")."""
+    R, A, L, M = [], [], [], []
+    for ring, at, look, mh in zip(rings, attrs, looks, mins):
+        if not (at.get("bridge_part") or at.get("bridge_masonry")) or mh > PASSAGE_BOTTOM_M or \
+                road_through(ring, bridges_xy) < 3.0:
+            R.append(ring), A.append(at), L.append(look), M.append(mh)
+            continue
+        c = ring.mean(0)
+        best = None
+        for ln in bridges_xy:
+            for a, b in zip(ln[:-1], ln[1:]):
+                ab = b - a
+                t = float(np.clip((c - a) @ ab / max(ab @ ab, 1e-9), 0, 1))
+                d = float(np.hypot(*(a + t * ab - c)))
+                if best is None or d < best[0]:
+                    best = (d, a + t * ab, ab / max(float(np.hypot(*ab)), 1e-9))
+        _, p0, u = best
+        nrm = np.array([-u[1], u[0]])
+        h = at.get("height")
+        own = look is not None          # (a building's part carries its own height over its bottom, a building its top)
+        top = (mh + float(h) if own else float(h)) if h is not None and np.isfinite(h) else mh + PASSAGE_H + 3.0
+        cut = mh + PASSAGE_H
+        if top <= cut + 1.0:            # all of it in the passage's height: only the sides stand
+            cut = top
+        for sgn in (1, -1):
+            piece = _clip_half(ring, p0 + nrm * sgn * PASSAGE_W / 2, nrm * sgn, True)
+            if piece is not None:
+                R.append(piece), A.append(dict(at, height=(cut - mh) if own else cut)), L.append(look), M.append(mh)
+        if top > cut + 1.0:
+            R.append(ring), A.append(dict(at, height=(top - cut) if own else top)), L.append(look), M.append(cut)
+    return R, A, L, M
+
+
 ML_BRIDGE_M = 6.0          # m of a road bridge's line through a machine-learned footprint: the deck, not a building
 
 
@@ -2013,6 +2075,8 @@ def tile_buildings(frame, x0, y0, x1, y1, layers, elev, water=None, part_layers=
             mins.append(mh)
     if not rings:
         return []
+    if bridges_xy:                      # a road bridge through a bridge's tower: a passage (Tower Bridge's arches)
+        rings, attrs, looks, mins = _passages(rings, attrs, looks, mins, bridges_xy)
     shared = _shared_walls(rings)
     cover = sum(_area2(r) / 2 for r, mh in zip(rings, mins) if mh <= 0.5) / ((x1 - x0) * (y1 - y0))
     town, dense = cover < TOWN_COVERAGE, cover > BRICK_WALK_COVERAGE
