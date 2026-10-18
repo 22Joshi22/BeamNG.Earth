@@ -156,6 +156,7 @@ BRIDGE_CLASSES = {"bridge_structure"}
 BRIDGE_PIER_M = 12.0        # a bridge structure's height when not mapped
 STEEL_MATERIALS = ("", "steel", "metal", "iron")     # a part over a bridge support of these (or none mapped): steel
 MASONRY_MATERIALS = ("concrete", "stone", "brick", "masonry", "granite")
+STONE_FACADES = ("stone", "sandstone", "limestone", "granite", "marble")
 STEEL = "bne_bridge_steel"  # (a LOOKS name: the corrugated-metal material, painted steel grey)
 # a bridge structure in its mapped paint (bridgetypes.PAINTS: the Golden Gate Bridge's towers, building:colour #bf4e3b,
 # were steel grey beside its orange cables, 2026-10-18)
@@ -632,6 +633,17 @@ def plan(ring, attrs, neighbours=0, lat=None, lon=None, look=None, town=False, d
             and _hash01(seed, "stone") < style.stone:
         wall = f"{STONE}|{int(_hash01(seed, 'stc') * len(WALL_TINTS[STONE]))}"
         facade = wall
+    # the mapped facade material (OSM building:material, Overture facade_material) over the guesses (Tower Bridge's
+    # stone towers came out as glass towers, 2026-10-18)
+    fm = str(attrs.get("facade_material") or "").lower()
+    if fm in STONE_FACADES and not (barn or shed):
+        wall = f"{STONE}|{int(_hash01(seed, 'stc') * len(WALL_TINTS[STONE]))}"
+        facade, plain = wall, False
+    elif fm == "brick" and not (barn or shed):
+        facade, band, plain, wall = BRICK_TINTS[int(seed * 7919) % len(BRICK_TINTS)], BAND_BRICK, False, None
+    elif fm == "glass":
+        facade = f"{OFFICE}|{int(_hash01(seed, 'glass tint') * len(WALL_TINTS[OFFICE]))}"
+        band, plain, wall = BAND_OFFICE, False, None
     if terminal:
         facade, band, plain = OFFICE, BAND_OFFICE, False
     elif garage:

@@ -212,6 +212,17 @@ def snapper(lat, lon, radius):
                     best = (dd, c)
         if best is None:
             return None
+        # only when no other road is nearer (Tower Bridge's photos, beside the short passages through its towers, were
+        # shot from the Thames' bed)
+        for ln in roads:
+            if any(ln is t for t in tunnels):
+                continue
+            q = (ln - p) * [mx, M_PER_DEG]
+            for u, v in zip(q[:-1], q[1:]):
+                w = v - u
+                t = max(0.0, min(1.0, float(-(u @ w) / max(w @ w, 1e-9))))
+                if float(np.hypot(*(u + w * t))) < best[0]:
+                    return None
         return la + best[1][1] / M_PER_DEG, lo + best[1][0] / mx
 
     def snap(la, lo, heading=None):

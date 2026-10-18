@@ -283,20 +283,21 @@ local function flatAt(x, y, z)
   return true
 end
 
--- under: the lowest flat surface instead (a tunnel's floor: the first was its tube's roof, the camera in the rock)
+-- under: the flat surface nearest the player's car instead (a teleport into a tunnel puts it on the floor: the
+-- first surface was the tube's roof, the camera in the rock; Tower Bridge's approach over a passage: its deck)
 local function groundAt(x, y, zRef, under)
   local top = zRef + B.RAY_UP
-  local low
+  local best
   for _ = 1, 24 do
     local okR, hit = pcall(castRay, vec3(x, y, top), vec3(x, y, zRef - B.RAY_LEN), true, true)
     if not (okR and type(hit) == 'table' and hit.pt and hit.pt.z) then break end
     if flatAt(x, y, hit.pt.z) then
       if not under then return hit.pt.z end
-      low = hit.pt.z
+      if not best or math.abs(hit.pt.z - zRef) < math.abs(best - zRef) then best = hit.pt.z end
     end
     top = hit.pt.z - 0.3
   end
-  if low then return low end
+  if best then return best end
   local ok, d = pcall(castRayStatic, vec3(x, y, top), vec3(0, 0, -1), B.RAY_LEN)
   if ok and d and d < B.RAY_LEN then return top - d end
 end
