@@ -462,7 +462,7 @@ def plan(ring, attrs, neighbours=0, lat=None, lon=None, look=None, town=False, d
                     seed=seed, min_h=0.0, wall=None, windows=False, steeple=False, porch=False, cls="bridge_part",
                     deck=False, pitch=None)
     mat_ = str(attrs.get("facade_material") or "").lower()
-    if cls in BRIDGE_CLASSES and mat_ in MASONRY_MATERIALS:
+    if attrs.get("bridge_masonry") or (cls in BRIDGE_CLASSES and mat_ in MASONRY_MATERIALS):
         # a mapped masonry pier (Tower Bridge's 9 m concrete piers under its stone towers): a solid block, not a frame
         look = f"{STONE}|0" if mat_ in ("stone", "brick") else "bne_precast"
         return Spec(ring=ring, floors=1, floor_h=h or BRIDGE_PIER_M, height=h or BRIDGE_PIER_M, roof="flat",
@@ -1718,7 +1718,11 @@ def support_rings(frame, infra_layers, x0, y0, margin=50.0, size=256.0):
         cls, tags = a.get("class"), a.get("tags")
         if cls is None:
             continue
-        for i in np.flatnonzero((cls.astype(str) == "bridge_support") & (f.kind == 3)):
+        cs = cls.astype(str)
+        # a bridge's supports, and its own outlines mapped as buildings (Tower Bridge's high walkways: building:colour
+        # lightblue, 45 m); not a bare bridge outline (Ponte Vecchio's shops stand on one)
+        three_d = np.array(['"building' in str(t) for t in tags], bool) if tags is not None else np.zeros(len(cs), bool)
+        for i in np.flatnonzero(((cs == "bridge_support") | ((cs == "bridge") & three_d)) & (f.kind == 3)):
             fid = f.ids[i]
             if fid in seen:
                 continue
@@ -1726,7 +1730,8 @@ def support_rings(frame, infra_layers, x0, y0, margin=50.0, size=256.0):
             pt = None
             if tags is not None and "colour" in str(tags[i]):
                 try:
-                    pt = bridgetypes.paint(json.loads(str(tags[i])).get("building:colour"))
+                    td = json.loads(str(tags[i]))
+                    pt = bridgetypes.paint(td.get("building:colour") or td.get("colour"))
                 except ValueError:
                     pt = None
             for part in f.parts(i):
@@ -1961,7 +1966,10 @@ def tile_buildings(frame, x0, y0, x1, y1, layers, elev, water=None, part_layers=
                     attrs.append({"class": at["class"], "height": ph, "num_floors": None, "roof_shape": "flat",
                                   "building_height": top, "facade_material": at.get("facade_material"),
                                   "bridge_part": _on_support(r, supports) if str(at.get("facade_material") or "")
-                                  .lower() in STEEL_MATERIALS else None})
+                                  .lower() in STEEL_MATERIALS else None,
+                                  "bridge_masonry": str(at.get("facade_material") or "").lower()
+                                  if _on_support(r, supports) is not None and str(at.get("facade_material") or "")
+                                  .lower() not in STEEL_MATERIALS else None})
                     looks.append(look)
                     mins.append(pmh)
                 if key is not None:
@@ -1997,8 +2005,9 @@ def tile_buildings(frame, x0, y0, x1, y1, layers, elev, water=None, part_layers=
             if mh <= 0.5 and garages_xy and _covers_garage(ring, garages_xy):
                 at = dict(at, garage=True)
             on = _on_support(ring, supports)
-            if on is not None and str(at.get("facade_material") or "").lower() in STEEL_MATERIALS:
-                at = dict(at, bridge_part=on)
+            if on is not None:              # a bridge's own: no flats' windows (Tower Bridge's towers, the user 2026-10-18)
+                fm_ = str(at.get("facade_material") or "").lower()
+                at = dict(at, bridge_part=on) if fm_ in STEEL_MATERIALS else dict(at, bridge_masonry=fm_)
             attrs.append(at)
             looks.append(None)
             mins.append(mh)
