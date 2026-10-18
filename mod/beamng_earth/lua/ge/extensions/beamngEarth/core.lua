@@ -52,6 +52,7 @@ local places = require('beamngEarth/places') -- saved and recent places (the set
 local banner = require('beamngEarth/banner') -- the connection banner (docs/DEVTOOLS.md)
 local hudapps = require('beamngEarth/hudapps') -- the same three as BeamNG UI apps (the ".Earth" app layout)
 local edgeguard = require('beamngEarth/edgeguard') -- never fall off the last block (docs/ROADMAP.md)
+local drophold = require('beamngEarth/drophold') -- a car dropped far away waits for its ground
 local groundcover = require('beamngEarth/groundcover') -- grass on the surface layers (docs/ROADMAP.md v1.5)
 local roads = require('beamngEarth/roads') -- DecalRoads from the server's road tiles (docs/ROADMAP.md v1.6)
 local sea = require('beamngEarth/sea') -- the sea's WaterBlock tiles (server seatiles.py)
@@ -832,6 +833,63 @@ local function updatePlayer(dt)
   st.slowFor = st.player.speed < SLOW_SPEED and (st.slowFor + dt) or 0
 end
 
+-- Drop hold (drophold.lua): a car dropped far off the block (the game's drop-at-camera) is held at rest where it was
+-- dropped until the block that follows it is committed and has ground under it.
+local dropHold = drophold.new()
+local dropHoldFailed = false
+M.dropHoldState = function() return dropHold end      -- (tests, tools)
+
+local function holdCar(veh, x, y, z)
+  -- the cluster moves by the reference node: set it where it is relative to the vehicle's position, at the target
+  local ref = veh:getRefNodeId()
+  local rel = veh:getNodePosition(ref)
+  veh:setClusterPosRelRot(ref, x + rel.x, y + rel.y, z + rel.z, 0, 0, 0, 1)
+  veh:applyClusterVelocityScaleAdd(ref, 0, 0, 0, 0)
+end
+
+local function updateDropHold(dt)
+  local pl = st.player
+  local veh = getPlayerVehicle(0)
+  if not pl or not veh then return end
+  local box = nil
+  if st.block then
+    local b = st.dropBox or {}
+    st.dropBox = b
+    b[1], b[2], b[3], b[4] = lattice.groundBox(st.block.cx, st.block.cy)
+    box = b
+  end
+  local h = dropHold
+  if h.active and h.last and h.last.anchorId ~= st.anchorId then drophold.moved(h, pl.x, pl.y, pl.z) end
+  local busy = st.placeFrames ~= nil or st.floorZ ~= nil
+  if drophold.observe(h, pl.x, pl.y, pl.z, pl.speed, dt, st.anchorId, box, busy) == 'start' then
+    log('I', 'beamngEarth', string.format('drop hold: the car is %.0f m from the block; held until its ground loads',
+      box and math.max(box[1] - pl.x, pl.x - box[3], box[2] - pl.y, pl.y - box[4], 0) or -1))
+    if ui_message then pcall(ui_message, 'Loading the ground here: the car waits', 4, 'beamngEarthDropHold') end
+  end
+  if not h.active then return end
+  local gz = nil
+  if box and drophold.inside(box, h.x, h.y, drophold.EDGE_MARGIN) then
+    local ray = rawget(_G, 'castRayStatic')
+    if ray then
+      local from = vec3(h.x, h.y, h.z + 600)
+      local d = ray(from, vec3(0, 0, -1), 3000)
+      if d and d < 3000 then gz = from.z - d end
+    end
+  end
+  local serial = st.block and (st.block.cx .. ',' .. st.block.cy .. ',' .. tostring(st.followCount)) or nil
+  local act, z = drophold.step(h, st.clock, box, serial, gz)
+  if act == nil then
+    holdCar(veh, h.x, h.y, h.z)
+  elseif act == 'place' then
+    holdCar(veh, h.x, h.y, z)
+    log('I', 'beamngEarth', string.format('drop hold: set on the ground at %.1f', z))
+  elseif act == 'timeout' then
+    log('W', 'beamngEarth', 'drop hold: no ground after ' .. drophold.MAX_S .. ' s, the car is let go')
+  else
+    log('I', 'beamngEarth', 'drop hold: ground loaded, the car is let go')
+  end
+end
+
 local function updateSky(dt)
   st.skyTimer = st.skyTimer + dt
   if st.skyTimer < SKY_INTERVAL or not st.player then return end
@@ -1232,6 +1290,14 @@ local function onUpdate(dtReal, dtSim)
 
   updatePlayer(dtReal)
   if st.active then
+    if not st.paused and not dropHoldFailed then
+      local ok, err = pcall(updateDropHold, dtReal)
+      if not ok then          -- never break the frame: off for the session, said once
+        dropHoldFailed = true
+        drophold.cancel(dropHold)
+        log('E', 'beamngEarth', 'drop hold turned off: ' .. tostring(err))
+      end
+    end
     t = mark('player', t)
     updateWorld(dtReal)
     t = mark('world', t)
