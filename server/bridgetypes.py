@@ -20,6 +20,7 @@ import numpy as np
 NBI_DECK_TRUSS, NBI_THROUGH_TRUSS = 9, 10
 NBI_DECK_ARCH, NBI_THROUGH_ARCH, NBI_SUSPENSION, NBI_STAYED = 11, 12, 13, 14
 NBI_LIFT, NBI_BASCULE, NBI_SWING = 15, 16, 17
+ARCH_ANY = 111          # (not NBI) an arch over or under its deck as its height allows: OSM's bridge:structure=arch
 TRUSS_TYPES = (NBI_DECK_TRUSS, NBI_THROUGH_TRUSS)
 
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "bridges_us.npz")
@@ -45,7 +46,7 @@ POST = (0.6, 0.7)       # verticals
 DIAG = (0.45, 0.6)      # diagonals
 BRACE = (0.4, 0.5)      # cross beams over the top
 
-OSM_TYPES = {"truss": NBI_THROUGH_TRUSS, "cantilever": NBI_THROUGH_TRUSS, "arch": NBI_DECK_ARCH,
+OSM_TYPES = {"truss": NBI_THROUGH_TRUSS, "cantilever": NBI_THROUGH_TRUSS, "arch": ARCH_ANY,
              "suspension": NBI_SUSPENSION, "cable-stayed": NBI_STAYED}    # bridge:structure; others: a plain deck
 OSM_INSIDE = 0.2        # this share of a chain's deck points inside a tagged outline: the chain is that bridge
 
@@ -363,3 +364,246 @@ def truss_members(parts, info, ground_fn, wet_fn=None, with_piers=False, road_li
                     beams.append((Lt, Rt2, *BRACE))
                     beams.append((Rt, Lt2, *BRACE))
     return (beams, piers) if with_piers else beams
+
+
+# --- arches, suspension and cable-stayed spans ------------------------------------------------------------------
+# One main span per chain, on its longest part: centred on its longest run over water (else where the deck stands
+# highest over the ground), as long as the inventory's span (else most of that run). Sydney Harbour Bridge was a
+# plain deck between the city's towers where the photos show its steel arch (Mapillary, 2026-10-18).
+ARCH_TYPES = (NBI_DECK_ARCH, NBI_THROUGH_ARCH, ARCH_ANY)
+ARCH_SPAN_SHARE = 1.05  # (no inventory span) an arch springs from the banks: a little more than the water
+SPAN_SHARE = 0.85       # (no inventory span) the main span: this share of the run over water it stands over
+SPAN_MAX = 1300.0       # m
+SPAN_MIN = 40.0         # m: shorter main spans are left plain
+ARCH_RISE = 1 / 5.0     # a deck arch's rise from its springings: a share of its span
+THROUGH_TOP = 1 / 6.5   # a through arch's crown over the deck: a share of its span (Sydney: 503 m, ~75 m)
+ARCH_TRUSS_M = 200.0    # an arch at least this long has trussed ribs ...
+ARCH_DEPTH_CROWN = 1 / 28.0     # ... this deep at the crown (a share of the span: Sydney 18 m) ...
+ARCH_DEPTH_END = 1 / 9.0        # ... and at the bearings (Sydney 57 m)
+TIED_SPAN_M = 300.0     # a through arch shorter than this is tied: it springs at the deck (Pittsburgh's)
+SUSP_TOWER = 1 / 9.0    # a suspension tower's top over the deck: a share of the main span (Golden Gate: 1280, 150)
+SUSP_SIDE = 0.35        # the side spans: a share of the main span past each tower
+SUSP_LOW_M = 3.0        # m: the main cable's lowest point over the deck
+STAYED_TOWER = 1 / 4.0  # a cable-stayed pylon's top over the deck: a share of the main span
+HANGER_M = 12.0         # m between hangers / stays / spandrel posts
+
+
+def _station(P, tans, k, sc, arcs):
+    """At arc sc of part k: (point (2,), unit along, unit left, lo, hi (offsets of the outermost decks' edges beside it,
+    PARAPET_W and SIDE_GAP_M outside), z low, z high of those decks)."""
+    from roadmesh import PARAPET_W
+    xy, z, w = P[k]
+    s = arcs[k]
+    p = np.array([np.interp(sc, s, xy[:, 0]), np.interp(sc, s, xy[:, 1])])
+    ii = min(int(np.searchsorted(s, sc)), len(s) - 1)
+    t = tans[k][ii]
+    nrm = np.array([-t[1], t[0]])
+    lo, hi = -w / 2, w / 2
+    zlo = zhi = float(np.interp(sc, s, z))
+    for k2, (xy2, z2, w2) in enumerate(P):
+        if k2 == k:
+            continue
+        d = np.hypot(*(xy2 - p).T)
+        m = int(np.argmin(d))
+        if d[m] > SIDE_REACH_M or abs(tans[k2][m] @ t) < PARALLEL_COS or abs(float((xy2[m] - p) @ t)) > PANEL_M:
+            continue
+        off = float((xy2[m] - p) @ nrm)
+        lo, hi = min(lo, off - w2 / 2), max(hi, off + w2 / 2)
+        zlo, zhi = min(zlo, float(z2[m])), max(zhi, float(z2[m]))
+    g = PARAPET_W + SIDE_GAP_M
+    return p, t, nrm, lo - g, hi + g, zlo, zhi
+
+
+def _prep(parts):
+    P = [(np.asarray(xy, np.float64), np.asarray(z, np.float64), float(w)) for xy, z, w in parts if len(xy) >= 2]
+    arcs = [np.r_[0.0, np.cumsum(np.hypot(*np.diff(xy, axis=0).T))] for xy, _, _ in P]
+    tans = []
+    for xy, _, _ in P:
+        t = np.gradient(xy, axis=0)
+        tans.append(t / np.maximum(np.hypot(t[:, 0], t[:, 1]), 1e-9)[:, None])
+    return P, arcs, tans
+
+
+def main_span(P, arcs, info, ground_fn, wet_fn=None):
+    """(part index, centre arc, span m) of a chain's main span, or None."""
+    if not P:
+        return None
+    k = int(np.argmax([a[-1] for a in arcs]))
+    xy, z, _ = P[k]
+    s = arcs[k]
+    run = None
+    if wet_fn is not None:
+        runs = _runs(np.asarray(wet_fn(xy), bool), s, 1.0)
+        if runs:
+            i, j = max(runs, key=lambda r: s[r[1]] - s[r[0]])
+            run = (s[i], s[j])
+    if run is None:
+        h = z - np.asarray(ground_fn(xy), np.float64)
+        m = int(np.argmax(h))
+        if h[m] < 8.0:
+            return None
+        i = j = m                                   # the run around the highest point over half its height
+        while i > 0 and h[i - 1] >= 0.5 * h[m]:
+            i -= 1
+        while j < len(h) - 1 and h[j + 1] >= 0.5 * h[m]:
+            j += 1
+        run = (s[i], s[j])
+    c = (run[0] + run[1]) / 2
+    share = ARCH_SPAN_SHARE if info["type"] in ARCH_TYPES else SPAN_SHARE
+    span = info.get("span") if info.get("src") == "nbi" and info.get("span") else share * (run[1] - run[0])
+    span = float(min(span, SPAN_MAX, s[-1] * 0.9))
+    if span < SPAN_MIN:
+        return None
+    c = float(np.clip(c, span / 2, s[-1] - span / 2))
+    return k, c, span
+
+
+def _ribs(P, tans, arcs, k, s0, s1, n):
+    """n + 1 stations from arc s0 to s1 on part k: [(s, p, t, nrm, lo, hi, zlo, zhi)]."""
+    out = []
+    for sc in np.linspace(s0, s1, n + 1):
+        out.append((float(sc),) + _station(P, tans, k, float(sc), arcs))
+    return out
+
+
+def _sz(span, a, lo, hi):
+    return float(np.clip(span * a, lo, hi))
+
+
+def arch_members(P, arcs, tans, ms, info, ground_fn):
+    """The ribs, hangers / spandrel posts and bracing of an arch over (through) or under (deck) its main span."""
+    k, c, L = ms
+    n = max(int(round(L / HANGER_M)), 4)
+    st = _ribs(P, tans, arcs, k, c - L / 2, c + L / 2, n)
+    deck_c = st[n // 2][7]
+    ends = np.array([st[0][1], st[-1][1]])
+    g_ends = np.asarray(ground_fn(ends), np.float64)
+    g_mid = float(np.asarray(ground_fn(st[n // 2][1][None]), np.float64)[0])
+    through = info["type"] == NBI_THROUGH_ARCH or (info["type"] != NBI_DECK_ARCH and deck_c - g_mid < 0.9 * ARCH_RISE * L)
+    rw, rh = _sz(L, 1 / 120, 1.0, 4.5), _sz(L, 1 / 60, 1.2, 9.0)        # rib (width, depth)
+    beams = []
+    if through:
+        tied = L < TIED_SPAN_M
+        z0 = [st[0][6] - 1.0, st[-1][6] - 1.0] if tied else [max(float(g), st[0][6] - L / 8) for g in g_ends]
+        top = deck_c + THROUGH_TOP * L
+    else:
+        z0 = [float(g) for g in g_ends]
+        top = deck_c - 1.5 - rh / 2
+    x = np.linspace(-1, 1, n + 1)
+    base = z0[0] + (z0[1] - z0[0]) * (x + 1) / 2
+    zr = base + (top - base) * (1 - x ** 2)
+    trussed = L >= ARCH_TRUSS_M
+    dz_t = (ARCH_DEPTH_CROWN + (ARCH_DEPTH_END - ARCH_DEPTH_CROWN) * x ** 2) * L if trussed else np.zeros(n + 1)
+    if not through:                                 # a deck arch's upper chord stays under the deck
+        dz_t = np.clip(np.minimum(dz_t, np.array([s[6] for s in st]) - 1.5 - rh / 2 - zr), 0.0, None)
+    for side in (0, 1):
+        pts = [np.r_[(s[1] + s[3] * (s[5] if side else s[4])), z] for s, z in zip(st, zr)]
+        for a in range(n):
+            beams.append((pts[a], pts[a + 1], rw, rh))
+        if trussed:                                 # a trussed rib (Sydney's): an upper chord, posts, diagonals
+            up = [p + np.r_[0.0, 0.0, d] for p, d in zip(pts, dz_t)]
+            for a in range(n):
+                beams.append((up[a], up[a + 1], rw, rh))
+                beams.append((pts[a], up[a], rw * 0.6, rw * 0.6))
+                beams.append((pts[a], up[a + 1]) if a % 2 == 0 else (up[a], pts[a + 1]))
+                beams[-1] = beams[-1] + (rw * 0.5, rw * 0.5)
+            beams.append((pts[n], up[n], rw * 0.6, rw * 0.6))
+        for a in range(1, n):
+            s = st[a]
+            e = s[1] + s[3] * (s[5] if side else s[4])
+            dz = zr[a] - s[7]
+            if through and dz > 1.0:                    # a hanger down to the deck
+                beams.append((np.r_[e, zr[a] - rh / 2], np.r_[e, s[6] - 0.8], 0.25, 0.25))
+            elif not through and s[6] - zr[a] > 1.5:    # a spandrel post up to the deck
+                beams.append((np.r_[e, zr[a] + rh / 2], np.r_[e, s[6] - 1.2], 0.8, 0.8))
+    for a in range(1, n):                                # bracing between the ribs, clear of the traffic
+        s = st[a]
+        if not through or zr[a] - s[7] > 7.0:
+            zb = zr[a] + dz_t[a]
+            Lp = np.r_[s[1] + s[3] * s[5], zb]
+            Rp = np.r_[s[1] + s[3] * s[4], zb]
+            beams.append((Lp, Rp, 0.5, 0.7))
+    return beams
+
+
+def suspension_members(P, arcs, tans, ms, info, ground_fn, stayed=False):
+    """Towers, main cables and hangers of a suspension span; with stayed, pylons and fans of stays."""
+    k, c, L = ms
+    s_part = arcs[k]
+    towers = [c - L / 2, c + L / 2]
+    beams = []
+    H = (STAYED_TOWER if stayed else SUSP_TOWER) * L
+    leg = (_sz(L, 1 / 250, 2.5, 8.0), _sz(L, 1 / 180, 3.0, 10.0))
+    tops = []
+    for sc in towers:
+        p, t, nrm, lo, hi, zlo, zhi = _station(P, tans, k, sc, arcs)
+        gz = float(np.asarray(ground_fn(p[None]), np.float64)[0])
+        top = zhi + H
+        legs = []
+        for off in (lo - leg[0] / 2, hi + leg[0] / 2):
+            e = p + nrm * off
+            beams.append((np.r_[e, gz - 2.0], np.r_[e, top], leg[0], leg[1]))
+            legs.append(e)
+        for zz in (top - 1.5, top - 0.3 * H, zlo - 3.0):     # portal beams (one under the decks)
+            if zz > gz + 1.0:
+                beams.append((np.r_[legs[0], zz], np.r_[legs[1], zz], leg[0] * 0.8, 2.5))
+        tops.append((p, t, nrm, lo, hi, top))
+    if not stayed:
+        side = SUSP_SIDE * L
+        s0, s1 = max(towers[0] - side, 0.0), min(towers[1] + side, s_part[-1])
+        n = max(int(round((s1 - s0) / HANGER_M)), 4)
+        st = _ribs(P, tans, arcs, k, s0, s1, n)
+        for which in (0, 1):
+            prev = None
+            for s in st:
+                sc, p, t, nrm, lo, hi, zlo, zhi = s
+                e = p + nrm * ((hi + leg[0] / 2) if which else (lo - leg[0] / 2))
+                if sc < towers[0]:                      # side span: straight down to the anchorage at the deck
+                    f = (sc - s0) / max(towers[0] - s0, 1e-9)
+                    zc = (zhi + 1.0) + (tops[0][5] - zhi - 1.0) * f ** 1.3
+                elif sc > towers[1]:
+                    f = (s1 - sc) / max(s1 - towers[1], 1e-9)
+                    zc = (zhi + 1.0) + (tops[1][5] - zhi - 1.0) * f ** 1.3
+                else:
+                    x = (sc - c) / (L / 2)
+                    low = zhi + SUSP_LOW_M
+                    zc = low + (min(tops[0][5], tops[1][5]) - low) * x ** 2
+                q = np.r_[e, zc]
+                if prev is not None:
+                    beams.append((prev, q, 0.9, 0.9))
+                if zc - zhi > 1.5 and abs(sc - towers[0]) > 2 and abs(sc - towers[1]) > 2:
+                    beams.append((q, np.r_[e, zhi - 0.6], 0.12, 0.12))
+                prev = q
+    else:
+        for ti, sc_t in enumerate(towers):
+            p, t, nrm, lo, hi, top = tops[ti]
+            reach = L / 2
+            for sc in np.arange(sc_t - reach + HANGER_M / 2, sc_t + reach, HANGER_M):
+                if abs(sc - sc_t) < 6.0 or sc < 0 or sc > s_part[-1]:
+                    continue
+                s = _station(P, tans, k, float(sc), arcs)
+                f = min(abs(sc - sc_t) / reach, 1.0)
+                anchor_z = top - 0.3 * H * f
+                for which, off in ((0, lo), (1, hi)):
+                    e_t = p + nrm * off
+                    e_d = s[0] + s[2] * (s[4] if which else s[3])
+                    beams.append((np.r_[e_t, anchor_z], np.r_[e_d, s[6] - 0.2], 0.25, 0.25))
+    return beams
+
+
+def structure_members(parts, info, ground_fn, wet_fn=None, road_lines=()):
+    """(beams, piers) of a chain's structure (chain_structure): a truss (truss_members), an arch, a suspension or a
+    cable-stayed span (one main span: main_span); ([], []) for a plain deck or a movable span."""
+    if info is None:
+        return [], []
+    if info["type"] in TRUSS_TYPES:
+        return truss_members(parts, info, ground_fn, wet_fn, with_piers=True, road_lines=road_lines)
+    if info["type"] not in ARCH_TYPES + (NBI_SUSPENSION, NBI_STAYED):
+        return [], []
+    P, arcs, tans = _prep(parts)
+    ms = main_span(P, arcs, info, ground_fn, wet_fn)
+    if ms is None:
+        return [], []
+    if info["type"] in ARCH_TYPES:
+        return arch_members(P, arcs, tans, ms, info, ground_fn), []
+    return suspension_members(P, arcs, tans, ms, info, ground_fn, stayed=info["type"] == NBI_STAYED), []

@@ -142,6 +142,27 @@ class SeaCarveTest(unittest.TestCase):
         self.assertAlmostEqual(d[3], -FakeBathy.BATHY, places=1)
         self.assertTrue(0 < d[1] < d[2] < d[3])
 
+    def test_no_sea_floor_in_the_mosaic_generic_floor(self):
+        """The mosaic's land DEM over a harbour (no depths): the generic floor, not BATHY_MIN (Sydney Harbour)."""
+        md = BathyMapData()
+        md.fetcher.BATHY = 3.0
+        sc = seacarve.SeaCarver(md, None)
+        self.assertAlmostEqual(float(sc.depth(np.array([south(100)]), np.array([LON0]))[0]), seacarve.DEPTH_CAP,
+                               places=1)
+
+    def test_harbour_water_is_sea(self):
+        """natural=water + water=harbour (Port Jackson) is the sea, not a lake (its tags in Overture's attrs)."""
+        class Tagged(FakeMapData):
+            def cell(self, key, layers=None, kind="demand"):
+                harbour = [(-77.5, 38.5), (-75.5, 38.5), (-75.5, SEA_LAT), (-77.5, SEA_LAT), (-77.5, 38.5)]
+                w = Water([("water", harbour)])
+                w.attrs["tags"] = np.array(['{"natural":"water","water":"harbour"}'], object)
+                return Cell(w)
+        sc = seacarve.SeaCarver(Tagged(), None)
+        d, lv = sc.water(np.array([south(100)]), np.array([LON0]))
+        self.assertEqual(float(lv[0]), seacarve.SEA_E)
+        self.assertGreater(float(d[0]), 1.0)
+
     def test_without_waiting(self):
         """Cells not at hand: the DEM band now, the cell built in the background for the next ask."""
         import time

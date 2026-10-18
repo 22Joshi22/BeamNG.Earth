@@ -1937,9 +1937,9 @@ class BridgeProfiles:
                                                                            float(la.max()), float(lo.max()))]
             info = bridgetypes.chain_structure(self.frame, chain, self._wet_at if self.wet is not None else None,
                                                infra)
-            return bridgetypes.truss_members(chain, info, self._ground,
-                                             self._wet_at if self.wet is not None else None, with_piers=True,
-                                             road_lines=self._roads_near)
+            return bridgetypes.structure_members(chain, info, self._ground,
+                                                 self._wet_at if self.wet is not None else None,
+                                                 road_lines=self._roads_near)
         except Exception as ex:             # a plain deck rather than no bridge
             log.debug("bridge structure: %s: %s", type(ex).__name__, ex)
             return [], []
@@ -2173,13 +2173,18 @@ class TunnelProfiles(BridgeProfiles):
         whole = super().parts(cells_feats, box)
         with self.lock:
             opened = set(self.open)
-        return [p for p in self._split(whole) if p[0] in opened]
+        # (an open section under water is an underwater tunnel with no ground over it: the Sydney Harbour Tunnel
+        # was drawn as a road across the harbour, 2026-10-18)
+        return self._dry([p for p in self._split(whole) if p[0] in opened])
 
     def parts(self, cells_feats, box):
         out = self._split(super().parts(cells_feats, box))
         with self.lock:
             opened = set(self.open)
-        out = [p for p in out if p[0] not in opened]
+        return self._dry([p for p in out if p[0] not in opened])
+
+    def _dry(self, out):
+        """The parts not under water for more than TUNNEL_WET_SHARE of their points."""
         if self.wet is None or not out:
             return out
         keep = []

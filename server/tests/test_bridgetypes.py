@@ -139,5 +139,37 @@ class TrussTest(unittest.TestCase):
         self.assertEqual(len(P), 8 * len(beams))
 
 
+class SpanTest(unittest.TestCase):
+    wet = staticmethod(lambda xy: np.abs(xy[:, 0]) < 200)                # 400 m of water under the middle
+    flat = staticmethod(lambda xy: np.zeros(len(xy)))
+
+    def test_through_arch_over_the_water(self):
+        beams, _ = bt.structure_members([deck(-400.0, 400.0, z=40.0)], {"type": bt.ARCH_ANY, "span": 0.0,
+                                                                         "src": "osm"}, self.flat, self.wet)
+        z = np.array([p[2] for b in beams for p in b[:2]])
+        self.assertGreater(z.max(), 40.0 + bt.THROUGH_TOP * 400 - 5)   # the crown over the deck
+        x = np.array([p[0] for b in beams for p in b[:2]])
+        self.assertLess(np.abs(x).max(), 0.6 * bt.ARCH_SPAN_SHARE * 400 + 5)
+
+    def test_deck_arch_under_a_high_deck(self):
+        beams, _ = bt.structure_members([deck(-400.0, 400.0, z=200.0)], {"type": bt.ARCH_ANY, "span": 0.0,
+                                                                          "src": "osm"}, self.flat, self.wet)
+        z = np.array([p[2] for b in beams for p in b[:2]])
+        self.assertLess(z.max(), 200.0)
+
+    def test_suspension_and_stayed_towers(self):
+        for kind, share in ((bt.NBI_SUSPENSION, bt.SUSP_TOWER), (bt.NBI_STAYED, bt.STAYED_TOWER)):
+            beams, _ = bt.structure_members([deck(-600.0, 600.0, z=50.0)], {"type": kind, "span": 0.0, "src": "osm"},
+                                            self.flat, self.wet)
+            self.assertGreater(len(beams), 20)
+            z = np.array([p[2] for b in beams for p in b[:2]])
+            L = bt.SPAN_SHARE * 400
+            self.assertAlmostEqual(z.max(), 50.0 + share * L, delta=0.05 * share * L + 1.0)
+
+    def test_movable_and_plain_draw_nothing(self):
+        for info in (None, {"type": bt.NBI_BASCULE, "span": 50.0, "src": "nbi"}):
+            self.assertEqual(bt.structure_members([deck()], info, self.flat, self.wet), ([], []))
+
+
 if __name__ == "__main__":
     unittest.main()
