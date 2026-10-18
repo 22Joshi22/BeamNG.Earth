@@ -318,7 +318,7 @@ def _piers_clear(piers, rb):
              if not c.get("tunnel")]
     out = []
     for p in piers:
-        x, y, ux, uy, zt, zb, width = p
+        x, y, ux, uy, zt, zb, width = p[:7]
         q = np.array([x, y])
         reach = float(np.clip(0.7 * width, 2.5, 14.0)) / 2 + PIER_T
         hit = False
@@ -388,14 +388,20 @@ def _parapet_cover(rb, context=()):
 def _pier(p, origin, P, T, UV, M, mat):
     """One pier (roads.pier_sites) appended to P, T, UV, M: a tapered wall with a cap under the girders, or for a deck
     wider than PIER_BENT_W a bent: square columns under a cap beam."""
-    x, y, ux, uy, zt, zb, width = p
+    x, y, ux, uy, zt, zb, width = p[:7]
+    thick = p[7] if len(p) > 7 else None        # a truss's anchor pier: one solid wall this thick, the truss's width
     t = np.array([ux, uy])
     nrm = np.array([-uy, ux])
     c = np.array([x, y])
     boxes = []                                  # (centre, half along t, half across, z0, z1, widen per m down)
     cap_w = width / 2 + PARAPET_W
-    boxes.append((c, PIER_T / 2 + 0.3, cap_w, zt - PIER_CAP_H, zt, 0.0))
-    if width > PIER_BENT_W:
+    if thick is not None:
+        boxes.append((c, thick / 2, width / 2, zb, zt, PIER_TAPER))
+    else:
+        boxes.append((c, PIER_T / 2 + 0.3, cap_w, zt - PIER_CAP_H, zt, 0.0))
+    if thick is not None:
+        pass
+    elif width > PIER_BENT_W:
         nc = max(2, int(round(width / 9.0)))
         for off in np.linspace(-(width / 2 - 2.0), width / 2 - 2.0, nc):
             boxes.append((c + nrm * off, PIER_COLUMN / 2, PIER_COLUMN / 2, zb, zt - PIER_CAP_H, 0.0))

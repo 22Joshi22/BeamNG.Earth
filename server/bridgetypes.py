@@ -27,6 +27,10 @@ COVER_M = 25000.0       # an NBI record (any notable type) this close: the inven
 MATCH_M = 60.0          # an NBI record's point this close to a chain's deck lines is that chain's
 WET_SPAN_M = 150.0      # (size rule, outside the inventory) a run over water this long: a through truss
 PANEL_M = 14.0          # m between a truss's verticals
+ANCHOR_ARM = 0.75       # a big truss reaches this share of its main span past the water (the Queensboro Bridge's
+                        # anchor arms: 143 and 140 m for its 182 and 299 m channel spans)
+ROAD_GAP_M = 3.0        # m an anchor pier keeps off a road's centre line under it
+ANCHOR_T = 6.0          # m: the thickness along the bridge of the solid pier under each end of a big truss
 MIN_RUN_M = 24.0        # a truss shorter than this is left out
 HIGH_M = 9.0            # m of deck over the ground: the long spans a big truss stands over (its approaches are plain)
 LOW_SPAN_M = 60.0       # an NBI span shorter than this: a small truss, over all of its bridge (HIGH_LOW_M)
@@ -108,6 +112,36 @@ def nbi_near(lat, lon, r_m):
     return idx[keep], d[keep]
 
 
+def matches(frame, lines):
+    """[(distance m, index)] of the inventory's records within MATCH_M of the deck lines (k, 2+), nearest first."""
+    lines = [np.asarray(ln, np.float64)[:, :2] for ln in lines if len(ln) >= 2]
+    if not lines:
+        return []
+    pts = np.concatenate(lines)
+    c = pts.mean(0)
+    la, lo, _ = frame.enu_to_geodetic(np.array([c[0]]), np.array([c[1]]), 0.0)
+    reach = float(np.hypot(*(pts.max(0) - pts.min(0)))) / 2 + MATCH_M
+    idx, _ = nbi_near(float(la[0]), float(lo[0]), reach)
+    if not len(idx):
+        return []
+    db = _load()
+    e, n, _ = frame.geodetic_to_enu(db["lat"][idx].astype(np.float64), db["lon"][idx].astype(np.float64), 0.0)
+    out = []
+    for i, q in zip(idx, np.c_[e, n]):
+        d = min(_seg_dist(q, ln) for ln in lines)
+        if d <= MATCH_M:
+            out.append((d, int(i)))
+    return sorted(out)
+
+
+def nav_clearance(frame, lines):
+    """m: the largest navigation clearance (NBI item 39) of the inventory's records on these deck lines, 0 if none."""
+    db = _load()
+    if "nav" not in db:
+        return 0.0
+    return max((float(db["nav"][i]) for _, i in matches(frame, lines)), default=0.0)
+
+
 def record(i):
     db = _load()
     return {"type": int(db["type"][i]), "span": float(db["span"][i]), "length": float(db["length"][i]),
@@ -134,16 +168,9 @@ def chain_structure(frame, parts, wet_fn=None, infra=()):
     c = pts.mean(0)
     la, lo, _ = frame.enu_to_geodetic(np.array([c[0]]), np.array([c[1]]), 0.0)
     lat, lon = float(la[0]), float(lo[0])
-    reach = float(np.hypot(*(pts.max(0) - pts.min(0)))) / 2 + MATCH_M
-    idx, _ = nbi_near(lat, lon, reach)
-    best = None
-    if len(idx):
-        db = _load()
-        e, n, _ = frame.geodetic_to_enu(db["lat"][idx].astype(np.float64), db["lon"][idx].astype(np.float64), 0.0)
-        for i, q in zip(idx, np.c_[e, n]):
-            d = min(_seg_dist(q, np.asarray(xy, np.float64)) for xy, _, _ in parts if len(xy) >= 2)
-            if d <= MATCH_M and (best is None or d < best[0]):
-                best = (d, int(i))
+    found = matches(frame, [xy for xy, _, _ in parts])
+    notable = [m for m in found if NBI_DECK_TRUSS <= int(_load()["type"][m[1]]) <= NBI_SWING]
+    best = notable[0] if notable else (found[0] if found else None)
     if osm is not None:                         # the map's tag; the inventory's span if it has the bridge
         span = record(best[1])["span"] if best is not None else (min(longest, 250.0) or 100.0)
         return {"type": osm, "span": span, "length": 0.0, "width": 0.0, "src": "osm"}
@@ -197,15 +224,28 @@ def _runs(mask, s, min_len):
     return out
 
 
-def truss_members(parts, info, ground_fn, wet_fn=None):
+def _clear_of_roads(foot, road_lines, gap):
+    """Whether no road line (k, 2) comes within gap m of any of the points foot (n, 2)."""
+    for ln in road_lines:
+        ln = np.asarray(ln, np.float64)[:, :2]
+        if len(ln) >= 2 and min(_seg_dist(q, ln) for q in foot) < gap:
+            return False
+    return True
+
+
+def truss_members(parts, info, ground_fn, wet_fn=None, with_piers=False, road_lines=()):
     """The truss beams [(p (3,), q (3,), w, h)] of a chain of deck parts [(xy (k, 2), z (k,), width)] whose structure
     (chain_structure) is a truss. ground_fn(xy) -> heights, wet_fn(xy) -> bool. Stations every PANEL_M along each
     part's high runs (longest parts first; a station beside one already placed is skipped: decks side by side share
     one truss); at each, the decks beside it (parallel, within SIDE_REACH_M) give the truss's width and heights. A big
     truss over water stands over the water and a span either side (the Queensboro Bridge's chain reached Queens
-    Plaza's ramps: trussed too), one elsewhere over the longest parts' high runs."""
+    Plaza's ramps: trussed too), one elsewhere over the longest parts' high runs. with_piers: (beams, piers): the solid
+    piers under a big truss's ends (roads.pier_sites tuples + their thickness, ANCHOR_T), moved along the bridge off
+    the roads under it (road_lines: [(k, 2)], or a function of the pier's foot points (n, 2) giving them) or left
+    out."""
+    piers = []
     if info is None or info["type"] not in TRUSS_TYPES:
-        return []
+        return ([], []) if with_piers else []
     span = info["span"] or 100.0
     small = span < LOW_SPAN_M
     high_m = HIGH_LOW_M if small else HIGH_M
@@ -214,7 +254,7 @@ def truss_members(parts, info, ground_fn, wet_fn=None):
     depth = float(np.clip(span / 8.0, 3.0, 24.0))
     P = [(np.asarray(xy, np.float64), np.asarray(z, np.float64), float(w)) for xy, z, w in parts if len(xy) >= 2]
     if not P:
-        return []
+        return ([], []) if with_piers else []
     arcs = [np.r_[0.0, np.cumsum(np.hypot(*np.diff(xy, axis=0).T))] for xy, _, _ in P]
     tans = []
     for xy, _, _ in P:
@@ -235,7 +275,8 @@ def truss_members(parts, info, ground_fn, wet_fn=None):
         if not small:
             if any_wet:
                 ws = s[wets[k]]
-                near = np.min(np.abs(s[:, None] - ws[None, :]), 1) <= span if len(ws) else np.zeros(len(s), bool)
+                near = (np.min(np.abs(s[:, None] - ws[None, :]), 1) <= ANCHOR_ARM * span if len(ws)
+                        else np.zeros(len(s), bool))
                 mask &= near
             elif s[-1] < 0.5 * longest:
                 continue
@@ -276,7 +317,7 @@ def truss_members(parts, info, ground_fn, wet_fn=None):
                     top, bot = zhi + float(np.clip(span / 10.0, 1.8, 3.5)), zlo - DECK_DEPTH
                 else:
                     top, bot = max(zlo - DECK_DEPTH + depth, zhi + HEADROOM_M), zlo - DECK_DEPTH
-                run.append((L, R, bot, top))
+                run.append((L, R, bot, top, t))
                 placed.append((p, t, (hi - lo) / 2))
             if run:
                 groups.append(run)
@@ -284,6 +325,22 @@ def truss_members(parts, info, ground_fn, wet_fn=None):
     for run in groups:
         if len(run) < 2:
             continue
+        if not small:                           # a solid pier under each end (the anchor piers)
+            for (L, R, bot, top, t), inward in ((run[0], 1.0), (run[-1], -1.0)):
+                wd = float(np.hypot(*(L - R)))
+                for off in (0.0, 0.5, 1.0, 1.5, 2.0):              # panels toward the truss's middle
+                    c = (L + R) / 2 + t * inward * off * PANEL_M
+                    nrm = (L - R) / max(wd, 1e-9)
+                    foot = np.array([c + nrm * a * wd / 2 + t * b * ANCHOR_T / 2
+                                     for a in (-1, 0, 1) for b in (-1, 0, 1)])
+                    if not _clear_of_roads(foot, road_lines(foot) if callable(road_lines) else road_lines,
+                                           ROAD_GAP_M):
+                        continue
+                    gz = float(np.asarray(ground_fn(c[None]), np.float64)[0])
+                    if bot - gz > 2.0:
+                        piers.append((float(c[0]), float(c[1]), float(t[0]), float(t[1]), float(bot), gz - 2.0, wd,
+                                      ANCHOR_T))
+                    break
         for side in (0, 1):
             for a in range(len(run)):
                 e = run[a][side]
@@ -305,4 +362,4 @@ def truss_members(parts, info, ground_fn, wet_fn=None):
                     Lt2, Rt2 = np.r_[run[a + 1][0], run[a + 1][3]], np.r_[run[a + 1][1], run[a + 1][3]]
                     beams.append((Lt, Rt2, *BRACE))
                     beams.append((Rt, Lt2, *BRACE))
-    return beams
+    return (beams, piers) if with_piers else beams

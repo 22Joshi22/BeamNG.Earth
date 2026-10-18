@@ -4,8 +4,10 @@
                                                "2025hwybronefiledel.zip", comma separated, ' quoted)
 
 Keeps the bridges whose main span (item 43B) is a structure drawn over the deck: trusses, arches, suspension,
-cable-stayed and movable spans (bridgetypes.py). Per bridge: lat, lon (item 16/17, DDMMSS.ss packed), the type code,
-the longest span (item 48), the structure length (49) and the deck width (52), in metres."""
+cable-stayed and movable spans (bridgetypes.py), and any bridge over a navigation channel (its clearance sets the
+deck's height over the water). Per bridge: lat, lon (item 16/17, DDMMSS.ss packed), the type code,
+the longest span (item 48), the structure length (49), the deck width (52) and the navigation channel's vertical
+clearance (39, 0 where no channel is controlled), in metres."""
 import csv
 import os
 import sys
@@ -40,19 +42,21 @@ def main(path):
     with open(path, encoding="latin-1", newline="") as f:
         for r in csv.DictReader(f, quotechar="'"):
             t = r["STRUCTURE_TYPE_043B"].strip()
-            if t not in KEEP:
+            nav = num(r["NAV_VERT_CLR_MT_039"]) if r["NAVIGATION_038"].strip() == "1" else 0.0
+            if t not in KEEP and nav <= 0 or not t.isdigit():
                 continue
             la, lo = dms(r["LAT_016"], 2), dms(r["LONG_017"], 3)
             if la is None or lo is None:
                 continue
             rows.append((la, -lo, int(t), num(r["MAX_SPAN_LEN_MT_048"]), num(r["STRUCTURE_LEN_MT_049"]),
-                         num(r["DECK_WIDTH_MT_052"])))
+                         num(r["DECK_WIDTH_MT_052"]), nav))
     a = np.array(rows, np.float64)
     o = np.argsort(a[:, 0])
     a = a[o]
     np.savez_compressed(OUT, lat=a[:, 0].astype(np.float32), lon=a[:, 1].astype(np.float32),
                         type=a[:, 2].astype(np.uint8), span=a[:, 3].astype(np.float32),
-                        length=a[:, 4].astype(np.float32), width=a[:, 5].astype(np.float32))
+                        length=a[:, 4].astype(np.float32), width=a[:, 5].astype(np.float32),
+                        nav=a[:, 6].astype(np.float32))
     print(len(a), "bridges ->", os.path.normpath(OUT), os.path.getsize(OUT), "bytes")
 
 

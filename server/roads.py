@@ -822,6 +822,7 @@ WATER_CLEAR_MAX = 40.0
 WATER_CAUSEWAY_M = 1500.0
 WATER_CAUSEWAY_CLEAR = 5.0
 WATER_STEP_M = 16.0         # m between a wet run's clearance points
+NAV_RUN_M = 100.0           # a wet run this long takes the bridge's navigation clearance (NBI item 39)
 
 
 def deck_profile_once(lines, ground_fn, crossings=(), clear=None, grade=None, lift=None, n_road=None):
@@ -889,15 +890,37 @@ def deck_profile_once(lines, ground_fn, crossings=(), clear=None, grade=None, li
         if deg[b] == 1:
             zz[-1] = z[-1]
         if len(zz) > 3:
+            # no sag between two higher points (the Queensboro Bridge dipped 7 m over Roosevelt Island between its
+            # channel spans: one arch in life, 2026-10-18), within the caps
+            zz = np.maximum(np.minimum(_no_sag(s, zz), np.maximum(cap[k], zz)), zz)
             step = s[-1] / (len(s) - 1)
-            sm = np.minimum(_smooth_pinned(zz, step, DECK_SIGMA), cap[k])    # (no hump back over a
+            sigma = float(np.clip(s[-1] / DECK_SIGMA_SHARE, DECK_SIGMA, DECK_SIGMA_MAX))   # a long deck: a long curve
+            sm = np.minimum(_smooth_pinned(zz, step, sigma), cap[k])         # (no hump back over a
             zz = np.maximum(sm, g)                                                          # junction at grade)
             zz[0], zz[-1] = sm[0], sm[-1]
         out.append(zz)
     return out
 
 
-DECK_SIGMA = 12.0       # m, deck profile smoothing
+DECK_SIGMA = 12.0       # m, deck profile smoothing (at least) ...
+DECK_SIGMA_SHARE = 25.0  # ... a 25th of the part's length ...
+DECK_SIGMA_MAX = 40.0   # ... at most
+
+
+def _no_sag(s, z):
+    """The upper concave hull of the profile (s, z) at s: every dip between two higher points filled with the
+    straight grade between them. Pure."""
+    hull = []
+    for p in zip(s, z):
+        while len(hull) >= 2:
+            (x1, y1), (x2, y2) = hull[-2], hull[-1]
+            if (x2 - x1) * (p[1] - y1) - (y2 - y1) * (p[0] - x1) >= 0:      # hull[-1] under the chord: dropped
+                hull.pop()
+            else:
+                break
+        hull.append(p)
+    hx, hy = zip(*hull)
+    return np.interp(s, hx, hy)
 
 
 def _dedupe(xy, tol=0.5):
@@ -1676,12 +1699,16 @@ class BridgeProfiles:
         self.trusses = {}                       # a chain's first part key -> its truss beams (bridgetypes)
         self.lock = threading.Lock()
 
-    def _water(self, lines):
+    def _water(self, lines, nav=0.0):
         """Clearance requirements over water (deck_profile_once crossings with their own clearance): every
-        WATER_STEP_M along each wet run of each line, water_clear of the run's length over the ground there."""
+        WATER_STEP_M along each wet run of each line, water_clear of the run's length over the ground there; over a
+        run of NAV_RUN_M or more at least nav (m: the bridge's navigation clearance, bridgetypes.nav_clearance) plus
+        the slab and girders under the road."""
         out = []
         if self.wet is None:
             return out
+        import roadmesh
+        under = roadmesh.DECK_DEPTH + roadmesh.GIRDER_D
         for k, ln in enumerate(lines):
             xy = np.asarray(ln, np.float64)[:, :2]
             if len(xy) < 2:
@@ -1701,6 +1728,8 @@ class BridgeProfiles:
                 while j + 1 < len(w) and w[j + 1]:
                     j += 1
                 c = water_clear(s[j] - s[i] + (s[1] - s[0]))
+                if nav > 0 and s[j] - s[i] >= NAV_RUN_M:
+                    c = max(c, nav + under)
                 for sc in np.arange(s[i], s[j] + 1e-6, WATER_STEP_M):
                     out.append((k, float(sc), float(np.interp(sc, s, g)), c))
                 i = j + 1
@@ -1793,7 +1822,13 @@ class BridgeProfiles:
         gl = [g for v in ground.values() for g in v]
         cr = _crossings(lines, gl)
         road_z = self._ground(np.array([c[2] for c in cr])) if cr else []
-        return deck_profile(lines, self._ground, [(c[0], c[1], z) for c, z in zip(cr, road_z)] + self._water(lines),
+        import bridgetypes
+        try:
+            nav = bridgetypes.nav_clearance(self.frame, lines)
+        except Exception as ex:             # the share-of-span rule alone
+            log.debug("nav clearance: %s: %s", type(ex).__name__, ex)
+            nav = 0.0
+        return deck_profile(lines, self._ground, [(c[0], c[1], z) for c, z in zip(cr, road_z)] + self._water(lines, nav),
                             levels=[pool[k][3] for k in comp], widths=[pool[k][0].width for k in comp])
 
     def parts(self, cells_feats, box):
@@ -1847,9 +1882,10 @@ class BridgeProfiles:
                         self.trusses[ck] = []
                     got = self.done.get(key)
                 if fresh:
-                    beams = self._structure(chain)
+                    beams, tpiers = self._structure(chain)
                     with self.lock:
                         self.trusses[ck] = beams
+                        self.piers[("truss", ck)] = tpiers
             if got is not None:
                 spec, xy, z, lon = got
                 out.append((self._part_id(key), spec, xy, z, lon))
@@ -1872,8 +1908,25 @@ class BridgeProfiles:
         la, lo, _ = self.frame.enu_to_geodetic(xy[:, 0], xy[:, 1], 0.0)
         return np.asarray(self.wet(la, lo), np.float64) > 0.5
 
+    def _roads_near(self, xy):
+        """The ground road lines (k, 2) of the map cells around the points xy (n, 2) (an anchor pier's site)."""
+        la, lo, _ = self.frame.enu_to_geodetic(np.asarray(xy)[:, 0], np.asarray(xy)[:, 1], 0.0)
+        out = []
+        for key in {mapcells.cell_of(float(a), float(b)) for a, b in zip(la, lo)}:
+            feats = self.cell_fn(key)
+            if feats is None or len(feats) == 0:
+                continue
+            rs = road_specs(feats)
+            for i in range(len(feats)):
+                if rs[i] is not None:
+                    for ring in ground_parts(feats, i):
+                        e, n = mapgeom.enu_xy(feats, self.frame, ring)
+                        out.append(np.stack([e, n], axis=1))
+        return out
+
     def _structure(self, chain):
-        """The truss beams of a solved chain [(xy, z, width)] (bridgetypes); [] for a plain deck."""
+        """The truss beams of a solved chain [(xy, z, width)] and the piers under its ends (bridgetypes); ([], []) for a
+        plain deck."""
         import bridgetypes
         try:
             infra = []
@@ -1885,10 +1938,11 @@ class BridgeProfiles:
             info = bridgetypes.chain_structure(self.frame, chain, self._wet_at if self.wet is not None else None,
                                                infra)
             return bridgetypes.truss_members(chain, info, self._ground,
-                                             self._wet_at if self.wet is not None else None)
+                                             self._wet_at if self.wet is not None else None, with_piers=True,
+                                             road_lines=self._roads_near)
         except Exception as ex:             # a plain deck rather than no bridge
             log.debug("bridge structure: %s: %s", type(ex).__name__, ex)
-            return []
+            return [], []
 
     def beams_in(self, box):
         """The truss beams (p, q, w, h) of the chains solved so far whose middle lies in box (each in one tile)."""
@@ -1976,7 +2030,7 @@ class TunnelProfiles(BridgeProfiles):
     levels_of = staticmethod(lambda feats, i: [-1.0] * len(tunnel_parts(feats, i)))
 
     def _structure(self, chain):                # (no truss over a tunnel)
-        return []
+        return [], []
 
     wet = None      # wet(lat, lon) -> water depth (m): tunnels under water are left out (the sea's WaterBlocks reach
                     # 100 m down: a car in the tube would float; earthd / blockworker set the sea's depth)

@@ -28,7 +28,8 @@ def db_with(*rows):
     o = np.argsort(la)
     return {"lat": np.asarray(la, np.float32)[o], "lon": np.asarray(lo, np.float32)[o],
             "type": np.array([r[2] for r in rows], np.uint8)[o], "span": np.array([r[3] for r in rows], np.float32)[o],
-            "length": np.full(len(rows), 300.0, np.float32), "width": np.full(len(rows), 20.0, np.float32)}
+            "length": np.full(len(rows), 300.0, np.float32), "width": np.full(len(rows), 20.0, np.float32),
+            "nav": np.array([r[4] if len(r) > 4 else 0.0 for r in rows], np.float32)[o]}
 
 
 class Outline:
@@ -77,6 +78,21 @@ class StructureTest(unittest.TestCase):
         self.assertEqual(bt.chain_structure(FRAME, [deck()], None, [truss])["type"], bt.NBI_THROUGH_TRUSS)
 
 
+class NavTest(unittest.TestCase):
+    def tearDown(self):
+        bt._db = None
+
+    def test_nav_clearance_of_the_bridge(self):
+        bt._db = db_with((20.0, 5.0, 2, 60.0, 41.1), (3000.0, 0.0, 2, 60.0, 9.0))
+        self.assertAlmostEqual(bt.nav_clearance(FRAME, [deck()[0]]), 41.1, places=3)
+        self.assertEqual(bt.nav_clearance(FRAME, [deck(y=500.0)[0]]), 0.0)
+
+    def test_girder_record_is_not_a_truss(self):
+        bt._db = db_with((20.0, 5.0, 2, 60.0, 41.1))
+        info = bt.chain_structure(FRAME, [deck()])
+        self.assertEqual(bt.truss_members([deck()], info, lambda xy: np.zeros(len(xy))), [])
+
+
 class TrussTest(unittest.TestCase):
     def test_through_truss_beside_the_decks(self):
         info = {"type": bt.NBI_THROUGH_TRUSS, "span": 180.0}
@@ -101,6 +117,18 @@ class TrussTest(unittest.TestCase):
         beams = bt.truss_members([long], info, lambda xy: np.zeros(len(xy)), lambda xy: np.abs(xy[:, 0]) < 100)
         xs = np.array([p[0] for b in beams for p in b[:2]])
         self.assertLessEqual(np.abs(xs).max(), 100.0 + 100.0 + bt.PANEL_M)
+
+    def test_anchor_piers_off_the_roads(self):
+        info = {"type": bt.NBI_THROUGH_TRUSS, "span": 100.0}
+        long = deck(-600.0, 600.0)
+        wet = lambda xy: np.abs(xy[:, 0]) < 100
+        beams, piers = bt.truss_members([long], info, lambda xy: np.zeros(len(xy)), wet, with_piers=True)
+        self.assertEqual(len(piers), 2)
+        x_end = piers[0][0]
+        road = [np.array([[x_end, -50.0], [x_end, 50.0]])]          # a street under that end
+        _, moved = bt.truss_members([long], info, lambda xy: np.zeros(len(xy)), wet, with_piers=True,
+                                    road_lines=road)
+        self.assertTrue(all(abs(p[0] - x_end) > bt.ROAD_GAP_M for p in moved))
 
     def test_mesh(self):
         info = {"type": bt.NBI_THROUGH_TRUSS, "span": 180.0}

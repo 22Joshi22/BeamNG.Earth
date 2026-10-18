@@ -222,6 +222,11 @@ class BridgeProfilesTest(unittest.TestCase):
         (z,) = roads.deck_profile([ln], flat, [(0, 6.0, 10.0), (0, 30.0, 10.0)])
         self.assertLess(float(np.interp(6.0, s, z)), 10.0 + 0.15, "no hump across the cross street")
         self.assertGreater(z.max(), 10.0 + 0.06 * 18 - 0.3, "the crossing farther on still lifts the deck")
+        # no sag between two crossings 120 m apart (the Queensboro Bridge over Roosevelt Island)
+        ln2 = np.c_[np.arange(0.0, 401.0, 4.0), np.zeros(101)]
+        (z2,) = roads.deck_profile([ln2], flat, [(0, 140.0, 10.0, 20.0), (0, 260.0, 10.0, 20.0)])
+        mid = float(np.interp(200.0, ln2[:, 0], z2))
+        self.assertGreater(mid, min(float(np.interp(140.0, ln2[:, 0], z2)), float(np.interp(260.0, ln2[:, 0], z2))) - 0.5)
         # a mainline at 18 m with a ramp leaving it at a shallow angle: heights match where they overlap
         main = np.c_[np.arange(0.0, 201.0, 4.0), np.zeros(51)]
         ramp = np.c_[np.arange(100.0, 301.0, 4.0), (np.arange(100.0, 301.0, 4.0) - 100.0) * 0.12]
