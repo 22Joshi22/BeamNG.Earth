@@ -420,7 +420,11 @@ class Grader:
             ab = b - a
             L2 = np.maximum((ab * ab).sum(1), 1e-12)
             sj = np.r_[0.0, np.cumsum(np.sqrt(L2))]
-            for j in range(len(a)):
+            # only the segments near the points (the Gotthard road tunnel's 4,200 segments each took a pass over a
+            # block's points: 140 s of grading per block, 2026-10-18)
+            near = ((np.minimum(a[:, 0], b[:, 0]) - hw <= x1) & (np.maximum(a[:, 0], b[:, 0]) + hw >= x0)
+                    & (np.minimum(a[:, 1], b[:, 1]) - hw <= y1) & (np.maximum(a[:, 1], b[:, 1]) + hw >= y0))
+            for j in np.flatnonzero(near):
                 t = ((e - a[j, 0]) * ab[j, 0] + (n - a[j, 1]) * ab[j, 1]) / L2[j]
                 # over it, from TUNNEL_KEEP_IN_M inside its portals: its mouths graded to the road (a road's last row
                 # at a portal took the hill's height, the road mesh a wedge up into the opening, 2026-10-17)
