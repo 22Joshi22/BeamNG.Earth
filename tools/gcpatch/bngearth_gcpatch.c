@@ -12,8 +12,8 @@
 // Nothing on disk is changed. It acts only in the main BeamNG.drive.x64 process (not the CEF helpers,
 // not Steam), and only if the handler's first 0x36 bytes are those of the build it was written for (0.39.4
 // Linux, x86-64) at its address; in another build (a game update: BeamNG 0.40, 2026-10-19) the game's code
-// is searched for the same bytes with the frame size and the two jump distances masked (they move with any
-// code change around them) and patched only if exactly one place matches; otherwise it does nothing.
+// is searched for the handler's core (`test sil, 1; jne; and esi, 0x0E; je`, the jump distance masked) and patched
+// only if exactly one place matches (0.40: one, its prologue uses other registers); otherwise it does nothing.
 // Without the launch option the game is stock.
 #define _GNU_SOURCE
 #include <elf.h>
@@ -73,10 +73,6 @@ static int is_main_game(void) {
 
 #define IMM_OFF (IMM - HANDLER)   /* 0x2F: the imm8 within the signature */
 
-// Bytes another build may change without changing what the code does: sub rsp's imm8, the jne / je rel32s.
-static int masked(size_t i) {
-    return i == 0x13 || (i >= 41 && i <= 44) || (i >= 50 && i <= 53);
-}
 
 struct mainprog { uintptr_t base; int covered; int seen; uintptr_t xs[8], xe[8]; int nx; };
 
@@ -124,17 +120,22 @@ __attribute__((constructor)) static void bngearth_gcpatch(void) {
         }
     }
     const char *how = "";
-    if (!code) {            // another build: search its code for the handler (masked signature), one match only
+    unsigned char *imm = NULL;
+    if (code) imm = code + IMM_OFF;
+    else {
+        // another build: search its code for the handler's core, `test sil, 1; jne rel32; and esi, 0x0E; je rel32`,
+        // one match only (0.40 (2026-10-19): the same core in a prologue with other registers, at 0x15fb3c5)
+        static const unsigned char CORE[15] = {0x40, 0xf6, 0xc6, 0x01, 0x0f, 0x85, 0, 0, 0, 0, 0x83, 0xe6, 0x0e, 0x0f, 0x84};
         int matches = 0;
         for (int k = 0; k < m.nx; k++) {
-            for (unsigned char *p = (unsigned char *)m.xs[k]; p + sizeof SIGNATURE <= (unsigned char *)m.xe[k]; p++) {
-                if (p[0] != SIGNATURE[0] || p[IMM_OFF - 2] != 0x83 || p[IMM_OFF - 1] != 0xe6) continue;
+            for (unsigned char *p = (unsigned char *)m.xs[k]; p + sizeof CORE <= (unsigned char *)m.xe[k]; p++) {
+                if (p[0] != 0x40 || p[1] != 0xf6) continue;
                 size_t i = 0;
-                for (; i < sizeof SIGNATURE; i++) {
-                    if (i == IMM_OFF || masked(i)) continue;
-                    if (p[i] != SIGNATURE[i]) break;
+                for (; i < sizeof CORE; i++) {
+                    if (i >= 6 && i <= 9) continue;         // the jne's rel32
+                    if (p[i] != CORE[i]) break;
                 }
-                if (i == sizeof SIGNATURE) { code = p; matches++; }
+                if (i == sizeof CORE) { imm = p + 12; matches++; }
             }
         }
         if (matches != 1) {
@@ -145,7 +146,6 @@ __attribute__((constructor)) static void bngearth_gcpatch(void) {
         }
         how = " (found by its signature in this build)";
     }
-    unsigned char *imm = code + IMM_OFF;
     if (*imm == PATCHED) { report("already applied%s", NULL); return; }
     if (*imm != STOCK) { report("not applied: unexpected byte (another build)%s", NULL); return; }
     long pagesz = sysconf(_SC_PAGESIZE);

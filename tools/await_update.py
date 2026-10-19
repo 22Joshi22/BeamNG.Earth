@@ -92,8 +92,8 @@ def main():
             "not start?)")
         return 1
     say(f"- {time.strftime('%H:%M')} game up: {lua('return tostring(beamng_versiond)')}")
-    off = lua("return tostring(core_modmanager and core_modmanager.getModsDisabledAfterUpdate and "
-              "core_modmanager.getModsDisabledAfterUpdate())")
+    # (0.40 no longer exports getModsDisabledAfterUpdate: the setting it keeps says it, 2026-10-19)
+    off = lua("return tostring(settings and settings.getValue and settings.getValue('disableModsAfterUpdate'))")
     if off.strip() == "true":
         lua("core_modmanager.enableModsAfterUpdate() return 1")
         say("- the update had turned mods off: turned back on (enableModsAfterUpdate)")
