@@ -202,4 +202,8 @@ collectgarbage('restart')
 T.check(grown < 1024, 'all is well: no per-frame allocation (' .. grown .. ' bytes)')
 if jit then jit.on() end
 
+-- a car dropped far away and held until its ground loads (drophold.lua): its own line, info level
+id, level, text = banner.compute(info({ net = 'connected', session = true, everConnected = true, dropHold = true }), 100)
+T.check(id == 'drophold' and level == 'info' and text == banner.DROP_HOLD_TEXT, 'drop hold: its line ' .. tostring(id) .. ' ' .. tostring(text))
+
 T.done('test_banner')

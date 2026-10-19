@@ -864,7 +864,6 @@ local function updateDropHold(dt)
   if drophold.observe(h, pl.x, pl.y, pl.z, pl.speed, dt, st.anchorId, box, busy) == 'start' then
     log('I', 'beamngEarth', string.format('drop hold: the car is %.0f m from the block; held until its ground loads',
       box and math.max(box[1] - pl.x, pl.x - box[3], box[2] - pl.y, pl.y - box[4], 0) or -1))
-    if ui_message then pcall(ui_message, 'Loading the ground here: the car waits', 4, 'beamngEarthDropHold') end
   end
   if not h.active then return end
   local gz = nil
@@ -1096,6 +1095,7 @@ local function updateBanner(dt)
   i.note, i.noteDetail = st.serverNote, st.serverNoteDetail
   local m = st.guard.mode
   i.edge = (m == 'warn' or m == 'hold') and m or nil
+  i.dropHold = dropHold.active or nil
   -- connected and said hello, yet the guard runs: the server does not (yet) build the terrain
   i.stuck = (i.session and net.isConnected()) and true or false
   banner.update(dt, i)

@@ -41,6 +41,7 @@ M.enabled = true
 
 local clock = 0             -- s since the mod loaded (update's dt)
 local cur = { id = 'starting', level = 'info', text = '', visible = true }
+M.DROP_HOLD_TEXT = 'Waiting for collision to load here: the car is held in place'
 local key = nil             -- the inputs the current text was built from
 local recoveredUntil = nil  -- clock until which 'recovered' shows
 local lastProblem = nil     -- the last non-ok connection state ('lost', 'noserver', ...)
@@ -110,10 +111,15 @@ function M.compute(info, t)
     if M.LEVEL_RANK[want] > M.LEVEL_RANK[level] then level = want end
     if id == 'ok' then id = 'edge' end
   end
+  if info.dropHold then         -- drophold.lua: a car dropped far away waits for its ground (the user, 2026-10-18)
+    text = (text ~= '') and (text .. '\n' .. M.DROP_HOLD_TEXT) or M.DROP_HOLD_TEXT
+    if M.LEVEL_RANK.info > M.LEVEL_RANK[level] then level = 'info' end
+    if id == 'ok' then id = 'drophold' end
+  end
   return id, level, text
 end
 
-local KEYS = { 'net', 'session', 'everConnected', 'attempts', 'note', 'noteDetail', 'edge', 'stuck' }
+local KEYS = { 'net', 'session', 'everConnected', 'attempts', 'note', 'noteDetail', 'edge', 'stuck', 'dropHold' }
 
 -- Did any input change since the text was built? (Compared field by field: nothing allocated.)
 local function changed(info)
@@ -140,7 +146,7 @@ function M.update(dt, info)
     else
       recoveredUntil = nil
     end
-  elseif id ~= 'edge' and id ~= 'starting' then
+  elseif id ~= 'edge' and id ~= 'starting' and id ~= 'drophold' then
     lastProblem = id
     recoveredUntil = nil
   end
