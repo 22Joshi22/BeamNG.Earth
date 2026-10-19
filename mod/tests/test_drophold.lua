@@ -23,6 +23,11 @@ T.check(d.step(h, 11.02, box2, 'b', 40) == nil, '... frame 2')
 local act, z = d.step(h, 11.04, box2, 'b', 40)
 T.check(act == 'release' and not h.active, 'dropped from 40 m over the ground: let go (it falls as the game drop does)')
 
+-- the drop's own frame reports the jump as the car's speed (here 900 km in a frame): still a drop
+h = d.new()
+d.observe(h, 0, 0, 10, 0, dt, 1, box, false)
+T.check(d.observe(h, 15000, 0, 10, 15000 / dt, dt, 1, box, false) == 'start', 'the jump frame\'s own speed does not excuse it')
+
 -- the drop point under the new ground (a free camera below the not-yet-loaded hills): set on the ground
 h = d.new()
 d.observe(h, 0, 0, 10, 0, dt, 1, box, false)
@@ -39,6 +44,15 @@ d.observe(h, 3000, 0, 10, 0, dt, 1, box, false)
 local box4 = { 2000, -1000, 4000, 1000 }
 for i = 1, 5 do T.check(d.step(h, i * 0.02, box4, 'd', nil) == nil, 'no ground hit: hold ' .. i) end
 T.check(d.step(h, d.MAX_S + 1, box4, 'd', nil) == 'timeout' and not h.active, 'past MAX_S: let go')
+
+-- a block being built for it (a slow server, a first visit): the wait does not count towards MAX_S
+h = d.new()
+d.observe(h, 0, 0, 10, 0, dt, 1, box, false)
+d.observe(h, 3000, 0, 10, 0, dt, 1, box, false)
+T.check(d.step(h, 0, box, 'e', nil, true) == nil, 'building: hold')
+T.check(d.step(h, d.MAX_S * 3, box, 'e', nil, true) == nil, 'still building after 3 x MAX_S: hold')
+T.check(d.step(h, d.MAX_S * 3 + 5, box, 'e', nil, false) == nil, 'stopped building: the clock starts')
+T.check(d.step(h, d.MAX_S * 4 + 6, box, 'e', nil, false) == 'timeout', 'MAX_S without progress: let go')
 
 -- a new anchor (a rebase or the mod's own teleport moves the frame): never a jump
 h = d.new()

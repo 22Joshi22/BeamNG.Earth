@@ -877,7 +877,8 @@ local function updateDropHold(dt)
     end
   end
   local serial = st.block and (st.block.cx .. ',' .. st.block.cy .. ',' .. tostring(st.followCount)) or nil
-  local act, z = drophold.step(h, st.clock, box, serial, gz)
+  local building = (st.terrainPending ~= nil or (st.pending ~= nil and not st.pending.ready)) and net.isConnected()
+  local act, z = drophold.step(h, st.clock, box, serial, gz, building)
   if act == nil then
     holdCar(veh, h.x, h.y, h.z)
   elseif act == 'place' then

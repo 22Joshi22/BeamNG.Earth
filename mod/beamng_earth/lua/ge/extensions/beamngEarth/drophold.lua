@@ -19,7 +19,7 @@ local M = {}
 M.JUMP_M = 250          -- m in one frame: a drop / switch, not driving (1000 mph is ~7 m a frame at 60 fps)
 M.EDGE_MARGIN = 40      -- m inside the block's collidable box before the ground there counts
 M.SETTLE_FRAMES = 3     -- frames after the covering block's commit (its collision applies the next frame)
-M.MAX_S = 30            -- s: let go even without ground (offline, a server that cannot build there)
+M.MAX_S = 30            -- s without progress (no block being built: offline, a server that cannot build there): let go
 M.UNDER_M = 0.5         -- the drop point this close over the ground or under it: the car goes onto the ground
 M.LIFT_M = 1.0          -- ... this far above it
 
@@ -35,10 +35,12 @@ M.inside = inside
 -- itself). Returns 'start' when a hold begins (h.x, h.y, h.z: where to hold), else nil.
 function M.observe(h, x, y, z, speed, dt, anchorId, box, busy)
   local last = h.last
-  h.last = { x = x, y = y, z = z, anchorId = anchorId }
+  h.last = { x = x, y = y, z = z, anchorId = anchorId, speed = speed or 0 }
   if h.active or busy or not last or last.anchorId ~= anchorId then return nil end
   local d = math.sqrt((x - last.x) ^ 2 + (y - last.y) ^ 2)
-  if d <= M.JUMP_M or d <= (speed or 0) * (dt or 0) * 5 then return nil end
+  -- the speed of the frame before: in the drop's own frame the engine reports the jump itself as the car's velocity
+  -- (thousands of m/s), which excused every drop (the user's first try, 2026-10-18: "physics didnt pause")
+  if d <= M.JUMP_M or d <= last.speed * (dt or 0) * 5 then return nil end
   if inside(box, x, y, 0) then return nil end     -- dropped onto the block (up to its edge): there is collision
   h.active, h.x, h.y, h.z, h.since, h.settle = true, x, y, z, nil, nil
   return 'start'
@@ -50,11 +52,13 @@ function M.moved(h, x, y, z)
 end
 
 -- While holding, each frame: now (s), the block's box, blockSerial (changes at every block commit), groundZ (the
--- ground under the hold point from a ray down, nil = no hit). Returns nil (keep holding), 'release' (let go where
+-- ground under the hold point from a ray down, nil = no hit), building (see above). Returns nil (keep holding), 'release' (let go where
 -- it is), 'place', z (set the car on the ground at z) or 'timeout'.
-function M.step(h, now, box, blockSerial, groundZ)
+-- building: a block for the car is being prepared (a terrain request out, the server connected): the wait is not
+-- counted (a slow server or a first visit took 48 s, and the car fell when 30 s ran out, 2026-10-18).
+function M.step(h, now, box, blockSerial, groundZ, building)
   if not h.active then return nil end
-  h.since = h.since or now
+  h.since = (building or h.since == nil) and now or h.since
   if now - h.since > M.MAX_S then
     h.active = false
     return 'timeout'
