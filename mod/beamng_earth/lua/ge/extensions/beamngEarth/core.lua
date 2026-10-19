@@ -109,7 +109,6 @@ local horizonOn = false       -- hello.horizon (M1h); outlives levels like the c
 local farRadius = nil         -- status.radius: the server's far-field radius (m), horizon mode only
 local cacheInfo = nil         -- the server's last 'cache' message (download cache usage); outlives levels
 local updateInfo = nil       -- a newer version on GitHub: { current, latest, url } (server updates.py)
-local updateToast = false    -- its one-time message is due (shown once the world is on screen: not behind the loading screen)
 local cacheClears = 0         -- answers to a clear so far (the settings page waits for the next one)
 
 local function resetState()
@@ -774,7 +773,6 @@ local function onMessage(msg)
   elseif t == 'update' then
     -- a newer version on GitHub (server updates.py): said once a session in game, and on the settings page
     if type(msg.latest) == 'string' then
-      if not updateInfo then updateToast = true end    -- said once, when the player is in the world (drawUi)
       updateInfo = { current = tostring(msg.current or ''), latest = msg.latest, url = tostring(msg.url or '') }
     end
   elseif t == 'cache' then
@@ -1193,6 +1191,40 @@ end
 
 -- The imgui window, the on-screen credits (one text draw; the attribution line until the server
 -- sends credits) and the connection banner (in our level or world only; hidden like the credits).
+-- A newer version on GitHub (the server's update check, updates.py): a small window that stays until the player opens the
+-- releases page (hidden for this session) or dismisses it (hidden until a newer version; settings updateDismissed). It was
+-- a 15 s toast (the user, 2026-10-18: "Make it persistant and add a dismiss buttion or a buttion to open the releases
+-- page").
+M.RELEASES_URL = 'https://github.com/TecnaGamer/BeamNG.Earth/releases/latest'
+local updateHidden = false
+local function drawUpdateNotice()
+  if updateHidden or not updateInfo or settings.get('updateDismissed') == tostring(updateInfo.latest) then return end
+  local im = ui_imgui
+  if not im then return end
+  local vp = im.GetMainViewport()
+  if vp then
+    -- the top left corner (the user, 2026-10-18)
+    im.SetNextWindowPos(im.ImVec2(vp.Pos.x + 12, vp.Pos.y + 12), im.Cond_Always, im.ImVec2(0, 0))
+  end
+  local flags = im.WindowFlags_AlwaysAutoResize + im.WindowFlags_NoCollapse + im.WindowFlags_NoSavedSettings
+    + im.WindowFlags_NoTitleBar
+  if im.Begin('BeamNG.Earth update##beamngEarthUpdate', nil, flags) then
+    im.Text(string.format('BeamNG.Earth %s is available (you have %s).', tostring(updateInfo.latest),
+      tostring(updateInfo.current)))
+    if im.Button('Open releases page') then
+      local url = (updateInfo.url ~= '' and updateInfo.url) or M.RELEASES_URL
+      -- the server opens it (the game's openWebBrowser does nothing in the native Linux build); the game's own
+      -- call only without a server
+      if net.isConnected() then net.send({ type = 'open_page', url = url })
+      elseif openWebBrowser then pcall(openWebBrowser, url) end
+      updateHidden = true
+    end
+    im.SameLine()
+    if im.Button('Dismiss') then settings.set('updateDismissed', tostring(updateInfo.latest)) end
+  end
+  im.End()
+end
+
 local function drawUi(dt)
   ui.draw(buildView(), { teleport = M.teleport, setRebaseDistance = M.setRebaseDistance })
   -- each element drawn by imgui unless its UI app is on screen (hudapps.lua)
@@ -1203,11 +1235,10 @@ local function drawUi(dt)
     statusbar.draw(st.inOurLevel and st.active, credits.hiddenByUi(), st.status)
   end
   hudapps.update(st.clock or 0, hudTexts)
-  if updateToast and updateInfo and st.inOurLevel and st.active and not credits.hiddenByUi()
-      and (st.clock or 0) > (st.loadingUntil or 0) and ui_message then
-    updateToast = false
-    pcall(ui_message, string.format('BeamNG.Earth %s is available (you have %s): %s', updateInfo.latest,
-      updateInfo.current, updateInfo.url), 15, 'beamngEarthUpdate')
+  if updateInfo and st.inOurLevel and st.active and not credits.hiddenByUi()
+      and (st.clock or 0) > (st.loadingUntil or 0) then
+    local ok, err = pcall(drawUpdateNotice)
+    if not ok then updateInfo = nil; log('E', 'beamngEarth', 'update notice: ' .. tostring(err)) end
   end
 end
 

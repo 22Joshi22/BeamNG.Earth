@@ -8,8 +8,10 @@ terrain-update handler in the game's memory at startup, so that height and layer
 free grass. The mod still rebuilds the grass itself where the world really moves: teleports and
 floating-origin rebases.
 
-- **Only BeamNG.drive 0.39.4, Linux x86-64.** It checks the handler's first 54 bytes and does
-  nothing on any other build, for example after a game update.
+- **Written for BeamNG.drive 0.39.4, Linux x86-64.** It checks the handler's first 54 bytes at its
+  0.39.4 address. In another build (a game update) it searches the game's code for the same bytes, with
+  the frame size and the two jump distances masked, and patches only a single match. If the handler
+  changed, it does nothing (the status file says so).
 - Nothing on disk changes. Without the launch option the game is stock.
 - It acts only in the main `BeamNG.drive.x64` process, not in the CEF helpers or Steam.
 - Unsupported by BeamNG. A wrong patch crashes the game, which a restart without the launch

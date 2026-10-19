@@ -500,6 +500,41 @@ def start_game(use_gcpatch, build="native", gfx=""):
     return None
 
 
+# A game update turns every mod off (core_modmanager.getModsDisabledAfterUpdate: "Mods will be disabled after updating
+# from version ...") until the player turns them back on in the main menu; without that BeamNG.Earth is just not there
+# (BeamNG 0.40, 2026-10-19). The game's log is read while it starts and the player told what to do.
+MODS_OFF_LINE = "Mods will be disabled after updating"
+GAME_LOG_WATCH_S = 600       # s after the game's start the log is watched
+
+
+def watch_game_log(user_dir, since):
+    """In the background: the game's log (written anew at each start) read for the mods-off line."""
+    path = os.path.join(user_dir, "beamng.log")
+
+    def run():
+        t0, pos = time.time(), 0
+        while time.time() - t0 < GAME_LOG_WATCH_S:
+            time.sleep(2)
+            try:
+                if os.path.getmtime(path) < since:
+                    continue                    # the last run's log: the game has not started writing yet
+                with open(path, "rb") as f:
+                    if os.path.getsize(path) < pos:
+                        pos = 0
+                    f.seek(pos)
+                    data = f.read()
+                    pos += len(data)
+            except OSError:
+                continue
+            if MODS_OFF_LINE.encode() in data:
+                problem("BeamNG.drive was updated and turned all mods off, BeamNG.Earth too.",
+                        "In the game's main menu, choose to enable your mods again (or Mods > Manage, turn "
+                        "BeamNG.Earth on), then pick Freeroam > BeamNG.Earth. The world server keeps running.")
+                return
+
+    threading.Thread(target=run, name="watch-game-log", daemon=True).start()
+
+
 def wait_for_game(proc):
     """Until the game closes."""
     if proc is not None:
@@ -790,6 +825,7 @@ def run(args):
             say("Start BeamNG.drive and pick 'BeamNG.Earth' in Freeroam. Ctrl+C stops the server.")
             server.wait()
             return
+        watch_game_log(user_dir, time.time() - 5)
         if running:
             row("Game", "already running")
             proc = None

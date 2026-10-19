@@ -375,4 +375,13 @@ end
 
 -- leave the shared modules as found
 rebase.distance, ui.visible, ui.compact, ui.hudHidden = dist0, vis0, compact0, false
+-- a text setting: the dismissed update notice's version (core.lua drawUpdateNotice), not on the page
+do
+  local st = require('beamngEarth/settings')
+  T.check(st.validate('updateDismissed', '1.5.1') == '1.5.1', 'updateDismissed: a version string')
+  T.check(st.validate('updateDismissed', {}) == nil, 'updateDismissed: a table is refused')
+  T.check(#st.validate('updateDismissed', string.rep('x', 100)) == 40, 'updateDismissed: at most maxLen characters')
+  T.check(st.HIDDEN.updateDismissed, 'updateDismissed: not on the settings page')
+end
+
 T.done('test_settings')

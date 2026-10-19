@@ -10,8 +10,11 @@
 // world really moves (teleports, floating-origin rebases).
 //
 // Nothing on disk is changed. It acts only in the main BeamNG.drive.x64 process (not the CEF helpers,
-// not Steam), and only if the handler's first 0x36 bytes are exactly those of the build it was written
-// for (0.39.4 Linux, x86-64); otherwise it does nothing. Without the launch option the game is stock.
+// not Steam), and only if the handler's first 0x36 bytes are those of the build it was written for (0.39.4
+// Linux, x86-64) at its address; in another build (a game update: BeamNG 0.40, 2026-10-19) the game's code
+// is searched for the same bytes with the frame size and the two jump distances masked (they move with any
+// code change around them) and patched only if exactly one place matches; otherwise it does nothing.
+// Without the launch option the game is stock.
 #define _GNU_SOURCE
 #include <elf.h>
 #include <link.h>
@@ -68,7 +71,14 @@ static int is_main_game(void) {
     return 1;
 }
 
-struct mainprog { uintptr_t base; int covered; int seen; };
+#define IMM_OFF (IMM - HANDLER)   /* 0x2F: the imm8 within the signature */
+
+// Bytes another build may change without changing what the code does: sub rsp's imm8, the jne / je rel32s.
+static int masked(size_t i) {
+    return i == 0x13 || (i >= 41 && i <= 44) || (i >= 50 && i <= 53);
+}
+
+struct mainprog { uintptr_t base; int covered; int seen; uintptr_t xs[8], xe[8]; int nx; };
 
 // The first object dl_iterate_phdr reports is the main program; is HANDLER in its executable PT_LOAD?
 static int find_main(struct dl_phdr_info *info, size_t size, void *data) {
@@ -79,9 +89,15 @@ static int find_main(struct dl_phdr_info *info, size_t size, void *data) {
     m->base = (uintptr_t)info->dlpi_addr;
     for (int i = 0; i < info->dlpi_phnum; i++) {
         const ElfW(Phdr) *ph = &info->dlpi_phdr[i];
-        if (ph->p_type == PT_LOAD && (ph->p_flags & PF_X) && ph->p_vaddr <= HANDLER &&
-            HANDLER + sizeof SIGNATURE <= ph->p_vaddr + ph->p_filesz)
-            m->covered = 1;
+        if (ph->p_type == PT_LOAD && (ph->p_flags & PF_X)) {
+            if (ph->p_vaddr <= HANDLER && HANDLER + sizeof SIGNATURE <= ph->p_vaddr + ph->p_filesz)
+                m->covered = 1;
+            if (m->nx < 8) {
+                m->xs[m->nx] = m->base + ph->p_vaddr;
+                m->xe[m->nx] = m->base + ph->p_vaddr + ph->p_filesz;
+                m->nx++;
+            }
+        }
     }
     return 1;
 }
@@ -92,23 +108,44 @@ __attribute__((constructor)) static void bngearth_gcpatch(void) {
         report("off (BNGEARTH_GCPATCH_OFF set)%s", NULL);
         return;
     }
-    struct mainprog m = {0, 0, 0};
+    struct mainprog m;
+    memset(&m, 0, sizeof m);
     dl_iterate_phdr(find_main, &m);
-    if (!m.seen || !m.covered) {
-        report("not applied: the handler is outside the game's code (another build)%s", NULL);
+    if (!m.seen) {
+        report("not applied: the game's code was not found%s", NULL);
         return;
     }
-    unsigned char *code = (unsigned char *)(m.base + HANDLER);
-    for (size_t i = 0; i < sizeof SIGNATURE; i++) {
-        if (HANDLER + i == IMM) continue;
-        if (code[i] != SIGNATURE[i]) {
-            char d[32];
-            snprintf(d, sizeof d, "%zu", i);
-            report("not applied: handler byte %s differs (another build)", d);
-            return;
+    unsigned char *code = NULL;
+    if (m.covered) {
+        code = (unsigned char *)(m.base + HANDLER);
+        for (size_t i = 0; i < sizeof SIGNATURE; i++) {
+            if (i == IMM_OFF) continue;
+            if (code[i] != SIGNATURE[i]) { code = NULL; break; }
         }
     }
-    unsigned char *imm = (unsigned char *)(m.base + IMM);
+    const char *how = "";
+    if (!code) {            // another build: search its code for the handler (masked signature), one match only
+        int matches = 0;
+        for (int k = 0; k < m.nx; k++) {
+            for (unsigned char *p = (unsigned char *)m.xs[k]; p + sizeof SIGNATURE <= (unsigned char *)m.xe[k]; p++) {
+                if (p[0] != SIGNATURE[0] || p[IMM_OFF - 2] != 0x83 || p[IMM_OFF - 1] != 0xe6) continue;
+                size_t i = 0;
+                for (; i < sizeof SIGNATURE; i++) {
+                    if (i == IMM_OFF || masked(i)) continue;
+                    if (p[i] != SIGNATURE[i]) break;
+                }
+                if (i == sizeof SIGNATURE) { code = p; matches++; }
+            }
+        }
+        if (matches != 1) {
+            char d[32];
+            snprintf(d, sizeof d, "%d", matches);
+            report("not applied: the handler was not found in this build (%s matches)", d);
+            return;
+        }
+        how = " (found by its signature in this build)";
+    }
+    unsigned char *imm = code + IMM_OFF;
     if (*imm == PATCHED) { report("already applied%s", NULL); return; }
     if (*imm != STOCK) { report("not applied: unexpected byte (another build)%s", NULL); return; }
     long pagesz = sysconf(_SC_PAGESIZE);
@@ -120,5 +157,5 @@ __attribute__((constructor)) static void bngearth_gcpatch(void) {
     }
     *imm = PATCHED;
     mprotect((void *)page, (size_t)pagesz, PROT_READ | PROT_EXEC);
-    report("applied: grass kept across terrain block moves%s", NULL);
+    report("applied: grass kept across terrain block moves%s", how);
 }

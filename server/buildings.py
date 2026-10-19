@@ -26,6 +26,14 @@ import staging
 FLOOR_M = 3.0               # m per storey (residential)
 GROUND_FLOOR_SHOP_M = 4.2   # m, a shop's ground floor
 FOUNDATION_M = 0.6          # m the walls reach under the lowest ground of the footprint
+# The walls reach this far under the lowest ground of the footprint (a skirt): beyond the physics block (+-512 m) the
+# ground drawn is the far field's mesh, coarser with distance (tens of metres between vertices at 1-2 km), which on any
+# slope runs metres under the heights the buildings stand on: they floated (the user, 2026-10-18: "houses and
+# buildings in many parts of the world are floating"). Under a correct ground the skirt is hidden; the floors stay
+# where they were (anchored at the eaves, the rest a plain plinth). The lite mesh (far tiles, a near tile's distant
+# detail) stands on the coarsest ground: the deepest skirt.
+SKIRT_M = 3.0
+SKIRT_LITE_M = 10.0
 MIN_AREA_M2 = 12.0          # footprints smaller than this are skipped (kiosks, sheds' slivers)
 MAX_VERTS = 64              # footprints with more vertices are simplified until under this
 SIMPLIFY_M = 0.35           # m: vertices closer than this to the line of their neighbours are dropped
@@ -1495,7 +1503,7 @@ def build(specs_and_ground, lite=False):
         mh = spec.min_h or 0.0
         if spec.deck and not lite and _parking_deck(m, spec, gmin, gmax, mat_idx):
             continue
-        z0 = gmin - FOUNDATION_M if mh <= 0.5 else base_z(spec, gmin, gmax) + mh
+        z0 = gmin - (SKIRT_LITE_M if lite else SKIRT_M) if mh <= 0.5 else base_z(spec, gmin, gmax) + mh
         z_eave = base_z(spec, gmin, gmax) + mh + spec.height
         _walls(m, spec, ring, z0, z_eave, mat_idx, lite)
         if mh > 0.5:                                  # a part standing on another / over a street: its underside
@@ -2114,7 +2122,8 @@ def tile_buildings(frame, x0, y0, x1, y1, layers, elev, water=None, part_layers=
     if bridges_xy or decks:             # a road bridge through a building: a passage (Tower Bridge's towers and gate)
         def ground_at(c):
             la, lo, _ = frame.enu_to_geodetic(float(c[0]) + x0, float(c[1]) + y0, 0.0)
-            return float(np.asarray(elev(np.array([float(la)]), np.array([float(lo)])), np.float64)[0])
+            z = float(np.asarray(elev(np.array([float(la)]), np.array([float(lo)])), np.float64)[0])
+            return float(frame.geodetic_to_enu(float(la), float(lo), z)[2])       # (the decks' frame up)
         rings, attrs, looks, mins = _passages(rings, attrs, looks, mins, bridges_xy, decks, ground_at)
     shared = _shared_walls(rings)
     cover = sum(_area2(r) / 2 for r, mh in zip(rings, mins) if mh <= 0.5) / ((x1 - x0) * (y1 - y0))
@@ -2141,6 +2150,10 @@ def tile_buildings(frame, x0, y0, x1, y1, layers, elev, water=None, part_layers=
         g = np.asarray(elev(la, lo), np.float64)
         if not np.all(np.isfinite(g)):
             continue
+        # heights above the ellipsoid -> the anchor frame's up (the Earth's curvature, as the terrain and the roads):
+        # without it a building stood (d^2 / 2R) over the ground at d from the anchor's origin, 5 m at 8 km, up to
+        # 18 m at the 15 km rebase distance (the user, 2026-10-18 at Santa Maria Val Muestair: floating houses)
+        g = np.asarray(frame.geodetic_to_enu(la, lo, g)[2], np.float64)
         if water is not None:
             c = ring.mean(0)
             cla, clo, _ = frame.enu_to_geodetic(c[0] + x0, c[1] + y0, 0.0)
