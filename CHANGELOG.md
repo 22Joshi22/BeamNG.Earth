@@ -52,8 +52,12 @@ source.
   them.
 
 ### Gameplay
-- **Dropping the car far away with the free camera is safe now.** The car waits in place until the ground under it
-  has loaded, instead of falling through the world.
+- **Dropping the car far away with the free camera is safe now.** The game pauses, with a banner saying it's waiting
+  for collision to load, until the ground under the car has loaded. Then it resumes, instead of the car falling
+  through the world.
+- **At the edge of the loaded ground the game pauses instead of braking the car.** This happens when the server can't
+  move the terrain (for example if it has stopped). It resumes once the ground follows; you can also resume yourself
+  and drive back.
 - **Credits show every data source** used around you: imagery, elevation, map data (OpenStreetMap, Overture,
   Microsoft, TomTom, and others), land cover, trees, sea depth, bridges, airports, gravity and weather. Each has a
   short name; the full wording stays on the settings page.
