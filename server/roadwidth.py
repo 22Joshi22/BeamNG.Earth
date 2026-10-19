@@ -12,7 +12,8 @@ measure_row(): every STEP m along the street (END_SKIP m kept clear of its ends:
 each way up to REACH m to the first building wall. The street is "walled" when both rays hit in at
 least WALLED of the cross-sections and the face-to-face distances agree (IQR within AGREE of the
 median); its right-of-way is then that median, split by split(): two sidewalks of WALK_SHARE of it
-(clamped to WALK_MIN..WALK_MAX) and the carriageway between. Elsewhere (front yards, open land): None,
+(clamped to WALK_MIN..WALK_MAX, down to WALK_NARROW_MIN on very narrow streets) and the carriageway between.
+Elsewhere (front yards, open land): None,
 and the class defaults stay. Pure; RoadWidths memoises per road for the life of the server, so the
 physics block, grading, the road meshes and the surface masks always agree.
 """
@@ -31,7 +32,8 @@ WALLED = 0.6            # share of cross-sections with a building on both sides
 AGREE = 0.3             # IQR / median at most this
 WALK_SHARE = 0.2        # each sidewalk this share of the right-of-way ...
 WALK_MIN, WALK_MAX = 1.8, 4.5   # ... within these (m)
-CARRIAGE_MIN = 5.0      # m: narrower measured carriageways are not trusted
+CARRIAGE_MIN = 3.0      # m: a measured single-lane street, including old town streets
+WALK_NARROW_MIN = 0.6   # m: keep narrow streets within their measured building-to-building width
 BUCKET = 16.0           # m, wall segment buckets
 
 
@@ -154,6 +156,7 @@ def measure_row(centreline, walls):
 def split(row):
     """(carriageway m, sidewalk m) of a right-of-way, or None when the carriageway would be implausible."""
     walk = min(WALK_MAX, max(WALK_MIN, WALK_SHARE * row))
+    walk = min(walk, max(WALK_NARROW_MIN, (row - CARRIAGE_MIN) / 2))
     cw = row - 2 * walk
     if cw < CARRIAGE_MIN:
         return None

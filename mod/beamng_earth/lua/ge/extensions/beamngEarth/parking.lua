@@ -66,10 +66,10 @@ function M.onTeleport()
 end
 
 -- the stock extensions the parked cars need (a level without traffic support loads none of them;
--- setupVehicles spawns its group through core_multiSpawn)
-M.EXTENSIONS = { 'core_multiSpawn', 'gameplay_traffic', 'gameplay_parking' }
+-- setupVehicles spawns its group through core_multiSpawn; gameplay_walk: 0.40's traffic.lua needs it, navgraph.lua)
+M.EXTENSIONS = { 'core_multiSpawn', 'gameplay_traffic', 'gameplay_parking', 'gameplay_walk' }
 local function parkingSystem()
-  if not (gameplay_parking and core_multiSpawn) and extensions and extensions.load then
+  if not (gameplay_parking and core_multiSpawn and gameplay_walk) and extensions and extensions.load then
     pcall(extensions.load, unpack(M.EXTENSIONS))
   end
   return gameplay_parking

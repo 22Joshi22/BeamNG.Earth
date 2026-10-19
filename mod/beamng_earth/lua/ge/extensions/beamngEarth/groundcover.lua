@@ -206,10 +206,12 @@ function M.setDensity(v)
   return true
 end
 
--- The level ended (its objects are gone with it).
+-- The level ended (its objects are gone with it, the stock materials loaded for it too: a level started again in
+-- the same game session found no m_grass_* / wca_groundcover and drew no grass, 2026-10-19).
 function M.reset()
   created = {}
   defsCache = {}
+  loadedMaterials = {}
   layered = false
 end
 

@@ -34,7 +34,9 @@ M.STUCK_S = 45
 M.STUCK_MS = 0.5
 M.STUCK_FAR_M = 40
 M.RESPAWN_M = { 60, 300 }   -- a respawned car goes this far (min, max) behind the camera
-M.EXTENSIONS = { 'core_multiSpawn', 'gameplay_traffic' }
+-- (gameplay_walk: 0.40's traffic.lua calls gameplay_walk.addVehicleToBlacklist when it activates its cars, and this
+-- level had none loaded: the cars spawned and never drove, 2026-10-19)
+M.EXTENSIONS = { 'core_multiSpawn', 'gameplay_traffic', 'gameplay_walk' }
 
 local graph = nil       -- the server's last graph {anchor, nodes, edges}
 local applied = nil     -- {anchor, serial, box} of the graph in the game's map now
@@ -297,7 +299,7 @@ local function applySignals(nodes)
 end
 
 local function trafficSystem()
-  if not (gameplay_traffic and core_multiSpawn) and extensions and extensions.load then
+  if not (gameplay_traffic and core_multiSpawn and gameplay_walk) and extensions and extensions.load then
     pcall(extensions.load, unpack(M.EXTENSIONS))
   end
   return gameplay_traffic

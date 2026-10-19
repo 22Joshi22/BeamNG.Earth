@@ -553,6 +553,61 @@ class TrackerTest(unittest.TestCase):
         self.assertEqual(keys, set(roads.tiles_near(0, 0, buildings.FAR_SEND_M)) - near)
         self.assertTrue(near and not (keys & near))
 
+    def test_at_speed_the_tiles_reach_along_the_path_nearest_first(self):
+        # 100 m/s east: the corridor ahead up to LEAD_S of driving (LEAD_MAX_M), only a strip of it beside the path
+        want = roads.wanted_tiles(0.0, 0.0, 100.0, 0.0)
+        near = set(roads.tiles_near(0, 0, roads.SEND_M))
+        ahead = want - near
+        self.assertTrue(ahead, "tiles beyond SEND_M along the path")
+        self.assertTrue(all(roads.tile_bbox(*k)[0] > 0 for k in ahead), "only ahead (east)")
+        far_x = max(roads.tile_bbox(*k)[0] for k in ahead)
+        lead = min(roads.LEAD_MAX_M, 100.0 * roads.LEAD_S)
+        self.assertGreaterEqual(far_x + roads.TILE, lead - roads.TILE / 2, "up to LEAD_S of driving")
+        self.assertTrue(all(abs((roads.tile_bbox(*k)[1] + roads.tile_bbox(*k)[3]) / 2) <= roads.CORRIDOR_M + roads.TILE
+                            for k in ahead), "a strip along the path")
+        self.assertEqual(roads.wanted_tiles(0.0, 0.0, 10.0, 0.0), near, "slow: the square around the car only")
+        # built in the order the car reaches them: the car's tile, the path ahead, then beside, behind last
+        key = roads.path_key(128.0, 128.0, 100.0, 0.0)
+        order = sorted([(-2, 0), (0, 2), (5, 0), (1, 0), (0, 0)], key=key)
+        self.assertEqual(order[:3], [(0, 0), (1, 0), (5, 0)])
+        self.assertEqual(order[-1], (-2, 0))
+
+    def test_at_speed_the_path_ahead_is_built_and_kept(self):
+        conn = FakeConn()
+        tr = roads.Tracker()
+        built = []
+
+        def build(aid, tx, ty):
+            built.append((tx, ty))
+            return (f"/p/{aid}_{tx}_{ty}", 1)
+
+        async def go():
+            loop = asyncio.get_running_loop()
+            for _ in range(80):
+                tr.on_pose(conn, 1, 128.0, 128.0, loop, build, vel=(100.0, 0.0))
+                await asyncio.sleep(0.01)
+        asyncio.run(go())
+        want = roads.wanted_tiles(128.0, 128.0, 100.0, 0.0)
+        self.assertEqual(set(built), want, "every wanted tile built once")
+        self.assertFalse([m for m in conn.sent if m["type"] == "roads_drop"], "the path ahead is not dropped")
+        first = built[:6]
+        self.assertEqual(first[0], (0, 0), "the car's own tile first")
+        self.assertTrue(all(k[0] >= 0 and abs(k[1]) <= 1 for k in first), f"then the path ahead: {first}")
+
+    def test_ground_first_no_path_tiles_while_a_block_builds(self):
+        conn = FakeConn()
+        tr = roads.Tracker()
+        built = []
+
+        async def go():
+            loop = asyncio.get_running_loop()
+            for _ in range(60):
+                tr.on_pose(conn, 1, 128.0, 128.0, loop, lambda aid, tx, ty: (built.append((tx, ty)), (f"/p/{tx}_{ty}", 1))[1],
+                           vel=(100.0, 0.0), ground_busy=True)
+                await asyncio.sleep(0.01)
+        asyncio.run(go())
+        self.assertEqual(set(built), set(roads.tiles_near(128.0, 128.0, roads.SEND_M)), "only the square around the car")
+
     def test_drops_far_and_resends_on_anchor_change(self):
         conn, tr, built = self.run_poses([(1, 0.0, 0.0), (1, 3000.0, 0.0), (2, 3000.0, 0.0)])
         drops = [m for m in conn.sent if m["type"] == "roads_drop"]

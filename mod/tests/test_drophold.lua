@@ -74,4 +74,29 @@ T.check(d.observe(h, 990, 0, 10, 0, dt, 1, box, false) == nil, 'dropped near the
 -- the block edge margin: a point just inside the box but within EDGE_MARGIN is not yet covered
 T.check(not d.inside(box, 990, 0, d.EDGE_MARGIN) and d.inside(box, 900, 0, d.EDGE_MARGIN), 'edge margin')
 
+-- bridges and buildings (2026-10-19): with the ground in, the hold waits for the colliders around the car
+h = d.new()
+d.observe(h, 0, 0, 10, 0, dt, 1, box, false)
+d.observe(h, 5000, 0, 30, 0, dt, 1, box, false)
+local box4 = { 4000, -1000, 6000, 1000 }
+d.step(h, 1, box4, 'd', 20, false, false); d.step(h, 1.02, box4, 'd', 20, false, false)
+T.check(d.step(h, 1.04, box4, 'd', 20, false, false) == nil and h.active, 'ground in, colliders not: still held')
+T.check(d.step(h, 5, box4, 'd', 20, false, false) == nil, '... 4 s later still held')
+act = d.step(h, 6, box4, 'd', 20, false, true)
+T.check(act == 'release' and not h.active, 'colliders in: let go')
+h = d.new()
+d.observe(h, 0, 0, 10, 0, dt, 1, box, false)
+d.observe(h, 5000, 0, 30, 0, dt, 1, box, false)
+d.step(h, 1, box4, 'd', 20, false, false); d.step(h, 1.02, box4, 'd', 20, false, false); d.step(h, 1.04, box4, 'd', 20, false, false)
+T.check(d.step(h, 1.04 + d.NEAR_MAX_S - 1, box4, 'd', 20, false, false) == nil, 'colliders late: held up to NEAR_MAX_S')
+T.check(d.step(h, 1.04 + d.NEAR_MAX_S + 0.1, box4, 'd', 20, false, false) == 'release', '... then let go anyway')
+T.check(d.step(d.new(), 1, box4, 'd', 20, false, nil) == nil, 'no hold active: nothing')
+-- a drop onto the block where the colliders are not in yet (a bridge there): held too; where they are: not
+h = d.new()
+d.observe(h, 0, 0, 10, 0, dt, 1, box, false)
+T.check(d.observe(h, 600, 0, 10, 0, dt, 1, box, false, function() return false end) == 'start', 'onto the block, colliders missing: hold')
+h = d.new()
+d.observe(h, 0, 0, 10, 0, dt, 1, box, false)
+T.check(d.observe(h, 600, 0, 10, 0, dt, 1, box, false, function() return true end) == nil, 'onto the block, colliders in: no hold')
+
 T.done('test_drophold')

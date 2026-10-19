@@ -140,7 +140,7 @@ def wire_mesh(lines, origin):
 
 MAJOR = {"primary", "secondary", "tertiary", "trunk"}
 MINOR = {"residential", "unclassified", "living_street"}
-G_SIGNAL, G_STOP = "signal", "stop"
+G_SIGNAL, G_STOP, G_YIELD = "signal", "stop", "giveway"
 JUNCTION_SNAP_M = 1.0       # road ends this close are one junction
 
 
@@ -179,13 +179,14 @@ def _is_signalled(arms):
 
 
 def junction_controls(arms, k, link_ok=None, ring=None):
-    """[(arm, G_SIGNAL | G_STOP)] of an urban junction's arms (fid, spec, unit vector away, point): signals on
+    """[(arm, G_SIGNAL | G_STOP | G_YIELD)] of a junction's arms (fid, spec, unit vector away, point): signals on
     every arm where two or more major roads meet, stop signs on the minor arms meeting a major road, on the
     stem of a minor T and on half the minor four-ways (hashed by the junction's 8 m cell; k is unused). Shared with
     navgraph.py, so the AI's signals and stop signs are where the props stand. ring: the fids of roundabout rings
-    (islands.ring_fids): a junction on a ring (two of its arms) has none: traffic yields to the ring."""
+    (islands.ring_fids): a junction on a ring (two of its arms) has give-way signs on incoming external arms.
+    The AI graph handles their priority, without installing stop controllers on the ring."""
     if ring and sum(1 for a in arms if a[0] in ring) >= 2:
-        return []
+        return [(a, G_YIELD) for a in arms if a[0] not in ring and not _outbound(a)]
     major = [a for a in arms if a[1].cls in MAJOR]
     minor = [a for a in arms if a[1].cls in MINOR]
     if _is_signalled(arms):
@@ -258,7 +259,8 @@ def junction_props(roads, box, curb_h=0.15, left_hand=False):
     ring = islands.ring_fids(roads)
     lines = [(spec.width / 2, np.asarray(pts, np.float64)[:, :2]) for _, spec, pts, _ in roads if len(pts) >= 2]
     for k, arms in junctions.items():
-        if len(arms) < 3 or not all(a[1].urban for a in arms):
+        on_ring = sum(1 for a in arms if a[0] in ring) >= 2
+        if len(arms) < 3 or (not on_ring and not all(a[1].urban for a in arms)):
             continue
         p = arms[0][3]
         if not (x0 <= p[0] < x1 and y0 <= p[1] < y1):

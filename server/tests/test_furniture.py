@@ -156,7 +156,8 @@ class RoundaboutTest(unittest.TestCase):
         u = lambda x, y: np.array([x, y], float)
         arms = [("r1", ring, u(0, 1), u(0, 0)), ("r2", ring, u(0, -1), u(0, 0)), ("a", app, u(1, 0), u(0, 0))]
         self.assertTrue(furniture.junction_controls(arms, None), "three major arms: signals without the ring")
-        self.assertEqual(furniture.junction_controls(arms, None, ring={"r1", "r2"}), [], "a ring entry: none")
+        self.assertEqual(furniture.junction_controls(arms, None, ring={"r1", "r2"}),
+                         [(arms[2], furniture.G_YIELD)], "give-way on the entry, no signals on the ring")
 
 
 class UnderDeckTest(unittest.TestCase):

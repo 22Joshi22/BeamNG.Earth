@@ -251,10 +251,23 @@ def setup_venv(dry_run):
                     "Reinstall Python from python.org (keep the default options, tick 'Add python.exe to PATH').")
             fail("could not create the virtual environment. " + hint)
     say("Python packages: installing the server's requirements (numpy, Pillow, duckdb, fsspec) ...")
-    r = subprocess.run([py, "-m", "pip", "install", "--disable-pip-version-check", "-r", REQUIREMENTS])
+    cmd = [py, "-m", "pip", "install", "--disable-pip-version-check"]
+    if IS_WIN:
+        # Without a matching wheel (e.g. a newer Python), pip tries to compile DuckDB and fails without MSVC.
+        cmd.append("--only-binary=duckdb")
+    r = subprocess.run(cmd + ["-r", REQUIREMENTS])
     if r.returncode != 0:
+        hint = "  Check your internet connection (and proxy/firewall), then run install.py again."
+        if IS_WIN:
+            hint = ("  For connection errors, check your internet connection (and proxy/firewall), then retry."
+                    "\n  If pip reports 'No matching distribution found' for duckdb, no prebuilt package is available"
+                    "\n  for this Python/platform. Try 64-bit Python 3.12 (used by the packaged release builds)."
+                    "\n  Close the server, rename this folder's .venv to an unused backup name, then run:"
+                    "\n    py -3.12 install.py"
+                    "\n  Installing another Python alone does not replace an existing .venv."
+                    "\n  Or use the standalone Windows .exe from the GitHub Releases page.")
         fail("pip could not install the packages (see the messages above).\n"
-             "  Check your internet connection (and proxy/firewall), then run install.py again.\n"
+             + hint + "\n"
              "  The mod is installed already; only the server's packages are missing.")
     r = subprocess.run([py, "-c", "import numpy, PIL; print('numpy', numpy.__version__, '/ Pillow', PIL.__version__)"],
                        capture_output=True, text=True, errors="replace")

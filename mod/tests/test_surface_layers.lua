@@ -101,8 +101,13 @@ do
   T.check(gc.afterBlockChange() == true and flushes == 1, 'a block change rebuilds the grass in the same tick')
   -- a GE Lua reload: the module starts over, the level's objects stay (here with an old field)
   o.fields.useNewPlacementGpu = '1'
+  local matLoads, realLoad = {}, _G.loadJsonMaterialsFile
+  _G.loadJsonMaterialsFile = function(p) matLoads[#matLoads + 1] = p end
   gc.reset()
   T.check(gc.ensure() == true, 'ensure after a module reload')
+  -- the level started again: its stock grass materials went with the old one and are loaded again
+  T.check(#matLoads >= 1, 'the stock grass materials loaded again after a reset (' .. #matLoads .. ' files)')
+  _G.loadJsonMaterialsFile = realLoad
   local o2 = scenetree.findObject(gc.PREFIX .. gc.DEFS[1].src)
   T.check(o2 ~= o and o2.fields.useNewPlacementGpu == '0' and scenetree.findObjectById(o.id) == nil,
     'a leftover object is made again from the current definition')

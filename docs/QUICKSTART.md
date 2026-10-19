@@ -6,7 +6,9 @@ in a few minutes. No programming needed.
 ## What you need
 - **BeamNG.drive** (tested with 0.39.x), started at least once.
 - **Python 3.10 or newer** from <https://www.python.org/downloads/>. On Windows, tick
-  **"Add python.exe to PATH"** on the first page of the Python installer.
+  **"Add python.exe to PATH"** on the first page of the Python installer. **64-bit Python 3.12**
+  is recommended for source installs on Windows, matching the packaged release builds. Newer
+  Python versions may not yet have compatible prebuilt packages for all dependencies.
 - **About 2 GB of free disk space** for the map cache (it grows as you explore and is capped).
 - **An internet connection**: the map (height data, aerial photos, roads, buildings) is downloaded
   while you play.
@@ -73,6 +75,14 @@ can drag `screenshot.jpg` into the issue. The "Open GitHub issue page" button in
 same without the edit step.
 
 ## Troubleshooting
+- **DuckDB fails to install on Windows**: the installer uses a prebuilt DuckDB package instead of
+  compiling it. If pip reports **"No matching distribution found"** for DuckDB, install **64-bit
+  Python 3.12**, close the world server, and rename this project's `.venv` folder to an unused
+  backup name (for example `.venv-backup`). Then open a terminal in the project folder and run
+  `py -3.12 install.py`. Installing another Python and rerunning the installer alone does not
+  change the interpreter in an existing `.venv`. Alternatively, use the standalone Windows
+  `.exe` from the [Releases page](https://github.com/TecnaGamer/BeamNG.Earth/releases), which
+  includes Python and the server's packages.
 - **"Looking for the world server" / "server not connected" banner** in the game: the server is not
   running. Start `run_server.bat` / `./run_server.sh` and wait a few seconds; the game reconnects
   by itself. If the server window shows an error, run the installer again.

@@ -68,13 +68,13 @@ local function riverSpeeds(flow)
   return { flow / 4, flow / 10 / 2, flow / 40 / 5 }
 end
 
-local TEXTURES = {      -- field, East Coast's file, the core fallback
-  { 'rippleTex', '/levels/east_coast_usa/art/water/ripple3.dds', '/core/art/water/ripple_nm.normal.dds' },
+local TEXTURES = {      -- field, East Coast's file, the stock fallback (0.40 moved them from /core/art/water to /assets)
+  { 'rippleTex', '/levels/east_coast_usa/art/water/ripple3.dds', '/assets/materials/tileable/water/water_effects/ripple_nm.normal.dds' },
   -- (2026-10-15: the ramp is a .png in East Coast USA, and neither fallback existed: ~1000 "texture missing" log
   -- errors per session that filled the log's 15000 lines before the end of a drive)
   { 'depthGradientTex', '/levels/east_coast_usa/art/water/depthcolor_ramp.png',
-    '/core/art/water/river_depthcolor_ramp_b.png' },
-  { 'foamTex', '/levels/east_coast_usa/art/water/foam.dds', '/core/art/water/foam_b.color.dds' },
+    '/assets/materials/tileable/water/depthcolor_ramp/river_depthcolor_ramp_b.png' },
+  { 'foamTex', '/levels/east_coast_usa/art/water/foam.dds', '/assets/materials/tileable/water/water_effects/foam_b.color.dds' },
 }
 
 local want = nil         -- { anchorId, tiles = { key -> tile }, rivers = { key -> river } } from the server

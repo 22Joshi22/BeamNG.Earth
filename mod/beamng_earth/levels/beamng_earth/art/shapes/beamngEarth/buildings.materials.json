@@ -141,8 +141,8 @@
     "persistentId": "f6cbbd2a-2d9f-5901-b24b-ed5b7306c7cb",
     "Stages": [
       {
-        "baseColorMap": "/levels/Utah/art/shapes/buildings/utah_roof_shingles_d.dds",
-        "normalMap": "/levels/Utah/art/shapes/buildings/utah_roof_shingles_n.dds",
+        "baseColorMap": "/assets/materials/baked_props/utah_roof_shingles/utah_roof_shingles_d.dds",
+        "normalMap": "/assets/materials/baked_props/utah_roof_shingles/utah_roof_shingles_n.dds",
         "roughnessFactor": 0.85,
         "metallicFactor": 0,
         "baseColorFactor": [
