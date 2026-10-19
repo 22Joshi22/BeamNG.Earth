@@ -6,9 +6,11 @@
 --   clear  far inside the block: nothing (no ray, no call)
 --   warn   within WARN_M of an edge, or of the braking distance plus WARN_LEAD at the current speed:
 --          the banner says so
---   hold   a soft wall: the velocity component towards an edge is capped at
---          sqrt(2 * DECEL * (d - STOP_M)), d the distance to that edge, so the car brakes at DECEL
---          and comes to rest STOP_M inside it; along the edge and inwards it drives freely
+--   hold   the game's own pause (simTimeAuthority) when the car would reach STOP_M inside an edge within
+--          PAUSE_LEAD_S, heading towards it; it resumes once the block followed (the car well inside again).
+--          The player may resume by hand to drive back inwards: no new pause for RESUME_GRACE_S. (It was a
+--          soft wall setting the car's velocity every frame; the user, 2026-10-18: "use this [the pause] for the
+--          edge system instead of doing whatever it was doing before when it tried to stop the car".)
 --   rescue the car left the block anyway (faster than the wall could brake it, or it was already
 --          past the edge) and has dropped RESCUE_DROP below the ground it last stood on: it is set
 --          down STOP_M inside the edge, heading kept (spawn.safeTeleport without a reset, as the
@@ -44,6 +46,10 @@ M.RAY_MARGIN = 50       -- m beyond the warn distance where the ray starts
 -- frames by less than SET_EPS each time.
 M.PULL = 0.5            -- 1/s: pull back speed per m past the stop line
 M.PULL_MAX = 2.0        -- m/s: at most
+M.PAUSE_LEAD_S = 0.5    -- s: pause when the car would reach the stop line this soon
+M.PAUSE_MIN_SPEED = 0.3 -- m/s towards the edge below which it is not moving there
+M.RESUME_INSIDE_M = 60  -- m past the stop line before a guard pause resumes by itself
+M.RESUME_GRACE_S = 5    -- s: the player resumed by hand: no new pause meanwhile
 
 local sqrt, max, min, abs = math.sqrt, math.max, math.min, math.abs
 
@@ -90,16 +96,16 @@ function M.step(g, inp)
     return 'air'
   end
   if not grounded then return 'air' end
-  -- towards either edge at most its cap (a block is far wider than both stop zones, so the two
-  -- bounds never cross)
-  local nvx = max(min(vx, M.cap(x1 - x)), -M.cap(x - x0))
-  local nvy = max(min(vy, M.cap(y1 - y)), -M.cap(y - y0))
-  if abs(nvx - vx) > M.SET_EPS or abs(nvy - vy) > M.SET_EPS then
-    g.holds = g.holds + 1
-    return 'hold', { nvx, nvy }
+  -- towards each edge: the distance past the stop line and the speed towards it
+  local function soon(dEdge, s)
+    return s > M.PAUSE_MIN_SPEED and dEdge - M.STOP_M <= s * M.PAUSE_LEAD_S + 1
   end
   local d = min(x - x0, x1 - x, y - y0, y1 - y)
-  if d <= M.STOP_M + 1 then return 'hold' end -- resting at the wall
+  if soon(x1 - x, vx) or soon(x - x0, -vx) or soon(y1 - y, vy) or soon(y - y0, -vy) then
+    g.holds = g.holds + 1
+    return 'hold', nil, nil, true
+  end
+  if d <= M.STOP_M + 1 then return 'hold' end -- resting at the line
   if d < M.warnDistance(sqrt(vx * vx + vy * vy)) then return 'warn' end
   return 'clear'
 end
@@ -117,16 +123,45 @@ end
 
 -- One frame with the engine: veh (the player's vehicle), box (the collidable area), clock (s).
 -- Returns the mode. Far inside the block nothing is called at all.
+local function simPaused()
+  local sta = rawget(_G, 'simTimeAuthority')
+  return sta and sta.getPause and sta.getPause() or false
+end
+local function simPause(on)
+  local sta = rawget(_G, 'simTimeAuthority')
+  if sta and sta.pause then sta.pause(on) end
+end
+
+-- A guard pause ends: the block followed (the car RESUME_INSIDE_M past the stop line), or the guard is turned off
+-- (the server healthy again: core.lua calls this then).
+function M.release(g)
+  if g.pausedByUs and simPaused() then simPause(false) end
+  g.pausedByUs = nil
+end
+
 function M.update(g, veh, box, clock)
   local p, v = veh:getPosition(), veh:getVelocity()
   local d = min(p.x - box[1], box[3] - p.x, p.y - box[2], box[4] - p.y)
+  if g.pausedByUs then
+    if not simPaused() then                       -- the player resumed: let them drive back inwards
+      g.pausedByUs, g.resumedAt = nil, clock
+    elseif d > M.STOP_M + M.RESUME_INSIDE_M then  -- the block followed
+      M.release(g)
+    else
+      g.mode = 'hold'
+      return g.mode
+    end
+  end
   if d > M.warnDistance(sqrt(v.x * v.x + v.y * v.y)) + M.RAY_MARGIN then
     g.mode = 'clear'
     return g.mode
   end
-  local mode, setV, rescue = M.step(g, { clock = clock, x = p.x, y = p.y, z = p.z, vx = v.x, vy = v.y, box = box,
+  local mode, _, rescue, pause = M.step(g, { clock = clock, x = p.x, y = p.y, z = p.z, vx = v.x, vy = v.y, box = box,
     ground = M.groundBelow(p) })
-  if setV then veh:applyClusterVelocityScaleAdd(-1, 0, setV[1], setV[2], v.z) end
+  if pause and not simPaused() and clock - (g.resumedAt or -math.huge) >= M.RESUME_GRACE_S then
+    simPause(true)
+    g.pausedByUs = true
+  end
   if rescue then
     local dir = veh:getDirectionVector()
     dir = vec3(dir.x, dir.y, 0)

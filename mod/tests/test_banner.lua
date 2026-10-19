@@ -46,9 +46,9 @@ id, level, text = banner.compute(info({ everConnected = true, attempts = 2, edge
 T.check(id == 'lost' and level == 'warn' and text:find('\nNear the edge of the loaded ground', 1, true)
   and text:find('until the BeamNG.Earth server is back', 1, true), 'lost + near the edge: a second line')
 id, level, text = banner.compute(info({ everConnected = true, attempts = 2, edge = 'hold' }), 100)
-T.check(level == 'error' and text:find('\nHeld at the edge of the loaded ground', 1, true), 'held at the edge: error level')
+T.check(level == 'error' and text:find('\nPaused at the edge of the loaded ground', 1, true), 'held at the edge: error level')
 id, level, text = banner.compute(info({ net = 'connected', session = true, everConnected = true, stuck = true, edge = 'hold' }), 100)
-T.check(id == 'edge' and level == 'error' and text == 'Held at the edge of the loaded ground until the BeamNG.Earth server answers terrain requests again',
+T.check(id == 'edge' and level == 'error' and text == 'Paused at the edge of the loaded ground until the BeamNG.Earth server answers terrain requests again (resume to drive back)',
   'connected but not answering terrain: the edge line alone')
 id, _, text = banner.compute(info({ net = 'connected', session = true, everConnected = true, stuck = true }), 100)
 T.check(id == 'ok' and text == '', 'not answering terrain, far from the edge: nothing to say yet')

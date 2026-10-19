@@ -63,7 +63,7 @@ end
 
 local EDGE_TEXT = {
   warn = 'Near the edge of the loaded ground: the car will be held there until the BeamNG.Earth server %s',
-  hold = 'Held at the edge of the loaded ground until the BeamNG.Earth server %s',
+  hold = 'Paused at the edge of the loaded ground until the BeamNG.Earth server %s (resume to drive back)',
 }
 
 -- The state for a set of inputs (pure):

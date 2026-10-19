@@ -6,9 +6,9 @@
 --
 -- A jump of more than JUMP_M in one frame (not explained by the car's own speed, the anchor unchanged: a rebase or
 -- the mod's own teleport moves the frame, not the car) to a place outside the block's collidable area starts a
--- hold: only the player's car is held where it was dropped, at rest (its position set every frame, its velocity
--- zeroed), while the game and the mod run on (the block that follows the player is built and committed as usual;
--- pausing the whole simulation would stop the mod's rebase commits, which move vehicles with physics running).
+-- hold: the game's own pause (simTimeAuthority, core.lua) while the mod runs on (the block that follows the player is
+-- built and committed as usual; a rebase waits for the resume). Holding the car by setting its position every frame
+-- damaged it (2026-10-18).
 -- The hold ends once the committed block covers the car (EDGE_MARGIN inside) and a ray down meets ground there:
 -- the car is set on the ground if the drop point is under it, else let go where it was dropped (a drop from the
 -- air falls, as the game's drop does). MAX_S at most, then it is let go anyway.

@@ -839,12 +839,29 @@ local dropHold = drophold.new()
 local dropHoldFailed = false
 M.dropHoldState = function() return dropHold end      -- (tests, tools)
 
-local function holdCar(veh, x, y, z)
+-- The game's own pause (simTimeAuthority, what the pause key does): holding the car by setting its position every frame
+-- strained it (its damage rose 0 -> 93k in 7 s of holding, the user 2026-10-18: "the hold seems to damage my car",
+-- "can you use the actual pause system"). Resumed only if the hold paused it; the player resuming it ends the hold.
+local function simPause(on)
+  local sta = rawget(_G, 'simTimeAuthority')
+  if sta and sta.pause then sta.pause(on) end
+end
+local function simPaused()
+  local sta = rawget(_G, 'simTimeAuthority')
+  return sta and sta.getPause and sta.getPause() or false
+end
+
+local function setCarAt(veh, x, y, z)
   -- the cluster moves by the reference node: set it where it is relative to the vehicle's position, at the target
   local ref = veh:getRefNodeId()
   local rel = veh:getNodePosition(ref)
   veh:setClusterPosRelRot(ref, x + rel.x, y + rel.y, z + rel.z, 0, 0, 0, 1)
   veh:applyClusterVelocityScaleAdd(ref, 0, 0, 0, 0)
+end
+
+local function endHold(h)
+  if h.pausedByUs and simPaused() then simPause(false) end
+  h.pausedByUs = nil
 end
 
 local function updateDropHold(dt)
@@ -861,11 +878,21 @@ local function updateDropHold(dt)
   local h = dropHold
   if h.active and h.last and h.last.anchorId ~= st.anchorId then drophold.moved(h, pl.x, pl.y, pl.z) end
   local busy = st.placeFrames ~= nil or st.floorZ ~= nil
-  if drophold.observe(h, pl.x, pl.y, pl.z, pl.speed, dt, st.anchorId, box, busy) == 'start' then
-    log('I', 'beamngEarth', string.format('drop hold: the car is %.0f m from the block; held until its ground loads',
+  if not st.paused and drophold.observe(h, pl.x, pl.y, pl.z, pl.speed, dt, st.anchorId, box, busy) == 'start' then
+    log('I', 'beamngEarth', string.format('drop hold: the car is %.0f m from the block; paused until its ground loads',
       box and math.max(box[1] - pl.x, pl.x - box[3], box[2] - pl.y, pl.y - box[4], 0) or -1))
+    if not simPaused() then
+      simPause(true)
+      h.pausedByUs = true
+    end
   end
   if not h.active then return end
+  if h.pausedByUs and not simPaused() then         -- the player resumed: their call
+    drophold.cancel(h)
+    h.pausedByUs = nil
+    log('I', 'beamngEarth', 'drop hold: resumed by the player')
+    return
+  end
   local gz = nil
   if box and drophold.inside(box, h.x, h.y, drophold.EDGE_MARGIN) then
     local ray = rawget(_G, 'castRayStatic')
@@ -878,16 +905,16 @@ local function updateDropHold(dt)
   local serial = st.block and (st.block.cx .. ',' .. st.block.cy .. ',' .. tostring(st.followCount)) or nil
   local building = (st.terrainPending ~= nil or (st.pending ~= nil and not st.pending.ready)) and net.isConnected()
   local act, z = drophold.step(h, st.clock, box, serial, gz, building)
-  if act == nil then
-    holdCar(veh, h.x, h.y, h.z)
-  elseif act == 'place' then
-    holdCar(veh, h.x, h.y, z)
+  if act == nil then return end
+  if act == 'place' then
+    setCarAt(veh, h.x, h.y, z)
     log('I', 'beamngEarth', string.format('drop hold: set on the ground at %.1f', z))
   elseif act == 'timeout' then
-    log('W', 'beamngEarth', 'drop hold: no ground after ' .. drophold.MAX_S .. ' s, the car is let go')
+    log('W', 'beamngEarth', 'drop hold: no ground after ' .. drophold.MAX_S .. ' s, resumed')
   else
-    log('I', 'beamngEarth', 'drop hold: ground loaded, the car is let go')
+    log('I', 'beamngEarth', 'drop hold: ground loaded, resumed')
   end
+  endHold(h)
 end
 
 local function updateSky(dt)
@@ -997,6 +1024,7 @@ local function updateWorld(dt)
   local ga = st.groundAhead
   local gz = ga and ga.anchorId == st.anchorId and st.clock - ga.at <= follow.GROUND_STALE_S and ga.z or nil
   local held = follow.altitudeHold(st.followHeld, pl.z, pl.vz, gz)
+  if dropHold.active then held = false end -- a car dropped high up still needs the block under it (2026-10-18)
   if held ~= st.followHeld then
     st.followHeld = held
     st.followHolds = st.followHolds + (held and 1 or 0)
@@ -1071,7 +1099,15 @@ end
 -- level-start flat block, before any anchor: no server at all).
 local function updateGuard()
   local g = st.guard
-  if guardFailed or serverHealthy() or st.placeFrames or st.paused then
+  -- a rebase / resync ready to commit moves the car with physics running: a guard pause gives way to it (it re-centres
+  -- the block on the car), and no new pause for RESUME_GRACE_S (the commit waits for the next unpaused frame)
+  local p = st.pending
+  if g.pausedByUs and p and p.ready and (p.purpose == 'rebase' or p.purpose == 'resync') then
+    edgeguard.release(g)
+    g.resumedAt = st.clock
+  end
+  -- a guard pause runs on until the car is well inside the (followed) block or the player resumes (edgeguard.update)
+  if not g.pausedByUs and (guardFailed or serverHealthy() or st.placeFrames or st.paused) then
     g.mode = 'off'
     return
   end
@@ -1084,6 +1120,7 @@ local function updateGuard()
   local ok, err = pcall(edgeguard.update, g, veh, box, st.clock)
   if not ok then
     guardFailed, g.mode = true, 'off'
+    pcall(edgeguard.release, g)
     log('E', 'beamngEarth', 'edge guard turned off: ' .. tostring(err))
   end
 end
@@ -1291,11 +1328,12 @@ local function onUpdate(dtReal, dtSim)
 
   updatePlayer(dtReal)
   if st.active then
-    if not st.paused and not dropHoldFailed then
+    if not dropHoldFailed and (not st.paused or dropHold.active) then     -- (it runs on while it paused the game)
       local ok, err = pcall(updateDropHold, dtReal)
       if not ok then          -- never break the frame: off for the session, said once
         dropHoldFailed = true
         drophold.cancel(dropHold)
+        endHold(dropHold)
         log('E', 'beamngEarth', 'drop hold turned off: ' .. tostring(err))
       end
     end
