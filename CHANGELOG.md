@@ -2,6 +2,32 @@
 
 What changed in each release of BeamNG.Earth, newest first.
 
+## 1.5.1 beta (2026-10-19)
+
+### Buildings
+- **Reduced the chance for buildings to spawn floating.** Buildings far from where the map was last centred were
+  placed without the curve of the Earth, so they could float by several metres (about 5 m at 8 km, up to 18 m at
+  15 km). They now use the same ground height as the terrain.
+- **Reduced the chance of gaps under distant buildings.** Their walls now reach a few metres below the ground,
+  which hides gaps where the distant terrain is less detailed.
+
+### Update notice
+- **The "new version available" notice now stays on screen** in the top-left corner until you choose **Open
+  releases page** or **Dismiss**. Dismiss hides it until the next version comes out.
+- **Open releases page should now open your browser on Linux too.** The world server opens it, because the game's
+  own browser call does nothing in the native Linux version.
+
+### Ready for BeamNG.drive 0.40
+- **The launcher now tells you when a game update has turned your mods off**, and how to turn BeamNG.Earth back
+  on.
+- **The Linux grass patch (gcpatch) is more likely to keep working after a game update.** It can now find its place
+  in a new game version on its own.
+
+### Known issues
+- Same as 1.5.0: bridges are not perfect yet, high-speed driving still stutters while the world loads, and long
+  sessions get more stuttery until you restart the game.
+- Not yet tested with BeamNG.drive 0.40.
+
 ## 1.5.0 (2026-10-18)
 
 The first release out of beta. Big themes: real bridges and tunnels, smoother driving, and credits for every data
