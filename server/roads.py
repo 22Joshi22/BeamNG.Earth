@@ -583,7 +583,10 @@ def _road_specs(feats, urban_fn, widths, left_hand):
             b = feats.coord_off[feats.ring_off[feats.part_off[j + 1]]]
             m = widths(str(feats.ids[j]), feats.lonlat[a:b]) if b > a else None
             dflt = carriageway(sp.cls, sp.kind, True, None, sp.oneway)
-            if m is not None and 0.6 * dflt <= m[0] <= MEASURE_MAX * dflt:
+            # Historic streets can be one shared lane between close building fronts. Rejecting these measurements
+            # kept a default carriageway wider than the street itself.
+            minimum = 3.0 if sp.cls in {"residential", "living_street", "unclassified", "tertiary"} else 0.6 * dflt
+            if m is not None and minimum <= m[0] <= MEASURE_MAX * dflt:
                 out[j] = sp._replace(width=m[0], walk=m[1])
     return out
 

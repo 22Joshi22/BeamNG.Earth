@@ -4,8 +4,9 @@
 Nodes are Overture connectors (named "c<connector id>": the same name in every window and anchor, and shared
 by every segment meeting at a junction) and the simplified shape points between them ("s<segment id>_<k>").
 Each edge carries what the custom map path does not compute (research §2.4): its half width (radius), lanes
-(per direction), one-way direction, speed limit (m/s) and drivability. Positions are in the anchor frame, z the
-ground (elev); the mod clips the graph to the terrain block before using it (the only collidable ground).
+(per direction), one-way direction, driving target (m/s, at most the posted limit) and drivability. Positions
+are in the anchor frame, z the ground (elev); the mod clips the graph to the terrain block before using it
+(the only collidable ground).
 
 Pure given the map cells and elev; deterministic.
 """
@@ -30,19 +31,27 @@ LANE_W_M = 3.3
 SIMPLIFY_M = 0.6            # a shape point is kept where the chord would be off by more than this
 MAX_EDGE_M = 80.0           # long straight edges are split (the AI and the spawner like shorter ones)
 WINDOW_M = 1100.0           # half size of the square around the player the graph covers
+CURVE_ACCEL = 2.0           # m/s^2: comfortable lateral acceleration, a driving target rather than a posted limit
+BRAKE_ACCEL = 2.5           # m/s^2: spread a tight bend's target back along its approaches
+NARROW_M = 5.5              # narrower two-way streets need slower encounters with oncoming traffic
+NARROW_MS = 30.0 / 3.6
+RING_MS = 30.0 / 3.6
+ENTRY_DRIVABILITY = 0.9     # stock AI yields to the ring's 1.0, even on a tangential entry
 
 
-def road_mph(feats, i, spec, mph=True):
-    """The speed limit (mph) of road feature i: the mapped one at its middle, else the class default (capped
-    in town for arterials), or None for a class the AI does not drive. Shared by the graph and the road tiles'
+def road_mph(feats, i, spec, mph=True, at=0.5):
+    """The speed limit (mph) of road feature i at fraction at (default: its middle), else the class default
+    (capped in town for arterials), or None for a class the AI does not drive. Shared by the graph and the road tiles'
     speed signs (furniture.py), so a sign shows what the traffic drives."""
     if spec is None or spec.cls not in DRIVE:
         return None
     speed = feats.rules.get("max_speed_kmh")
     if speed is not None:
         for r in speed.rows(i):
-            if speed.start[r] <= 0.5 <= speed.end[r]:
-                return float(speed.value[r]) / 1.609344
+            if speed.start[r] <= at <= speed.end[r]:
+                value = float(speed.value[r])
+                if math.isfinite(value) and value > 0:
+                    return value / 1.609344
     v = DRIVE[spec.cls][1]
     if not mph and spec.cls in KMH_DEFAULT:
         v = KMH_DEFAULT[spec.cls] / 1.609344
@@ -63,12 +72,38 @@ def _rdp(p, tol):
         d = p[b] - p[a]
         L = math.hypot(*d)
         seg = p[a + 1:b] - p[a]
-        dist = np.abs(seg[:, 0] * d[1] - seg[:, 1] * d[0]) / L if L > 1e-9 else np.hypot(*seg.T)
+        # Distance to the finite chord: an infinite line discarded collinear reversals in hairpins.
+        t = np.clip((seg @ d) / (L * L), 0, 1) if L > 1e-9 else np.zeros(len(seg))
+        dist = np.hypot(*(seg - t[:, None] * d).T)
         k = int(dist.argmax())
         if dist[k] > tol:
             keep[a + 1 + k] = True
             stack += [(a, a + 1 + k), (a + 1 + k, b)]
     return np.flatnonzero(keep)
+
+
+def _speed_profile(xy, width, oneway, limit=math.inf):
+    """Advisory speeds at graph points. Both directions can brake before a bend; legal limits stay in road_mph.
+    No curve is invented between separate roads, and straight wide roads keep their original target."""
+    target = min(limit, NARROW_MS) if not oneway and width < NARROW_M else limit
+    v2 = np.full(len(xy), target * target, np.float64)
+    lengths = np.hypot(*np.diff(xy, axis=0).T)
+    if len(xy) > 2:
+        a, b = np.diff(xy, axis=0)[:-1], np.diff(xy, axis=0)[1:]
+        la, lb = lengths[:-1], lengths[1:]
+        chord = np.hypot(*(a + b).T)
+        cross = np.abs(a[:, 0] * b[:, 1] - a[:, 1] * b[:, 0])
+        radius = np.full(len(a), np.inf)
+        bend = cross > 1e-6
+        radius[bend] = la[bend] * lb[bend] * chord[bend] / (2 * cross[bend])
+        reversal = (~bend) & ((a * b).sum(1) < 0)
+        radius[reversal] = 0.0
+        v2[1:-1] = np.minimum(v2[1:-1], np.maximum((10 / 3.6) ** 2, CURVE_ACCEL * radius))
+    for j in range(1, len(xy)):
+        v2[j] = min(v2[j], v2[j - 1] + 2 * BRAKE_ACCEL * lengths[j - 1])
+    for j in range(len(xy) - 2, -1, -1):
+        v2[j] = min(v2[j], v2[j + 1] + 2 * BRAKE_ACCEL * lengths[j])
+    return np.sqrt(v2)
 
 
 def driving_width(spec):
@@ -120,7 +155,7 @@ def build(frame, feats_list, elev, centre, urban_fn=None, window=WINDOW_M, decks
     bridge all along are in the graph (road_specs leaves them to the bridge builder). widths: the road tiles'
     measured street widths (roadwidth.py), so the AI's lanes are on the carriageway the road mesh draws."""
     cx, cy = centre
-    nodes, edges, seen = {}, [], set()
+    nodes, edges, edge_fids, seen = {}, [], [], set()
     prop_arms = {}          # connector name -> [(fid, spec, unit vector away, point, end, length)] (the props' view)
     ring_cands = []         # the roads the road tiles draw (fid, spec, pts, None): roundabout rings (islands.ring_fids)
     approaches = {}         # (connector, fid, end) -> (graph node next to it, traffic comes in)
@@ -150,7 +185,8 @@ def build(frame, feats_list, elev, centre, urban_fn=None, window=WINDOW_M, decks
                 continue
             e, n, _ = frame.geodetic_to_enu(ll[:, 1], ll[:, 0], 0.0)
             p = np.stack([e, n], 1)
-            if (np.abs(p[:, 0] - cx).min() > window + 200) or (np.abs(p[:, 1] - cy).min() > window + 200):
+            if (p[:, 0].max() < cx - window - 200 or p[:, 0].min() > cx + window + 200 or
+                    p[:, 1].max() < cy - window - 200 or p[:, 1].min() > cy + window + 200):
                 continue
             if rspecs[i] is not None:
                 ring_cands.append((fid, rspecs[i], np.column_stack([p, np.zeros(len(p))]), None))
@@ -181,21 +217,32 @@ def build(frame, feats_list, elev, centre, urban_fn=None, window=WINDOW_M, decks
             if con is not None:
                 for r in con.rows(i):
                     marks[round(float(con.start[r]) * L, 2)] = "c" + str(con.value[r])
-            for k in _rdp(p, SIMPLIFY_M):
+            w = driving_width(spec)
+            # A narrow street gets the stock game's ~20 cm precision instead of a 60 cm corner cut.
+            tolerance = min(SIMPLIFY_M, max(0.1, w * 0.035))
+            for k in _rdp(p, tolerance):
                 sk = round(float(s[k]), 2)
-                if not any(abs(sk - m) < 1.0 for m in marks):
+                if not any(abs(sk - m) < 0.05 for m in marks):
                     marks[sk] = f"s{fid}_{k}"
             if 0.0 not in marks and not any(m < 1.0 for m in marks):
                 marks[0.0] = f"s{fid}_0"
             if not any(m > L - 1.0 for m in marks):
                 marks[round(L, 2)] = f"s{fid}_{len(p) - 1}"
+            # A speed limit may change inside an Overture segment. Keep its boundaries in the graph.
+            if speed is not None:
+                for r in speed.rows(i):
+                    for at in (float(speed.start[r]), float(speed.end[r])):
+                        sk = round(at * L, 2)
+                        if 0 < at < 1 and not any(abs(sk - m) < 0.01 for m in marks):
+                            marks[sk] = f"s{fid}_v{int(round(at * 1e6))}"
             order = sorted(marks)
             full = []
             for a, b in zip(order[:-1], order[1:]):
                 full.append(a)
                 gap = b - a
-                if gap > MAX_EDGE_M:
-                    m = int(math.ceil(gap / MAX_EDGE_M))
+                max_edge = min(MAX_EDGE_M, max(12.0, 8 * w))
+                if gap > max_edge:
+                    m = int(math.ceil(gap / max_edge))
                     for j in range(1, m):
                         sj = round(a + gap * j / m, 2)
                         marks[sj] = f"s{fid}_{int(round(sj * 10))}d"
@@ -204,10 +251,8 @@ def build(frame, feats_list, elev, centre, urban_fn=None, window=WINDOW_M, decks
             xy = np.stack([np.interp(full, s, p[:, 0]), np.interp(full, s, p[:, 1])], 1)
             names = [marks[v] for v in full]
             # this road's edge attributes
-            w = driving_width(spec)       # the AI's lanes and radius: not the parking lanes
             mid = 0.5
             driv = DRIVE[spec.cls][0]
-            v = road_mph(feats, i, spec, mph) * MPH
             direction = 0
             if ow is not None:
                 for r in ow.rows(i):
@@ -216,6 +261,7 @@ def build(frame, feats_list, elev, centre, urban_fn=None, window=WINDOW_M, decks
             if direction == 0 and spec.oneway and spec.dir:     # a divided road's carriageway (roads.dual_carriageways)
                 direction = int(spec.dir)
             lo, li = _lanes(w, direction != 0)
+            profile = _speed_profile(xy, w, direction != 0)
             # this road's approaches at its two ends (the graph node next to the junction, whether traffic comes in)
             for end in (0, -1):
                 j, nb = (0, 1) if end == 0 else (len(names) - 1, len(names) - 2)
@@ -236,7 +282,25 @@ def build(frame, feats_list, elev, centre, urban_fn=None, window=WINDOW_M, decks
                     if nm not in nodes and nm not in pending:
                         pending[nm] = (float(q[0]), float(q[1]))
                         node_fid[nm] = fid
-                edges.append([a, b, 1 if direction else 0, lo, li, round(v, 2), driv, round(w / 2, 2)])
+                legal = road_mph(feats, i, spec, mph, at=(full[j] + full[j + 1]) / (2 * L)) * MPH
+                target = min(legal, float(profile[j]), float(profile[j + 1]))
+                edges.append([a, b, 1 if direction else 0, lo, li, round(target, 2), driv, round(w / 2, 2)])
+                edge_fids.append(fid)
+    import islands
+    ring = islands.ring_directions(ring_cands, left_hand)
+    ring_nodes = {nm for fid, e in zip(edge_fids, edges) if fid in ring for nm in e[:2]}
+    for fid, e in zip(edge_fids, edges):
+        if fid in ring:
+            if not e[2]:             # a mapped one-way takes precedence over inferred circulation
+                if ring[fid] < 0:
+                    e[0], e[1] = e[1], e[0]
+                e[2] = 1
+                e[3], e[4] = _lanes(e[7] * 2, True)
+            e[5], e[6] = min(e[5], round(RING_MS, 2)), 1.0
+        elif any(nm in ring_nodes for nm in e[:2]):
+            # Yield through the stock AI's priority mechanism, not action 4 (which it ignores).
+            e[6] = min(e[6], ENTRY_DRIVABILITY)
+            e[5] = min(e[5], round(RING_MS, 2))
     # keep the edges with both ends in the window; z of their nodes from the ground
     inside = {nm for nm, (x, y) in pending.items() if abs(x - cx) <= window and abs(y - cy) <= window}
     edges = [e for e in edges if e[0] in inside and e[1] in inside]
@@ -257,8 +321,7 @@ def build(frame, feats_list, elev, centre, urban_fn=None, window=WINDOW_M, decks
                 radius[nm] = max(radius.get(nm, 0.0), e[7])
         for nm, x, y, z in zip(used, X, Y, Z):
             nodes[nm] = [round(float(x), 2), round(float(y), 2), round(float(z), 2), radius[nm]]
-    import islands
-    signals = _signals(prop_arms, approaches, nodes, left_hand, islands.ring_fids(ring_cands))
+    signals = _signals(prop_arms, approaches, nodes, left_hand, set(ring))
     # one edge per node pair (two segments joining the same connectors: keep the first)
     uniq, pairs = [], set()
     for e in edges:
@@ -291,7 +354,8 @@ def _signals(arms, approaches, nodes, left_hand=False, ring=None):
     for name, a in arms.items():
         if name not in nodes or len(a) < 3 or not all(x[1].urban for x in a):
             continue
-        put = furniture.junction_controls(farms[name], None, link_ok, ring=ring)
+        put = [(arm, what) for arm, what in furniture.junction_controls(farms[name], None, link_ok, ring=ring)
+               if what != furniture.G_YIELD]    # give-way uses edge priority; a stop controller would force a stop
         if not put:
             continue
         kind = "signal" if put[0][1] == furniture.G_SIGNAL else "stop"
