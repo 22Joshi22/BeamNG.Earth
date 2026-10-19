@@ -310,7 +310,7 @@ class RestartDriveTest(unittest.TestCase):
         frames = {}
         st = {"c": None, "session": None, "anchor": None, "block": None, "tp": None, "pending": None, "next": 1,
               "clock": 0.0, "pose_t": 0.0, "error_at": None, "t_lat": None, "wall": None, "phase": "start",
-              "anchor_session": None, "resync": False}
+              "anchor_session": None, "resync": False, "guard_paused": False}
         player = {"p": [0.0, 0.0, 0.0], "v": [0.0, 0.0], "want": 0.0}
         guard = modsim.EdgeGuard()
         stats = {"holes": [], "vanished": [], "unhealthy": {}, "guard_modes": {}, "edge_min": math.inf,
@@ -413,22 +413,31 @@ class RestartDriveTest(unittest.TestCase):
             elif st["c"] is not None:
                 pump(time.monotonic())
             x, y, z = player["p"]
-            # the driver holds its speed east (the throttle); the guard caps it below
+            # the driver holds its speed east (the throttle); the guard pauses the game before the edge
             if player["want"] > 0:
                 player["v"] = [player["want"], 0.0]
             ok = healthy()
             stats["unhealthy"].setdefault(st["phase"], 0)
             if not ok:
                 stats["unhealthy"][st["phase"]] += 1
+            elif st["guard_paused"]:
+                st["guard_paused"] = False      # core.lua: the server healthy again releases the guard's pause
             if st["anchor"] is not None and not ok and st["block"] is not None:
                 # core.lua updateGuard: only while the server cannot move the block; on the ground (0.5 m)
                 box = modsim.ground_box(*st["block"], SIZE)
                 inside = box[0] <= x <= box[2] and box[1] <= y <= box[3]
-                mode, setv, _ = guard.step(st["clock"], x, y, z, *player["v"], box, 0.5 if inside else None)
+                d = min(x - box[0], box[2] - x, y - box[1], box[3] - y)
+                if st["guard_paused"] and d > EDGE["STOP_M"] + EDGE["RESUME_INSIDE_M"]:
+                    st["guard_paused"] = False  # edgeguard.update: the block followed
+                if st["guard_paused"]:
+                    mode = "hold"               # edgeguard.update: paused by the guard, no step
+                else:
+                    mode, _, _, pause = guard.step(st["clock"], x, y, z, *player["v"], box, 0.5 if inside else None)
+                    st["guard_paused"] = pause
                 stats["guard_modes"].setdefault(st["phase"], {}).setdefault(mode, 0)
                 stats["guard_modes"][st["phase"]][mode] += 1
-                if setv is not None:
-                    player["v"] = list(setv)
+            if st["guard_paused"]:
+                player["v"] = [0.0, 0.0]        # the game paused: the car does not move
             x, y = x + player["v"][0] * DT, y + player["v"][1] * DT
             player["p"] = [x, y, z]
             if st["block"] is not None:
@@ -520,8 +529,9 @@ class RestartDriveTest(unittest.TestCase):
         self.assertIsNone(st["c"], "the connection is gone")
         block = st["block"]
         gx1 = modsim.ground_box(*block, SIZE)[2]
-        self.assertLessEqual(player["p"][0], gx1 - EDGE["STOP_M"] + 0.5, "held before the edge")
-        self.assertLess(abs(player["v"][0]), 0.2, "at rest at the wall")
+        self.assertLessEqual(player["p"][0], gx1 - EDGE["STOP_M"] + 0.5, "paused before the edge")
+        self.assertTrue(st["guard_paused"], "the game paused by the guard")
+        self.assertLess(abs(player["v"][0]), 0.2, "not moving while paused")
         modes = stats["guard_modes"]["gap"]
         self.assertGreater(modes.get("warn", 0), 0, modes)
         self.assertGreater(modes.get("hold", 0), 0, modes)

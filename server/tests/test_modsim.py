@@ -158,7 +158,7 @@ def python_edge_trace(steps, seed):
         elif gr < 0.8:
             ground = 3 + rnd() * 6
         z = 1000 + (rnd() - 0.5) * 40
-        mode, setv, rescue = g.step(clock, px, py, z, vx, vy, box, ground)
+        mode, setv, rescue, _ = g.step(clock, px, py, z, vx, vy, box, ground)
         out.append(" ".join(str(v) for v in (
             "E", i, mode, f(setv[0]) if setv else "-", f(setv[1]) if setv else "-",
             f(rescue[0]) if rescue else "-", f(rescue[1]) if rescue else "-", f(rescue[2]) if rescue else "-",
@@ -381,7 +381,7 @@ class ModSimTest(unittest.TestCase):
         for m in ("clear", "warn", "hold", "air"):
             self.assertGreater(modes.count(m), 50, m)
         last = py[-1].split()
-        self.assertGreater(int(last[-2]), 200)          # soft-wall velocity changes
+        self.assertGreater(int(last[-2]), 50)           # guard pauses
         self.assertGreater(int(last[-1]), 50)           # rescues (rate-limited)
         self.assertGreater(sum(1 for ln in py if ln.split()[3] == "-" and ln.split()[2] == "hold"), 50)
 
