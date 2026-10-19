@@ -374,7 +374,9 @@ class MeshTest(unittest.TestCase):
         spec, P = self.check_outward(rect(0, 0, 30, 20), {"class": "retail", "height": 9.0})
         self.assertAlmostEqual(P[:, 2][P[:, 2] < 9.5].max(), 9.0 + bld.CORNICE_UP_M)
         self.assertGreater(P[:, 2].max(), 10.0, "boxes on a 600 m2 flat roof")
-        self.assertAlmostEqual(P[:, 2].min(), -bld.FOUNDATION_M)
+        # the walls reach SKIRT_M under the ground (hidden; fills the gap where the far field's coarse ground runs lower)
+        self.assertAlmostEqual(P[:, 2].min(), -bld.SKIRT_M)
+        self.assertAlmostEqual(bld.build([(spec, 0.0, 0.0)], lite=True)[0][:, 2].min(), -bld.SKIRT_LITE_M)
 
     def test_gabled_and_hipped(self):
         for shape in ("gabled", "hipped"):

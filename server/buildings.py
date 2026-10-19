@@ -26,6 +26,14 @@ import staging
 FLOOR_M = 3.0               # m per storey (residential)
 GROUND_FLOOR_SHOP_M = 4.2   # m, a shop's ground floor
 FOUNDATION_M = 0.6          # m the walls reach under the lowest ground of the footprint
+# The walls reach this far under the lowest ground of the footprint (a skirt): beyond the physics block (+-512 m) the
+# ground drawn is the far field's mesh, coarser with distance (tens of metres between vertices at 1-2 km), which on any
+# slope runs metres under the heights the buildings stand on: they floated (the user, 2026-10-18: "houses and
+# buildings in many parts of the world are floating"). Under a correct ground the skirt is hidden; the floors stay
+# where they were (anchored at the eaves, the rest a plain plinth). The lite mesh (far tiles, a near tile's distant
+# detail) stands on the coarsest ground: the deepest skirt.
+SKIRT_M = 3.0
+SKIRT_LITE_M = 10.0
 MIN_AREA_M2 = 12.0          # footprints smaller than this are skipped (kiosks, sheds' slivers)
 MAX_VERTS = 64              # footprints with more vertices are simplified until under this
 SIMPLIFY_M = 0.35           # m: vertices closer than this to the line of their neighbours are dropped
@@ -1495,7 +1503,7 @@ def build(specs_and_ground, lite=False):
         mh = spec.min_h or 0.0
         if spec.deck and not lite and _parking_deck(m, spec, gmin, gmax, mat_idx):
             continue
-        z0 = gmin - FOUNDATION_M if mh <= 0.5 else base_z(spec, gmin, gmax) + mh
+        z0 = gmin - (SKIRT_LITE_M if lite else SKIRT_M) if mh <= 0.5 else base_z(spec, gmin, gmax) + mh
         z_eave = base_z(spec, gmin, gmax) + mh + spec.height
         _walls(m, spec, ring, z0, z_eave, mat_idx, lite)
         if mh > 0.5:                                  # a part standing on another / over a street: its underside
