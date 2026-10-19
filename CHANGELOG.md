@@ -62,5 +62,8 @@ source.
 - The Windows .exe triggers fewer antivirus false positives.
 
 ### Known issues
+- Bridges are much better but not perfect yet.
+- Houses and buildings float above the ground in many parts of the world.
+- High-speed driving still stutters while the world loads around you.
 - A long session (about an hour of driving and teleporting) gets steadily more stuttery. Restarting the game
   clears it. The cause is being investigated (GPU memory fragmentation is the main suspect).
