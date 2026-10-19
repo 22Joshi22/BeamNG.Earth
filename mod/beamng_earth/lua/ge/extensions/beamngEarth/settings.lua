@@ -66,6 +66,8 @@ M.SCHEMA = {
   devMapKm = { kind = 'number', default = 10, min = 1, max = 80, label = 'Dev mini-map radius (km)' },
   -- not on the page (not in ORDER): the welcome version last shown (EarthWelcome.vue)
   welcomeSeen = { kind = 'number', default = 0, min = 0, max = 1000, label = 'Welcome page seen (version)' },
+  -- not on the page: the newer version whose update notice the player dismissed (core.lua drawUpdateNotice)
+  updateDismissed = { kind = 'string', default = '', maxLen = 40, label = 'Update notice dismissed (version)' },
 }
 M.ORDER = { 'rebaseDistance', 'viewDistanceMode', 'viewDistanceKm', 'hazeStrength', 'skyMode', 'clouds',
   'weatherMode', 'realGravity', 'groundCover', 'groundCoverDensity', 'roads', 'hudVisible', 'statusBar',
@@ -73,7 +75,7 @@ M.ORDER = { 'rebaseDistance', 'viewDistanceMode', 'viewDistanceKm', 'hazeStrengt
   'creditsCorner', 'creditsSize', 'cacheCapGb', 'devOutlineKm', 'devMapKm' }
 
 -- Stored but not on the settings page
-M.HIDDEN = { welcomeSeen = true }
+M.HIDDEN = { welcomeSeen = true, updateDismissed = true }
 
 -- Old values that still load (and set) as their replacement, without a warning: 'auto' weather
 -- (real unless BWM_Weather was changing the weather) is Real now, which switches itself to Manual
@@ -103,6 +105,9 @@ function M.validate(key, v)
     local n = tonumber(v)
     if not n or n ~= n or n == math.huge or n == -math.huge then return nil, key .. ': not a number' end
     return math.max(s.min, math.min(s.max, n))
+  elseif s.kind == 'string' then
+    if type(v) ~= 'string' and type(v) ~= 'number' then return nil, key .. ': not a string' end
+    return tostring(v):sub(1, s.maxLen or 200)
   elseif s.kind == 'bool' then
     if v == true or v == 'true' or v == 1 then return true end
     if v == false or v == 'false' or v == 0 then return false end

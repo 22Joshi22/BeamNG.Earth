@@ -2122,7 +2122,8 @@ def tile_buildings(frame, x0, y0, x1, y1, layers, elev, water=None, part_layers=
     if bridges_xy or decks:             # a road bridge through a building: a passage (Tower Bridge's towers and gate)
         def ground_at(c):
             la, lo, _ = frame.enu_to_geodetic(float(c[0]) + x0, float(c[1]) + y0, 0.0)
-            return float(np.asarray(elev(np.array([float(la)]), np.array([float(lo)])), np.float64)[0])
+            z = float(np.asarray(elev(np.array([float(la)]), np.array([float(lo)])), np.float64)[0])
+            return float(frame.geodetic_to_enu(float(la), float(lo), z)[2])       # (the decks' frame up)
         rings, attrs, looks, mins = _passages(rings, attrs, looks, mins, bridges_xy, decks, ground_at)
     shared = _shared_walls(rings)
     cover = sum(_area2(r) / 2 for r, mh in zip(rings, mins) if mh <= 0.5) / ((x1 - x0) * (y1 - y0))
@@ -2149,6 +2150,10 @@ def tile_buildings(frame, x0, y0, x1, y1, layers, elev, water=None, part_layers=
         g = np.asarray(elev(la, lo), np.float64)
         if not np.all(np.isfinite(g)):
             continue
+        # heights above the ellipsoid -> the anchor frame's up (the Earth's curvature, as the terrain and the roads):
+        # without it a building stood (d^2 / 2R) over the ground at d from the anchor's origin, 5 m at 8 km, up to
+        # 18 m at the 15 km rebase distance (the user, 2026-10-18 at Santa Maria Val Muestair: floating houses)
+        g = np.asarray(frame.geodetic_to_enu(la, lo, g)[2], np.float64)
         if water is not None:
             c = ring.mean(0)
             cla, clo, _ = frame.enu_to_geodetic(c[0] + x0, c[1] + y0, 0.0)

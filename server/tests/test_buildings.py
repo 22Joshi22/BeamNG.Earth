@@ -666,3 +666,22 @@ class StoopTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class CurvatureTest(unittest.TestCase):
+    def test_ground_in_the_anchor_frame(self):
+        # 8 km from the anchor's origin the ground (h = 100 m everywhere) lies d^2 / 2R = ~5 m lower in the frame, as the
+        # terrain and the roads have it: the building stands on that (it floated 5 m, Santa Maria Val Muestair 2026-10-18)
+        import geodesy
+        f = geodesy.EnuFrame(46.53, 10.45)
+        x0, y0 = 0.0, 8000.0
+
+        def ll(x, y, w, d):
+            e = np.array([x, x + w, x + w, x, x]) + x0; n = np.array([y, y, y + d, y + d, y]) + y0
+            la, lo, _ = f.enu_to_geodetic(e, n, 0.0)
+            return np.stack([lo, la], 1)
+        b = Feats(["B"], [ll(10, 10, 20, 15)], **{"class": ["house"], "height": [8.0]})
+        items = bld.tile_buildings(f, x0, y0, x0 + 256, y0 + 256, [b], lambda la, lo: np.full(np.shape(la), 100.0))
+        (spec, gmin, gmax), = items
+        r = np.hypot(x0 + 20, y0 + 17)
+        self.assertAlmostEqual(gmin, 100.0 - r * r / (2 * 6371000.0), delta=0.2)
