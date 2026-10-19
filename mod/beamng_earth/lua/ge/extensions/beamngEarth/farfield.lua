@@ -188,6 +188,23 @@ function M.folderOf(path)
   return type(path) == 'string' and path:match('^/temp/beamngEarth/([^/]+)/') or nil
 end
 
+-- folderOf memoised for heldSessions, which runs on every pose (2 Hz) over every material's texture: ~11k
+-- string matches cost ~8 ms a pose at 100 mph in Manhattan (2026-10-18); a lookup per path instead. Cleared when it
+-- grows past FOLDER_MEMO_MAX paths (a long session's dropped tiles).
+local FOLDER_MEMO_MAX = 60000
+local folderMemo, folderMemoN = {}, 0
+local function folderOfMemo(path)
+  local f = folderMemo[path]
+  if f == nil then
+    f = M.folderOf(path) or false
+    if type(path) == 'string' then
+      if folderMemoN >= FOLDER_MEMO_MAX then folderMemo, folderMemoN = {}, 0 end
+      folderMemo[path], folderMemoN = f, folderMemoN + 1
+    end
+  end
+  return f or nil
+end
+
 local function deleteById(id)
   local o = scenetree.findObjectById(id)
   if o then o:delete() end
@@ -1399,14 +1416,14 @@ function M.heldSessions()
   local set = {}
   for _, tbl in ipairs({ pending, live, old }) do
     for _, inst in pairs(tbl) do
-      local f = inst.id and M.folderOf(inst.shape)
+      local f = inst.id and inst.shape and folderOfMemo(inst.shape)
       if f then set[f] = true end
     end
   end
   for _, f in pairs(doomedFolder) do if f then set[f] = true end end
   for _, sp in pairs(spares) do if sp.folder then set[sp.folder] = true end end
   satmat.eachTexture(function(tex)
-    local f = M.folderOf(tex)
+    local f = tex and folderOfMemo(tex)
     if f then set[f] = true end
   end)
   local out = {}

@@ -325,9 +325,9 @@
         "roughnessFactor": 0.9,
         "metallicFactor": 0,
         "baseColorFactor": [
-          0.92,
-          0.88,
-          0.86,
+          0.7,
+          0.55,
+          0.5,
           1
         ]
       },
@@ -349,6 +349,60 @@
         "normalMap": "/assets/materials/tileable/brick/stone_brick_irregular/t_stone_brick_irregular_nm.normal.png",
         "roughnessMap": "/assets/materials/tileable/brick/stone_brick_irregular/t_stone_brick_irregular_r.data.png",
         "ambientOcclusionMap": "/assets/materials/tileable/brick/stone_brick_irregular/t_stone_brick_irregular_ao.data.png",
+        "metallicFactor": 0,
+        "baseColorFactor": [
+          1,
+          1,
+          1,
+          1
+        ],
+        "vertColor": true
+      },
+      {},
+      {},
+      {}
+    ],
+    "translucent": false
+  },
+  "bne_bld_marble": {
+    "name": "bne_bld_marble",
+    "mapTo": "bne_bld_marble",
+    "class": "Material",
+    "version": 1.5,
+    "persistentId": "94a751bd-8e62-5646-be56-5c31f71bb9bc",
+    "Stages": [
+      {
+        "baseColorMap": "/assets/materials/tileable/stone/m_marble_cut/t_marble_cut_b.color.png",
+        "normalMap": "/assets/materials/tileable/stone/m_marble_cut/t_marble_cut_nm.normal.png",
+        "roughnessMap": "/assets/materials/tileable/stone/m_marble_cut/t_marble_cut_r.data.png",
+        "ambientOcclusionMap": "/assets/materials/tileable/stone/m_marble_cut/t_marble_cut_ao.data.png",
+        "metallicFactor": 0,
+        "baseColorFactor": [
+          1,
+          1,
+          1,
+          1
+        ],
+        "vertColor": true
+      },
+      {},
+      {},
+      {}
+    ],
+    "translucent": false
+  },
+  "bne_bld_brick": {
+    "name": "bne_bld_brick",
+    "mapTo": "bne_bld_brick",
+    "class": "Material",
+    "version": 1.5,
+    "persistentId": "b90de9cb-aaa2-557f-a46d-beb6b54c03cc",
+    "Stages": [
+      {
+        "baseColorMap": "/assets/materials/tileable/brick/brick_plain/t_bricks_red_01_b.color.png",
+        "normalMap": "/assets/materials/tileable/brick/brick_plain/t_bricks_red_01_nm.normal.png",
+        "roughnessMap": "/assets/materials/tileable/brick/brick_plain/t_bricks_red_01_r.data.png",
+        "ambientOcclusionMap": "/assets/materials/tileable/brick/brick_plain/t_bricks_red_01_ao.data.png",
         "metallicFactor": 0,
         "baseColorFactor": [
           1,

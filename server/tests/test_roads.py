@@ -6,6 +6,7 @@ import json
 import os
 import sys
 import tempfile
+import math
 import unittest
 
 import numpy as np
@@ -341,6 +342,24 @@ class BuildTileTest(unittest.TestCase):
             shape = cdae.read(os.path.join(d, "walks_1_0_0.cdae"))
             self.assertEqual([m["name"] for m in shape["materials"]], list(sidewalks.MATERIALS))
 
+    def test_acute_corner_is_rounded(self):
+        # two streets leaving a junction 30 degrees apart (a triangular block's tip, Fells Point, report #46): a curb
+        # return round the tip, not the sidewalks meeting in a wedge
+        import junctions
+        X = (120.0, 120.0)
+        c30 = (120 + 180 * math.cos(math.radians(30)), 120 + 180 * math.sin(math.radians(30)))
+        arms = [[X, (300, 120)], [X, c30], [X, (-60, 120)]]
+        f = features(arms, ["residential"] * 3)
+        walks = []
+        roads.build_tile(FRAME, 0, 0, [f], flat, lambda la, lo: np.ones(np.shape(la), bool), walks=walks)
+        corners = [w["corner"] for w in walks if "corner" in w]
+        tips = [c for c in corners if np.mean(c["arc"][:, 1]) > 120 and np.mean(c["arc"][:, 0]) > 125
+                and np.mean(c["arc"][:, 1]) < 120 + (np.mean(c["arc"][:, 0]) - 120) * 0.6]
+        self.assertEqual(len(tips), 1, "the tip has its curb return")
+        arc = tips[0]["arc"][:, :2]
+        self.assertLess(float(np.hypot(*(arc - np.array(X)).T).min()), 40.0)
+        self.assertLessEqual(junctions.ACUTE_R_MIN, junctions.RADII["residential"])
+
     def test_junction_short_connector_no_corner_on_roads(self):
         import junctions
         # two parallel streets joined by an 8 m connector (two junctions 8 m apart): no curb return
@@ -397,6 +416,21 @@ class BuildTileTest(unittest.TestCase):
         self.assertTrue(any(c["m"] == roads.SIDEWALK["m"] for c in chunks), "cobbled city streets keep sidewalks")
         self.assertFalse(any(c["m"].startswith("line_") for c in chunks), "no lines painted on cobbles")
 
+    def test_tower_passages_stay_bridge(self):
+        """Tower Bridge: level 1 over 0.03-0.88, flags bridge / tunnel (through a tower, ~10 m) / bridge / tunnel /
+        bridge: one bridge (the touching ranges merged, tunnel winning, made it a tunnel left out under water)."""
+        fl = [(0, "is_bridge", 0.03, 0.34), (0, "is_tunnel", 0.34, 0.37), (0, "is_bridge", 0.37, 0.56),
+              (0, "is_tunnel", 0.56, 0.59), (0, "is_bridge", 0.59, 0.88)]
+        f = features([[(-190, 0), (190, 0)]], ["trunk"], levels=[(0, 1.0, 0.03, 0.88)], flags=fl)
+        (a, b, k), = roads.level_ranges(f, 0)
+        self.assertEqual(k, "bridge")
+        self.assertAlmostEqual(a, 0.03, places=5)
+        self.assertAlmostEqual(b, 0.88, places=5)
+        # a real tunnel next to a bridge stays a tunnel; a level range where no flag is keeps its kind
+        f2 = features([[(-500, 0), (500, 0)]], ["trunk"], levels=[(0, -1.0, 0.0, 0.2)],
+                      flags=[(0, "is_bridge", 0.2, 0.3), (0, "is_tunnel", 0.3, 0.8)])
+        self.assertEqual([k for _, _, k in roads.level_ranges(f2, 0)], ["tunnel", "bridge", "tunnel"])
+
     def test_partial_bridge_kept_and_decked(self):
         # 400 m street; level 1 on 40-60 % of it (a bridge in the middle): ground parts drawn, the
         # bridge part a deck between the two abutments' heights (the ground slopes 5 % east)
@@ -435,6 +469,14 @@ class BuildTileTest(unittest.TestCase):
         self.assertTrue(np.allclose(o[1], [9, 1, 5]), "mitred corner")
         self.assertEqual(roads.centre_colour(-76.6), "line_yellow")
         self.assertEqual(roads.centre_colour(12.5), "line_white")
+        # the Americas' double yellow line; elsewhere one broken white line (the Gotthard road, 2026-10-18)
+        sp = roads.Spec(7.0, "paved", False, "primary", False)
+        line = np.array([[0.0, 0, 5], [100, 0, 5]])
+        us = [lk for lk, w, ln in roads.extras(sp, line, -76.6) if lk["m"] == "line_yellow"]
+        eu = [lk for lk, w, ln in roads.extras(sp, line, 8.6) if lk["m"] in ("line_white", roads.LANE_LINE["m"])
+              and lk is not roads.EDGE_LINE]
+        self.assertEqual(len(us), 2)
+        self.assertEqual([lk["m"] for lk in eu], [roads.LANE_LINE["m"]])
 
     def test_feature_in_two_cells_once_and_deterministic(self):
         f = features([[(-300, 50), (300, 50)]], ["primary"])
@@ -554,6 +596,72 @@ class PaintRoadsTest(unittest.TestCase):
         self.assertEqual(sf.MATERIALS[sf.COBBLE][1], "COBBLESTONE")
         self.assertEqual(sf.DIRT, len(sf.MATERIALS) - 1, "dirt still last")
 
+    def test_a_tunnels_open_section_painted(self):
+        # a 'tunnel' in the map lying open (grading.Grader.open_tunnels): road, not grass (Central Park, 2026-10-17)
+        lat, lon = self.grid()
+        f = features([[(-200, 0), (200, 0)]], ["residential"], flags=[(0, "is_tunnel")])
+        idx = np.full(lat.shape, sf.GRASS, np.uint8)
+        self.assertEqual(int(sf.paint_roads(idx, lat, lon, [f], 2.0)[64, 10]), sf.GRASS, "a tunnel: not painted")
+        la = np.array([LAT, LAT])
+        lo = LON + np.array([-200.0, 200.0]) / M_LON
+        out = sf.paint_roads(idx, lat, lon, [f], 2.0, extra=[(la, lo, roads.Spec(7.0, "paved", False, "residential"))])
+        self.assertEqual(int(out[64, 10]), sf.ASPHALT)
+
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class MedianTest(unittest.TestCase):
+    def test_divided_road_has_a_median(self):
+        # report #48 (Boston Street): the carriageways' inner sides a curbed band and lawn, not two sidewalks
+        sp = roads.Spec(7.0, "paved", True, "secondary", True, 2.5, 1, None, None, 19.0)
+        self.assertTrue(roads.has_median(sp))
+        self.assertEqual(roads.walk_sides(sp), (-1,), "the sidewalk on the outer (right) side only")
+        self.assertEqual(roads.median_side(sp), 1)
+        pts = np.c_[np.arange(0.0, 50.1, 5.0), np.zeros(11), np.zeros(11)]
+        walks = [(lk, w) for lk, w, _ in roads.extras(sp, pts, -76.6) if lk["m"] == roads.SIDEWALK["m"]]
+        self.assertEqual(sorted(w for _, w in walks), [roads.MEDIAN_CURB_W, sp.walk], "a wide median: curb bands")
+        narrow = sp._replace(median=11.0)           # Boston Street: 4.5 m of median, one island curb to curb
+        walks = [w for lk, w, _ in roads.extras(narrow, pts, -76.6) if lk["m"] == roads.SIDEWALK["m"]]
+        self.assertIn(1.85, walks)
+        # two one-way streets a block apart: not a median
+        far = sp._replace(median=60.0)
+        self.assertFalse(roads.has_median(far))
+        self.assertEqual(roads.walk_sides(far), (1, -1))
+
+    def test_median_painted_lawn(self):
+        import surface as sf
+        n = 128
+        rows = np.arange(n)[:, None]
+        cols = np.arange(n)[None, :]
+        lat = LAT + (n / 2 - rows) * 2 / M_LAT + np.zeros((1, n))
+        lon = LON + (cols - n / 2) * 2 / M_LON + np.zeros((n, 1))
+        f = features([[(-200, 0), (200, 0)], [(200, 22), (-200, 22)]], ["secondary", "secondary"])
+        f.attrs["name"] = np.array(["Boston Street", "Boston Street"], object)
+        out = sf.paint_roads(np.full(lat.shape, sf.GRASS, np.uint8), lat, lon, [f], 2.0)
+        self.assertEqual(int(out[64 - 5, 64]), sf.LAWN, "between the carriageways (a wide median): lawn")
+        self.assertEqual(int(out[64, 64]), sf.ASPHALT)
+
+
+class WallRunsTest(unittest.TestCase):
+    def test_one_wall_over_a_wavering_cut(self):
+        cut = np.array([0, 0.5, 2.5, 1.9, 2.2, 1.5, 0.9, 1.0, 2.4, 2.6, 1.3, 0.2, 0, 2.1, 0, 0, 0])
+        w = roads._wall_runs(cut)
+        self.assertTrue(w[2:11].all(), "one wall from 2 to 10 (the 0.9 / 1.0 dip filled)")
+        self.assertFalse(w[:2].any() or w[11:].any(), "no stub for a lone 2.1 m sample")
+
+
+class ViewOrderTest(unittest.TestCase):
+    def test_tiles_in_view_come_first(self):
+        # the camera looks east: a tile 600 m east is built before one 400 m west, the car's own tile first
+        import types
+        import roads as r
+        conn = types.SimpleNamespace(cam={"x": 0.0, "y": 0.0, "fx": 1.0, "fy": 0.0, "fovDeg": 60}, cam_aid=1)
+        key = r.view_key(conn, 1, 128.0, 128.0)
+        want = [(-2, 0), (3, 0), (0, 0)]
+        self.assertEqual(sorted(want, key=key), [(0, 0), (3, 0), (-2, 0)])
+        plain = r.view_key(types.SimpleNamespace(cam=None), 1, 128.0, 128.0)
+        self.assertEqual(sorted(want, key=plain), [(0, 0), (-2, 0), (3, 0)])
+        other = r.view_key(conn, 2, 128.0, 128.0)            # (the camera of another anchor's frame: ignored)
+        self.assertEqual(sorted(want, key=other), [(0, 0), (-2, 0), (3, 0)])

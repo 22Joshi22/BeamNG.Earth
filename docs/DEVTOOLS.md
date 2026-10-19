@@ -41,6 +41,20 @@ player right now, e.g.:
 - The full credit list stays in CREDITS.md and on the settings page.
 - Built after the dev tools branch is merged (shares ui.lua / settings.lua).
 
+### Every source, short names (the user, 2026-10-18)
+- "Show all sources", not only those that ask for credit: besides the tiles' imagery and elevation and the
+  weather, `credits.feature_ids` adds what built the world near the player: the map data's datasets
+  (the cached cells' provenance within 1.5 km once road tiles are shown: OpenStreetMap, Overture,
+  Microsoft's ML buildings, TomTom, Esri, Google, ...; `mapdata.layer_provenance` reads only that entry
+  of the cached file, never fetches), ESA WorldCover (surface on), Meta & WRI canopy (trees shown), NOAA
+  NCEI (sea tiles), FHWA NBI / Wikidata (a typed bridge record near), OurAirports (a runway near) and
+  NGA EGM2008 (real gravity).
+- "Trim the text per source": the overlay names each source by a short name (`credits.SHORT`), once,
+  grouped: `Imagery: USGS, NYS ITS | Elevation: Mapterhorn | Map: Overture Maps, OpenStreetMap, Microsoft
+  | Land cover: ESA WorldCover | Trees: Meta & WRI | Weather: Open-Meteo | Gravity: NGA EGM2008`. The
+  full wordings (`credits.full_label`, CREDITS.md) stay the attribution of record on the settings page.
+- Imagery's leaf-off share ("leafon", a count of other sources' texels) is no source (it showed raw).
+
 ### Built (2026-10-10, merged to main; offline-tested, in-game check pending)
 - **Server** `server/credits.py` + small hooks: `dem.Dem.served` records which provider served each
   DEM tile (Mapterhorn / AWS fallback / none; also when netfetch fails over from Mapterhorn to AWS);
@@ -104,14 +118,15 @@ One or two lines at the top centre of the screen (`beamngEarth/banner.lua`, draw
 say what is wrong with the world server and what the player can do; hidden while all is well, in the
 pause menu and the big map (like the credits overlay), and outside our world (our level, or another
 level after a console teleport).
-- States: `starting` ("looking for the world server", the first 6 s, or connected and waiting for the
-  hello), `noserver` ("World server not running. Start it with:  python3 server/earthd.py   (it will
-  start automatically in a later version)", red), `lost` ("Connection to the world server lost -
-  reconnecting (attempt n)", amber; n = connection attempts since the loss, net.lua), `offline`
-  ("Offline - using cached data (areas never visited have no terrain)", from the server's status
-  note), `degraded` ("World server degraded: <the server's note>"), `recovered` ("World server
-  connected", green, 4 s after a lost or missing server came back; not after a normal start), `ok`
-  (hidden).
+- States: `starting` ("looking for the BeamNG.Earth server on this PC", the first 6 s, or connected and
+  waiting for the hello), `noserver` ("BeamNG.Earth server not running on this PC - start BeamNG.Earth with
+  its launcher (or:  python3 server/earthd.py)", red), `lost` ("Lost the BeamNG.Earth server on this PC -
+  reconnecting (attempt n). Is its launcher window still open?", amber; n = connection attempts since the
+  loss, net.lua), `offline` ("Server OK, internet data sources unreachable - using cached data (areas never
+  visited have no terrain)", from the server's status note), `degraded` ("Server OK, some internet data
+  sources not answering: <the server's note>"), `recovered` ("BeamNG.Earth server connected", green, 4 s
+  after a lost or missing server came back; not after a normal start), `ok` (hidden). Every line says
+  which side is at fault: the program on this PC, or the internet data sources behind it (2026-10-17).
 - The edge guard (`edgeguard.lua`, "Robustness" 2) adds a second line and raises the level: "Near the
   edge of the loaded ground: the car will be held there until the world server is back" (amber),
   "Held at the edge of the loaded ground until the world server is back" (red); "... answers terrain
@@ -122,7 +137,7 @@ level after a console teleport).
   font: `GetFont()` throws in 0.39), measured only when the text or the viewport width changes. An
   imgui error turns it off once (logged), never every frame.
 - Settings page: the same line in a bar under the header (`status.banner` = `core.banner()`:
-  `{ id, level, text, guard }`; text "World server connected" while all is well), coloured by level
+  `{ id, level, text, guard }`; text "BeamNG.Earth server connected" while all is well), coloured by level
   with a left border (a plain div, nothing focusable; no glyphs).
 - Tests: `mod/tests/test_banner.lua` (states, the note parser, the "connected" line, drawing,
   hiding, the error path, no per-frame allocation), `mod/tests/test_core_robustness.lua` (the whole

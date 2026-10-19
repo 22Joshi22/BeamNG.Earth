@@ -176,7 +176,18 @@ def build(aid, lat, lon, hm_zoom, q, cx, cy, size, out_dir, name, ter_name=None)
         z = g.apply(la, lo, z, gradingmod.ROAD_LIFT)
         grade_s[0] += time.perf_counter() - t1
         return z
-    info = heightmap.generate(frame, elev, os.path.join(out_dir, name), cx, cy, q=q, size=size, keep=keep,
+    import roads as roadsmod
+    raw = lambda la, lo: ground(frame, la, lo, _s.dem.sample(la, lo, hm_zoom))     # noqa: E731
+    gen = elev
+    if ter_name is not None and getattr(_s, "md", None) is not None:
+        tun = tunnel_profiles(aid, frame, elev, g)
+        half = size * heightmap.SQUARE / 2
+        cell_fn = lambda key: _s.md.cell(key, layers=("roads",), kind="demand").layers.get("roads")   # noqa: E731
+
+        def gen(la, lo):        # the ground over the low arches raised over their vaults (roads.arch_raise)
+            return roadsmod.block_arch_raise(tun, cell_fn, frame, la, lo, elev(la, lo),
+                                             (cx - half, cy - half, cx + half, cy + half))
+    info = heightmap.generate(frame, gen, os.path.join(out_dir, name), cx, cy, q=q, size=size, keep=keep,
                               chunks=chunks)
     stages = {"heights": time.perf_counter() - t0, "grading": grade_s[0]}
     idx = None
@@ -191,7 +202,7 @@ def build(aid, lat, lon, hm_zoom, q, cx, cy, size, out_dir, name, ter_name=None)
         t1 = time.perf_counter()
         if road_feats:
             idx = surfacemod.paint_roads(idx, keep["lat"], keep["lon"], road_feats, heightmap.SQUARE,
-                                         _s.surface.urban, _s.widths)
+                                         _s.surface.urban, _s.widths, _open_tunnels(g, keep))
         idx = (surfacemod.paint_lots(idx, keep["lat"], keep["lon"], _s.surface.lots(keep["lat"], keep["lon"]))
             if hasattr(_s.surface, "lots") else idx)
         stages["roadPaint"] = time.perf_counter() - t1
@@ -199,8 +210,10 @@ def build(aid, lat, lon, hm_zoom, q, cx, cy, size, out_dir, name, ter_name=None)
         info["surfaceComplete"] = complete and roads_complete
     if ter_name is not None:
         t1 = time.perf_counter()
-        idx = _tunnel_holes(aid, frame, elev, keep, cx, cy, idx, info)
-        info["ter"] = surfacemod.write_ter(out_dir, ter_name, keep["qgrid"], idx)
+        idx = _tunnel_holes(aid, frame, elev, keep, cx, cy, idx, info, g)
+        info["ter"], mats = surfacemod.write_ter(out_dir, ter_name, keep["qgrid"], idx)
+        if mats is not None:          # the .ter's own material list (MATERIALS indices)
+            info["mats"] = mats
         stages["ter"] = time.perf_counter() - t1
     info["stages"] = stages
     return info
@@ -228,9 +241,13 @@ def roads_tile(aid, lat, lon, zoom, tx, ty, out_dir, vfs_dir, sidewalks, lift, b
         if bridges is None:
             bridges = _s.bridges[aid] = roadsmod.BridgeProfiles(
                 frame, lambda key: _s.md.cell(key, layers=("roads",), kind="demand").layers.get("roads"), elev)
+            sea = getattr(_s, "sea", None)
+            bridges.wet = sea.depth if sea is not None else None        # (decks clear the water: roads.water_clear)
+            bridges.infra_fn = lambda key: _s.md.cell(key, layers=("infrastructure",), kind="demand").layers.get(
+                "infrastructure")                                       # (bridge:structure tags: bridgetypes)
             for old in sorted(_s.bridges)[:-ANCHORS_KEPT]:
                 del _s.bridges[old]
-    tunnels = tunnel_profiles(aid, frame, elev)
+    tunnels = tunnel_profiles(aid, frame, elev, g)
     walks = []
     urban = _s.surface.urban if _s.surface is not None else None
     props = [] if buildings else None
@@ -241,25 +258,31 @@ def roads_tile(aid, lat, lon, zoom, tx, ty, out_dir, vfs_dir, sidewalks, lift, b
     if buildings:
         import buildings as buildingsmod
         items = buildingsmod.road_tile_items(frame, tx, ty, _s.md,
-                                             lambda la, lo: ground(frame, la, lo, _s.dem.sample(la, lo, zoom)))
+                                             lambda la, lo: ground(frame, la, lo, _s.dem.sample(la, lo, zoom)),
+                                             decks=_tile_decks(bridges, cells, tx, ty))
         town = buildingsmod.coverage(items) < buildingsmod.POLES_COVERAGE
-    chunks = roadsmod.build_tile(frame, tx, ty, cells, elev, urban, walks=walks, bridges=bridges, widths=_s.widths,
+    rwalls = []
+    ctx = []
+    chunks = roadsmod.build_tile(frame, tx, ty, cells, elev, urban, walks=walks, deck_context=ctx, bridges=bridges, widths=_s.widths,
                                  props=props, lines=lines, wires=wires, town=town, park=park,
                                  left_hand=left_hand, mph=mph, structures=buildingsmod.centres(items, tx, ty) if items else (),
-                                 tunnels=tunnels)
+                                 tunnels=tunnels, walls=rwalls)
     if _s.airports is not None:         # runway markings, drawn by the road mesh like the lane lines
         chunks += _s.airports.tile_chunks(frame, tx, ty, elev, roadsmod.tile_bbox)
     x0, y0, _, _ = roadsmod.tile_bbox(tx, ty)
     if items is not None:               # front doors and shopfronts, driveways into the road mesh
         drives = []
         props.extend(buildingsmod.doors(items, lines, x0, y0, drives))
+        drives.extend(buildingsmod.garage_drives(items, lines, x0, y0))
         chunks += drives
         park = parkingmod.clear_of(park, props, drives)
         park = parkingmod.tile_lot_spots(frame, tx, ty, _s.md, elev, items, park)
         buildingsmod.brick_walks(walks, items, lat, lon)
     mesh = roadmeshmod.build(frame, chunks, elev, (x0, y0, 0.0), lift)
-    dmesh = roadmeshmod.deck(chunks, (x0, y0, 0.0))
-    tmesh = roadmeshmod.tunnel(chunks, (x0, y0, 0.0))
+    mesh = _with_plazas(mesh, frame, tx, ty, elev, (x0, y0, 0.0), getattr(_s, "surface", None))
+    dmesh = roadmeshmod.deck(chunks, (x0, y0, 0.0), bridges.piers_in(roadsmod.tile_bbox(tx, ty)), ctx,
+                              bridges.beams_in(roadsmod.tile_bbox(tx, ty)))
+    tmesh = roadmeshmod.tunnel(chunks, (x0, y0, 0.0), rwalls)
     bld = None
     if buildings:
         import buildings as buildingsmod
@@ -270,14 +293,57 @@ def roads_tile(aid, lat, lon, zoom, tx, ty, out_dir, vfs_dir, sidewalks, lift, b
                                bld, props, wires, park, tunnel_mesh=tmesh)
 
 
-def _tunnel_holes(aid, frame, elev, keep, cx, cy, idx, info):
+def _with_plazas(mesh, frame, tx, ty, elev, origin, surface):
+    """The road mesh with the tile's squares and pedestrian areas paved (plazas.py), from the cached land use (none
+    when it is not cached yet: surface.Surface.lots never waits)."""
+    if surface is None or not hasattr(surface, "lots"):
+        return mesh
+    import plazas
+    import roads as roadsmod
+    try:
+        box = roadsmod.tile_bbox(tx, ty)
+        la, lo, _ = frame.enu_to_geodetic(np.array([box[0], box[2]]), np.array([box[1], box[3]]), np.zeros(2))
+        rings = plazas.polygons(surface.lots(la, lo))
+        return plazas.merge(mesh, plazas.mesh(frame, box, rings, elev, origin)) if rings else mesh
+    except Exception:                   # no plazas rather than no road tile
+        log.exception("plazas of tile %s_%s", tx, ty)
+        return mesh
+
+
+def _tile_decks(bridges, cells, tx, ty):
+    """[(xy (k, 2), z (k,))] of the bridge decks over road tile (tx, ty) (the buildings they run through get a way:
+    buildings.road_tile_items), [] without bridge profiles."""
+    if bridges is None:
+        return []
+    import roads as roadsmod
+    x0, y0, x1, y1 = roadsmod.tile_bbox(tx, ty)
+    try:
+        return [(np.asarray(xy, np.float64)[:, :2], np.asarray(z, np.float64))
+                for _, _, xy, z, _ in bridges.parts(cells, (x0 - 20, y0 - 20, x1 + 20, y1 + 20))]
+    except Exception as e:      # no ways cut rather than no buildings
+        log.debug("tile decks: %s: %s", type(e).__name__, e)
+        return []
+
+
+def _open_tunnels(g, keep):
+    """The tunnels' open sections over a block (grading.Grader.open_tunnels; none without a grader)."""
+    if g is None:
+        return []
+    try:
+        return g.open_tunnels(keep["lat"], keep["lon"])
+    except Exception:
+        log.exception("open tunnel sections")
+        return []
+
+
+def _tunnel_holes(aid, frame, elev, keep, cx, cy, idx, info, g=None):
     """idx with the block's tunnel portals as holes (roads.block_tunnel_holes); info["tunnelHoles"]: how many."""
     import roads as roadsmod
     if getattr(_s, "md", None) is None:     # no map data (roads off): no tunnels
         return idx
     try:
         holes = roadsmod.block_tunnel_holes(
-            tunnel_profiles(aid, frame, elev),
+            tunnel_profiles(aid, frame, elev, g),
             lambda key: _s.md.cell(key, layers=("roads",), kind="demand").layers.get("roads"),
             frame, keep, cx, cy, heightmap.SQUARE)
     except Exception:                   # no holes rather than no block
@@ -291,8 +357,9 @@ def _tunnel_holes(aid, frame, elev, keep, cx, cy, idx, info):
     return idx
 
 
-def tunnel_profiles(aid, frame, elev):
-    """The anchor's roads.TunnelProfiles in this process (road tiles and the block's terrain holes share it)."""
+def tunnel_profiles(aid, frame, elev, g=None):
+    """The anchor's roads.TunnelProfiles in this process (road tiles and the block's terrain holes share it): its
+    ground read at grading.PROFILE_ZOOM (raw; ends: graded by g), as in every other process."""
     import roads as roadsmod
     with _s.lock:
         if getattr(_s, "tunnels", None) is None:        # (a state made without it: tests)
@@ -303,6 +370,9 @@ def tunnel_profiles(aid, frame, elev):
                 frame, lambda key: _s.md.cell(key, layers=("roads",), kind="demand").layers.get("roads"), elev)
             sea = getattr(_s, "sea", None)
             t.wet = sea.depth if sea is not None else None
+            t.raw = lambda la, lo: ground(frame, la, lo, _s.dem.sample(la, lo, gradingmod.PROFILE_ZOOM))  # noqa: E731
+            if g is not None:
+                t.ends = lambda la, lo: g.apply(la, lo, t.raw(la, lo), gradingmod.ROAD_LIFT, roads_only=True)    # noqa: E731
             for old in sorted(_s.tunnels)[:-ANCHORS_KEPT]:
                 del _s.tunnels[old]
         return t

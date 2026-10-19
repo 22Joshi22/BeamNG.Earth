@@ -55,6 +55,15 @@ REGIONAL = {
                    "geoportail.lu orthophoto (CC0)", (49.44, 5.73, 50.19, 6.53), "xyz", False),
     "austria": ("https://maps.wien.gv.at/basemap/bmaporthofoto30cm/normal/google3857/{z}/{y}/{x}.jpeg",
                 "Datenquelle: basemap.at (CC BY 4.0)", (46.37, 9.53, 49.02, 17.16), "xyz", False),
+    # Italy (the user's reports #40 / #44 at the Stelvio Pass, 2026-10-17: "Ground to blurry here", the 10 m Sentinel
+    # mosaic): South Tyrol's 2024 flight (open data, no access constraints) inside its province, then the national
+    # 2012 orthophoto (Geoportale Nazionale, both UTM zones' layers; plain http: its https redirects there) for the
+    # rest of the country
+    "it_bolzano": ("https://geoservices.buergernetz.bz.it/mapproxy/wms?LAYERS=gvcc-Orthoimagery:Aerial-2024-RGB&" + WMS,
+                   "Autonome Provinz Bozen - Suedtirol orthophoto 2024", (46.22, 10.38, 47.10, 12.48), "export", False),
+    "it_pcn": ("http://wms.pcn.minambiente.it/ogc?map=/ms_ogc/WMS_v1.3/raster/ortofoto_colore_12.map&"
+               "LAYERS=OI.ORTOIMMAGINI.2012.32,OI.ORTOIMMAGINI.2012.33&" + WMS,
+               "Geoportale Nazionale (MASE) orthophoto 2012", (35.40, 6.60, 47.10, 18.60), "export", False),
     "czechia": ("https://ags.cuzk.gov.cz/arcgis1/rest/services/ORTOFOTO_WM/MapServer/tile/{z}/{y}/{x}",
                 "(c) CUZK ortofoto (CC BY 4.0)", (48.55, 12.09, 51.06, 18.86), "xyz", False),
     "estonia": ("https://tiles.maaamet.ee/tm/tms/1.0.0/foto@GMC/{z}/{x}/{ty}.jpg", "Ortofoto: Maa-amet",

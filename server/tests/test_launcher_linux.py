@@ -194,3 +194,23 @@ class FlatpakGameProcess(unittest.TestCase):
         with mock.patch.object(launcher, "IS_WIN", False), mock.patch.object(launcher, "game_pids", lambda: []), \
                 mock.patch("builtins.open", mock.mock_open(read_data=listen)):
             self.assertFalse(launcher.game_alive())
+
+
+class ConsoleEcho(unittest.TestCase):
+    def test_only_warnings_errors_tracebacks_and_connected(self):
+        log = ["2026-10-17 07:04:50,488 INFO earthd: session 1 kept\n",
+               "earthd listening on 127.0.0.1:47613 session x\n",
+               "2026-10-17 07:04:55,466 INFO earthd: client connected ('127.0.0.1', 34278)\n",
+               "2026-10-17 07:05:01,000 WARNING earthd.net: net: host: circuit open for 60 s\n",
+               "2026-10-17 07:05:02,000 ERROR earthd: tile failed\n",
+               "Traceback (most recent call last):\n", '  File "dem.py", line 236\n', "dem.DemUnavailable: x\n",
+               "2026-10-17 07:05:03,000 INFO earthd: anchor 1: land cover wait 3.11 s\n",
+               "2026-10-17 07:05:04,000 INFO earthd: client connected ('127.0.0.1', 1)\n"]
+        state = {}
+        out = launcher.echo_lines(log[:4], state) + launcher.echo_lines(log[4:], state)
+        self.assertEqual(out[0], "  Game          connected to the world server")
+        self.assertTrue(out[1].startswith("  server: ") and "WARNING" in out[1])
+        self.assertIn("ERROR", out[2])
+        self.assertEqual([o.strip() for o in out[3:6]], ["server: Traceback (most recent call last):",
+                                                         'server:   File "dem.py", line 236', "server: dem.DemUnavailable: x"])
+        self.assertEqual(len(out), 6, "no INFO lines, 'connected' once")

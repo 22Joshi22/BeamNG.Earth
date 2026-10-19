@@ -250,6 +250,8 @@ def resolve_view(place, view):
         cfg["alt"] = float(view["alt"])
     else:
         cfg["agl"] = float(view["agl"])
+    if view.get("under"):                       # in a tunnel: on its floor, the lowest flat surface (benchmark.lua)
+        cfg["under"] = True
     cfg["dir"] = camera_dir(heading, pitch)
     return cfg
 

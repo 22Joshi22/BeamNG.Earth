@@ -115,6 +115,8 @@ def plan(frame, x, y, sea_at, radius=None):
 LAKE_RADIUS_M = 2000.0      # lake tiles within this of the player (the far tiles carved: L <= 2)
 LAKE_TILE_MAX = 512.0
 LAKE_TILE_MIN = 64.0
+LAKE_TILE_FLOOR = 16.0      # ... split on to this where land under the water's plane would flood (LAKE_FLOOD_SHARE)
+LAKE_FLOOD_SHARE = 0.05     # a tile's share of samples that may be land under the water's plane
 LAKE_SAMPLES = 24           # samples per tile edge when checking a lake tile
 LAKE_FLOOD_M = 1.0          # land inside a lake tile lower than the lake by more than this splits it
                             # (a valley below a dam; the banks themselves are ~ at the lake's level)
@@ -165,7 +167,7 @@ def plan_lakes(frame, x, y, lake_at, ground_at, radius=None):
         return lat, lon
 
     todo, s = roots, s0
-    while todo and s >= LAKE_TILE_MIN:
+    while todo and s >= LAKE_TILE_FLOOR:
         lat, lon = samples(todo, s)
         lv = np.asarray(lake_at(lat, lon), np.float64).reshape(len(todo), -1)
         has = np.isfinite(lv).any(axis=1)
@@ -185,10 +187,16 @@ def plan_lakes(frame, x, y, lake_at, ground_at, radius=None):
             a, bx, by = _plane(U[wet], V[wet], l[wet])
             fit = np.abs(l[wet] - (a + bx * U[wet] + by * V[wet])).max() <= LEVEL_TOL_M
             plane = a + bx * U + by * V
-            clear = np.all(gr[~wet] >= plane[~wet] - LAKE_FLOOD_M)
-            if (fit and clear) or (s <= LAKE_TILE_MIN and wet.mean() >= 0.5 and fit):
+            low = gr[~wet] < plane[~wet] - LAKE_FLOOD_M  # land under the water's plane: it would flood
+            clear = not low.any()
+            # a tile at least half water may hold a little low land (a shore's noise), but not a trench or a
+            # valley: those split on down to LAKE_TILE_FLOOR (a reservoir's 64 m tile flooded Central Park's
+            # sunken 86th Street Transverse beside it, the user's report 2026-10-17)
+            flooded = low.sum() / low.size if low.size else 0.0
+            if (fit and clear) or (s <= LAKE_TILE_MIN and wet.mean() >= 0.5 and fit
+                                   and (flooded <= LAKE_FLOOD_SHARE or s <= LAKE_TILE_FLOOR)):
                 out.append((x0, y0, s, a, bx, by))
-            elif s > LAKE_TILE_MIN:
+            elif s > LAKE_TILE_FLOOR:
                 h = s / 2
                 nxt += [(x0 + a * h, y0 + b * h) for a in (0, 1) for b in (0, 1)]
         todo, s = nxt, s / 2

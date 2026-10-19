@@ -144,6 +144,9 @@ def place_dir(name):
 
 DRIVE_CLASSES = {"motorway", "trunk", "primary", "secondary", "tertiary", "residential", "unclassified",
                  "living_street", "service"}
+BRIDGE_SNAP_M = 15.0    # a photo this close to a bridge's centreline, heading along it (BRIDGE_ALONG), is on its deck
+BRIDGE_ALONG = 0.9
+TUNNEL_SNAP_M = 40.0
 SNAP_M = 25.0           # a photo inside a building is moved to the nearest road centreline this close
 
 
@@ -157,7 +160,18 @@ def snapper(lat, lon, radius):
     import mapdata
     md = mapdata.MapData()
     d = (radius + 100) / M_PER_DEG
-    blds, roads = [], []
+    blds, roads, bridges, tunnels, others = [], [], [], [], []
+    import roads as roadsmod
+
+    def is_tunnel(f, i):
+        if not hasattr(f, "_bne_tunnels"):
+            f._bne_tunnels = roadsmod.tunnel_specs(f)
+        return f._bne_tunnels[i] is not None
+
+    def is_bridge(f, i):
+        if not hasattr(f, "_bne_bridges"):
+            f._bne_bridges = roadsmod.bridge_specs(f)
+        return f._bne_bridges[i] is not None
     for key in mapcells.cells_for_bbox(lat - d, lon - d, lat + d, lon + d):
         cell = md.cell(key, layers=("buildings", "roads"), kind="demand")
         for layer, out in (("buildings", blds), ("roads", roads)):
@@ -172,10 +186,65 @@ def snapper(lat, lon, radius):
                 b = f.coord_off[f.ring_off[f.part_off[i] + 1]] if layer == "buildings" else \
                     f.coord_off[f.ring_off[f.part_off[i + 1]]]
                 out.append(np.asarray(f.lonlat[a:b], np.float64))
+                if layer == "roads":    # (by their ranges: a segment can be half bridge, half tunnel: Genoa's A10)
+                    if is_bridge(f, i):
+                        bridges.extend(np.asarray(r, np.float64) for r in roadsmod.bridge_parts(f, i) if len(r) >= 2)
+                    if is_tunnel(f, i):
+                        tunnels.extend(np.asarray(r, np.float64) for r in roadsmod.tunnel_parts(f, i) if len(r) >= 2)
+                    others.extend(np.asarray(r, np.float64) for r in roadsmod.ground_parts(f, i) if len(r) >= 2)
     mx = M_PER_DEG * math.cos(math.radians(lat))
 
-    def snap(la, lo):
+    def in_tunnel(la, lo, heading):
+        """(la, lo) on the nearest tunnel line within TUNNEL_SNAP_M heading along it (the photo was shot in the
+        tunnel: GPS drifts there, the Caldecott's were 15-17 m off their bores), else None."""
+        if heading is None:
+            return None
         p = np.array([lo, la])
+        hv = np.array([math.sin(math.radians(heading)), math.cos(math.radians(heading))])
+        best = None
+        for ln in tunnels:
+            q = (ln - p) * [mx, M_PER_DEG]
+            for u, v in zip(q[:-1], q[1:]):
+                w = v - u
+                t = max(0.0, min(1.0, float(-(u @ w) / max(w @ w, 1e-9))))
+                c = u + w * t
+                dd = float(np.hypot(*c))
+                if dd < TUNNEL_SNAP_M and abs(float(hv @ w)) / max(float(np.hypot(*w)), 1e-9) > BRIDGE_ALONG \
+                        and (best is None or dd < best[0]):
+                    best = (dd, c)
+        if best is None:
+            return None
+        # only when no other road is nearer (Tower Bridge's photos, beside the short passages through its towers, were
+        # shot from the Thames' bed)
+        for ln in others + bridges:
+            q = (ln - p) * [mx, M_PER_DEG]
+            for u, v in zip(q[:-1], q[1:]):
+                w = v - u
+                t = max(0.0, min(1.0, float(-(u @ w) / max(w @ w, 1e-9))))
+                if float(np.hypot(*(u + w * t))) < best[0]:
+                    return None
+        return la + best[1][1] / M_PER_DEG, lo + best[1][0] / mx
+
+    def snap(la, lo, heading=None):
+        p = np.array([lo, la])
+        bridge = None       # a photo beside a bridge's deck (its sidewalk, GPS) looking along it: onto it (one under
+                            # it, on a street crossing, looks across)
+        for ln in bridges:
+            q = (ln - p) * [mx, M_PER_DEG]
+            for u, v in zip(q[:-1], q[1:]):
+                w = v - u
+                t = max(0.0, min(1.0, float(-(u @ w) / max(w @ w, 1e-9))))
+                c = u + w * t
+                dd = float(np.hypot(*c))
+                if heading is None or not (dd < BRIDGE_SNAP_M):
+                    continue
+                hv = np.array([math.sin(math.radians(heading)), math.cos(math.radians(heading))])
+                along = abs(float(hv @ w)) / max(float(np.hypot(*w)), 1e-9)
+                if along > BRIDGE_ALONG and (bridge is None or dd < bridge[0]):
+                    bridge = (dd, c)
+        if bridge is not None:
+            c = bridge[1]
+            return la + c[1] / M_PER_DEG, lo + c[0] / mx, round(bridge[0], 1)
         if not any(Path(r).contains_point(p) for r in blds if len(r) >= 4):
             return la, lo, 0.0
         best = None
@@ -192,6 +261,7 @@ def snapper(lat, lon, radius):
             return la, lo, 0.0
         c = best[1]
         return la + c[1] / M_PER_DEG, lo + c[0] / mx, round(best[0], 1)
+    snap.in_tunnel = in_tunnel
     return snap
 
 
@@ -205,7 +275,7 @@ def cmd_fetch(a):
     sys.path.insert(0, os.path.join(ROOT, "server"))
     snap = snapper(a.lat, a.lon, a.radius)
     for im, la, lo, hd in chosen:
-        la, lo, moved = snap(la, lo)
+        la, lo, moved = snap(la, lo, hd)
         fn = f"mly_{im['id']}.jpg"
         path = os.path.join(d, fn)
         if not os.path.exists(path):
@@ -219,6 +289,9 @@ def cmd_fetch(a):
                        "width": im.get("width"), "height": im.get("height"), "snapped_m": moved})
         views.append({"name": f"mly_{im['id']}", "lat": la, "lon": lo, "agl": CAMERA_AGL, "heading": round(hd, 1),
                       "pitch": 0, "fov": round(hfov(im), 1)})
+        on = snap.in_tunnel(la, lo, hd)
+        if on is not None:
+            views[-1].update(lat=on[0], lon=on[1], under=True)
         time.sleep(0.2)
     with open(os.path.join(d, "photos.json"), "w") as f:
         json.dump({"name": a.name, "lat": a.lat, "lon": a.lon, "radius": a.radius, "found": len(images),

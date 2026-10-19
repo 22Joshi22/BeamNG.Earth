@@ -52,6 +52,7 @@ local places = require('beamngEarth/places') -- saved and recent places (the set
 local banner = require('beamngEarth/banner') -- the connection banner (docs/DEVTOOLS.md)
 local hudapps = require('beamngEarth/hudapps') -- the same three as BeamNG UI apps (the ".Earth" app layout)
 local edgeguard = require('beamngEarth/edgeguard') -- never fall off the last block (docs/ROADMAP.md)
+local drophold = require('beamngEarth/drophold') -- a car dropped far away waits for its ground
 local groundcover = require('beamngEarth/groundcover') -- grass on the surface layers (docs/ROADMAP.md v1.5)
 local roads = require('beamngEarth/roads') -- DecalRoads from the server's road tiles (docs/ROADMAP.md v1.6)
 local sea = require('beamngEarth/sea') -- the sea's WaterBlock tiles (server seatiles.py)
@@ -76,6 +77,8 @@ local SKY_INTERVAL = 5.0       -- TimeOfDay lat/lon follow
 local VISIBLE_DISTANCE = 100000
 local LAG_PROBE_FRAMES = 10   -- simulated frames to watch for a rebase's vehicle move to show up
 local PLACE_DELAY_FRAMES = 2   -- let the collision rebuild settle before placing the vehicle
+local FLOOR_WAIT_S = 60        -- s a teleport into a tunnel waits for the tube's floor before giving up (car stays on top)
+local FLOOR_HIT_M = 0.8        -- m the static collision found under floorZ + 2 may differ from floorZ: the tube is there
 local PRE_LIFT = 5             -- m above groundZ + 1 to hold the vehicle until it is placed
 local LOADING_AFTER_TELEPORT_S = 3 -- governor loading mode (8 ms budget) this long after a teleport
 local SLOW_SPEED, SLOW_S = 1, 3    -- ... and while the player is below 1 m/s for over 3 s
@@ -142,6 +145,8 @@ local function resetState()
     status = '',
     placeFrames = nil,       -- countdown to placing the player after a teleport
     placeZ = nil,
+    floorZ = nil,            -- a teleport into a tunnel: its floor (the car moved down once the tube collides)
+    floorUntil = nil,
     poseTimer = 0,
     skyTimer = SKY_INTERVAL,
     autoTeleportDone = false,
@@ -360,6 +365,10 @@ local function commitTeleport(msg)
   st.loadingUntil = st.clock + LOADING_AFTER_TELEPORT_S
   st.placeFrames = PLACE_DELAY_FRAMES
   st.placeZ = (msg.groundZ or 0) + 1.0
+  -- in a tunnel: set down on the ground over it first (placed in the tube before its road tile came, the car fell
+  -- through the world under the one-sided terrain), moved down onto the floor once that collides (2026-10-17)
+  st.floorZ = msg.floorZ
+  st.floorUntil = msg.floorZ and (st.clock + FLOOR_WAIT_S) or nil
   -- The player's old coordinates may now lie anywhere on the new terrain.
   -- Lift it above the new origin in this same frame (velocity zeroed as in spawn.lua:532-534)
   -- so physics never sees that; placePlayer() then sets it down properly.
@@ -526,6 +535,26 @@ local function placePlayer(z)
   dir = vec3(dir.x, dir.y, 0)
   if dir:length() < 1e-3 then dir = vec3(0, 1, 0) end
   spawn.safeTeleport(veh, vec3(0, 0, z), quatFromDir(dir:normalized(), vec3(0, 0, 1)), nil, nil, false, nil, true)
+end
+
+-- A teleport into a tunnel: once a ray down from just over its floor (floorZ) meets collision at the floor (the tube's
+-- road tile is in), the player goes down onto it; after FLOOR_WAIT_S it stays where it is (on the ground over it).
+function M.floorCheck()
+  if st.clock > (st.floorUntil or 0) then
+    st.floorZ, st.floorUntil = nil, nil
+    return
+  end
+  if not roads.settledFor(st.anchorId, 0, 0) then return end
+  local ray = rawget(_G, 'castRayStatic')
+  if not ray then return end
+  local from = vec3(0, 0, st.floorZ + 2)
+  local d = ray(from, vec3(0, 0, -1), 6)
+  if d and math.abs((from.z - d) - st.floorZ) < FLOOR_HIT_M then
+    local z = st.floorZ
+    st.floorZ, st.floorUntil = nil, nil
+    log('I', 'beamngEarth', string.format('teleport: down onto the tunnel floor at %.1f', z))
+    placePlayer(z + 1.0)
+  end
 end
 
 ------------------------------------------------------------------------------------------
@@ -804,6 +833,90 @@ local function updatePlayer(dt)
   st.slowFor = st.player.speed < SLOW_SPEED and (st.slowFor + dt) or 0
 end
 
+-- Drop hold (drophold.lua): a car dropped far off the block (the game's drop-at-camera) is held at rest where it was
+-- dropped until the block that follows it is committed and has ground under it.
+local dropHold = drophold.new()
+local dropHoldFailed = false
+M.dropHoldState = function() return dropHold end      -- (tests, tools)
+
+-- The game's own pause (simTimeAuthority, what the pause key does): holding the car by setting its position every frame
+-- strained it (its damage rose 0 -> 93k in 7 s of holding, the user 2026-10-18: "the hold seems to damage my car",
+-- "can you use the actual pause system"). Resumed only if the hold paused it; the player resuming it ends the hold.
+local function simPause(on)
+  local sta = rawget(_G, 'simTimeAuthority')
+  if sta and sta.pause then sta.pause(on) end
+end
+local function simPaused()
+  local sta = rawget(_G, 'simTimeAuthority')
+  return sta and sta.getPause and sta.getPause() or false
+end
+
+local function setCarAt(veh, x, y, z)
+  -- the cluster moves by the reference node: set it where it is relative to the vehicle's position, at the target
+  local ref = veh:getRefNodeId()
+  local rel = veh:getNodePosition(ref)
+  veh:setClusterPosRelRot(ref, x + rel.x, y + rel.y, z + rel.z, 0, 0, 0, 1)
+  veh:applyClusterVelocityScaleAdd(ref, 0, 0, 0, 0)
+end
+
+local function endHold(h)
+  if h.pausedByUs and simPaused() then simPause(false) end
+  h.pausedByUs = nil
+end
+
+local function updateDropHold(dt)
+  local pl = st.player
+  local veh = getPlayerVehicle(0)
+  if not pl or not veh then return end
+  local box = nil
+  if st.block then
+    local b = st.dropBox or {}
+    st.dropBox = b
+    b[1], b[2], b[3], b[4] = lattice.groundBox(st.block.cx, st.block.cy)
+    box = b
+  end
+  local h = dropHold
+  if h.active and h.last and h.last.anchorId ~= st.anchorId then drophold.moved(h, pl.x, pl.y, pl.z) end
+  local busy = st.placeFrames ~= nil or st.floorZ ~= nil
+  if not st.paused and drophold.observe(h, pl.x, pl.y, pl.z, pl.speed, dt, st.anchorId, box, busy) == 'start' then
+    log('I', 'beamngEarth', string.format('drop hold: the car is %.0f m from the block; paused until its ground loads',
+      box and math.max(box[1] - pl.x, pl.x - box[3], box[2] - pl.y, pl.y - box[4], 0) or -1))
+    if not simPaused() then
+      simPause(true)
+      h.pausedByUs = true
+    end
+  end
+  if not h.active then return end
+  if h.pausedByUs and not simPaused() then         -- the player resumed: their call
+    drophold.cancel(h)
+    h.pausedByUs = nil
+    log('I', 'beamngEarth', 'drop hold: resumed by the player')
+    return
+  end
+  local gz = nil
+  if box and drophold.inside(box, h.x, h.y, drophold.EDGE_MARGIN) then
+    local ray = rawget(_G, 'castRayStatic')
+    if ray then
+      local from = vec3(h.x, h.y, h.z + 600)
+      local d = ray(from, vec3(0, 0, -1), 3000)
+      if d and d < 3000 then gz = from.z - d end
+    end
+  end
+  local serial = st.block and (st.block.cx .. ',' .. st.block.cy .. ',' .. tostring(st.followCount)) or nil
+  local building = (st.terrainPending ~= nil or (st.pending ~= nil and not st.pending.ready)) and net.isConnected()
+  local act, z = drophold.step(h, st.clock, box, serial, gz, building)
+  if act == nil then return end
+  if act == 'place' then
+    setCarAt(veh, h.x, h.y, z)
+    log('I', 'beamngEarth', string.format('drop hold: set on the ground at %.1f', z))
+  elseif act == 'timeout' then
+    log('W', 'beamngEarth', 'drop hold: no ground after ' .. drophold.MAX_S .. ' s, resumed')
+  else
+    log('I', 'beamngEarth', 'drop hold: ground loaded, resumed')
+  end
+  endHold(h)
+end
+
 local function updateSky(dt)
   st.skyTimer = st.skyTimer + dt
   if st.skyTimer < SKY_INTERVAL or not st.player then return end
@@ -828,6 +941,7 @@ local function anchorKnown()
 end
 
 local function updateWorld(dt)
+  if st.floorZ and not st.placeFrames then M.floorCheck() end
   if st.placeFrames then
     st.placeFrames = st.placeFrames - 1
     if st.placeFrames <= 0 then
@@ -910,6 +1024,7 @@ local function updateWorld(dt)
   local ga = st.groundAhead
   local gz = ga and ga.anchorId == st.anchorId and st.clock - ga.at <= follow.GROUND_STALE_S and ga.z or nil
   local held = follow.altitudeHold(st.followHeld, pl.z, pl.vz, gz)
+  if dropHold.active then held = false end -- a car dropped high up still needs the block under it (2026-10-18)
   if held ~= st.followHeld then
     st.followHeld = held
     st.followHolds = st.followHolds + (held and 1 or 0)
@@ -984,7 +1099,15 @@ end
 -- level-start flat block, before any anchor: no server at all).
 local function updateGuard()
   local g = st.guard
-  if guardFailed or serverHealthy() or st.placeFrames or st.paused then
+  -- a rebase / resync ready to commit moves the car with physics running: a guard pause gives way to it (it re-centres
+  -- the block on the car), and no new pause for RESUME_GRACE_S (the commit waits for the next unpaused frame)
+  local p = st.pending
+  if g.pausedByUs and p and p.ready and (p.purpose == 'rebase' or p.purpose == 'resync') then
+    edgeguard.release(g)
+    g.resumedAt = st.clock
+  end
+  -- a guard pause runs on until the car is well inside the (followed) block or the player resumes (edgeguard.update)
+  if not g.pausedByUs and (guardFailed or serverHealthy() or st.placeFrames or st.paused) then
     g.mode = 'off'
     return
   end
@@ -997,6 +1120,7 @@ local function updateGuard()
   local ok, err = pcall(edgeguard.update, g, veh, box, st.clock)
   if not ok then
     guardFailed, g.mode = true, 'off'
+    pcall(edgeguard.release, g)
     log('E', 'beamngEarth', 'edge guard turned off: ' .. tostring(err))
   end
 end
@@ -1008,6 +1132,7 @@ local function updateBanner(dt)
   i.note, i.noteDetail = st.serverNote, st.serverNoteDetail
   local m = st.guard.mode
   i.edge = (m == 'warn' or m == 'hold') and m or nil
+  i.dropHold = dropHold.active or nil
   -- connected and said hello, yet the guard runs: the server does not (yet) build the terrain
   i.stuck = (i.session and net.isConnected()) and true or false
   banner.update(dt, i)
@@ -1101,7 +1226,9 @@ local function mark(name, t0)
 end
 local function noteHitch(frameMs)
   local h = { ms = math.floor(frameMs + 0.5), at = math.floor(st.clock * 10 + 0.5) / 10, mod = {} }
-  for k, v in pairs(prevMarks) do if v >= 1 then h.mod[k] = math.floor(v * 10 + 0.5) / 10 end end
+  -- marks: the mod's parts in the frame that just ended (onUpdate swaps them to prevMarks after this call; reading
+  -- prevMarks named the frame before it, and most Lua-led hitches showed no part at all, 2026-10-18)
+  for k, v in pairs(marks) do if v >= 1 then h.mod[k] = math.floor(v * 10 + 0.5) / 10 end end
   if Engine and Engine.Debug and Engine.Debug.getLastPerformanceMetrics then
     local m = {}
     if pcall(Engine.Debug.getLastPerformanceMetrics, m) then
@@ -1201,6 +1328,15 @@ local function onUpdate(dtReal, dtSim)
 
   updatePlayer(dtReal)
   if st.active then
+    if not dropHoldFailed and (not st.paused or dropHold.active) then     -- (it runs on while it paused the game)
+      local ok, err = pcall(updateDropHold, dtReal)
+      if not ok then          -- never break the frame: off for the session, said once
+        dropHoldFailed = true
+        drophold.cancel(dropHold)
+        endHold(dropHold)
+        log('E', 'beamngEarth', 'drop hold turned off: ' .. tostring(err))
+      end
+    end
     t = mark('player', t)
     updateWorld(dtReal)
     t = mark('world', t)

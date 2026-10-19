@@ -33,6 +33,11 @@ spawn = { safeTeleport = function(v, pos, rot, a, b, c, d, reset)
   v.pos = vec3(pos.x, pos.y, GROUND_Z + 0.5)
 end }
 
+-- the game's pause (simTimeAuthority): physics stands still while paused
+simTimeAuthority = { paused = false }
+function simTimeAuthority.pause(on) simTimeAuthority.paused = on and true or false end
+function simTimeAuthority.getPause() return simTimeAuthority.paused end
+
 local function newVeh(x, y, z, vx, vy)
   local v = { pos = vec3(x, y, z), vel = vec3(vx, vy, 0), sets = 0 }
   function v:getPosition() return vec3(self.pos) end
@@ -60,7 +65,7 @@ local function drive(veh, frames, dt, onFrame)
     -- (the last 1 m/s to rest brakes up to ~8 m/s^2: the profile is sampled once a frame; not counted)
     local dv = (before - veh.vel):length() / dt
     if dv > out.maxDecel and f > 1 and before:length() > 1 then out.maxDecel = dv end
-    veh.pos = veh.pos + vec3(veh.vel.x * dt, veh.vel.y * dt, veh.vel.z * dt)
+    if not simTimeAuthority.paused then veh.pos = veh.pos + vec3(veh.vel.x * dt, veh.vel.y * dt, veh.vel.z * dt) end
     local p = veh.pos
     out.minEdge = math.min(out.minEdge, p.x - BOX[1], BOX[3] - p.x, p.y - BOX[2], BOX[4] - p.y)
     if onFrame then onFrame(f, g, mode) end
@@ -70,71 +75,57 @@ local function drive(veh, frames, dt, onFrame)
 end
 
 ------------------------------------------------------------------------------------------
--- the soft wall
+-- the pause at the edge (the user, 2026-10-18: the game's own pause instead of the soft wall)
 
-T.near(edgeguard.cap(edgeguard.STOP_M), 0, 1e-12, 'cap: zero at the stop line')
-T.near(edgeguard.cap(edgeguard.STOP_M + 75), 30, 1e-9, 'cap: 30 m/s at 75 m before it (6 m/s^2)')
-T.check(edgeguard.cap(edgeguard.STOP_M - 4) < 0 and edgeguard.cap(0) == -edgeguard.PULL_MAX, 'cap: inside the stop line a pull back, at most PULL_MAX')
--- creeping under throttle (in-game 2026-10-11: 4.6 m in 50 s): inside the stop line even a slow
--- outward speed is replaced by a pull back
-do
-  local g = edgeguard.new()
-  local box = { -512, -512, 510, 510 }
-  local x = 510 - edgeguard.STOP_M + 3            -- 3 m past the stop line
-  local mode, setV = edgeguard.step(g, { clock = 1, x = x, y = 0, z = 100, vx = 0.04, vy = 1, box = box, ground = 0.5 })
-  T.check(mode == 'hold' and setV and setV[1] < -1 and setV[2] == 1, 'creep: pulled back inwards, along the edge free')
-  -- back at the stop line moving inwards: nothing to do
-  mode, setV = edgeguard.step(g, { clock = 2, x = 510 - edgeguard.STOP_M - 0.5, y = 0, z = 100, vx = -0.3, vy = 0, box = box, ground = 0.5 })
-  T.check(setV == nil, 'at the stop line moving inwards: left alone')
-  -- simulate a car pushing outwards at 3 m/s^2 for 60 s at 60 GE frames/s: it stays inside the stop zone
-  local px, vx2 = 400, 8
-  for i = 1, 3600 do
-    vx2 = vx2 + 3 / 60
-    local m2, sv = edgeguard.step(g, { clock = 2 + i / 60, x = px, y = 0, z = 100, vx = vx2, vy = 0, box = box, ground = 0.5 })
-    if sv then vx2 = sv[1] end
-    px = px + vx2 / 60
-  end
-  T.check(px < 510 - edgeguard.STOP_M + 1, 'sustained throttle for 60 s: held at the stop line (x ' .. string.format('%.2f', px) .. ')')
-end
 T.check(edgeguard.warnDistance(0) == edgeguard.WARN_M and edgeguard.warnDistance(60) > 300, 'warn distance grows with speed')
 
 local veh = newVeh(0, 0, GROUND_Z + 0.5, 30, 0)
 local r = drive(veh, 60 * 40, 1 / 60)
 T.check(r.firstWarn and r.firstWarn.x < BOX[3] - edgeguard.WARN_M + 1, '30 m/s east: warned >= 150 m before the edge')
-T.check(r.firstHold and r.firstHold.x > r.firstWarn.x, '... then braked')
-T.check(r.maxDecel <= edgeguard.DECEL * 1.1, string.format('braking at most DECEL (%.2f m/s^2)', r.maxDecel))
+T.check(r.firstHold and r.firstHold.x > r.firstWarn.x and simTimeAuthority.paused, '... then the game paused')
 T.check(r.minEdge >= edgeguard.STOP_M - 0.5, string.format('never past the stop line (%.2f m inside)', r.minEdge))
-T.check(math.abs(veh.vel.x) < 0.2 and BOX[3] - veh.pos.x < edgeguard.STOP_M + 1, 'at rest at the wall')
-T.check(veh.lastNode == -1 and veh.lastScale == 0, 'the velocity is set (scale 0, every cluster), not added to')
--- along the edge and back inwards: free
-veh.vel = vec3(0, 20, 0)
-local sets = veh.sets
-r = drive(veh, 30, 1 / 60)
-T.check(veh.sets == sets and math.abs(veh.vel.y - 20) < 1e-9, 'along the edge: untouched')
+T.check(veh.sets == 0 and veh.vel.x == 30, 'the car is never touched (its speed kept for the resume)')
+T.check(r.g.pausedByUs, 'the guard knows it paused')
+-- the player resumes to drive back inwards: no new pause meanwhile
+simTimeAuthority.pause(false)
 veh.vel = vec3(-15, 0, 0)
-sets = veh.sets
-drive(veh, 30, 1 / 60)
-T.check(veh.sets == sets and veh.vel.x == -15, 'back inwards: untouched')
+local g0 = r.g
+local clock0 = 40
+for f = 1, 60 do
+  edgeguard.update(g0, veh, BOX, clock0 + f / 60)
+  if not simTimeAuthority.paused then veh.pos = veh.pos + vec3(veh.vel.x / 60, 0, 0) end
+end
+T.check(not simTimeAuthority.paused and not g0.pausedByUs, 'resumed by the player: driving inwards, no pause')
+-- the block follows while paused: the car well inside the new box resumes by itself
+do
+  local g = edgeguard.new()
+  local v2 = newVeh(BOX[3] - edgeguard.STOP_M - 5, 0, GROUND_Z + 0.5, 30, 0)
+  edgeguard.update(g, v2, BOX, 1)
+  T.check(simTimeAuthority.paused and g.pausedByUs, 'heading off the edge: paused')
+  local moved = { BOX[1] + 512, BOX[2], BOX[3] + 512, BOX[4] }
+  edgeguard.update(g, v2, BOX, 2)
+  T.check(simTimeAuthority.paused, 'the block not followed yet: still paused')
+  edgeguard.update(g, v2, moved, 3)
+  T.check(not simTimeAuthority.paused and not g.pausedByUs, 'the block followed: resumed by itself')
+  -- the player had paused the game already: the guard never resumes it
+  local g2 = edgeguard.new()
+  simTimeAuthority.pause(true)
+  edgeguard.update(g2, newVeh(BOX[3] - edgeguard.STOP_M - 5, 0, GROUND_Z + 0.5, 30, 0), BOX, 4)
+  T.check(not g2.pausedByUs, 'already paused by the player: not the guard\'s pause')
+  simTimeAuthority.pause(false)
+end
 
--- 134 m/s: braked hard at first (the block is too small for 6 m/s^2 from that speed), never off it
+-- 134 m/s: paused before the stop line, never off the block
 veh = newVeh(-400, 0, GROUND_Z + 0.5, 134, 0)
 r = drive(veh, 60 * 20, 1 / 60)
 T.check(r.minEdge >= edgeguard.STOP_M - 1, string.format('134 m/s: stays on the block (%.2f m inside)', r.minEdge))
-T.check(math.abs(veh.vel.x) < 0.5, '134 m/s: stopped')
+T.check(simTimeAuthority.paused, '134 m/s: paused')
+simTimeAuthority.pause(false)
 -- diagonally into the NE corner
 veh = newVeh(100, 100, GROUND_Z + 0.5, 25, 25)
 r = drive(veh, 60 * 30, 1 / 60)
-T.check(r.minEdge >= edgeguard.STOP_M - 0.5 and BOX[3] - veh.pos.x < 17 and BOX[4] - veh.pos.y < 17, 'corner: held on both axes')
--- the velocity reading lags one frame (set twice with the same target): nothing more happens
-do
-  local g = edgeguard.new()
-  local v2 = newVeh(BOX[3] - edgeguard.STOP_M - 20, 0, GROUND_Z + 0.5, 30, 0)
-  edgeguard.update(g, v2, BOX, 1)
-  local after = v2.vel.x
-  v2.vel = vec3(30, 0, 0) -- the stale reading
-  edgeguard.update(g, v2, BOX, 1.016)
-  T.near(v2.vel.x, after, 1e-9, 'a stale velocity reading: the same target again, no double braking')
-end
+T.check(r.minEdge >= edgeguard.STOP_M - 0.5, 'corner: paused before either edge')
+simTimeAuthority.pause(false)
 
 ------------------------------------------------------------------------------------------
 -- far inside: nothing called

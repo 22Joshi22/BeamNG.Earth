@@ -11,7 +11,7 @@
 --   lost       the connection dropped: reconnecting, with the attempt number
 --   offline    the server runs without internet ("Offline - using cached data", server netfetch)
 --   degraded   the server's "Degraded: ..." note (hosts unreachable, tiles without imagery)
---   recovered  for RECOVERED_S after a lost / missing server came back ("World server connected")
+--   recovered  for RECOVERED_S after a lost / missing server came back ("BeamNG.Earth server connected")
 --   ok         hidden
 -- The edge guard (edgeguard.lua) adds a second line while it warns or holds the car at the edge of
 -- the loaded ground, and raises the level.
@@ -41,6 +41,7 @@ M.enabled = true
 
 local clock = 0             -- s since the mod loaded (update's dt)
 local cur = { id = 'starting', level = 'info', text = '', visible = true }
+M.DROP_HOLD_TEXT = 'Waiting for collision to load here: the car is held in place'
 local key = nil             -- the inputs the current text was built from
 local recoveredUntil = nil  -- clock until which 'recovered' shows
 local lastProblem = nil     -- the last non-ok connection state ('lost', 'noserver', ...)
@@ -61,8 +62,8 @@ function M.noteOf(text)
 end
 
 local EDGE_TEXT = {
-  warn = 'Near the edge of the loaded ground: the car will be held there until the world server %s',
-  hold = 'Held at the edge of the loaded ground until the world server %s',
+  warn = 'Near the edge of the loaded ground: the car will be held there until the BeamNG.Earth server %s',
+  hold = 'Paused at the edge of the loaded ground until the BeamNG.Earth server %s (resume to drive back)',
 }
 
 -- The state for a set of inputs (pure):
@@ -79,22 +80,25 @@ function M.compute(info, t)
   if info.net ~= 'connected' then
     if not info.everConnected then
       if (t or 0) < M.STARTING_S then
-        id, level, text = 'starting', 'info', 'BeamNG.Earth: looking for the world server (127.0.0.1:' .. tostring(info.port or 47613) .. ') ...'
+        id, level, text = 'starting', 'info', 'BeamNG.Earth: looking for the BeamNG.Earth server on this PC (127.0.0.1:' .. tostring(info.port or 47613) .. ') ...'
       else
         id, level = 'noserver', 'error'
-        text = 'World server not running. Start it with:  ' .. M.START_CMD
-          .. '   (it will start automatically in a later version)'
+        text = 'BeamNG.Earth server not running on this PC - start BeamNG.Earth with its launcher (or:  '
+          .. M.START_CMD .. ')'
       end
     else
       id, level = 'lost', 'warn'
-      text = 'Connection to the world server lost - reconnecting (attempt ' .. tostring(math.max(1, info.attempts or 1)) .. ')'
+      -- the program on this PC, not the internet (the user, 2026-10-17: "make this more clear if it's the server or
+      -- a data provider that's not connected"; data sources are the offline / degraded lines below)
+      text = 'Lost the BeamNG.Earth server on this PC - reconnecting (attempt ' .. tostring(math.max(1, info.attempts or 1))
+        .. '). Is its launcher window still open?'
     end
   elseif not info.session then
-    id, level, text = 'starting', 'info', 'Connected - waiting for the world server ...'
+    id, level, text = 'starting', 'info', 'Connected - waiting for the BeamNG.Earth server ...'
   elseif info.note == 'offline' then
-    id, level, text = 'offline', 'warn', 'Offline - using cached data (areas never visited have no terrain)'
+    id, level, text = 'offline', 'warn', 'Server OK, internet data sources unreachable - using cached data (areas never visited have no terrain)'
   elseif info.note == 'degraded' then
-    id, level, text = 'degraded', 'warn', 'World server degraded: ' .. tostring(info.noteDetail or '')
+    id, level, text = 'degraded', 'warn', 'Server OK, some internet data sources not answering: ' .. tostring(info.noteDetail or '')
   else
     id, level, text = 'ok', 'ok', ''
   end
@@ -107,10 +111,15 @@ function M.compute(info, t)
     if M.LEVEL_RANK[want] > M.LEVEL_RANK[level] then level = want end
     if id == 'ok' then id = 'edge' end
   end
+  if info.dropHold then         -- drophold.lua: a car dropped far away waits for its ground (the user, 2026-10-18)
+    text = (text ~= '') and (text .. '\n' .. M.DROP_HOLD_TEXT) or M.DROP_HOLD_TEXT
+    if M.LEVEL_RANK.info > M.LEVEL_RANK[level] then level = 'info' end
+    if id == 'ok' then id = 'drophold' end
+  end
   return id, level, text
 end
 
-local KEYS = { 'net', 'session', 'everConnected', 'attempts', 'note', 'noteDetail', 'edge', 'stuck' }
+local KEYS = { 'net', 'session', 'everConnected', 'attempts', 'note', 'noteDetail', 'edge', 'stuck', 'dropHold' }
 
 -- Did any input change since the text was built? (Compared field by field: nothing allocated.)
 local function changed(info)
@@ -133,11 +142,11 @@ function M.update(dt, info)
     end
     lastProblem = nil
     if recoveredUntil and clock < recoveredUntil then
-      id, level, text = 'recovered', 'ok', 'World server connected'
+      id, level, text = 'recovered', 'ok', 'BeamNG.Earth server connected'
     else
       recoveredUntil = nil
     end
-  elseif id ~= 'edge' and id ~= 'starting' then
+  elseif id ~= 'edge' and id ~= 'starting' and id ~= 'drophold' then
     lastProblem = id
     recoveredUntil = nil
   end
@@ -152,7 +161,7 @@ function M.current() return cur end
 -- The settings page's state line: the banner's text, or what all-is-well means.
 function M.line()
   if cur.text ~= '' then return cur.text end
-  return 'World server connected'
+  return 'BeamNG.Earth server connected'
 end
 
 local function u32(im, rgba) return im.GetColorU322(im.ImVec4(rgba[1], rgba[2], rgba[3], rgba[4])) end

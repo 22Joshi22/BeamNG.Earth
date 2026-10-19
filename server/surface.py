@@ -187,16 +187,34 @@ def grid_affine(lat, lon):
     return f
 
 
-def paint_roads(idx, lat, lon, feats_list, square, urban_fn=None, widths=None):
+def paint_roads(idx, lat, lon, feats_list, square, urban_fn=None, widths=None, extra=()):
     """idx (material per sample, [row, col], as classify gives it) with the roads of feats_list (the
     "roads" Features of the cells around) drawn in at their width: ROAD_MATERIAL by surface kind.
     lat / lon: the samples' positions; square: m between samples; urban_fn: as roads.road_specs (the
-    same widths as the drawn roads). Pure (a new array)."""
+    same widths as the drawn roads); extra: [(lat (k,), lon (k,), roads.Spec)] more roads (a tunnel's open
+    sections, grading.Grader.open_tunnels). Pure (a new array)."""
     h, w = idx.shape
     to_px = grid_affine(lat, lon)
     layers = {k: Image.new("L", (w, h), 0) for k in ROAD_ORDER}
     draws = {k: ImageDraw.Draw(im) for k, im in layers.items()}
+    lawn = Image.new("L", (w, h), 0)            # divided roads' medians (under the roads: they paint over it)
+    lawn_draw = ImageDraw.Draw(lawn)
     seen = set()
+
+    def line(x, y, spec, aisle):
+        width, kind = spec.width, spec.kind
+        if aisle:
+            width += 2 * AISLE_STALLS_M         # the stalls either side (parking.aisle_spots): no grass under cars
+        if roadsmod.has_sidewalks(spec):
+            width += 2 * (spec.walk + square)   # the sidewalks (+ a sample: tufts at the outer edge): grass grew up
+                                                # through them (ground cover is the terrain's: Lauterbrunnen, Baltimore
+                                                # 2026-10-15)
+        px = max(1, int(round(width / square)))
+        c, r = to_px(x, y)
+        if c.max() < -px or c.min() > w + px or r.max() < -px or r.min() > h + px:
+            return
+        draws[kind].line(list(zip(c.tolist(), r.tolist())), fill=255, width=px, joint="curve")
+
     for feats in feats_list:
         if feats is None or len(feats) == 0:
             continue
@@ -206,20 +224,25 @@ def paint_roads(idx, lat, lon, feats_list, square, urban_fn=None, widths=None):
             if specs[i] is None or fid in seen:
                 continue
             seen.add(fid)
-            width, kind = specs[i].width, specs[i].kind
-            if kind == "paved" and roadsmod._rule_value(feats.rules.get("subclass"), i) == "parking_aisle":
-                width += 2 * AISLE_STALLS_M         # the stalls either side (parking.aisle_spots): no grass under cars
-            if roadsmod.has_sidewalks(specs[i]):
-                width += 2 * (specs[i].walk + square)   # the sidewalks (+ a sample: tufts at the outer edge): grass
-                                                    # grew up through them (ground cover is the terrain's: Lauterbrunnen,
-                                                    # Baltimore 2026-10-15)
-            px = max(1, int(round(width / square)))
+            aisle = specs[i].kind == "paved" and \
+                roadsmod._rule_value(feats.rules.get("subclass"), i) == "parking_aisle"
+            mw = roadsmod.median_width(specs[i])
+            ms = roadsmod.median_side(specs[i])
             for ring in roadsmod.ground_parts(feats, i):      # not bridges / tunnels
-                c, r = to_px(ring[:, 0], ring[:, 1])
-                if c.max() < -px or c.min() > w + px or r.max() < -px or r.min() > h + px:
-                    continue
-                draws[kind].line(list(zip(c.tolist(), r.tolist())), fill=255, width=px, joint="curve")
+                line(ring[:, 0], ring[:, 1], specs[i], aisle)
+                if ms is not None and mw > roadsmod.MEDIAN_SLAB_M and len(ring) >= 2:
+                    # the median's ground: lawn (report #48, Boston Street, 2026-10-17)
+                    sc = np.array([111320.0 * math.cos(math.radians(float(ring[0, 1]))), 110540.0])
+                    xy = (ring[:, :2] - ring[0, :2]) * sc
+                    off = roadsmod.offset_polyline(np.c_[xy, np.zeros(len(xy))],
+                                                   ms * (specs[i].width / 2 + mw / 2))[:, :2] / sc + ring[0, :2]
+                    c, r = to_px(off[:, 0], off[:, 1])
+                    lawn_draw.line(list(zip(c.tolist(), r.tolist())), fill=255,
+                                   width=max(1, int(round(mw / square))), joint="curve")
+    for la, lo, spec in extra:
+        line(np.asarray(lo), np.asarray(la), spec, False)
     out = idx.copy()
+    out[np.asarray(lawn) > 0] = LAWN
     for k in ROAD_ORDER:
         m = np.asarray(layers[k]) > 0
         out[m] = ROAD_MATERIAL[k]
@@ -299,6 +322,8 @@ def write_masks(idx, out_dir, stem):
     return names
 
 
+SNOW_BRIGHT = 165           # mean of r, g, b of the ground photo (0-255) from which a snow candidate stays snow, ...
+SNOW_GREY = 40              # ... with at most this spread between its channels (white, not pale scree)
 LAWN_GREEN = 10             # 2g - r - b of the ground photo above which a lawn candidate stays a lawn
 
 
@@ -306,35 +331,59 @@ def photo_lawns(out_dir, ter_name, mask_names_, rgb):
     """Detail mode: the block's LAWN samples where the ground photo (rgb (px, px, 3), row 0 = north, the
     block's footprint) is not green turn DIRT (paved yards, lots and driveways: the grass layer's blades
     over a pale photo looked like snow, Lancaster 2026-10-14). Patches the .ter's layer map and the two
-    masks in place, atomically. Returns the number of samples changed."""
+    masks in place, atomically. Returns the number of samples changed. Likewise SNOW (WorldCover "snow and ice")
+    where the photo is not snow-white turns LOOSE scree (the Stelvio Pass's summit in late summer: the snow layer's
+    white blur where the orthophoto has grey-brown gravel, the user's reports #40 / #44, 2026-10-17)."""
     path = os.path.join(out_dir, ter_name)
     with open(path, "rb") as f:
         data = bytearray(f.read())
     n = struct.unpack_from("<I", data, 1)[0]
     off = 5 + 2 * n * n
     lay = np.frombuffer(bytes(data[off:off + n * n]), np.uint8).reshape(n, n)       # row 0 = south
+    # the .ter's layer indices are into its own material list (write_ter: only the used ones): back to MATERIALS
+    o = off + n * n + 4
+    names = []
+    for _ in range(struct.unpack_from("<I", data, off + n * n)[0]):
+        names.append(bytes(data[o + 1:o + 1 + data[o]]).decode())
+        o += 1 + data[o]
+    order = [m for m, _ in MATERIALS]
+    glob = [order.index(m) if m in order else DIRT for m in names]
+    to_glob = np.full(256, heightmap.TER_HOLE, np.uint8)
+    to_glob[:len(glob)] = glob
+    to_local = np.full(256, heightmap.TER_HOLE, np.uint8)
+    for li, gi in enumerate(glob):
+        to_local[gi] = li
+    lay = to_glob[lay]
     lawn = lay == LAWN
-    if not lawn.any():
+    snow = lay == SNOW
+    if not lawn.any() and not snow.any():
         return 0
     px = rgb.shape[0]
     rows = np.clip(((n - 1 - np.arange(n)) + 0.5) * px / n, 0, px - 1).astype(np.int64)
     cols = np.clip((np.arange(n) + 0.5) * px / n, 0, px - 1).astype(np.int64)
-    c = rgb.astype(np.int32)
+    c = rgb.astype(np.int32)[rows[:, None], cols[None, :]]
     exg = 2 * c[:, :, 1] - c[:, :, 0] - c[:, :, 2]
-    green = exg[rows[:, None], cols[None, :]] > LAWN_GREEN
+    green = exg > LAWN_GREEN
+    white = (c.mean(2) >= SNOW_BRIGHT) & (c.max(2) - c.min(2) <= SNOW_GREY)
     bare = lawn & ~green
-    k = int(bare.sum())
+    scree = snow & ~white
+    if to_local[DIRT] == heightmap.TER_HOLE:
+        bare[:] = False
+    if to_local[LOOSE] == heightmap.TER_HOLE:
+        scree[:] = False
+    k = int(bare.sum() + scree.sum())
     if not k:
         return 0
     lay = lay.copy()
     lay[bare] = DIRT
-    data[off:off + n * n] = lay.tobytes()
+    lay[scree] = LOOSE
+    data[off:off + n * n] = to_local[lay].tobytes()
     tmp = staging.tmp_for(path)
     with open(tmp, "wb") as f:
         f.write(data)
     os.replace(tmp, path)
     north = lay[::-1]
-    for i in (LAWN, DIRT):
+    for i in (LAWN, DIRT, SNOW, LOOSE):
         p = os.path.join(out_dir, mask_names_[i])
         tmp = staging.tmp_for(p)
         Image.fromarray(np.where(north == i, 255, 0).astype(np.uint8), "L").save(tmp, format="PNG", compress_level=1)
@@ -342,12 +391,33 @@ def photo_lawns(out_dir, ter_name, mask_names_, rgb):
     return k
 
 
+def used_materials(idx):
+    """The MATERIALS indices a block's .ter lists: those its samples use (holes aside), plus what photo_lawns may
+    turn them into (LAWN -> DIRT, SNOW -> LOOSE), in MATERIALS order. Each distinct material a .ter lists costs
+    the engine's first draw after the swap ~20 ms (in-game probes 2026-10-18 at Tower Bridge: one material
+    55-80 ms, three 80-180, all ten 250-560 ms in RenderShadows, whether a sample uses them or not)."""
+    u = set(np.unique(np.asarray(idx, np.uint8)).tolist())
+    u.discard(heightmap.TER_HOLE)
+    if LAWN in u:
+        u.add(DIRT)
+    if SNOW in u:
+        u.add(LOOSE)
+    return sorted(u) or [DIRT]
+
+
 def write_ter(out_dir, name, qgrid, idx):
-    """The block's .ter (heightmap.write_ter) with these materials (idx: MATERIALS indices, row 0 =
-    south) or, idx None, the level's single dirt layer (the mod's terrain.MATERIAL). Returns name."""
-    mats = [m for m, _ in MATERIALS] if idx is not None else [MATERIALS[DIRT][0]]
-    heightmap.write_ter(os.path.join(out_dir, name), qgrid, idx, mats)
-    return name
+    """The block's .ter (heightmap.write_ter) with the materials its samples use (idx: MATERIALS indices, row
+    0 = south; used_materials) or, idx None, the level's single dirt layer (the mod's terrain.MATERIAL).
+    Returns (name, the MATERIALS indices listed in order, None for the single dirt layer)."""
+    if idx is None:
+        heightmap.write_ter(os.path.join(out_dir, name), qgrid, None, [MATERIALS[DIRT][0]])
+        return name, None
+    used = used_materials(idx)
+    lut = np.full(256, heightmap.TER_HOLE, np.uint8)
+    lut[used] = np.arange(len(used), dtype=np.uint8)
+    heightmap.write_ter(os.path.join(out_dir, name), qgrid, lut[np.asarray(idx, np.uint8)],
+                        [MATERIALS[i][0] for i in used])
+    return name, used
 
 
 class Surface:

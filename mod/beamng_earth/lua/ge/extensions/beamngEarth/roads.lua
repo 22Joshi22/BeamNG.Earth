@@ -511,6 +511,22 @@ local function madeSquares(aid, busy)
   end
   return done
 end
+-- True once the road tile of anchor aid under (x, y) is made, no other anchor's road (a rebase's ghost too) is near
+-- it, and the collision is rebuilt after (core.floorCheck: a ray found the old session's tunnel floor at a teleport's
+-- spot, the car went down onto it and fell when that mesh went, 2026-10-17). Must come after madeSquares.
+function M.settledFor(aid, x, y)
+  if anchorId ~= aid or #deleteQ > 0 or collisionDirty then return false end
+  local n = M.TILE_M
+  for _, t in pairs(tiles) do
+    if t.anchor ~= aid or t.ghost then
+      if not t.cx or (math.abs(t.cx - x) < 1.5 * n and math.abs(t.cy - y) < 1.5 * n) then return false end
+    end
+  end
+  local busy = {}
+  for _, q in ipairs(walkQ) do busy[q.key] = true end
+  return madeSquares(aid, busy)[math.floor(x / n) .. '_' .. math.floor(y / n)] == true
+end
+
 local function covered(done, cx, cy)
   local h, n = M.TILE_M / 2, M.TILE_M
   for gx = math.floor((cx - h) / n), math.floor((cx + h - 1e-6) / n) do
@@ -690,6 +706,7 @@ M._noteNewColliders = noteNewColliders
 function M.requestCollision() collisionDirty = true end
 
 function M.hasWork() return #createQ > 0 or #deleteQ > 0 or #walkQ > 0 or #farQ > 0 or collisionDirty end
+
 
 -- Somebody else just ran be:reloadCollision() (the terrain commit): the sidewalks made so far collide.
 function M.collisionRebuilt()

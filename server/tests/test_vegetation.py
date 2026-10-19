@@ -88,8 +88,17 @@ class VegetationTest(unittest.TestCase):
         rlon, rlat = md.lonlat(100, 400)                   # on the residential road's centreline
         street = 1 - free
         off = abs(trees.lat[street] - rlat) * 111000
-        self.assertGreater(off, veg.ROAD_HALF_WIDTH_M["residential"] + veg.ROAD_CLEAR_M - 1.0, "beside the road")
-        self.assertLess(off, veg.ROAD_HALF_WIDTH_M["residential"] + veg.ROAD_CLEAR_M + 3.0)
+        curb = veg.ROAD_HALF_WIDTH_M["residential"] + veg.TREE_PIT_M + 0.6     # a tree pit just past the curb
+        self.assertGreater(off, curb - 1.0, "beside the road")
+        self.assertLess(off, curb + 3.0)                   # (whole CHM pixels, ~2 m here)
+
+    def test_footway_keeps_its_tree(self):
+        md = FakeMapData()
+        md.cd.layers["roads"].attrs["class"][:] = "footway"   # a sidewalk mapped as a line: street trees stand on it
+        it = veg.Vegetation(md, None).cell(KEY)
+        trees = it.take(it.kind == veg.KIND_TREE)
+        rlon, rlat = md.lonlat(100, 400)
+        self.assertLess((np.hypot((trees.lon - rlon) * 85000, (trees.lat - rlat) * 111000)).min(), 4.0)
 
     def test_deterministic(self):
         a = veg.Vegetation(FakeMapData(), None).cell(KEY)
@@ -155,3 +164,24 @@ class DilateTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RockSinkTest(unittest.TestCase):
+    def test_rocks_sink_into_slopes_trees_do_not(self):
+        # a 45-degree hillside rising to the east (z = e): a 2 m rock sinks ROCK_SINK of its height, a tree stays
+        f = geodesy.EnuFrame(LAT, LON)
+        e = np.array([10.0, 20.0, 30.0]); n = np.zeros(3)
+        la, lo, _ = f.enu_to_geodetic(e, n, np.zeros(3))
+        it = veg.Items(lo, la, np.array([2.0, 2.0, 15.0]), np.ones(3), np.zeros(3, np.uint8),
+                       np.array([veg.G_ROCK, veg.G_DESERT_ROCK, veg.G_CONIFER], np.uint8), np.zeros(3), np.zeros(3),
+                       np.ones(3))
+
+        def elev(lat, lon):
+            x, _, _ = f.geodetic_to_enu(np.asarray(lat), np.asarray(lon), np.zeros(np.size(lat)))
+            return np.asarray(x, np.float64)
+        z = veg._sink_rocks(f, it, e, n, e.copy(), elev)
+        self.assertAlmostEqual(z[0], 10.0 - veg.ROCK_SINK * 2.0, delta=0.02)
+        self.assertAlmostEqual(z[1], 20.0 - veg.ROCK_SINK * 2.0, delta=0.02)
+        self.assertEqual(z[2], 30.0)
+        flat = veg._sink_rocks(f, it, e, n, np.zeros(3), lambda la, lo: np.zeros(np.size(la)))
+        self.assertTrue(np.allclose(flat, 0.0, atol=0.02), "no sinking on flat ground")

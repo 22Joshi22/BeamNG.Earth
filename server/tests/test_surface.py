@@ -62,11 +62,11 @@ class ClassifyTest(unittest.TestCase):
         rgb[:] = (190, 188, 180)                    # pale paving ...
         rgb[:32] = (70, 110, 50)                    # ... the north half a lawn
         with tempfile.TemporaryDirectory() as d:
-            sf.write_ter(d, "b.ter", np.zeros((n, n), np.uint16), idx)
+            _, used = sf.write_ter(d, "b.ter", np.zeros((n, n), np.uint16), idx)
             names = sf.write_masks(idx[::-1], d, "b")
             changed = sf.photo_lawns(d, "b.ter", names, rgb)
             with open(os.path.join(d, "b.ter"), "rb") as f:
-                lay = np.frombuffer(f.read()[5 + 2 * n * n:5 + 3 * n * n], np.uint8).reshape(n, n)
+                lay = _glob(np.frombuffer(f.read()[5 + 2 * n * n:5 + 3 * n * n], np.uint8).reshape(n, n), used)
             inner = lay[1:-1, 4:-1]                 # (the edge ring is holes)
             self.assertTrue((inner[: n // 2 - 1] == sf.DIRT).all(), "south half: paved")
             self.assertTrue((inner[n // 2:] == sf.LAWN).all(), "north half: lawn")
@@ -75,6 +75,59 @@ class ClassifyTest(unittest.TestCase):
             lawn_mask = np.array(Image.open(os.path.join(d, names[sf.LAWN])))
             self.assertEqual(lawn_mask[1, 8], 255)
             self.assertEqual(lawn_mask[-2, 8], 0)
+
+
+def _glob(lay, used):
+    """A .ter's layer map (indices into its own list) as MATERIALS indices."""
+    lut = np.full(256, 255, np.uint8)
+    lut[:len(used)] = used
+    return lut[lay]
+
+
+class CompactTerTest(unittest.TestCase):
+    def test_the_ter_lists_only_the_materials_used(self):
+        # each material a .ter lists costs the swap's first draw ~20 ms (in-game probes 2026-10-18)
+        import struct
+        import tempfile
+        n = 16
+        idx = np.full((n, n), sf.GRASS, np.uint8)
+        idx[:, :4] = sf.ASPHALT
+        idx[:4] = sf.LAWN
+        with tempfile.TemporaryDirectory() as d:
+            _, used = sf.write_ter(d, "b.ter", np.zeros((n, n), np.uint16), idx)
+            self.assertEqual(used, [sf.ASPHALT, sf.GRASS, sf.LAWN, sf.DIRT])      # (a lawn may turn dirt)
+            with open(os.path.join(d, "b.ter"), "rb") as f:
+                raw = f.read()
+            off = 5 + 3 * n * n
+            self.assertEqual(struct.unpack_from("<I", raw, off)[0], 4)
+            lay = np.frombuffer(raw[5 + 2 * n * n:off], np.uint8).reshape(n, n)
+            self.assertEqual(lay[8, 8], 1)
+            self.assertTrue((_glob(lay, used)[1:-1, 1:-1] == idx[1:-1, 1:-1]).all())
+
+    def test_no_layers_is_the_single_dirt_layer(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            self.assertEqual(sf.write_ter(d, "b.ter", np.zeros((8, 8), np.uint16), None), ("b.ter", None))
+
+
+class PhotoSnowTest(unittest.TestCase):
+    def test_snow_only_where_the_photo_is_white(self):
+        # WorldCover "snow and ice" on the Stelvio Pass's summit where the orthophoto has grey-brown scree (#40/#44)
+        import tempfile
+        n = 16
+        idx = np.full((n, n), sf.SNOW, np.uint8)
+        rgb = np.zeros((64, 64, 3), np.uint8)
+        rgb[:] = (128, 118, 100)                    # scree ...
+        rgb[:32] = (235, 238, 242)                  # ... the north half snow
+        with tempfile.TemporaryDirectory() as d:
+            _, used = sf.write_ter(d, "b.ter", np.zeros((n, n), np.uint16), idx)
+            names = sf.write_masks(idx[::-1], d, "b")
+            sf.photo_lawns(d, "b.ter", names, rgb)
+            with open(os.path.join(d, "b.ter"), "rb") as f:
+                lay = _glob(np.frombuffer(f.read()[5 + 2 * n * n:5 + 3 * n * n], np.uint8).reshape(n, n), used)
+            inner = lay[1:-1, 1:-1]
+            self.assertTrue((inner[: n // 2 - 1] == sf.LOOSE).all(), "south half: scree")
+            self.assertTrue((inner[n // 2:] == sf.SNOW).all(), "north half: snow")
 
 
 class WarpTest(unittest.TestCase):
@@ -268,8 +321,10 @@ class ServerSurfaceTest(unittest.TestCase):
         conn = earthd.Connection.__new__(earthd.Connection)
         conn.s = s
         msg = conn.terrain_msg((a.id, 0.0, 0.0), info)
-        self.assertEqual(msg["layers"], [f"{s.vfs_dir}/{n}" for n in info["layers"]])
-        self.assertEqual(msg["materials"], [list(m) for m in sf.MATERIALS])
+        # only the .ter's own materials (grass and dirt), in its order
+        self.assertEqual(info["mats"], [sf.GRASS, sf.DIRT])
+        self.assertEqual(msg["layers"], [f"{s.vfs_dir}/{info['layers'][i]}" for i in (sf.GRASS, sf.DIRT)])
+        self.assertEqual(msg["materials"], [list(sf.MATERIALS[i]) for i in (sf.GRASS, sf.DIRT)])
 
     def test_default_server_sends_no_layers(self):
         s = self.make()

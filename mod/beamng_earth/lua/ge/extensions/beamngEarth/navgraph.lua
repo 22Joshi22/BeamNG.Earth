@@ -142,7 +142,7 @@ local function makeHead(inst, a)
   local o = inst:createSignalObject(M.SIGNAL_SHAPE, vec3(a[8], a[9], a[10]), quat(0, 0, 0, 1))
   if not o then return end
   local m = MatrixF(true)
-  m:setFromEuler(vec3(0, 0, math.rad(a[11] or 0)))      -- as trees.lua turns the static boom
+  m:setFromEuler(vec3(0, 0, -math.rad(a[11] or 0)))     -- as trees.lua turns the static boom (negated: clockwise)
   m:setPosition(vec3(a[8], a[9], a[10]))
   o:setTransform(m)
   heads[inst.name] = { id = o:getID(), x = a[8], y = a[9] }

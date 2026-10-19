@@ -130,7 +130,12 @@ require('beamngEarth/statusbar').enabled = false   -- its own test: test_statusb
 local wallNow = 0
 core._governor().clock = function() return wallNow end
 local st = core._state
+-- the game's pause (simTimeAuthority): the edge guard and the drop hold pause the game; physics stands still then
+simTimeAuthority = { paused = false }
+function simTimeAuthority.pause(on) simTimeAuthority.paused = on and true or false end
+function simTimeAuthority.getPause() return simTimeAuthority.paused end
 local function frame(paused)
+  paused = paused or simTimeAuthority.paused
   wallNow = wallNow + 16
   bannerTexts = {}
   core.onUpdate(DT, paused and 0 or DT)
@@ -154,8 +159,8 @@ local function has(list, v) for _, x in ipairs(list or {}) do if x == v then ret
 core.onExtensionLoaded() -- our level: the flat block, the world active
 setGround(0, 0)
 frames(3)
-T.check(banner.current().id == 'starting' and shown() and shown():find('looking for the world server', 1, true),
-  'just started: "looking for the world server"')
+T.check(banner.current().id == 'starting' and shown() and shown():find('looking for the BeamNG.Earth server', 1, true),
+  'just started: "looking for the BeamNG.Earth server"')
 T.check(#server.sent == 0, 'no server: nothing sent')
 frames(120) -- 6 s
 T.check(core.banner().id == 'noserver' and shown():find('python3 server/earthd.py', 1, true),
@@ -168,11 +173,11 @@ local warned, held = false, false
 for _ = 1, 60 * 20 do
   frame()
   if st().guard.mode == 'warn' and shown():find('Near the edge', 1, true) then warned = true end
-  if st().guard.mode == 'hold' and shown():find('Held at the edge', 1, true) then held = true end
+  if st().guard.mode == 'hold' and shown():find('Paused at the edge', 1, true) then held = true end
 end
 T.check(warned and held, 'no server: warned, then held at the edge (banner second line)')
-T.check(veh.pos.x <= 1022 - edgeguard.STOP_M + 0.5 and math.abs(veh.vel.x) < 0.2,
-  string.format('the car rests inside the flat block (x %.1f)', veh.pos.x))
+T.check(veh.pos.x <= 1022 - edgeguard.STOP_M + 0.5 and simTimeAuthority.paused,
+  string.format('the game paused with the car inside the flat block (x %.1f)', veh.pos.x))
 T.check(#server.sent == 0, 'still nothing sent')
 
 ------------------------------------------------------------------------------------------
@@ -187,7 +192,7 @@ T.check(banner.current().id == 'starting', 'connected, waiting for the server\'s
 serverSend({ type = 'hello', protocol = 4, format = 4, serverVersion = '0.4.0', sessionId = 's1', farFormat = 'cdae',
   material = 'bngEarthFar_v3', nearVisual = 'mesh' })
 T.check(pumpUntil(function() return #received('prepare_anchor') == 1 end, 10), 'auto-teleport requested')
-T.check(core.banner().id == 'recovered' and shown() == 'World server connected', 'the server came: "World server connected"')
+T.check(core.banner().id == 'recovered' and shown() == 'BeamNG.Earth server connected', 'the server came: "BeamNG.Earth server connected"')
 local req = received('prepare_anchor')[1]
 -- a healthy server, but the first anchor not built yet: terrain-follow cannot move the flat start
 -- block at all (it follows anchors only), so the car on it is still held at its edge
@@ -248,9 +253,9 @@ veh.pos, veh.vel = vec3(b.cx + 400, b.cy, 0.5), vec3(25, 0, 0)
 local nSent = #server.sent
 for _ = 1, 60 * 20 do frame() end
 local x1 = select(3, lattice.groundBox(b.cx, b.cy))
-T.check(veh.pos.x <= x1 - edgeguard.STOP_M + 0.5 and math.abs(veh.vel.x) < 0.2 and st().guard.mode == 'hold',
-  string.format('server gone: the car is held %.1f m inside the edge', x1 - veh.pos.x))
-T.check(shown():find('Held at the edge', 1, true) and shown():find('lost', 1, true), 'banner: lost + held')
+T.check(veh.pos.x <= x1 - edgeguard.STOP_M + 0.5 and simTimeAuthority.paused and st().guard.mode == 'hold',
+  string.format('server gone: paused with the car %.1f m inside the edge', x1 - veh.pos.x))
+T.check(shown():find('Paused at the edge', 1, true) and shown():find('Lost the BeamNG.Earth server', 1, true), 'banner: lost + held')
 T.check(#server.sent == nSent, 'nothing sent while disconnected')
 
 ------------------------------------------------------------------------------------------
@@ -328,9 +333,9 @@ T.check(pumpUntil(function() return #received('prepare_terrain') > nPt end, 40),
 frames(20)
 T.check(st().guard.mode == 'off', 'just asked: the guard waits (the server may be slow)')
 for _ = 1, 60 * 20 do frame() end
-T.check(veh.pos.x <= ex1 - edgeguard.STOP_M + 0.5 and math.abs(veh.vel.x) < 0.2,
-  string.format('unanswered for STUCK_S: held %.1f m inside the edge', ex1 - veh.pos.x))
-T.check(shown() == 'Held at the edge of the loaded ground until the world server answers terrain requests again',
+T.check(veh.pos.x <= ex1 - edgeguard.STOP_M + 0.5 and simTimeAuthority.paused,
+  string.format('unanswered for STUCK_S: paused %.1f m inside the edge', ex1 - veh.pos.x))
+T.check(shown() == 'Paused at the edge of the loaded ground until the BeamNG.Earth server answers terrain requests again (resume to drive back)',
   'banner: the server does not answer terrain requests')
 pt = last('prepare_terrain')
 serverSend({ type = 'terrain_ready', requestId = pt.requestId, anchorId = 1, cx = pt.cx, cy = pt.cy,
@@ -354,12 +359,12 @@ T.check(st().guard.mode ~= 'off', 'terrain_error: the guard runs')
 veh.pos = vec3(b.cx, b.cy, 0.5)
 serverSend({ type = 'status', text = 'Far field ready | Offline - using cached data', backlog = 0 })
 frames(2)
-T.check(core.banner().id == 'offline' and shown():find('Offline - using cached data', 1, true), 'offline: in the banner')
+T.check(core.banner().id == 'offline' and shown():find('internet data sources unreachable', 1, true), 'offline: in the banner')
 local settings = require('beamngEarth/settings')
 beamngEarth_core = core
 local ui = settings.uiState()
 T.check(ui.status.banner and ui.status.banner.id == 'offline' and ui.status.banner.level == 'warn'
-  and ui.status.banner.text:find('Offline', 1, true), 'the settings page gets the same state line')
+  and ui.status.banner.text:find('internet data sources', 1, true), 'the settings page gets the same state line')
 beamngEarth_core = nil
 core.onUiChangedState('menu', 'play')
 frames(2)

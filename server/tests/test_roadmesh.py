@@ -79,11 +79,91 @@ class BridgeTest(unittest.TestCase):
         high = c[:, 2] > 20.0 + 0.04 * c[:, 0] - roadmesh.DECK_DEPTH / 2   # the top rises 20 -> 22 m
         self.assertTrue((n[flat & high, 2] > 0).all() and (flat & high).any(), "the top faces up")
         self.assertTrue((n[flat & ~high, 2] < 0).all() and (flat & ~high).any(), "the underside faces down")
-        self.assertAlmostEqual(P[:, 2].max(), 22.0)
-        self.assertAlmostEqual(P[:, 2].min(), 20.0 - roadmesh.DECK_DEPTH)
+        self.assertAlmostEqual(P[:, 2].max(), 22.0 + roadmesh.PARAPET_H, msg="a parapet on each edge")
+        self.assertAlmostEqual(P[:, 2].min(), 20.0 - roadmesh.DECK_DEPTH - roadmesh.GIRDER_D, msg="girders under it")
         Pr, Tr, _, mr, _ = roadmesh.build(FRAME, [deck], lambda la, lo: la, (0, 0, 0))
         self.assertEqual(mr, ["road_asphalt_2lane"], "the asphalt is in the road mesh ...")
         self.assertAlmostEqual(Pr[:, 2].max(), 22.0 + roadmesh.DECK_SKIN, msg="... just over the slab")
+
+
+class BridgeLookTest(unittest.TestCase):
+    """Girders, parapets and piers (2026-10-17, the user: "Bridges need a lot of work in general")."""
+
+    def deck(self, y, fid, z=20.0):
+        return {"m": "road_asphalt_2lane", "w": 8.0, "tl": 11.0, "p": 20, "deck": True, "fixed": True, "fid": fid,
+                "n": [[0, y, z], [50, y, z]]}
+
+    def parapet_tops(self, P):
+        return P[np.abs(P[:, 2] - (20.0 + roadmesh.PARAPET_H)) < 1e-6]
+
+    def test_no_parapet_between_decks_side_by_side(self):
+        P = roadmesh.deck([self.deck(0.0, "a"), self.deck(8.0, "b")], (0.0, 0.0, 0.0))[0]
+        ys = np.unique(np.round(self.parapet_tops(P)[:, 1], 2))
+        self.assertTrue(ys.min() < -4.0 and ys.max() > 12.0, "the outer edges have one")
+        self.assertFalse(((ys > 0.5) & (ys < 7.5)).any(), "none between them: %s" % ys)
+
+    def test_parapet_where_a_deck_runs_under(self):
+        P = roadmesh.deck([self.deck(0.0, "a"), self.deck(8.0, "b", z=12.0)], (0.0, 0.0, 0.0))[0]
+        ys = np.unique(np.round(self.parapet_tops(P)[:, 1], 2))
+        self.assertTrue(((ys > 3.0) & (ys < 5.0)).any(), "over a lower deck the edge is free")
+
+    def test_tunnel_floor_is_a_slab(self):
+        d = self.deck(0.0, "a")
+        d["tunnel"] = True
+        P = roadmesh.deck([d], (0.0, 0.0, 0.0))[0]
+        self.assertAlmostEqual(P[:, 2].max(), 20.0)
+        self.assertAlmostEqual(P[:, 2].min(), 20.0 - roadmesh.DECK_DEPTH)
+
+    def test_piers_reach_the_ground(self):
+        p = (25.0, 0.0, 1.0, 0.0, 17.8, 3.0, 8.0)
+        P, T, UV, mats, M = roadmesh.deck([], (0.0, 0.0, 0.0), [p])
+        self.assertAlmostEqual(P[:, 2].max(), 17.8)
+        self.assertAlmostEqual(P[:, 2].min(), 3.0)
+        c = P[T].mean(1)
+        n = np.cross(P[T[:, 1]] - P[T[:, 0]], P[T[:, 2]] - P[T[:, 0]])
+        out = c - np.array([25.0, 0.0, 10.0])
+        self.assertTrue(((n * out).sum(1) > 0).all(), "faces outward")
+        wide = roadmesh.deck([], (0.0, 0.0, 0.0), [(25.0, 0.0, 1.0, 0.0, 17.8, 3.0, 24.0)])[0]
+        self.assertGreater(len(wide), len(P), "a wide deck: a bent of columns")
+
+
+class PierSitesTest(unittest.TestCase):
+    def test_spacing_roads_and_low_decks(self):
+        import roads
+        xy = np.c_[np.arange(0.0, 200.1, 4.0), np.zeros(51)]
+        z = np.full(51, 20.0)
+        flat = lambda q: np.zeros(len(q))          # noqa: E731
+        ps = roads.pier_sites(xy, z, 10.0, flat)
+        self.assertGreaterEqual(len(ps), 3)
+        xs = sorted(p[0] for p in ps)
+        self.assertTrue(all(b - a > 20.0 for a, b in zip(xs, xs[1:])))
+        self.assertAlmostEqual(ps[0][4], 20.0 - roadmesh.DECK_DEPTH - roadmesh.GIRDER_D)
+        # a road under the deck at x = 100: no pier on it
+        road = [np.array([[100.0, -50.0], [100.0, 50.0]])]
+        ps2 = roads.pier_sites(xy, z, 10.0, flat, road)
+        self.assertTrue(all(abs(p[0] - 100.0) > roads.PIER_ROAD_M for p in ps2))
+        # a deck lying on the ground: none
+        self.assertEqual(roads.pier_sites(xy, np.full(51, 1.0), 10.0, flat), [])
+        # a short bridge: none
+        self.assertEqual(roads.pier_sites(xy[:6], z[:6], 10.0, flat), [])
+
+
+class DeckRulesTest(unittest.TestCase):
+    def test_upper_deck_over_the_lower_one(self):
+        # two roadways on one line, levels 2 and 3 (the Queensboro Bridge): the upper clears the lower
+        import roads
+        xy = np.c_[np.arange(0.0, 600.1, 4.0), np.zeros(151)]
+        flat = lambda q: np.full(len(q), 2.0)      # noqa: E731
+        zs = roads.deck_profile([xy, xy + [0.0, 3.0]], flat, levels=[2.0, 3.0], widths=[10.0, 10.0])
+        mid = slice(40, 110)
+        self.assertTrue((zs[1][mid] - zs[0][mid] >= roads.DECK_ROAD_CLEAR - 0.6).all(),
+                        float((zs[1][mid] - zs[0][mid]).min()))
+
+    def test_water_clearance(self):
+        import roads
+        self.assertEqual(roads.water_clear(10.0), roads.WATER_CLEAR_MIN)
+        self.assertAlmostEqual(roads.water_clear(250.0), 37.5)
+        self.assertEqual(roads.water_clear(5000.0), roads.WATER_CAUSEWAY_CLEAR, "a causeway")
 
 
 class BridgeProfilesTest(unittest.TestCase):
@@ -138,6 +218,15 @@ class BridgeProfilesTest(unittest.TestCase):
         s = ln[:, 0]
         self.assertLessEqual(np.abs(np.diff(z) / np.diff(s)).max(), roads.DECK_MAX_GRADE + 0.02)
         self.assertLess(z.max(), 10.0 + 0.06 * 30 + 0.1)
+        # a ramp starting in the intersection it climbs from (Queens Plaza, report #55): flush with the cross street
+        (z,) = roads.deck_profile([ln], flat, [(0, 6.0, 10.0), (0, 30.0, 10.0)])
+        self.assertLess(float(np.interp(6.0, s, z)), 10.0 + 0.15, "no hump across the cross street")
+        self.assertGreater(z.max(), 10.0 + 0.06 * 18 - 0.3, "the crossing farther on still lifts the deck")
+        # no sag between two crossings 120 m apart (the Queensboro Bridge over Roosevelt Island)
+        ln2 = np.c_[np.arange(0.0, 401.0, 4.0), np.zeros(101)]
+        (z2,) = roads.deck_profile([ln2], flat, [(0, 140.0, 10.0, 20.0), (0, 260.0, 10.0, 20.0)])
+        mid = float(np.interp(200.0, ln2[:, 0], z2))
+        self.assertGreater(mid, min(float(np.interp(140.0, ln2[:, 0], z2)), float(np.interp(260.0, ln2[:, 0], z2))) - 0.5)
         # a mainline at 18 m with a ramp leaving it at a shallow angle: heights match where they overlap
         main = np.c_[np.arange(0.0, 201.0, 4.0), np.zeros(51)]
         ramp = np.c_[np.arange(100.0, 301.0, 4.0), (np.arange(100.0, 301.0, 4.0) - 100.0) * 0.12]

@@ -62,7 +62,8 @@ class WordingTest(unittest.TestCase):
     def test_elevation_and_weather(self):
         self.assertEqual(set(credits.ELEVATION), {demmod.MAPTERHORN["name"], demmod.AWS["name"]})
         self.assertIn("mapterhorn.com/attribution", credits.ELEVATION["mapterhorn"])
-        self.assertEqual(credits.label(credits.WEATHER_ID), weather.CREDIT)
+        self.assertEqual(credits.full_label(credits.WEATHER_ID), weather.CREDIT)
+        self.assertEqual(credits.label(credits.WEATHER_ID), "Open-Meteo")
         self.assertIn("Mapterhorn", earthd.ELEVATION_CREDIT)
 
     def test_line(self):
@@ -70,11 +71,18 @@ class WordingTest(unittest.TestCase):
         self.assertEqual(credits.ordered(ids), ["img:usgs", "img:eox2023", "dem:mapterhorn", "dem:aws-terrarium",
                                                 "wx:open-meteo"])
         text = credits.line(ids)
-        self.assertEqual(text, "Imagery: USGS The National Map; " + credits.IMAGERY["eox2023"]
-                         + " | Elevation: Mapterhorn (see mapterhorn.com/attribution); AWS Terrain Tiles / Mapzen"
-                         + " | Weather data by Open-Meteo.com")
-        self.assertEqual(credits.line({"img:eox2016"}, far=True), "Far imagery: " + credits.IMAGERY["eox2016"])
-        self.assertEqual(credits.line({"dem:mapterhorn"}, far=True), "Far elevation: Mapterhorn (see mapterhorn.com/attribution)")
+        # short names (the user, 2026-10-18); the full wordings stay in the settings page and CREDITS.md
+        self.assertEqual(text, "Imagery: USGS, EOX Sentinel-2 cloudless 2023 (Copernicus)"
+                         " | Elevation: Mapterhorn, AWS Terrain Tiles / Mapzen | Weather: Open-Meteo")
+        self.assertEqual(credits.line({"img:eox2016"}, far=True),
+                         "Far imagery: EOX Sentinel-2 cloudless 2016 (Copernicus)")
+        self.assertEqual(credits.line({"dem:mapterhorn"}, far=True), "Far elevation: Mapterhorn")
+        # one name once (two NAIP services), every source kind in its group
+        self.assertEqual(credits.line({"img:naip", "img:naipusda", "map:OpenStreetMap", "map:Overture",
+                                       "map:Microsoft ML Buildings", "land:esa-worldcover", "sea:noaa",
+                                       "grav:egm2008"}),
+                         "Imagery: USDA NAIP | Map: Overture Maps, OpenStreetMap, Microsoft | Land cover: ESA WorldCover"
+                         " | Sea depth: NOAA NCEI | Gravity: NGA EGM2008")
         self.assertEqual(credits.line(set()), "")
         # a source outside the catalogue (a custom chain) is named, after the known ones
         self.assertEqual(credits.ordered({"img:zz", "img:usgs"}), ["img:usgs", "img:zz"])
@@ -87,9 +95,9 @@ class WordingTest(unittest.TestCase):
         text = (Path(__file__).resolve().parents[2] / "CREDITS.md").read_text()
         for i in ("img:usgs", "dem:mapterhorn"):
             kind = "Imagery: " if i.startswith("img:") else "Elevation: "
-            self.assertIn(f'"{kind}{credits.label(i)}"', text, i)
+            self.assertIn(f'"{kind}{credits.full_label(i)}"', text, i)
         self.assertIn(f'"{credits.IMAGERY["eox2023"]}"', text)
-        self.assertIn(f'"{credits.label("dem:aws-terrarium")}"', text)
+        self.assertIn(f'"{credits.full_label("dem:aws-terrarium")}"', text)
         self.assertIn(f'"{weather.CREDIT}"', text)
         for name in (demmod.MAPTERHORN["name"], demmod.AWS["name"]):
             self.assertIn(credits.ELEVATION[name], earthd.ELEVATION_CREDIT, name)
@@ -301,10 +309,9 @@ class MessageTest(unittest.TestCase):
         m = credits.Credits().message(c)
         self.assertEqual(m["ids"], ["img:usgs", "img:eox2023", "dem:mapterhorn"])
         self.assertEqual(m["farIds"], ["img:eox2016", "dem:aws-terrarium"])     # near sources not repeated
-        self.assertEqual(m["near"], "Imagery: USGS The National Map; " + credits.IMAGERY["eox2023"]
-                         + " | Elevation: Mapterhorn (see mapterhorn.com/attribution)")
-        self.assertEqual(m["far"], "Far imagery: " + credits.IMAGERY["eox2016"]
-                         + " | Far elevation: AWS Terrain Tiles / Mapzen")
+        self.assertEqual(m["near"], "Imagery: USGS, EOX Sentinel-2 cloudless 2023 (Copernicus) | Elevation: Mapterhorn")
+        self.assertEqual(m["far"], "Far imagery: EOX Sentinel-2 cloudless 2016 (Copernicus)"
+                         " | Far elevation: AWS Terrain Tiles / Mapzen")
         self.assertEqual((m["type"], m["v"]), ("credits", credits.VERSION))
         json.dumps(m)
         # the player moves east: b and c near, a still within 2 km
@@ -329,7 +336,7 @@ class MessageTest(unittest.TestCase):
         c.s.tiles[(1, "a")] = self.info("dem:mapterhorn")
         m = credits.Credits().message(c)
         self.assertEqual((m["near"], m["far"], m["ids"], m["farIds"]),
-                         ("Elevation: " + credits.ELEVATION["mapterhorn"] + " | " + weather.CREDIT, "",
+                         ("Elevation: Mapterhorn | Weather: Open-Meteo", "",
                           ["dem:mapterhorn", "wx:open-meteo"], []))
         c.active = None
         self.assertIsNone(credits.Credits().message(c))
@@ -481,9 +488,9 @@ class SessionCreditsTest(test_server.ServerHarness):
         self.assertEqual(last["ids"], ["img:eox2023", "dem:mapterhorn", "wx:open-meteo"])
         # the far field (80 km): USGS and AWS east of their limits
         self.assertEqual(last["farIds"], ["img:usgs", "dem:aws-terrarium"])
-        self.assertEqual(last["near"], "Imagery: " + credits.IMAGERY["eox2023"]
-                         + " | Elevation: Mapterhorn (see mapterhorn.com/attribution) | Weather data by Open-Meteo.com")
-        self.assertEqual(last["far"], "Far imagery: USGS The National Map | Far elevation: AWS Terrain Tiles / Mapzen")
+        self.assertEqual(last["near"], "Imagery: EOX Sentinel-2 cloudless 2023 (Copernicus) | Elevation: Mapterhorn"
+                         " | Weather: Open-Meteo")
+        self.assertEqual(last["far"], "Far imagery: USGS | Far elevation: AWS Terrain Tiles / Mapzen")
         # only on change: every message differs from the one before
         for prev, m in zip(got, got[1:]):
             self.assertNotEqual(prev, m)
@@ -554,3 +561,45 @@ class DefaultServerTest(test_server.ServerHarness):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class FeatureSourcesTest(unittest.TestCase):
+    """Every source that built what is near the player, not only the tiles' imagery and elevation (the user,
+    2026-10-18: "show all sources")."""
+
+    def test_feature_ids(self):
+        import types
+        import geodesy
+
+        class MD:
+            def layer_provenance(self, key, layer):
+                return {"roads": {"id": "overture:transportation", "datasets": [
+                            {"dataset": "OpenStreetMap", "features": 9}, {"dataset": "TomTom", "features": 0}]},
+                        "buildings": {"id": "overture:buildings", "datasets": [
+                            {"dataset": "Microsoft ML Buildings", "features": 3}]},
+                        "landcover": {"id": "esa-worldcover"}, "canopy": {"id": "meta-wri-chm"}}.get(layer)
+
+        frame = geodesy.EnuFrame(39.2834, -76.5934)
+        s = types.SimpleNamespace(anchors={1: types.SimpleNamespace(frame=frame)}, mapdata=MD(), surface=object(),
+                                  veg=object(), airports=None)
+        conn = types.SimpleNamespace(s=s, active=1, focus=(0.0, 0.0),
+                                     roads=types.SimpleNamespace(aid=1, sent={(0, 0)}),
+                                     veg=types.SimpleNamespace(aid=1, sent={(0, 0)}),
+                                     sea_sent=(1, ([{"t": 1}], [])), gravity=types.SimpleNamespace(msg={"source": "egm2008"}))
+        ids = credits.feature_ids(conn)
+        self.assertTrue({"map:Overture", "map:OpenStreetMap", "map:Microsoft ML Buildings", "land:esa-worldcover",
+                         "canopy:meta-wri-chm", "sea:noaa", "grav:egm2008"} <= ids, ids)
+        self.assertNotIn("map:TomTom", ids)                 # (no features of it here)
+        # no road tiles shown yet: no map data credited; no trees shown: no canopy
+        conn.roads.sent, conn.veg.sent = set(), set()
+        ids = credits.feature_ids(conn)
+        self.assertFalse({i for i in ids if i.startswith(("map:", "canopy:", "bridge:"))}, ids)
+        self.assertIn("land:esa-worldcover", ids)
+
+    def test_leaf_off_share_is_no_source(self):
+        ids = credits.tile_sources(None, (0, 0, 1, 1), None, None, {"usgs": 5, "leafon": 5})
+        self.assertEqual(ids, frozenset({"img:usgs"}))
+
+    def test_short_names_ascii(self):
+        for text in credits.SHORT.values():
+            self.assertTrue(text.isascii(), text)

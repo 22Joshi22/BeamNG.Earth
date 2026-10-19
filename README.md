@@ -136,7 +136,8 @@ More detail (traffic, the status bar, reporting problems, troubleshooting): [doc
    world map (search, teleport, GPS routes, Autodrive).
 
 Player downloads: `python3 tools/build_app.py` builds this system's AppImage / .exe (PyInstaller; see its
-docstring); GitHub Actions (`.github/workflows/release.yml`) builds both and publishes the release `v<VERSION>`
+docstring; for the .exe run `tools/build_bootloader.py` first: a bootloader built from source, fewer antivirus
+false positives); GitHub Actions (`.github/workflows/release.yml`) builds both and publishes the release `v<VERSION>`
 whenever `main` gets a `VERSION` without one. Release zip of the source: `python3 tools/package.py`.
 
 Tests: `cd server && python3 -m unittest discover -s tests -p "test_*.py"` and

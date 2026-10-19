@@ -14,7 +14,9 @@ M.ROWS_PER_FRAME = 12000 -- rows of changing tiles looked at per frame at most (
 M.RINGS = { { 300, 1.0 }, { 700, 0.6 }, { 1500, 0.35 }, { 1e9, 0.2 } }   -- tile distance (m): the rank shown below
 -- small props only near the player (2026-10-14, Fells Point at street level: ~10 ms a frame for the Forest
 -- with a door on every house out to 300 m): the tile distance (m) beyond which a group is not shown
-M.GROUP_MAX_M = { shrub = 250, desert_shrub = 250, door = 120, hydrant = 200, bin = 200, bench = 200, polelamp = 400,
+-- rocks only over the fine ground (farfield.NEAR_RADII: L0 within 400 m): beyond it the coarser tiles round off the
+-- ridges and a rock placed on the real ground floated over the drawn one (Stelvio pass, the user's report 2026-10-17)
+M.GROUP_MAX_M = { shrub = 250, desert_shrub = 250, rock = 400, desert_rock = 400, door = 120, hydrant = 200, bin = 200, bench = 200, polelamp = 400,
   stop = 300, signal = 500, fence = 150, wallsign_logistics = 800, wallsign_rentabox = 800, wallsign_lemon = 800, wallsign_turboburger = 500,
   speed30 = 300, speed40 = 300, speed50 = 300, speed60 = 300, speed70 = 300,
   speedk40 = 300, speedk60 = 300, speedk80 = 300, speedk100 = 300 }
@@ -292,7 +294,10 @@ local function makeItem(fd, row, shape, sc, solid)
   local d = itemType(shape, solid)
   if not d then M.errors = M.errors + 1; return nil end
   local m = MatrixF(true)
-  m:setFromEuler(vec3(0, 0, math.rad(row[5] or 0)))
+  -- setFromEuler turns clockwise (the engine's headings): a row's yaw (counter-clockwise from +x, the server's) is
+  -- given negated. Positive, every prop was mirrored about the x axis: doors on north-south walls backwards, on
+  -- diagonal walls askew, benches and lamps turned (read back in-game 2026-10-17: rows at 141.6 rendered at -141.6)
+  m:setFromEuler(vec3(0, 0, -math.rad(row[5] or 0)))
   m:setPosition(vec3(row[2], row[3], row[4]))
   local ok, it = pcall(function() return fd:createNewItem(d, m, sc) end)
   if not ok then M.errors = M.errors + 1; return nil end

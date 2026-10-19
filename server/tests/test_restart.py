@@ -584,3 +584,22 @@ class RestartDriveTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TerrainCacheGoesWithItsSessionTest(unittest.TestCase):
+    def test_base_photos_cache_entries_removed(self):
+        # detail mode's packed base photos (terraincache.py) left by an earlier run: 3.9 GB had piled up (2026-10-18)
+        import terraincache
+        with tempfile.TemporaryDirectory() as root:
+            sid = "20260101-000000-dddd"
+            make_session(root, sid, earthd.SESSION_STALE_S + 600, files=("hm_1_0_0_base.png", "hm_1_0_0_base_r2.png"))
+            cdir = terraincache.cache_dir(root)
+            os.makedirs(cdir)
+            keys = [terraincache.base_key(f"/temp/beamngEarth/{sid}/{n}", earthd.BASE_AO_VFS)
+                    for n in ("hm_1_0_0_base.png", "hm_1_0_0_base_r2.png")]
+            for k in keys + ["0123456789abcdef"]:                  # (the last: the game's own, kept)
+                open(os.path.join(cdir, k + ".dds"), "w").close()
+            s = earthd.Server(root, os.path.join(root, "cache"), imagery=None)
+            self.addCleanup(s.tile_pool.shutdown)
+            self.addCleanup(s.hm_pool.shutdown)
+            self.assertEqual(sorted(os.listdir(cdir)), ["0123456789abcdef.dds"])

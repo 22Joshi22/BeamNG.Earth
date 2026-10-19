@@ -31,7 +31,7 @@ import mapcells
 
 log = logging.getLogger("earthd.seacarve")
 
-VERSION = 14
+VERSION = 16
 SEA_E = 0.0                 # m: the sea surface (the DEMs' heights are above mean sea level)
 DEPTH_SLOPE = 0.15          # floor depth per metre from the shoreline (1 : 6.7)
 DEPTH_CAP = 6.0             # m: the floor's depth away from the shore without bathymetry (Chesapeake mean
@@ -49,6 +49,10 @@ PX_ZOOM = 16                # raster pixels: Web-Mercator z16 (256 px tiles): 10
 CELL_PX = 256 << (PX_ZOOM - mapcells.ZOOM)      # raster pixels per cell edge (1024)
 PAD_PX = 32                 # margin rasterised from the neighbouring cells (> the cap's distance)
 SEA_SUBTYPES = ("ocean",)
+SEA_WATER_TAGS = ('"water":"harbour"', '"water":"bay"', '"water":"lagoon"', '"water":"sound"', '"water":"strait"',
+                  '"water":"fjord"', '"water":"cove"', '"tidal":"yes"')   # OSM water areas at sea level: the sea
+                  # (Sydney Harbour, natural=water + water=harbour, not coastline: a lake 2-6 m up on the DEM, the
+                  # Harbour Bridge's deck 35 m over "ground"; 2026-10-18)
 SEA_LO, SEA_HI = -0.5, 0.3  # m: DEM heights in this band are the sea where no polygons are at hand (far
                             # tiles, the large water tiles): the DEMs' sea surfaces are flat at ~0
 SINK_M = 6.0                # m: such ground sunk below the surface (no flicker through the water tiles), as
@@ -273,7 +277,7 @@ class SeaCarver:
 
     def _build(self, x, y):
         own = self._water((mapcells.ZOOM, x, y))
-        if own is None or not (np.isin(own.attrs["subtype"], SEA_SUBTYPES).any()
+        if own is None or not (self._sea_rows(own).size
                                or (self.dem is not None and (self._lake_rows(own).size
                                                              or self._river_rows(own).size))):
             return None                 # no water in the cell itself: nothing to carve here
@@ -288,7 +292,7 @@ class SeaCarver:
                 f = own if (dx, dy) == (0, 0) else self._water((mapcells.ZOOM, x + dx, y + dy))
                 if f is None:
                     continue
-                for i in np.flatnonzero(np.isin(f.attrs["subtype"], SEA_SUBTYPES) & (f.kind == 3)):
+                for i in self._sea_rows(f):
                     self._rasterise(f, i, sea, ox, oy)
                 if self.dem is not None:
                     for i in self._river_rows(f):
@@ -355,10 +359,13 @@ class SeaCarver:
                 st = shore_steps(sea, kmax).astype(np.float32)
                 depth[sea] = np.minimum(DEPTH_CAP, DEPTH_SLOPE * (st[sea] - 0.5) * px)
             else:
-                target = np.where(np.isfinite(bathy) & (bathy < -BATHY_MIN), np.clip(-bathy, BATHY_MIN, BATHY_MAX),
-                                  BATHY_MIN)
                 kmax = int(math.ceil(BATHY_MAX / SHORE_SLOPE / px)) + 2
                 st = shore_steps(sea, kmax).astype(np.float32)
+                # where the mosaic has no sea floor (its land DEM over Sydney Harbour: 2-6 m up) the generic floor,
+                # not BATHY_MIN: 1 m of clear water showed the aerial photo's bridge shadow on the bed, 2026-10-18
+                generic = np.minimum(DEPTH_CAP, DEPTH_SLOPE * (st - 0.5) * px)
+                target = np.where(np.isfinite(bathy) & (bathy < -BATHY_MIN), np.clip(-bathy, BATHY_MIN, BATHY_MAX),
+                                  generic)
                 depth[sea] = np.minimum(target[sea], SHORE_SLOPE * (st[sea] - 0.5) * px)
             level[sea] = SEA_E
         for _ in range(OUTLINE_PAD_PX):  # the river mask a little wider than the water: a lookup next to a
@@ -597,6 +604,16 @@ class SeaCarver:
         jj, ii = np.nonzero(m)
         dry[jj, ii] = e[jj // k - j0, ii // k - i0] > level + WATER_BANK_M
         return dry
+
+    @staticmethod
+    def _sea_rows(f):
+        """The rows of the sea: ocean polygons and water areas tagged as tidal ones (SEA_WATER_TAGS)."""
+        sub = f.attrs["subtype"]
+        ok = np.isin(sub, SEA_SUBTYPES)
+        tags = f.attrs.get("tags")
+        if tags is not None:
+            ok |= np.array([any(t in str(v).replace(" ", "") for t in SEA_WATER_TAGS) for v in tags], bool)
+        return np.flatnonzero(ok & (f.kind == 3))
 
     @staticmethod
     def _lake_rows(f):

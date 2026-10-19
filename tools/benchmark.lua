@@ -271,10 +271,33 @@ end
 -- no collision, and the physics block only covers ~1 km around the player - outside it the static
 -- ray found nothing and an aerial camera 600 m back went inside a valley wall, in-game 2026-10-11),
 -- then the static collision.
-local function groundAt(x, y, zRef)
+-- A hit counts when the surface is flat around it (FLAT_M each way within FLAT_DZ): a bridge's truss cross beams,
+-- arch ribs and hangers over the road are skipped and the ray goes on down to the deck (the street view
+-- comparison's cameras stood on the Queensboro Bridge's top chords, 2026-10-18).
+B.FLAT_M, B.FLAT_DZ = 1.5, 0.6
+local function flatAt(x, y, z)
+  for _, o in ipairs({ { B.FLAT_M, 0 }, { -B.FLAT_M, 0 }, { 0, B.FLAT_M }, { 0, -B.FLAT_M } }) do
+    local ok, h = pcall(castRay, vec3(x + o[1], y + o[2], z + 1.0), vec3(x + o[1], y + o[2], z - 1.5), true, true)
+    if not (ok and type(h) == 'table' and h.pt and h.pt.z and math.abs(h.pt.z - z) < B.FLAT_DZ) then return false end
+  end
+  return true
+end
+
+-- under: the flat surface nearest the player's car instead (a teleport into a tunnel puts it on the floor: the
+-- first surface was the tube's roof, the camera in the rock; Tower Bridge's approach over a passage: its deck)
+local function groundAt(x, y, zRef, under)
   local top = zRef + B.RAY_UP
-  local okR, hit = pcall(castRay, vec3(x, y, top), vec3(x, y, top - B.RAY_LEN), true, true)
-  if okR and type(hit) == 'table' and hit.pt and hit.pt.z then return hit.pt.z end
+  local best
+  for _ = 1, 24 do
+    local okR, hit = pcall(castRay, vec3(x, y, top), vec3(x, y, zRef - B.RAY_LEN), true, true)
+    if not (okR and type(hit) == 'table' and hit.pt and hit.pt.z) then break end
+    if flatAt(x, y, hit.pt.z) then
+      if not under then return hit.pt.z end
+      if not best or math.abs(hit.pt.z - zRef) < math.abs(best - zRef) then best = hit.pt.z end
+    end
+    top = hit.pt.z - 0.3
+  end
+  if best then return best end
   local ok, d = pcall(castRayStatic, vec3(x, y, top), vec3(0, 0, -1), B.RAY_LEN)
   if ok and d and d < B.RAY_LEN then return top - d end
 end
@@ -311,7 +334,7 @@ function B.view(cfg)
   if cfg.alt then
     z = zGeo or cfg.alt -- lat/lon/alt: the ENU height (the Earth curves away from the anchor)
   else
-    ground = groundAt(x, y, pz)
+    ground = groundAt(x, y, pz, cfg.under)
     groundFrom = ground and 'ray' or 'player'
     z = (ground or pz) + (cfg.agl or 2)
   end

@@ -1,6 +1,8 @@
 """buildings: footprints become closed walls and a roof, heights predicted where the data has none,
 deterministic, every triangle facing out."""
+import os
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -8,6 +10,7 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import buildings as bld  # noqa: E402
+import cdae  # noqa: E402
 
 
 def rect(x, y, w, d):
@@ -248,6 +251,20 @@ class ParkingDeckTest(unittest.TestCase):
                 return True
         return False
 
+    def test_skin_tower_and_entrance(self):
+        # reports #51/#52 (2026-10-17): a brick or precast skin, a stair tower over the roof, a driveway from the road
+        spec, (P, UV, T, M, mats, C) = self.deck(60, 40)
+        used = {mats[k] for k in np.unique(M)}
+        self.assertTrue(used & {bld.BRICK_WALL, bld.CONCRETE}, used)
+        self.assertGreater(P[:, 2].max(), 9.0 + bld.STAIR_TOWER_UP - 0.2, "a stair tower over the top deck")
+        # a road 8 m south of the garage's south edge (y = 0), running east-west
+        road = (np.array([[-50.0, -12.0], [120.0, -12.0]]), 4.0)
+        drives = bld.garage_drives([(spec, 0.0, 0.0)], [road], 0.0, 0.0)
+        self.assertEqual(len(drives), 1)
+        n = np.array(drives[0]["n"])[:, :2]
+        self.assertGreater(n[:, 1].max(), 0.0, "into the ground deck")
+        self.assertAlmostEqual(n[:, 1].min(), -12.0 + 4.1, places=1, msg="to the road's edge")
+
     def test_a_big_garage_is_open_decks_with_a_ramp_well(self):
         # the user, 2026-10-14: "garage buildings ... are solid"
         spec, (P, UV, T, M, mats, C) = self.deck(60, 40)
@@ -323,6 +340,18 @@ class SplitTest(unittest.TestCase):
         self.assertEqual(sum(len(p[2]) for p in parts), len(one[2]), "every triangle in exactly one part")
         self.assertEqual(len(bld.build_parts(items)), 1, "a small tile stays one mesh")
 
+    def test_parts_carry_their_lite_mesh(self):
+        # a near tile's shape draws the far tiles' lite mesh while it is small on screen (camera LOD)
+        items = [(bld.plan(rect(x * 30, 0, 20, 12), {"class": ""}), 0.0, 0.0) for x in range(4)]
+        (part,) = bld.build_parts(items, with_lod=True)
+        lite = bld.build(items, lite=True)
+        self.assertEqual(len(part[6][2]), len(lite[2]))
+        with tempfile.TemporaryDirectory() as d:
+            bld.write(os.path.join(d, "t.cdae"), part)
+            shape = cdae.read(os.path.join(d, "t.cdae"))
+            self.assertEqual(shape["names"][1:], [f"detail{int(bld.BLD_LOD_PX)}", "detail2"])
+            self.assertEqual(len(shape["meshes"]), 2)
+
 
 class MeshTest(unittest.TestCase):
     def check_outward(self, ring, attrs):
@@ -362,7 +391,7 @@ class DoorTest(unittest.TestCase):
         self.assertEqual(len(rows), 1)
         g, x, y, z, yaw, sc, h, r = rows[0]
         self.assertEqual(g, "door")
-        self.assertAlmostEqual(y, -0.03, places=2)                     # on the south wall
+        self.assertAlmostEqual(y, -bld.DOOR_OUT_M, places=2)            # on the south wall (its panel just out of it)
         self.assertAlmostEqual(yaw, 0.0)                               # the wall runs +x
 
     def test_main_street_shopfronts(self):
@@ -525,6 +554,112 @@ class PhotoFillTest(unittest.TestCase):
         rgb[mask] = (200, 200, 200)
         out = bld.fill_photo(rgb, mask, 256.0, 512)
         self.assertTrue(np.allclose(out[mask].astype(int), (40, 160, 60), atol=4), "no black holes, no roof colour")
+
+
+class StoopStreetTest(unittest.TestCase):
+    def test_steps_reach_the_street(self):
+        # the house's floor 1 m over the sidewalk (its highest ground): steps all the way down, no white block
+        ring = np.array([[0.0, 0.0], [6.0, 0.0], [6.0, 12.0], [0.0, 12.0]])
+        spec = bld.plan(ring, {"class": "house"})
+        spec.stoop = (0, 3.0)
+        m = bld.Mesh()
+        bld._stoop(m, spec, ring, 10.0, 11.0, bld._Looks(spec.seed))
+        P = m.arrays()[0]
+        tops = sorted({round(float(z), 3) for z in P[:, 2] if z > 10.0})
+        self.assertAlmostEqual(tops[-1], 11.0 + bld.STOOP_H)
+        self.assertLessEqual(tops[0] - 10.0, bld.STOOP_RISE_MAX + 1e-6, "the bottom step one riser over the street")
+
+
+class BridgePassageTest(unittest.TestCase):
+    """A road bridge through a bridge's tower (Tower Bridge): the tower splits round a passage at its bottom."""
+
+    def test_passage(self):
+        ring = np.array([[-10, -10], [10, -10], [10, 10], [-10, 10], [-10, -10]], float)
+        road = [np.array([[0.0, -50.0], [0.0, 50.0]])]
+        R, A, L, M = bld._passages([ring], [{"bridge_masonry": "stone", "height": 40.0}], [None], [9.0], road)
+        self.assertEqual(len(R), 3)
+        sides = [r for r, m in zip(R, M) if m == 9.0]
+        self.assertEqual(len(sides), 2)
+        for r in sides:                 # clear of the road's PASSAGE_W
+            self.assertGreaterEqual(np.abs(r[:, 0]).min(), bld.PASSAGE_W / 2 - 1e-6)
+        self.assertIn(9.0 + bld.PASSAGE_H, M)
+        # another building: only with the deck's height, where the deck passes through it (Southern Gate, 22 m, the
+        # deck 9 m up: solid under it, the sides, the top); under a viaduct (8 m tall, deck 12 m up) it stays whole
+        deck = [(road[0], np.array([12.0, 12.0]))]
+        R2, A2, L2, M2 = bld._passages([ring], [{"height": 22.0}], [None], [0.0], road, deck, lambda c: 3.0)
+        self.assertEqual(len(R2), 4)
+        self.assertIn(9.0 + bld.PASSAGE_CLEAR, M2)
+        R4, *_ = bld._passages([ring], [{"height": 8.0}], [None], [0.0], road, deck, lambda c: 3.0)
+        self.assertEqual(len(R4), 1)
+        R5, *_ = bld._passages([ring], [{"height": 22.0}], [None], [0.0], road)      # (no decks: left whole)
+        self.assertEqual(len(R5), 1)
+        R3, *_ = bld._passages([ring], [{"bridge_masonry": "stone", "height": 10.0}], ["k"], [47.0], road)
+        self.assertEqual(len(R3), 1)
+
+
+class MachineLearnedFootprintTest(unittest.TestCase):
+    """Microsoft's machine-learned footprints on a road bridge or on water are its deck or a boat (Tower Bridge's
+    river, 2026-10-18); on an island in the river, a building."""
+
+    def test_deck_boat_island(self):
+        sq = lambda cx, cy: np.array([[cx - 5, cy - 5], [cx + 5, cy - 5], [cx + 5, cy + 5], [cx - 5, cy + 5]], float)
+        bridge = [np.array([[0.0, 50.0], [100.0, 50.0]])]
+        river = [(np.array([[0, 0], [100, 0], [100, 100], [0, 100]], float),
+                  [np.array([[60, 60], [90, 60], [90, 90], [60, 90]], float)])]
+        self.assertTrue(bld._ml_false(sq(20, 50), bridge, None))
+        self.assertTrue(bld._ml_false(sq(20, 20), None, river))
+        self.assertFalse(bld._ml_false(sq(75, 75), bridge, river))
+        self.assertFalse(bld._ml_false(sq(150, 20), bridge, river))
+
+
+class BridgeStructureTest(unittest.TestCase):
+    """A bridge's tower (Overture bridge_structure: the Queensboro Bridge's, 33 x 4.6 x 110 m) is an open steel frame
+    the decks run through, not a glass tower (2026-10-17)."""
+
+    def test_part_on_a_bridge_support_is_painted_steel(self):
+        """A building part over a mapped bridge support (the Golden Gate Bridge's towers): a plain box in the
+        support's paint, not a glass tower; it builds (its roof look too: a KeyError dropped the whole road tile)."""
+        ring = np.array([[0.0, 0.0], [6.0, 0.0], [6.0, 6.0], [0.0, 6.0]])
+        sp = bld.plan(ring, {"class": "", "height": 225.0, "bridge_part": "orange"})
+        self.assertEqual(sp.facade, f"{bld.STEEL}|orange")
+        self.assertFalse(sp.windows)
+        self.assertIsNotNone(bld.build([(sp, 0.0, 0.0)]))
+        sup = [(ring * 2 - 3, "orange")]
+        self.assertEqual(bld._on_support(ring, sup), "orange")
+        self.assertIsNone(bld._on_support(ring + 50, sup))
+
+    def ring(self, hl, hw):
+        return np.array([[-hl, -hw], [hl, -hw], [hl, hw], [-hl, hw]], np.float64)
+
+    def test_thin_tower_is_two_legs_and_top_beams(self):
+        spec = bld.plan(self.ring(16.7, 2.3), {"class": "bridge_structure", "height": 110.0})
+        self.assertEqual(spec.cls, "bridge_structure")
+        self.assertFalse(spec.door)
+        P, UV, T, M, mats, C = bld.build([(spec, 5.0, 6.0)])
+        c = P[T].mean(1)
+        low = c[:, 2] < 5.0 + bld.STEEL_TOP_SHARE * 110.0 - 1.0
+        self.assertTrue((np.abs(c[low, 0]) > 16.7 - 2 * 2.3 - 0.01).all(), "below the top only the legs at the ends")
+        self.assertAlmostEqual(P[:, 2].max(), 115.0, places=3)
+        self.assertEqual(bld.collider_boxes([(spec, 5.0, 6.0)], 0.0, 0.0), [], "driven through")
+        Pc = bld.collision_mesh([(spec, 5.0, 6.0)])[0]
+        self.assertTrue((np.abs(Pc[:, 0]) > 16.7 - 2 * 2.3 - 0.01).all(), "it collides at its legs only")
+
+    def test_small_footprint_is_a_pier(self):
+        spec = bld.plan(self.ring(3.0, 2.0), {"class": "bridge_structure", "height": 12.0})
+        P = bld.build([(spec, 0.0, 0.0)])[0]
+        self.assertAlmostEqual(P[:, 2].max(), 12.0, places=3)
+
+
+
+class StoopTest(unittest.TestCase):
+    def test_steps_reach_the_lowest_ground(self):
+        # a row house on a street falling 1.5 m along it: its front steps go down to the lowest ground (they floated)
+        spec = bld.plan(rect(0, 0, 6, 14), {"class": "house"}, 1, 39.28, -76.59)
+        spec.roof, spec.band, spec.stoop = "flat", bld.BAND_BRICK, (0, 3.0)
+        P, UV, T, M, mats, C = bld.build([(spec, 10.0, 11.5)])
+        front = (P[:, 1] < 0.0) & (P[:, 1] > -2.0)          # out from the wall y = 0 (edge 0 runs along +x)
+        self.assertTrue(front.any())
+        self.assertLessEqual(P[front, 2].min(), 10.0 - 0.3 + 1e-6)
 
 
 if __name__ == "__main__":
