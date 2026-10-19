@@ -214,3 +214,39 @@ class ConsoleEcho(unittest.TestCase):
         self.assertEqual([o.strip() for o in out[3:6]], ["server: Traceback (most recent call last):",
                                                          'server:   File "dem.py", line 236', "server: dem.DemUnavailable: x"])
         self.assertEqual(len(out), 6, "no INFO lines, 'connected' once")
+
+
+class ModsOffAfterUpdateTest(unittest.TestCase):
+    """A game update turns every mod off until the player turns them back on (BeamNG 0.40, 2026-10-19): the
+    launcher reads the game's log and says what to do."""
+
+    def test_the_line_is_reported(self):
+        got = []
+        old = launcher.problem
+        launcher.problem = lambda msg, hint=None: got.append((msg, hint))
+        self.addCleanup(setattr, launcher, "problem", old)
+        with tempfile.TemporaryDirectory() as d:
+            since = time.time() - 1
+            launcher.watch_game_log(d, since)
+            with open(os.path.join(d, "beamng.log"), "w") as f:
+                f.write(" 1.2|I|getModsDisabledAfterUpdate| Mods will be disabled after updating from version: '0.39.4'\n")
+            for _ in range(20):
+                if got:
+                    break
+                time.sleep(0.25)
+        self.assertEqual(len(got), 1)
+        self.assertIn("turned all mods off", got[0][0])
+
+    def test_last_runs_log_is_ignored(self):
+        got = []
+        old = launcher.problem
+        launcher.problem = lambda msg, hint=None: got.append(msg)
+        self.addCleanup(setattr, launcher, "problem", old)
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, "beamng.log")
+            with open(p, "w") as f:
+                f.write("Mods will be disabled after updating from version: '0.39.4'\n")
+            os.utime(p, (time.time() - 3600, time.time() - 3600))      # an old run's log
+            launcher.watch_game_log(d, time.time())
+            time.sleep(3)
+        self.assertEqual(got, [])
