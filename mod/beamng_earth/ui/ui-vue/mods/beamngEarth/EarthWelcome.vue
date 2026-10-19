@@ -82,7 +82,8 @@ function poll() {
 // marks the welcome seen and goes back to driving (or to the map)
 function finish(state) {
   engineLua(`if beamngEarth_settings and beamngEarth_settings.uiWelcomeDone then beamngEarth_settings.uiWelcomeDone() end; ` +
-            `guihooks.trigger('ChangeState', {state = '${state}'})`)
+            `if beamngEarth_settings and beamngEarth_settings.navigate then beamngEarth_settings.navigate('${state}') ` +
+            `else guihooks.trigger('ChangeState', {state = '${state}'}) end`)
 }
 function done() { finish("play") }
 function openMap() { finish("beamngEarthMap") }

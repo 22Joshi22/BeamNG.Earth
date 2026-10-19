@@ -17,7 +17,7 @@ ports of:
                 nearest-first imports, previous-anchor tiles dropped once covered; server sessions
                 (switchAnchor's session: old tiles keyed by session and anchor, heldAnchors of the
                 current session only, heldSessions from the shapes and material textures).
-  edgeguard.lua step (EdgeGuard): the soft wall at the block's edge while the server cannot move
+  edgeguard.lua step (EdgeGuard): the pause at the block's edge while the server cannot move
                 the block, the rescue of a car that left it (docs/ROADMAP.md "Robustness" 2).
   satmat.lua    per-tile imagery materials: created (unit 'material') before the first tile using
                 them, reference-counted, deleted (unit 'matDelete') after their last tile object.
@@ -492,9 +492,11 @@ def tex_kind(px):
 
 # --- edgeguard.lua, core.lua serverHealthy ------------------------------------------------
 class EdgeGuard:
-    """edgeguard.lua: new() and step() (docs/ROADMAP.md "Robustness" 2): the soft wall that holds a car
-    on the ground STOP_M inside the block's collidable edge, the warning before it, the rescue of a car
-    that left the block and dropped below its last ground; nothing for a vehicle off the ground."""
+    """edgeguard.lua: new() and step() (docs/ROADMAP.md "Robustness" 2): the game's pause when a car on the
+    ground would reach STOP_M inside the block's collidable edge within PAUSE_LEAD_S, the warning before it,
+    the rescue of a car that left the block and dropped below its last ground; nothing for a vehicle off the
+    ground. update()'s pause bookkeeping (resume once the car is RESUME_INSIDE_M past the stop line, the
+    player's own resume and its grace) is the caller's (test_restart.py)."""
 
     def __init__(self):
         self.mode = "off"
@@ -516,8 +518,14 @@ class EdgeGuard:
     def warn_distance(speed):
         return max(EDGE["WARN_M"], EDGE["STOP_M"] + speed * speed / (2 * EDGE["DECEL"]) + EDGE["WARN_LEAD"])
 
+    @staticmethod
+    def soon(d_edge, s):
+        """edgeguard.lua step's soon: moving towards an edge, the stop line reached within PAUSE_LEAD_S."""
+        return s > EDGE["PAUSE_MIN_SPEED"] and d_edge - EDGE["STOP_M"] <= s * EDGE["PAUSE_LEAD_S"] + 1
+
     def step(self, clock, x, y, z, vx, vy, box, ground):
-        """One frame: (mode, (vx, vy) to set or None, (x, y, z) to set the car down at or None)."""
+        """One frame: (mode, None (the velocity is no longer set), (x, y, z) to set the car down at or None,
+        pause: True to pause the game)."""
         x0, y0, x1, y1 = box
         inside = x0 <= x <= x1 and y0 <= y <= y1
         grounded = ground is not None and ground <= EDGE["NEAR_GROUND_M"]
@@ -529,21 +537,19 @@ class EdgeGuard:
                 self.last_rescue = clock
                 self.rescues += 1
                 m = min(EDGE["STOP_M"], (x1 - x0) / 2, (y1 - y0) / 2)
-                return "hold", None, (min(max(x, x0 + m), x1 - m), min(max(y, y0 + m), y1 - m), self.last_ground_z + 1)
-            return "air", None, None
+                return "hold", None, (min(max(x, x0 + m), x1 - m), min(max(y, y0 + m), y1 - m), self.last_ground_z + 1), False
+            return "air", None, None, False
         if not grounded:
-            return "air", None, None
-        nvx = max(min(vx, self.cap(x1 - x)), -self.cap(x - x0))
-        nvy = max(min(vy, self.cap(y1 - y)), -self.cap(y - y0))
-        if abs(nvx - vx) > EDGE["SET_EPS"] or abs(nvy - vy) > EDGE["SET_EPS"]:
-            self.holds += 1
-            return "hold", (nvx, nvy), None
+            return "air", None, None, False
         d = min(x - x0, x1 - x, y - y0, y1 - y)
+        if self.soon(x1 - x, vx) or self.soon(x - x0, -vx) or self.soon(y1 - y, vy) or self.soon(y - y0, -vy):
+            self.holds += 1
+            return "hold", None, None, True
         if d <= EDGE["STOP_M"] + 1:
-            return "hold", None, None
+            return "hold", None, None, False
         if d < self.warn_distance(math.sqrt(vx * vx + vy * vy)):
-            return "warn", None, None
-        return "clear", None, None
+            return "warn", None, None, False
+        return "clear", None, None, False
 
 
 def server_healthy(connected, session, pending, clock, error_at, block=True, resync=False):

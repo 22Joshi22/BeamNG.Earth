@@ -888,7 +888,8 @@ function teleport() {
 }
 
 function close() {
-  engineLua("if beamngEarth_settings and beamngEarth_settings.mapOpened then beamngEarth_settings.mapOpened(false) end; guihooks.trigger('ChangeState', {state = 'play'})")
+  engineLua("if beamngEarth_settings and beamngEarth_settings.mapOpened then beamngEarth_settings.mapOpened(false) end; " +
+            "if beamngEarth_settings and beamngEarth_settings.navigate then beamngEarth_settings.navigate('play') else guihooks.trigger('ChangeState', {state = 'play'}) end")
 }
 
 function onEscape() {

@@ -9,6 +9,7 @@ Prints PASS / WARN / FAIL per check and what it means. Needs the game's MCP serv
 import argparse
 import json
 import os
+import re
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -105,10 +106,20 @@ def main():
         text = open(log, encoding="utf-8", errors="replace").read()
     except OSError:
         text = ""
-    packing = text.count("Texture added for packing")
-    check(res, packing == 0, "terrain texture cache keys (terraincache.py)",
-          "no re-encoding" if packing == 0 else f"{packing} 'Texture added for packing': the cache key changed, every "
-          "block's photo is re-encoded by the game (a freeze per block move)")
+    # the game packs its own terrain textures once after an update (new files, no cache yet): only our base photos'
+    # keys count (terraincache.base_key of every *_base*.png in the session folders)
+    sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "server"))
+    import glob
+    import terraincache
+    ours = set()
+    for p in glob.glob(os.path.join(a.user_dir, "temp", "beamngEarth", "*", "*_base*.png")):
+        rel = "/temp/beamngEarth/" + os.path.basename(os.path.dirname(p)) + "/" + os.path.basename(p)
+        ours.add(terraincache.base_key(rel, "/levels/beamng_earth/art/terrains/bngEarth_base_ao.png").upper())
+    packed = re.findall(r"Texture added for packing[^/]*/temp/art/terrainMaterialCache/([0-9A-Fa-f]{16})\.dds", text)
+    mine = [k for k in packed if k.upper() in ours]
+    check(res, not mine, "terrain texture cache keys (terraincache.py)",
+          (f"our photos all from the cache ({len(packed)} of the game's own textures packed once)" if not mine else
+           f"{len(mine)} of our base photos re-encoded by the game: the cache key changed (a freeze per block move)"))
     # (detail_ground.dds: "only RGB formats are supported!" is logged and the texture loads anyway, since 2026-10-10)
     errs = [ln for ln in text.splitlines() if "|E|" in ln and "beamngEarth" in ln and "detail_ground.dds" not in ln]
     check(res, not errs, "mod errors in the log", "none" if not errs else f"{len(errs)}, first: {errs[0][:140]}")

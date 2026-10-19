@@ -115,6 +115,8 @@ MOD_TO_SERVER = {
     "route": {"id": F(int), "lat0": F(NUM), "lon0": F(NUM), "lat1": F(NUM), "lon1": F(NUM),
               "bearing": F(NUM, OPT)},   # the GPS (routing.py); bearing: the car's heading, the route starts that way
     "where": {"id": F(int), "lat": F(NUM), "lon": F(NUM), "online": F(bool)},   # the status bar (geocode.py)
+    # the update notice's button: the server opens the releases page (updates.open_page; additive)
+    "open_page": {"url": F(str)},
 }
 CAM = {"x", "y", "z", "fx", "fy", "fz", "fovDeg", "h"}     # h: the screen height px (screen-space LOD)
 TERRAIN = {"cx": F(NUM), "cy": F(NUM), "heightmap": F(str), "size": F(int), "squareSize": F(NUM),

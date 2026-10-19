@@ -549,15 +549,27 @@ end
 function M.mapOpened(on) mapOpen = on and true or false end
 function M.isMapOpen() return mapOpen end
 
+-- Go to a UI screen (route): extensions.ui_router.navigate, BeamNG 0.40's way (its patch notes: "Use
+-- extensions.ui_router.navigate(routeName, params) instead of guihooks.trigger('ChangeState', ...)"; it exists in 0.39.4
+-- too); the old ChangeState only without it.
+function M.navigate(state)
+  local r = rawget(_G, 'ui_router')
+  if r and r.navigate then
+    local ok = pcall(r.navigate, state)
+    if ok then return true end
+  end
+  local gh = rawget(_G, 'guihooks')
+  if gh then gh.trigger('ChangeState', { state = state }) return true end
+  return false
+end
+
 -- The key binding (actions/beamngEarth.json; M and the pause menu Map via redirectBigMap): open the map, or close it back to driving.
 function M.toggleMap()
-  local gh = rawget(_G, 'guihooks')
-  if not gh then return end
   if mapOpen then
-    gh.trigger('ChangeState', { state = 'play' })
+    M.navigate('play')
     mapOpen = false
   else
-    gh.trigger('ChangeState', { state = M.MAP_ROUTE })
+    M.navigate(M.MAP_ROUTE)
   end
 end
 
@@ -597,8 +609,7 @@ M.WELCOME_DELAY_S = 2
 local welcomeAt = nil
 
 function M.showWelcome()
-  local gh = rawget(_G, 'guihooks')
-  if gh then gh.trigger('ChangeState', { state = M.WELCOME_ROUTE }) end
+  M.navigate(M.WELCOME_ROUTE)
 end
 
 -- EarthWelcome.vue's buttons: seen.
@@ -618,8 +629,7 @@ local feedbackQ = nil      -- { what, frames } waiting for the menu to go
 
 function M.feedback(what)
   if what ~= 'report' and what ~= 'profiler' then return { error = 'unknown' } end
-  local gh = rawget(_G, 'guihooks')
-  if gh then gh.trigger('ChangeState', { state = 'play' }) end
+  M.navigate('play')
   feedbackQ = { what = what, frames = M.FEEDBACK_FRAMES }
   return { ok = true }
 end

@@ -381,9 +381,16 @@ class TexturedShapeTest(unittest.TestCase):
     def test_uv2_convention_matches_engine(self):
         """A stock shape compiled by the engine from a Collada file with two UV sets stores
         tverts2 = (u1, 1 - v1), exactly as tverts = (u0, 1 - v0), which is what cdae.encode
-        writes for uvs2 (read-only check against the game's art_shapes.zip)."""
-        base = "art/shapes/common/building_architect_modules/string_course/G_C_SC_01_300x20"
+        writes for uvs2 (read-only check against the game's art_shapes.zip; the first of these the
+        installed game has: 0.40 dropped the string course module)."""
         with zipfile.ZipFile(GAME) as z:
+            names = set(z.namelist())
+            base = next((b for b in ("art/shapes/common/building_architect_modules/string_course/G_C_SC_01_300x20",
+                                     "art/shapes/interface/raceLineAssist/s_rla_marker_arrow",
+                                     "art/shapes/race/dragstrip/WinLight_Timeboard")
+                         if b + ".dae" in names and b + ".cdae" in names), None)
+            if base is None:
+                self.skipTest("no stock two-UV shape in this game version")
             txt = z.read(base + ".dae").decode()
             shape = cdae.decode(z.read(base + ".cdae"))
 

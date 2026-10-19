@@ -2,6 +2,29 @@
 
 What changed in each release of BeamNG.Earth, newest first.
 
+## 1.5.2 beta (2026-10-19)
+
+Works with BeamNG.drive 0.40. Tested on 0.40.0: loading the world, driving in Baltimore, the Golden Gate, and terrain
+blocks loading while you drive.
+
+### BeamNG.drive 0.40
+- **The map, welcome and feedback screens now open the way 0.40 expects.** 0.40 changed how mods switch UI
+  screens; BeamNG.Earth uses the new way and falls back to the old one.
+- **Parked cars follow 0.40's renamed parked-traffic setting.** 0.40 renamed the option that sets how many parked
+  cars there are; BeamNG.Earth reads the new name first.
+- **The Linux grass patch (gcpatch) now works on 0.40.** It finds its place in the new game version on its own, so
+  grass should stay when terrain blocks move.
+
+### Tips after updating the game to 0.40
+- **0.40 turns all mods off after the update.** Turn mods back on from the main menu, then check that BeamNG.Earth
+  is on under Mods > Manage.
+- **0.40 may reset your units.** If the speedometer shows km/h, switch it back to mph in the game's options.
+
+### Known issues
+- Same as 1.5.0: bridges are not perfect yet, high-speed driving still stutters while the world loads, and long
+  sessions get more stuttery until you restart the game.
+- 0.40's new weather has not been tested together with BeamNG.Earth's real weather yet.
+
 ## 1.5.1 beta (2026-10-19)
 
 Works with BeamNG.drive 0.39.4.

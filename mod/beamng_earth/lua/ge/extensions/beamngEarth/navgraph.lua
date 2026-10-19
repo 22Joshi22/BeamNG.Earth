@@ -379,7 +379,8 @@ function M.takeChoice(o)
   end
   M.choice = { traffic = o.trafficMode == 'enabled', parked = o.trafficParked == 'enabled',
                police = o.trafficPolice == 'enabled', trafficAmount = tonumber(o.trafficAmount) or -1,
-               parkedAmount = tonumber(o.trafficParkedAmount) or -1 }
+               -- (0.40 renamed trafficParkedAmount to trafficParkingAmount)
+               parkedAmount = tonumber(o.trafficParkingAmount or o.trafficParkedAmount) or -1 }
   if log then
     log('I', 'beamngEarth', string.format('traffic choice: traffic %s, parked %s, police %s (freeroam %s / %s)',
       tostring(M.choice.traffic), tostring(M.choice.parked), tostring(M.choice.police), tostring(o.trafficMode),
