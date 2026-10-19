@@ -2398,6 +2398,9 @@ class Connection:
             self.spawn(self.route(msg))
         elif kind == "where":                   # the status bar's street, town and country (geocode.py)
             self.spawn(self.where(msg))
+        elif kind == "open_page":               # the update notice's button: the releases page (updates.open_page)
+            if not updatesmod.open_page(msg.get("url")):
+                log.info("open_page: refused %r", msg.get("url"))
         elif kind == "cache":
             self.on_cache(msg)
         elif kind == "roads_reset":             # the mod dropped its roads (settings): send them all again

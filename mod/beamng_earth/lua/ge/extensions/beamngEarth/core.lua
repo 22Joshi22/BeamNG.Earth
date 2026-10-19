@@ -1203,9 +1203,8 @@ local function drawUpdateNotice()
   if not im then return end
   local vp = im.GetMainViewport()
   if vp then
-    -- under the status bar (its UI app sits in the top ~3.5 % of the screen)
-    im.SetNextWindowPos(im.ImVec2(vp.Pos.x + vp.Size.x * 0.5, vp.Pos.y + math.max(80, vp.Size.y * 0.05)), im.Cond_Always,
-      im.ImVec2(0.5, 0))
+    -- the top left corner (the user, 2026-10-18)
+    im.SetNextWindowPos(im.ImVec2(vp.Pos.x + 12, vp.Pos.y + 12), im.Cond_Always, im.ImVec2(0, 0))
   end
   local flags = im.WindowFlags_AlwaysAutoResize + im.WindowFlags_NoCollapse + im.WindowFlags_NoSavedSettings
     + im.WindowFlags_NoTitleBar
@@ -1214,7 +1213,10 @@ local function drawUpdateNotice()
       tostring(updateInfo.current)))
     if im.Button('Open releases page') then
       local url = (updateInfo.url ~= '' and updateInfo.url) or M.RELEASES_URL
-      if openWebBrowser then pcall(openWebBrowser, url) end
+      -- the server opens it (the game's openWebBrowser does nothing in the native Linux build); the game's own
+      -- call only without a server
+      if net.isConnected() then net.send({ type = 'open_page', url = url })
+      elseif openWebBrowser then pcall(openWebBrowser, url) end
       updateHidden = true
     end
     im.SameLine()
