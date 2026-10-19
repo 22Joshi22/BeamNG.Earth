@@ -310,6 +310,8 @@ BLOCK_SURVEY_M = 2048.0             # m: the largest block (1024² at 2 m); Serv
 SURVEY_ZOOM = 10
 DELTA_MARGIN = 0.1          # m added to measured swap-group deltas (crossings between vertices)
 NICE = 10                   # default niceness of the server process (§4.5)
+NICE_ROADS = 3              # the road tile workers' niceness on top of it (blockworker.init: the terrain blocks first)
+NICE_FAR = 6                # the far field's and far buildings' (the scenery far away last)
 IMAGERY_PREFETCH = 40       # queued tiles whose imagery is fetched ahead of their build (only spare request tokens)
 # status.backlog (docs/V1_4_SPEC.md §3.0, §4): every status message carries the number of desired
 # tiles of the current anchor not shown yet. Status messages only go out on events (v1.3.1); with
@@ -2085,6 +2087,7 @@ class Connection:
         self.active = None              # committed anchor id
         self.block = None               # farfield.Block of the committed terrain
         self.pending_block = None       # the last prepare_terrain of the active anchor
+        self.terrain_wait = 0           # prepare_terrain requests being built (roads.Tracker: the ground first)
         self.predicted_block = None     # the terrain the prefetch expects next
         self.focus = (0.0, 0.0)         # player x, y in the active frame
         self.vel = (0.0, 0.0)
@@ -2533,9 +2536,11 @@ class Connection:
             if time.perf_counter() - t1 > 0.1:
                 log.debug("terrain request %s: update_far %.2f s", (aid, cx, cy), time.perf_counter() - t1)
         t0 = time.perf_counter()
+        self.terrain_wait += 1
         try:
             info = await self.s.terrain(anchor, cx, cy)
         except Exception as e:
+            self.terrain_wait -= 1
             log.exception("terrain request %s failed", req)
             self.send({"type": "terrain_error", "requestId": req, "anchorId": aid,
                        "error": f"{type(e).__name__}: {e}"})
@@ -2543,6 +2548,7 @@ class Connection:
                 self.pending_block = None   # the mod will not commit it: stop forcing L0 there
                 self.update_far()
             return
+        self.terrain_wait -= 1
         key = (aid, cx, cy)
         self.s.hm_sent.append(key)
         log.info("terrain_ready %s after %.0f ms", key, (time.perf_counter() - t0) * 1000)
@@ -2714,7 +2720,8 @@ class Connection:
             self.s.download_ahead(self.s.anchors[aid], *self.focus, *self.vel)
             self.base_refresh(aid)
         if self.s.mapdata is not None and aid == self.active:
-            self.roads.on_pose(self, aid, *self.focus, asyncio.get_running_loop(), self.s.build_roads_tile)
+            self.roads.on_pose(self, aid, *self.focus, asyncio.get_running_loop(), self.s.build_roads_tile,
+                               vel=self.vel, ground_busy=self.terrain_wait > 0)
         if self.s.veg is not None and aid == self.active:
             anchor = self.s.anchors.get(aid)
             if anchor is not None:                            # a teleport's cells built at once, ahead
@@ -3255,7 +3262,7 @@ async def main_async(args):
             initargs=(args.cache_dir, args.offline, args.roads == "on",
                       args.grading == "on" and args.roads == "on",
                       args.road_widths == "on" and args.roads == "on", False, ctx.Queue(maxsize=1),
-                      logging.getLogger().level, args.airports == "on", args.sea == "on"))
+                      logging.getLogger().level, args.airports == "on", args.sea == "on", NICE_FAR))
     airports_db = None
     if args.airports == "on":       # before any worker process starts: they read this copy
         try:
@@ -3269,14 +3276,14 @@ async def main_async(args):
             args.road_processes, mp_context=ctx, initializer=blockworker.init,
             initargs=(args.cache_dir, args.offline, True, args.grading == "on", args.road_widths == "on",
                       args.surface == "on", ctx.Queue(maxsize=1), logging.getLogger().level,
-                      args.airports == "on", args.sea == "on"))
+                      args.airports == "on", args.sea == "on", NICE_ROADS))
     far_bld_pool = None
     if road_pool is not None and args.buildings == "on":
         far_bld_pool = ProcessPoolExecutor(       # far building tiles (blockworker.far_buildings_tile)
             1, mp_context=ctx, initializer=blockworker.init,
             initargs=(args.cache_dir, args.offline, True, args.grading == "on", args.road_widths == "on",
                       args.surface == "on", ctx.Queue(maxsize=1), logging.getLogger().level,
-                      args.airports == "on", args.sea == "on"))
+                      args.airports == "on", args.sea == "on", NICE_FAR))
     server = Server(args.user_dir, args.cache_dir, args.workers, kfun, args.hysteresis, args.far_radius, fmt,
                     imagery=args.imagery, near_visual=args.near_visual, tex_near=args.tex_near,
                     tex_far=args.tex_far, tone=args.tone, near_radii=radii,

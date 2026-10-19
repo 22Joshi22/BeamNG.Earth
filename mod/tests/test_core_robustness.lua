@@ -229,7 +229,8 @@ T.check(core.banner().id == 'ok' and not shown(), 'all is well: the banner is hi
 veh.pos, veh.vel = vec3(990, 0, 0.5), vec3(20, 0, 0)
 local sets = veh.sets
 frames(10)
-T.check(st().guard.mode == 'off' and veh.sets == sets and veh.vel.x == 20, 'healthy server: guard off at the edge, no call')
+T.check(st().guard.mode ~= 'hold' and not st().guard.pausedByUs and veh.sets == sets and veh.vel.x == 20,
+  'healthy server: no pause short of the edge, no call (the block follows)')
 veh.pos, veh.vel = vec3(0, 0, 0.5), vec3(0, 0, 0)
 -- answer the terrain request that drive caused, so the server is healthy again
 local pt = last('prepare_terrain')
@@ -304,7 +305,7 @@ T.check(#farfield.heldAnchors() == 0, 'heldAnchors: never s1\'s numbers')
 nPose = #received('pose')
 T.check(pumpUntil(function() return #received('pose') > nPose end, 30), 'poses after the resync')
 T.check(has(last('pose').sessions, 's1') and #last('pose').held == 0, 'pose.sessions still names s1 while its tiles are shown')
-T.check(st().guard.mode == 'off', 'healthy again: the guard is off')
+T.check(st().guard.mode ~= 'hold' and not st().guard.pausedByUs, 'healthy again: the guard holds nothing')
 -- s2 covers the area and says far_done: the s1 tiles go, then the folder is released
 local keys2 = {}
 for i = 1, 4 do
@@ -343,7 +344,7 @@ serverSend({ type = 'terrain_ready', requestId = pt.requestId, anchorId = 1, cx 
 T.check(pumpUntil(function() return st().block.cx == pt.cx end, 100), 'the answer arrives and commits once the car is past the commit distance')
 setGround(pt.cx, pt.cy)
 frames(2)
-T.check(st().guard.mode == 'off' and not shown(), 'answered: the guard is off, the banner hidden')
+T.check(st().guard.mode ~= 'hold' and not st().guard.pausedByUs and not shown(), 'answered: the guard holds nothing, the banner hidden')
 -- a terrain_error: held for ERROR_HOLD_S
 veh.vel = vec3(0, 0, 0)
 b = st().block

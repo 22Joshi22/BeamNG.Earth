@@ -92,8 +92,17 @@ def load_airports(cache_dir, dem):
 
 
 def init(cache_dir, offline, roads, grading, road_widths, surface, warm_q, log_level=logging.INFO, airports=False,
-         sea=False):
+         sea=False, nice=0):
+    """nice: this worker's niceness on top of the server's (earthd NICE_*): the terrain blocks' workers keep the
+    server's own, the road tiles' and the far field's run below them, so the ground under the car wins the server's
+    few cores (2026-10-19: at 180 mph the next block waited 6 s behind the road tiles ahead and a ball fell off the
+    block's edge)."""
     global _s
+    if nice and hasattr(os, "nice"):
+        try:
+            os.nice(int(nice))
+        except OSError:
+            pass
     logging.basicConfig(level=log_level, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     _s = _State(cache_dir, offline, roads, grading, road_widths, surface, airports, sea)
     threading.Thread(target=_watch_parent, args=(os.getppid(),), daemon=True, name="parent-watch").start()

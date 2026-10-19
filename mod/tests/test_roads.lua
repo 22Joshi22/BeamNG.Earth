@@ -108,6 +108,20 @@ T.check(w.pos.x == 256 and w.pos.y == 512, 'at the tile corner')
 T.check(S.calls.reloadCollision == 1, 'collision reloaded for it')
 roads.update(gov, 2)
 T.check(S.calls.reloadCollision == 1, 'nothing more while nothing changes')
+-- a terrain .ter swap: no rebuild for SWAP_QUIET_FRAMES frames (its collision follows by itself; one in between took
+-- the block before its heights were in, 2026-10-19)
+do
+  local quietMs = roads.SWAP_QUIET_MS
+  roads.SWAP_QUIET_MS = 0
+  roads.requestCollision()
+  roads.terrainSwapped()
+  for i = 1, roads.SWAP_QUIET_FRAMES - 1 do roads.update(gov, 2) end
+  T.check(S.calls.reloadCollision == 1 and roads.swapQuiet(), 'no rebuild in the frames after a terrain swap')
+  roads.update(gov, 2)
+  T.check(S.calls.reloadCollision == 2 and not roads.swapQuiet(), 'then the pending rebuild runs')
+  roads.SWAP_QUIET_MS = quietMs
+  S.calls.reloadCollision = 1
+end
 roads.onDrop({ anchorId = 2, key = '5_5' })
 roads.update(gov, 2)
 T.check(#statics() == 0 and decalRoads() == 0 and S.calls.reloadCollision == 2, 'dropped tile: mesh deleted, collision reloaded')
@@ -271,5 +285,17 @@ roads = fresh
 roads.onTile({ anchorId = 2, key = '0_0', path = '/t/a.json', n = 2 }, 2)
 roads.reset()
 T.check(roads.status().tiles == 0 and roads.status().queued == 0, 'level end: forgotten')
+
+-- high speed (2026-10-19): the collision reach is ahead of a fast car only, all round when slow or no direction
+do
+  local p = vec3(0, 0, 0)
+  local east = { x = 1, y = 0 }
+  T.check(roads.radiusToward(p, 1500, 100, 1400, east) == 1400, 'ahead of a fast car: the full reach')
+  T.check(roads.radiusToward(p, -1500, 0, 1400, east) == roads.COLLIDE_M[1], 'behind it: the minimum')
+  T.check(roads.radiusToward(p, 0, 1500, 1400, east) == roads.COLLIDE_M[1], 'beside it: the minimum')
+  T.check(roads.radiusToward(p, -100, 50, 1400, east) == 1400, 'its own tile: the full reach')
+  T.check(roads.radiusToward(p, -1500, 0, 1400, nil) == 1400, 'slow (no direction): all round')
+  T.check(roads.collideRadius(100) == 1400 and roads.collideRadius(500) == roads.COLLIDE_M[2], 'reach: 14 s of driving, capped')
+end
 
 T.done('test_roads')

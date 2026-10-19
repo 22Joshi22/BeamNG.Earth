@@ -22,6 +22,12 @@ M.SETTLE_FRAMES = 3     -- frames after the covering block's commit (its collisi
 M.MAX_S = 30            -- s without progress (no block being built: offline, a server that cannot build there): let go
 M.UNDER_M = 0.5         -- the drop point this close over the ground or under it: the car goes onto the ground
 M.LIFT_M = 1.0          -- ... this far above it
+-- Bridges and buildings too (the user, 2026-10-19: "The teleport pause works for the ground but bridges and buildings
+-- take longer to get collision and when it unpauses they often dont"): with the ground in, the hold also waits for the
+-- road tiles within NEAR_M (their decks, tunnels, sidewalks and buildings made and solid: roads.readyAround), at most
+-- NEAR_MAX_S, then lets go anyway.
+M.NEAR_M = 300
+M.NEAR_MAX_S = 20
 
 function M.new() return { active = false } end
 
@@ -33,7 +39,9 @@ M.inside = inside
 -- Each frame with the player's position (x, y, z in the anchor frame), speed (m/s), the frame's dt (s), the
 -- anchor id, the block's collidable box ({x0, y0, x1, y1} or nil) and busy (the mod is placing or rebasing the car
 -- itself). Returns 'start' when a hold begins (h.x, h.y, h.z: where to hold), else nil.
-function M.observe(h, x, y, z, speed, dt, anchorId, box, busy)
+-- nearReady(x, y): optional, are the colliders around (x, y) in (roads.readyAround)? A drop onto the block where they
+-- are not holds too (a bridge or building there had no collision yet).
+function M.observe(h, x, y, z, speed, dt, anchorId, box, busy, nearReady)
   local last = h.last
   h.last = { x = x, y = y, z = z, anchorId = anchorId, speed = speed or 0 }
   if h.active or busy or not last or last.anchorId ~= anchorId then return nil end
@@ -41,8 +49,9 @@ function M.observe(h, x, y, z, speed, dt, anchorId, box, busy)
   -- the speed of the frame before: in the drop's own frame the engine reports the jump itself as the car's velocity
   -- (thousands of m/s), which excused every drop (the user's first try, 2026-10-18: "physics didnt pause")
   if d <= M.JUMP_M or d <= last.speed * (dt or 0) * 5 then return nil end
-  if inside(box, x, y, 0) then return nil end     -- dropped onto the block (up to its edge): there is collision
-  h.active, h.x, h.y, h.z, h.since, h.settle = true, x, y, z, nil, nil
+  -- dropped onto the block (up to its edge): its ground is there, and the bridges and buildings too unless nearReady says
+  if inside(box, x, y, 0) and (not nearReady or nearReady(x, y)) then return nil end
+  h.active, h.x, h.y, h.z, h.since, h.settle, h.nearSince = true, x, y, z, nil, nil, nil
   return 'start'
 end
 
@@ -56,7 +65,8 @@ end
 -- it is), 'place', z (set the car on the ground at z) or 'timeout'.
 -- building: a block for the car is being prepared (a terrain request out, the server connected): the wait is not
 -- counted (a slow server or a first visit took 48 s, and the car fell when 30 s ran out, 2026-10-18).
-function M.step(h, now, box, blockSerial, groundZ, building)
+-- near: the colliders around the hold point are in (roads.readyAround; nil counts as yes).
+function M.step(h, now, box, blockSerial, groundZ, building, near)
   if not h.active then return nil end
   h.since = (building or h.since == nil) and now or h.since
   if now - h.since > M.MAX_S then
@@ -72,6 +82,10 @@ function M.step(h, now, box, blockSerial, groundZ, building)
   end
   h.settle.frames = h.settle.frames + 1
   if h.settle.frames < M.SETTLE_FRAMES or groundZ == nil then return nil end
+  if near == false then
+    h.nearSince = h.nearSince or now
+    if now - h.nearSince < M.NEAR_MAX_S then return nil end
+  end
   h.active = false
   if h.z < groundZ + M.UNDER_M then return 'place', groundZ + M.LIFT_M end
   return 'release'
