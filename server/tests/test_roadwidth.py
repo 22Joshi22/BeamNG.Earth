@@ -38,7 +38,7 @@ class MeasureTest(unittest.TestCase):
         one = roadwidth.Walls(row_of_houses(9.0, 1))
         self.assertIsNone(roadwidth.measure_row(np.array([(-100.0, 0.0), (100.0, 0.0)]), one), "a quay: one side")
         self.assertIsNone(roadwidth.measure_row(np.array([(-100.0, 0.0), (100.0, 0.0)]), roadwidth.Walls([])))
-        self.assertIsNone(roadwidth.split(8.0), "no plausible carriageway")
+        self.assertIsNone(roadwidth.split(4.0), "no plausible carriageway and sidewalks")
 
 
 class UseTest(unittest.TestCase):

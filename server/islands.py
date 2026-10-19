@@ -130,20 +130,22 @@ RING_ROUND = 0.82           # this round: a ring if RING_ONEWAY_SHARE of it is o
 RING_ONEWAY_SHARE = 0.5
 
 
-def ring_fids(roads_list):
-    """{fid} of the roads that form roundabout rings: small loops round as a circle, or nearly that round and at least
+def ring_directions(roads_list, left_hand=False):
+    """{fid: direction along its geometry} of roundabout rings: small loops round as a circle, or nearly that round and at least
     half one-way, all those driven the same way round (spec.dir: +1 along the geometry, -1 against). A junction on a ring gets no
     signals or stop signs (furniture.junction_controls): a ring entry looked like a crossroads of three major roads,
     and its signal poles stood on the ring (Timisoara 2026-10-15). Shared by the road tiles and the road graph, so
-    both decide the same."""
-    edges, adj = _graph(roads_list)
-    out = set()
+    both decide the same. Mapped one-way directions take precedence; missing directions follow the ring's mapped
+    circulation, or the driving side when none is mapped. Sorting makes inference independent of cell/load order."""
+    edges, adj = _graph(sorted(roads_list, key=lambda r: r[0]))
+    out = {}
     for cyc in _cycles(edges, adj, RING_MAX_EDGES, RING_MAX_LOOP_M):
         L = sum(edges[k][5] for k, _ in cyc)
         parts = [edges[k][2] if fwd else edges[k][2][::-1] for k, fwd in cyc]
         poly = np.concatenate([p[:-1, :2] for p in parts])
-        area = abs(_area(poly)) if len(poly) >= 3 else 0.0
-        if not (MIN_AREA_M2 <= area <= RING_MAX_AREA_M2):
+        signed_area = _area(poly) if len(poly) >= 3 else 0.0
+        area = abs(signed_area)
+        if L > RING_MAX_LOOP_M or not (MIN_AREA_M2 <= area <= RING_MAX_AREA_M2):
             continue
         rnd = 4 * math.pi * area / (L * L)
         ow = [(k, fwd) for k, fwd in cyc if getattr(edges[k][1], "oneway", False) and getattr(edges[k][1], "dir", 0)]
@@ -152,8 +154,19 @@ def ring_fids(roads_list):
             continue                                                 # one-ways against each other: not a ring
         oneway_ok = along and sum(edges[k][5] for k, _ in ow) >= RING_ONEWAY_SHARE * L
         if rnd >= RING_ROUND_ANY or (rnd >= RING_ROUND and oneway_ok):
-            out.update(edges[k][0] for k, _ in cyc)
+            # A through road makes this a connected road loop, not a roundabout with a central island.
+            members = {k for k, _ in cyc}
+            if any(_crosses(poly, e[2]) for j, e in enumerate(edges) if j not in members):
+                continue
+            forward = along[0] if along else (signed_area > 0) != bool(left_hand)
+            for k, fwd in cyc:
+                out[edges[k][0]] = 1 if fwd == forward else -1
     return out
+
+
+def ring_fids(roads_list):
+    """Feature ids of roundabout rings, shared by the signs and the AI graph."""
+    return set(ring_directions(roads_list))
 
 
 def find(roads_list, is_oneway=lambda spec: bool(getattr(spec, "oneway", False)), structures=()):
