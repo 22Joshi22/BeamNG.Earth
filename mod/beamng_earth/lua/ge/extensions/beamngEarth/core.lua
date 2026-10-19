@@ -1203,7 +1203,9 @@ local function drawUpdateNotice()
   if not im then return end
   local vp = im.GetMainViewport()
   if vp then
-    im.SetNextWindowPos(im.ImVec2(vp.Pos.x + vp.Size.x * 0.5, vp.Pos.y + 70), im.Cond_Always, im.ImVec2(0.5, 0))
+    -- under the status bar (its UI app sits in the top ~3.5 % of the screen)
+    im.SetNextWindowPos(im.ImVec2(vp.Pos.x + vp.Size.x * 0.5, vp.Pos.y + math.max(80, vp.Size.y * 0.05)), im.Cond_Always,
+      im.ImVec2(0.5, 0))
   end
   local flags = im.WindowFlags_AlwaysAutoResize + im.WindowFlags_NoCollapse + im.WindowFlags_NoSavedSettings
     + im.WindowFlags_NoTitleBar
