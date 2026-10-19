@@ -8,8 +8,8 @@
   "Stages": [
    {
     "baseColorMap": "/levels/beamng_earth/art/runway/t_paint_white_b.color.png",
-    "normalMap": "/levels/west_coast_usa/art/road/t_line_white_nm.normal.png",
-    "opacityMap": "/levels/west_coast_usa/art/road/t_line_white_o.data.png",
+    "normalMap": "/assets/materials/decalroad/lines/line_white/t_line_white_nm.normal.dds",
+    "opacityMap": "/assets/materials/decalroad/lines/line_white/t_line_white_o.data.dds",
     "roughnessFactor": 0.45
    },
    {},
@@ -33,8 +33,8 @@
   "Stages": [
    {
     "baseColorMap": "/levels/beamng_earth/art/runway/t_paint_yellow_b.color.png",
-    "normalMap": "/levels/west_coast_usa/art/road/t_line_white_nm.normal.png",
-    "opacityMap": "/levels/west_coast_usa/art/road/t_line_white_o.data.png",
+    "normalMap": "/assets/materials/decalroad/lines/line_white/t_line_white_nm.normal.dds",
+    "opacityMap": "/assets/materials/decalroad/lines/line_white/t_line_white_o.data.dds",
     "roughnessFactor": 0.45
    },
    {},
