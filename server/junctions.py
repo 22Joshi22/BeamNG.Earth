@@ -132,8 +132,18 @@ def _boxes(roads):
     got = _BOXES.get(id(roads))
     if got is not None and got[0] is roads:
         return got[1]
-    b = np.array([(ln[:, 0].min(), ln[:, 1].min(), ln[:, 0].max(), ln[:, 1].max()) for _, _, ln, _ in roads],
-                 np.float64).reshape(-1, 4)
+    # every line at once (min / max over each line's run of points: four numpy calls per road took ~0.5 % a tile)
+    import mapgeom
+    lines = [ln for _, _, ln, _ in roads]
+    b = np.empty((len(lines), 4))
+    if lines:
+        n = np.array([len(ln) for ln in lines], np.int64)
+        allp = np.concatenate([np.asarray(ln, np.float64)[:, :2] for ln in lines])
+        a = np.concatenate(([0], np.cumsum(n)[:-1]))
+        b[:, 0] = mapgeom._reduce(np.minimum, allp[:, 0], a, a + n)
+        b[:, 1] = mapgeom._reduce(np.minimum, allp[:, 1], a, a + n)
+        b[:, 2] = mapgeom._reduce(np.maximum, allp[:, 0], a, a + n)
+        b[:, 3] = mapgeom._reduce(np.maximum, allp[:, 1], a, a + n)
     if len(_BOXES) >= 16:
         _BOXES.clear()
     _BOXES[id(roads)] = (roads, b)      # (the list kept: its id cannot be another list's meanwhile)

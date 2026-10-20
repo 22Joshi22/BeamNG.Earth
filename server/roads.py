@@ -3071,6 +3071,9 @@ def build_tile(frame, tx, ty, cells, elev, urban_fn=None, walks=None, bridges=No
     rings = []                                  # (fid, spec, lon/lat ring) near the tile (xy at h = 0)
     for fid in sorted(seen):
         feats, i, spec = seen[fid]
+        fb = feats.boxes(frame)[i]          # (the whole feature far from the tile: none of its parts is near)
+        if fb[2] < near[0] or fb[0] > near[2] or fb[3] < near[1] or fb[1] > near[3]:
+            continue
         for ring in ground_parts(feats, i):
             e, n = mapgeom.enu_xy(feats, frame, ring)
             if (e.max() < near[0] or e.min() > near[2] or n.max() < near[1] or n.min() > near[3]):
