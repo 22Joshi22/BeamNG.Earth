@@ -79,12 +79,13 @@ class DownloadAheadTest(unittest.TestCase):
         self.run_at(s, a, 50.0 + earthd.AHEAD_MOVE_M, 0.0, 30.0, 0.0)
         self.assertGreater(len(s.dem.asked), n)
 
-    def test_no_buildings_no_cells(self):
+    def test_no_buildings_roads_only(self):
+        # (from PR #64) without buildings the road layer is still fetched ahead (the road tiles need it)
         s, a = server(), anchor()
         s.buildings = False
         self.run_at(s, a, 0.0, 0.0, 30.0, 0.0)
         self.assertTrue(s.dem.asked)
-        self.assertEqual(s.mapdata.cells, [])
+        self.assertTrue(s.mapdata.cells and all(layers == ("roads",) for _, layers, _ in s.mapdata.cells))
 
 
 if __name__ == "__main__":

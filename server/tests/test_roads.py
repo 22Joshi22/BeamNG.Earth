@@ -557,6 +557,36 @@ class TrackerTest(unittest.TestCase):
         self.assertEqual(keys, want)
         self.assertEqual(len(built), len(want), "each tile built once")
 
+    def test_empty_and_failed_tiles_not_built_at_every_pose(self):
+        # (from PR #64) a tile with no roads came back None and was built again at every pose; a failed one too, at
+        # once: an empty one now stays done while within reach, a failed one waits TILE_RETRY_S
+        conn = FakeConn()
+        tr = roads.Tracker()
+        built = []
+        fail = {(0, 0)}
+
+        def build(aid, tx, ty):
+            built.append((tx, ty))
+            if (tx, ty) in fail:
+                raise OSError("offline")
+            return None if (tx + ty) % 2 else (f"/p/{aid}_{tx}_{ty}", 1)
+
+        async def go():
+            loop = asyncio.get_running_loop()
+            for _ in range(40):
+                tr.on_pose(conn, 1, 0.0, 0.0, loop, build)
+                await asyncio.sleep(0.01)
+        asyncio.run(go())
+        near = set(roads.tiles_near(0, 0, roads.SEND_M))
+        counts = {k: built.count(k) for k in near}
+        self.assertTrue(all(counts[k] == 1 for k in near if (k[0] + k[1]) % 2), "empty tiles built once")
+        self.assertEqual(counts[(0, 0)], 1, "the failed one not again within TILE_RETRY_S")
+        tr.retry[(0, 0)] = 0.0              # its wait over
+        fail.clear()
+        asyncio.run(go())
+        self.assertEqual(built.count((0, 0)), 2)
+        self.assertIn((1, "0_0"), {(m["anchorId"], m["key"]) for m in conn.sent if m["type"] == "roads_tile"})
+
     def test_far_buildings_skip_the_road_tiles(self):
         import vegetation
         import buildings

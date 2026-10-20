@@ -190,8 +190,9 @@ AHEAD_MAX_M = 4000.0
 AHEAD_MIN_V = 8.0               # m/s: slower, the blocks around (and surface.prefetch's 3 km) cover it
 AHEAD_MOVE_M = 150.0            # m the player moves before the next round
 AHEAD_MARGIN_M = 250.0          # m around the block's half width at each point
-AHEAD_LAYERS = ("buildings", "building_parts", "infrastructure", "land_use")    # the road tiles' cells (not
-                                                                                # landcover / roads: surface.prefetch)
+# the road tiles' cells (landcover: surface.prefetch). With roads (surface.prefetch has them within 3 km, with the land
+# cover on) and water, which a road tile otherwise fetched itself when it needed it (from KyzoFox's 1.5.4, PR #64)
+AHEAD_LAYERS = ("roads", "buildings", "building_parts", "infrastructure", "water", "land_use")
 BASE_PX = 1024                  # detail mode: the block's base photo (1 km -> 1 m per texel; USGS is ~1.9 m)
 BASE_AO_VFS = "/levels/beamng_earth/art/terrains/bngEarth_base_ao.png"   # every surface layer's aoBaseTex
 BASE_AO = 251                   # its flat value (tools/make_level_assets.py)
@@ -1164,7 +1165,7 @@ class Server:
             pts.append((float(la), float(lo)))
         reach = self.layout.block * heightmap.SQUARE / 2 + AHEAD_MARGIN_M
         zoom = anchor.hm_zoom
-        layers = AHEAD_LAYERS if (self.mapdata is not None and self.buildings) else ()
+        layers = (AHEAD_LAYERS if self.buildings else ("roads",)) if self.mapdata is not None else ()
         self.ahead_busy = True
 
         def run():

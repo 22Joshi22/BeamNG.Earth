@@ -24,6 +24,7 @@ import logging
 import math
 import os
 import threading
+import time
 from collections import namedtuple
 
 import numpy as np
@@ -3251,6 +3252,10 @@ class Tracker:
         self.building = set()
         self.pool = None        # its own BUILD_PER_POSE threads (vegetation.Tracker)
         self.futs = {}
+        # (from KyzoFox's 1.5.4, PR #64) a tile that came back with no roads was built again at every pose: kept here
+        # while it is within reach; a failed one is asked again after TILE_RETRY_S, not at the next pose
+        self.empty = set()
+        self.retry = {}         # tile -> monotonic time it may be built again
 
     def close(self):
         if self.pool is not None:
@@ -3265,6 +3270,7 @@ class Tracker:
             for f in self.futs.values():
                 f.cancel()
             self.aid, self.sent, self.building, self.futs = aid, set(), set(), {}
+            self.empty, self.retry = set(), {}
         if self.pool is None:
             from concurrent.futures import ThreadPoolExecutor
             self.pool = ThreadPoolExecutor(BUILD_PER_POSE, thread_name_prefix="roads-tile")
@@ -3272,7 +3278,9 @@ class Tracker:
         fast = math.hypot(vx, vy) >= FAST_MS
         wanted = wanted_tiles(x, y, vx, vy)
         start = set(tiles_near(x, y, SEND_M)) if ground_busy else wanted
-        want = [k for k in start if k not in self.sent and k not in self.building]
+        now = time.monotonic()
+        want = [k for k in start if k not in self.sent and k not in self.building and k not in self.empty
+                and self.retry.get(k, 0.0) <= now]
         want.sort(key=path_key(x, y, vx, vy) if fast else view_key(conn, aid, x, y))
         for tx, ty in want[:max(0, BUILD_PER_POSE - len(self.building))]:   # in flight at most (vegetation.Tracker)
             self.building.add((tx, ty))
@@ -3282,6 +3290,10 @@ class Tracker:
         for k in drop:
             self.sent.discard(k)
             conn.send({"type": "roads_drop", "anchorId": aid, "key": f"{k[0]}_{k[1]}"})
+        if self.empty:
+            self.empty = {k for k in self.empty if k in wanted or tile_distance(k[0], k[1], x, y) <= DROP_M}
+        if self.retry:
+            self.retry = {k: t for k, t in self.retry.items() if t > now}
 
     def _built(self, conn, aid, key, fut):
         if aid != self.aid:                 # (an old anchor's: the same key may be in flight for the new one)
@@ -3300,8 +3312,10 @@ class Tracker:
                 log.warning("roads tile %s failed: %s", key, kind, exc_info=e)
             else:
                 log.debug("roads tile %s: %s: %s", key, type(e).__name__, e)
+            self.retry[key] = time.monotonic() + TILE_RETRY_S
             return
-        if res is None:
+        if res is None:                     # no roads there: not built again while it stays within reach
+            self.empty.add(key)
             return
         path, n = res
         self.sent.add(key)
@@ -3314,6 +3328,7 @@ class Tracker:
         conn.send(m)
 
 
+TILE_RETRY_S = 3.0              # s before a road tile whose build failed is built again (Tracker._built)
 _FAILS_SEEN = set()             # the kinds of road tile failures logged in full (Tracker._built)
 BLD_PARTS_MAX = 4               # building meshes per road tile ("bld", "bld2".."bld4": the mod's list)
 

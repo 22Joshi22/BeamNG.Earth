@@ -229,9 +229,16 @@ local function dropTile(key)
   if t.deck then deleteQ[#deleteQ + 1] = t.deck end
   for _, w in ipairs({ 'bld', 'bld2', 'bld3', 'bld4', 'bldcol', 'walkcol', 'tunnel' }) do if t[w] then deleteQ[#deleteQ + 1] = t[w] end end
   if t.wire then deleteQ[#deleteQ + 1] = t.wire end
-  local keep = {}
-  for _, q in ipairs(parked) do if q.key ~= key then keep[#keep + 1] = q end end
-  parked = keep
+  -- and its meshes not made yet (from KyzoFox's 1.5.4, PR #64): a tile sent again under the same key left its old
+  -- walkQ / held / createQ entries, which were then made for the new tile from pooled shape paths that had just been
+  -- reported gone and refilled with another tile's shape: that tile's buildings drawn here at its ground height (houses
+  -- floating in the sky near Cleburne, AL, 2026-10-19)
+  local function purge(list)
+    local keep = {}
+    for _, q in ipairs(list) do if q.key ~= key then keep[#keep + 1] = q end end
+    return keep
+  end
+  parked, walkQ, held, createQ = purge(parked), purge(walkQ), purge(held), purge(createQ)
   if t.props then require('beamngEarth/trees').dropKey((key:gsub(':', ':p', 1))) end
   if t.park then require('beamngEarth/parking').dropKey(key) end
   tiles[key] = nil
@@ -390,7 +397,7 @@ function M.onTile(msg, currentAnchor)
     colliders = type(data.colliders) == 'table' and data.colliders or {}, slots = slots, at = now(), colWant = {} }
   sinceChange = stopwatch.new()
   if road then                -- the tile's road mesh replaces its DecalRoads (server/roadmesh.py)
-    walkQ[#walkQ + 1] = { key = key, walk = road, what = 'road' }
+    walkQ[#walkQ + 1] = { key = key, walk = road, what = 'road', tile = tiles[key] }
   else
     for _, c in ipairs(data.chunks) do createQ[#createQ + 1] = { key = key, chunk = c } end
   end
@@ -403,7 +410,7 @@ function M.onTile(msg, currentAnchor)
     tiles[key].park = true
   end
   if type(data.wire) == 'table' and data.wire.shape and type(data.wire.pos) == 'table' then    -- pole wires
-    walkQ[#walkQ + 1] = { key = key, walk = data.wire, what = 'wire' }
+    walkQ[#walkQ + 1] = { key = key, walk = data.wire, what = 'wire', tile = tiles[key] }
   end
   -- sidewalks, bridge decks, buildings (split in parts under the engine's 16-bit index limit), the buildings'
   -- lean collision mesh: colliders only near the car (M.COLLIDE_M); with a bldcol the drawn buildings only render
@@ -417,7 +424,7 @@ function M.onTile(msg, currentAnchor)
   for _, what in ipairs({ 'walk', 'deck', 'bld', 'bld2', 'bld3', 'bld4', 'bldcol', 'walkcol', 'tunnel' }) do
     local w = data[what]
     if type(w) == 'table' and w.shape and type(w.pos) == 'table' then
-      local q = { key = key, walk = w, what = what,
+      local q = { key = key, walk = w, what = what, tile = tiles[key],
         renderOnly = (lean and what:sub(1, 3) == 'bld' and what ~= 'bldcol') or (leanWalk and what == 'walk') }
       if not q.renderOnly then tiles[key].colWant[what] = true end
       if q.renderOnly or M.collideNear(tiles[key]) then walkQ[#walkQ + 1] = q else parked[#parked + 1] = q end
@@ -663,6 +670,7 @@ function M.update(gov, currentAnchor, player)
   while #walkQ > 0 and gov:try('roadWalk') do
     local q = table.remove(walkQ, M.nextWalk(walkQ))
     local t = tiles[q.key]
+    if t and q.tile and q.tile ~= t then t = nil end   -- (an entry of an earlier tile under this key: not made)
     -- (only a colliding mesh waits: a render-only one (q.renderOnly: the drawn sidewalks and buildings beside their lean
     -- collision meshes) cannot catch the car, and holding it hid a whole tile's sidewalks while the car stood in their
     -- box: a roundabout's island band was never drawn, 2026-10-17 Harbor Point)
