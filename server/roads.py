@@ -120,6 +120,11 @@ NEAR_M = 40.0                   # roads this far outside the tile still cut its 
 # West Coast USA's plain streets 12.5 m for 8 m of driving: ~2.3 m of parking each side). A width
 # rule, where Overture has one, is the carriageway already.
 PARKING_M = 2.3
+# Rural motorways: two lanes a direction (most rural Interstates and European motorways; every US Interstate was drawn
+# with three, GitHub #43) between paved shoulders, the edge line along each; urban ones keep STYLE's three lanes.
+# Overture has no lane counts.
+MOTORWAY_RURAL_M = 7.4
+SHOULDER_M = 2.2
 PARKING_CLASSES = {"residential", "tertiary", "secondary", "unclassified", "living_street"}
 EDGE_STRIP_M = 1.0
 URBAN_CLASS = 50                # ESA WorldCover "built-up"
@@ -349,8 +354,23 @@ def carriageway(cls, kind, urban, rule_width=None, oneway=False):
     if urban and cls in PARKING_CLASSES:
         return w + (1 if oneway else 2) * PARKING_M
     if not urban and cls != "service":
+        if oneway and cls == "motorway":
+            return MOTORWAY_RURAL_M + 2 * SHOULDER_M
         return w + 2 * EDGE_STRIP_M
     return w
+
+
+def rural_motorway(spec):
+    """One carriageway of a rural motorway: two lanes between shoulders (carriageway)."""
+    return spec.cls == "motorway" and spec.oneway and not spec.urban and spec.kind in BUILT
+
+
+def edge_margin(spec):
+    """m of a drawn carriageway beside its driving lanes on each side, parking aside: a rural road's edge strip or
+    a rural motorway's shoulder (carriageway), 0 in towns."""
+    if spec.urban or spec.kind not in BUILT or spec.cls == "service":
+        return 0.0
+    return SHOULDER_M if rural_motorway(spec) else EDGE_STRIP_M
 
 
 def _dir_kmh(feats, i, ncon, lengths=None):
@@ -1348,7 +1368,8 @@ def extras(spec, pts, lon, left_hand=False):
     if kind == "paved" and cls in LANE_CLASSES:
         # lane lines (white dashes) where the driving width holds two or more lanes a direction
         parked = urban and cls in PARKING_CLASSES and not (not spec.oneway and cls in URBAN_ARTERIAL)
-        drive = w - ((PARKING_M if spec.oneway else 2 * PARKING_M) if parked else 0.0)
+        # (a rural road's edge strips counted as lanes: three on every rural Interstate, GitHub #43)
+        drive = w - ((PARKING_M if spec.oneway else 2 * PARKING_M) if parked else 2 * edge_margin(spec))
         lanes = int(drive // LANE_M)
         if spec.oneway and lanes >= 2:
             lw = drive / lanes
@@ -1362,7 +1383,8 @@ def extras(spec, pts, lon, left_hand=False):
                     out.append((LANE_LINE, LANE_LINE["w"], offset_polyline(pts, side * k * lw)))
     if kind == "paved" and (not urban or not has_sidewalks(spec)) and cls in EDGE_LINE_CLASSES:   # no curb: edge lines
         for side in (1, -1):
-            out.append((EDGE_LINE, EDGE_LINE["w"], offset_polyline(pts, side * (w / 2 - EDGE_LINE["inset"]))))
+            inset = SHOULDER_M if rural_motorway(spec) else EDGE_LINE["inset"]
+            out.append((EDGE_LINE, EDGE_LINE["w"], offset_polyline(pts, side * (w / 2 - inset))))
     return out
 
 

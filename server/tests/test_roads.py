@@ -173,6 +173,24 @@ class BuildTileTest(unittest.TestCase):
         self.assertEqual(s[2].width, roads.LINK_M[2], "a two-way slip road")
         self.assertEqual(roads.bridge_specs(features([[(0, 0), (100, 0)]], ["motorway"])), [None])
 
+    def test_motorway_lanes_rural_two_urban_three(self):
+        """GitHub #43: every US Interstate had three lanes a direction, rural ones mostly have two; a rural road's edge
+        strips were counted as lanes (a rural divided trunk had three too)."""
+        pts = np.array([(0.0, 0.0, 0.0), (100.0, 0.0, 0.0)])
+
+        def lanes(cls, urban):
+            sp = roads.Spec(roads.carriageway(cls, "paved", urban, None, True), "paved", urban, cls, True, 2.5, 1)
+            n = sum(1 for look, w, line in roads.extras(sp, pts, -100.0) if look is roads.LANE_LINE)
+            return n + 1, sp
+        n, rural = lanes("motorway", False)
+        self.assertEqual(n, 2, "rural motorway carriageway")
+        self.assertAlmostEqual(rural.width, roads.MOTORWAY_RURAL_M + 2 * roads.SHOULDER_M)
+        edges = [line[0][1] for look, w, line in roads.extras(rural, pts, -100.0) if look is roads.EDGE_LINE]
+        self.assertEqual(sorted(round(abs(y), 2) for y in edges), [round(roads.MOTORWAY_RURAL_M / 2, 2)] * 2,
+                         "edge lines between the lanes and the shoulders")
+        self.assertEqual(lanes("motorway", True)[0], 3, "urban motorway carriageway")
+        self.assertEqual(lanes("trunk", False)[0], 2, "rural divided trunk")
+
     def test_divided_trunk_sidewalk_outer_side_only_when_slow(self):
         pts = np.array([(0.0, 0.0, 0.0), (100.0, 0.0, 0.0)])
 

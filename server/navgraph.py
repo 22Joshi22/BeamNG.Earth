@@ -115,6 +115,8 @@ def driving_width(spec):
     w = roads.STYLE.get(spec.cls, roads.STYLE["unknown"])[0]
     if spec.oneway and spec.cls in roads.ONEWAY_STYLE:
         w = roads.ONEWAY_STYLE[spec.cls]
+    if roads.rural_motorway(spec):
+        w = roads.MOTORWAY_RURAL_M      # two lanes between the shoulders
     return float(min(spec.width, w))
 
 
