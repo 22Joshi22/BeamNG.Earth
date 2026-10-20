@@ -662,8 +662,9 @@ def under_wine():
 
 
 def steam_compat_tool():
-    """Linux: the compatibility tool Steam is set to use for the game (a Proton's name), "" for none, None when
-    Steam's config does not say (it writes the setting when it exits)."""
+    """Linux: the compatibility tool Steam is set to use for the game (its name: a Proton, or a Steam Linux Runtime
+    container that runs the native build), "" for none, None when Steam's config does not say (it writes the setting
+    when it exits)."""
     import install
     import re
     for root in install._steam_roots():
@@ -678,6 +679,13 @@ def steam_compat_tool():
         e = re.search(r'"%s"\s*\{[^}]*?"name"\s*"([^"]*)"' % APP_ID, m.group(1))
         return e.group(1) if e else ""
     return None
+
+
+def is_proton(tool):
+    """Is the compatibility tool tool (steam_compat_tool) a Proton, the Windows build's? (Steam also offers the Steam
+    Linux Runtime containers, which run the native build: steamlinuxruntime_4 was taken for a Proton and a stale
+    2024 Proton prefix used, GitHub #56.)"""
+    return bool(tool) and "proton" in tool.lower()
 
 
 def last_written(user_dir):
@@ -713,8 +721,10 @@ def linux_build(force=None):
     mode = force
     if mode is None:
         tool = steam_compat_tool()
-        if tool:
+        if is_proton(tool):
             mode = "proton"
+        elif tool:                  # a Steam Linux Runtime container (steamlinuxruntime_4, _sniper): the native build
+            mode = "native"
         elif not proton_dirs:
             mode = "native"
         elif tool is None or not os.path.isdir(native):
@@ -815,7 +825,9 @@ def run(args):
         build, user_dir = linux_build(args.build)
     else:
         user_dir = user_folder()
-    row("Game folder", user_dir + ("  (the Windows build, Proton)" if build == "proton" else ""))
+    tool = steam_compat_tool() if not IS_WIN and not args.user_dir else None
+    row("Game folder", user_dir + ("  (the Windows build, Proton)" if build == "proton" else "")
+        + (f"  (Steam compatibility tool: {tool})" if tool else ""))       # (which was read: GitHub #56)
     running = game_alive()
     if not args.keep_mod:
         status = install.install_mod(user_dir, True, dry_run=False, quiet=True)

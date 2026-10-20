@@ -46,6 +46,20 @@ class FlatpakSteam(unittest.TestCase):
         with mock.patch.object(launcher, "steam_compat_tool", return_value=""):
             self.assertEqual(launcher.linux_build(), ("native", self.flat))
 
+    def test_steam_linux_runtime_is_the_native_build(self):
+        # GitHub #56: Steam set to steamlinuxruntime_4 (a container for the native build), a stale Proton prefix
+        # from 2024 with a log in it: the native folder, not the prefix
+        pfx = os.path.join(self.home, *FP, ".local", "share", "Steam", "steamapps", "compatdata", str(launcher.APP_ID),
+                           "pfx", "drive_c", "users", "steamuser", "AppData", "Local", "BeamNG.drive", "0.32")
+        touch(os.path.join(pfx, "beamng.log"), time.time() - 3e7)
+        touch(os.path.join(self.flat, "beamng.log"))
+        for tool in ("steamlinuxruntime_4", "steamlinuxruntime_sniper"):
+            with mock.patch.object(launcher, "steam_compat_tool", return_value=tool):
+                self.assertEqual(launcher.linux_build(), ("native", self.flat), tool)
+        self.assertTrue(launcher.is_proton("proton_9") and launcher.is_proton("GE-Proton9-20")
+                        and launcher.is_proton("proton_experimental"))
+        self.assertFalse(launcher.is_proton("steamlinuxruntime_4") or launcher.is_proton("") or launcher.is_proton(None))
+
     def test_flatpak_folder_before_the_first_start(self):
         import shutil
         shutil.rmtree(os.path.join(self.home, ".local"))
