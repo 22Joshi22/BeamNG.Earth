@@ -674,6 +674,18 @@ class StoopTest(unittest.TestCase):
         self.assertLessEqual(P[front, 2].min(), 10.0 - 0.3 + 1e-6)
 
 
+class PortalSkipTest(unittest.TestCase):
+    def test_a_service_tunnel_lifts_no_building(self):
+        # GitHub #60: a 15 m drive-through (a service road tunnel) under an Oklahoma City church floated it 10 m up
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        from test_roads import features, FRAME
+        f = features([[(-100, 0), (100, 0)], [(-100, 50), (100, 50)]], ["service", "secondary"],
+                     flags=[(0, "is_tunnel", 0.4, 0.6), (1, "is_tunnel", 0.4, 0.6)], ids=["dock", "street"])
+        lines = bld.tunnel_lines(FRAME, [f], -128.0, -128.0)
+        self.assertEqual(len(lines), 1, "the street's tunnel only")
+        self.assertAlmostEqual(float(lines[0][:, 1].mean()), 50.0 + 128.0, delta=0.5)
+
+
 if __name__ == "__main__":
     unittest.main()
 

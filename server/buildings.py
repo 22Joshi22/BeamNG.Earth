@@ -1689,7 +1689,8 @@ THROUGH_CLASSES = {"motorway", "trunk", "primary", "secondary", "tertiary", "res
 
 def tunnel_lines(frame, road_layers, x0, y0, margin=50.0, size=256.0):
     """Polylines (k, 2) relative to (x0, y0) of the road tunnels near the tile (roads.tunnel_parts; for
-    road_through: a building a tunnel runs into is its portal building, its floor over the tube)."""
+    road_through: a building a tunnel runs into is its portal building, its floor over the tube), but those of
+    PORTAL_SKIP_CLASSES."""
     import roads as roadsmod
     out = []
     for f in road_layers:
@@ -1697,7 +1698,7 @@ def tunnel_lines(frame, road_layers, x0, y0, margin=50.0, size=256.0):
             continue
         ts = roadsmod.tunnel_specs(f)
         for i in range(len(f.kind)):
-            if ts[i] is None:
+            if ts[i] is None or ts[i].cls in PORTAL_SKIP_CLASSES:
                 continue
             for ring in roadsmod.tunnel_parts(f, i):
                 e, n = mapgeom.enu_xy(f, frame, ring)
@@ -1822,6 +1823,10 @@ def _covers_garage(ring, garages):
 
 
 TUNNEL_THROUGH_M = 5.0      # a footprint a road tunnel runs into this far: its portal building, lifted over the tube
+PORTAL_SKIP_CLASSES = ("service",)     # tunnels that lift no building: a driveway, loading dock or covered drop-off
+                            # under a building, which stands on the ground (GitHub #60: a 15 m drive-through under an
+                            # Oklahoma City church floated it 10 m up; in downtown Baltimore and Chicago 20 office and
+                            # garage blocks of up to 7,156 m2 stood 7.4-10.5 m up over loading-dock tunnels, 2026-10-20)
 OVER_TUNNEL_CLEAR_M = 7.5   # (the tube's vault is roadmesh.TUNNEL_H = 6.8 m over the floor; 2026-10-17: Eisenhower's
                             # east portal building closed the tunnel)
 
