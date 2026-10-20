@@ -10,9 +10,10 @@
 // world really moves (teleports, floating-origin rebases).
 //
 // Only while the BeamNG.Earth level runs (the user, 2026-10-20: the mod effectively off on other maps, where a terrain
-// edited in the World Editor needs its grass updated): the mod creates the flag file temp/beamngEarth_gcpatch_on in
-// the game's user folder when its level starts and removes it when it ends (groundcover.lua); a thread here looks
-// for it every FLAG_POLL_MS and writes the byte back and forth. Stock until the flag shows up.
+// edited in the World Editor needs its grass updated): the mod creates the flag file temp/beamngearth_gcpatch_on in
+// the game's user folder when its level starts and removes it when it ends (groundcover.lua; lower case: the game's
+// file system writes new names so); a thread here looks for it every FLAG_POLL_MS and writes the byte back and forth.
+// Stock until the flag shows up.
 //
 // Nothing on disk is changed. It acts only in the main BeamNG.drive.x64 process (not the CEF helpers,
 // not Steam), and only if the handler's first 0x36 bytes are those of the build it was written for (0.39.4
@@ -130,7 +131,7 @@ static int set_byte(unsigned char v) {
 static void *watch_flag(void *arg) {
     (void)arg;
     char flag[512];
-    temp_path(flag, sizeof flag, "beamngEarth_gcpatch_on");
+    temp_path(flag, sizeof flag, "beamngearth_gcpatch_on");
     int on = 0;
     for (;;) {
         int want = access(flag, F_OK) == 0;

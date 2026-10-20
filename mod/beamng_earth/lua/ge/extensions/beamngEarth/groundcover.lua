@@ -28,7 +28,7 @@ local M = {}
 
 -- tools/gcpatch acts only while this file exists (its thread looks every 250 ms): created when our level starts,
 -- removed when it ends, so other levels keep the stock engine (the user, 2026-10-20: the mod effectively off there).
-M.PATCH_FLAG = '/temp/beamngEarth_gcpatch_on'
+M.PATCH_FLAG = '/temp/beamngearth_gcpatch_on'   -- lower case: the game's file system writes new names so
 function M.enginePatch(on)
   local ok, err = pcall(function()
     if on then
