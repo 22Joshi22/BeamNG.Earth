@@ -2570,6 +2570,161 @@ fn mesh_warp<'py>(py: Python<'py>, img: PyReadonlyArray3<'py, u8>, qx: PyReadonl
     out.into_pyarray(py)
 }
 
+/// The terrain block's height at (x, y) from its samples grid[j, i] (lattice index i0 + i, j0 + j, every cell m): each
+/// square cut from its south-west corner to its north-east one, as the engine draws it. NaN outside the grid.
+#[inline]
+fn terrain_at(grid: &numpy::ndarray::ArrayView2<f64>, i0: i64, j0: i64, cell: f64, x: f64, y: f64) -> f64 {
+    let (gx, gy) = (x / cell, y / cell);
+    let (mut i, mut j) = (gx.floor() as i64, gy.floor() as i64);
+    let (ny, nx) = (grid.shape()[0] as i64, grid.shape()[1] as i64);
+    // a point on the grid's last line belongs to the square before it
+    if i - i0 == nx - 1 && gx == (i as f64) { i -= 1; }
+    if j - j0 == ny - 1 && gy == (j as f64) { j -= 1; }
+    let (li, lj) = (i - i0, j - j0);
+    if li < 0 || lj < 0 || li + 1 >= nx || lj + 1 >= ny { return f64::NAN; }
+    let (fx, fy) = (gx - i as f64, gy - j as f64);
+    let (li, lj) = (li as usize, lj as usize);
+    let (a, b, c, d) = (grid[[lj, li]], grid[[lj, li + 1]], grid[[lj + 1, li]], grid[[lj + 1, li + 1]]);
+    if fy > fx { a + fy * (c - a) + fx * (d - c) } else { a + fx * (b - a) + fy * (d - b) }
+}
+
+/// roadmesh.build's road surface on the terrain block: triangles (t, 3) over points (n, 2), uvs (n, 2), each given
+/// the terrain's heights at its corners (grid: as terrain_at); where the ground inside departs from that plane by more
+/// than tol (checked at the grid points inside and where its edges cross the terrain's edges) it is cut along the
+/// terrain's edges and every piece takes the terrain's heights: within tol of the drawn ground
+/// everywhere. Returns (points (m, 3), uvs (m, 2), triangles (r, 3), source triangle (r,)); points not shared.
+#[pyfunction]
+#[allow(clippy::too_many_arguments)]
+fn follow_tris<'py>(py: Python<'py>, pts: PyReadonlyArray2<'py, f64>, uv: PyReadonlyArray2<'py, f64>,
+                    tris: PyReadonlyArray2<'py, i64>, cell: f64, grid: PyReadonlyArray2<'py, f64>, i0: i64, j0: i64,
+                    tol: f64)
+                    -> (Bound<'py, PyArray2<f64>>, Bound<'py, PyArray2<f64>>, Bound<'py, PyArray2<i64>>,
+                        Bound<'py, PyArray1<i64>>) {
+    let (pv, uvv, tv, gv) = (pts.as_array(), uv.as_array(), tris.as_array(), grid.as_array());
+    let (p_out, uv_out, t_out, src) = py.allow_threads(|| {
+        type V = [f64; 4];
+        let cell = if cell > 0.0 { cell } else { 2.0 };
+        let fams: [(f64, f64); 3] = [(1.0, 0.0), (0.0, 1.0), (-1.0, 1.0)];
+        let ter = |x: f64, y: f64| terrain_at(&gv, i0, j0, cell, x, y);
+        let mut p_out: Vec<[f64; 3]> = Vec::new();
+        let mut uv_out: Vec<[f64; 2]> = Vec::new();
+        let mut t_out: Vec<[i64; 3]> = Vec::new();
+        let mut src: Vec<i64> = Vec::new();
+        let lerp = |a: &V, b: &V, f: f64| -> V {
+            [a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f, a[2] + (b[2] - a[2]) * f, a[3] + (b[3] - a[3]) * f]
+        };
+        for ti in 0..tv.shape()[0] {
+            let tri: Vec<V> = (0..3).map(|k| {
+                let i = tv[[ti, k]] as usize;
+                [pv[[i, 0]], pv[[i, 1]], uvv[[i, 0]], uvv[[i, 1]]]
+            }).collect();
+            let z: Vec<f64> = tri.iter().map(|q| ter(q[0], q[1])).collect();
+            // the plane through the corners: z = z0 + s (p1 - p0) + t (p2 - p0) in barycentric terms
+            let (x0, y0, x1, y1, x2, y2) = (tri[0][0], tri[0][1], tri[1][0], tri[1][1], tri[2][0], tri[2][1]);
+            let det = (x1 - x0) * (y2 - y0) - (x2 - x0) * (y1 - y0);
+            let mut split = !z.iter().all(|v| v.is_finite()) || det.abs() < 1e-12;
+            if !split {
+                let plane = |x: f64, y: f64| {
+                    let s = ((x - x0) * (y2 - y0) - (x2 - x0) * (y - y0)) / det;
+                    let t = ((x1 - x0) * (y - y0) - (x - x0) * (y1 - y0)) / det;
+                    (z[0] + s * (z[1] - z[0]) + t * (z[2] - z[0]), s, t)
+                };
+                let dev = |x: f64, y: f64| { let tz = ter(x, y); if tz.is_finite() { (tz - plane(x, y).0).abs() } else { f64::INFINITY } };
+                // the grid points inside
+                let (lx, hx) = (x0.min(x1).min(x2), x0.max(x1).max(x2));
+                let (ly, hy) = (y0.min(y1).min(y2), y0.max(y1).max(y2));
+                'outer: for gi in ((lx / cell).ceil() as i64)..=((hx / cell).floor() as i64) {
+                    for gj in ((ly / cell).ceil() as i64)..=((hy / cell).floor() as i64) {
+                        let (x, y) = (gi as f64 * cell, gj as f64 * cell);
+                        let (_, s, t) = plane(x, y);
+                        if s >= -1e-9 && t >= -1e-9 && s + t <= 1.0 + 1e-9 && dev(x, y) > tol { split = true; break 'outer; }
+                    }
+                }
+                // where its edges cross the terrain's edges
+                if !split {
+                    'edges: for e in 0..3 {
+                        let (a, b) = (&tri[e], &tri[(e + 1) % 3]);
+                        for &(nx, ny) in fams.iter() {
+                            let (da, db) = (nx * a[0] + ny * a[1], nx * b[0] + ny * b[1]);
+                            let (lo, hi) = (da.min(db), da.max(db));
+                            for k in ((lo / cell).floor() as i64 + 1)..=((hi / cell).ceil() as i64 - 1) {
+                                let line = k as f64 * cell;
+                                if line <= lo || line >= hi { continue; }
+                                let f = (line - da) / (db - da);
+                                let q = lerp(a, b, f);
+                                if dev(q[0], q[1]) > tol { split = true; break 'edges; }
+                            }
+                        }
+                    }
+                }
+            }
+            if !split {
+                let base = p_out.len() as i64;
+                for (k, q) in tri.iter().enumerate() {
+                    p_out.push([q[0], q[1], z[k]]);
+                    uv_out.push([q[2], q[3]]);
+                }
+                t_out.push([base, base + 1, base + 2]);
+                src.push(ti as i64);
+                continue;
+            }
+            let mut polys: Vec<Vec<V>> = vec![tri];
+            for &(nx, ny) in fams.iter() {
+                let mut next: Vec<Vec<V>> = Vec::new();
+                for poly in polys.into_iter() {
+                    let d: Vec<f64> = poly.iter().map(|q| nx * q[0] + ny * q[1]).collect();
+                    let (lo, hi) = d.iter().fold((f64::INFINITY, f64::NEG_INFINITY), |a, &x| (a.0.min(x), a.1.max(x)));
+                    let mut rest = poly;
+                    for k in ((lo / cell).floor() as i64 + 1)..=((hi / cell).ceil() as i64 - 1) {
+                        let line = k as f64 * cell;
+                        if line <= lo + 1e-9 || line >= hi - 1e-9 { continue; }
+                        let n = rest.len();
+                        let mut below: Vec<V> = Vec::new();
+                        let mut above: Vec<V> = Vec::new();
+                        for j in 0..n {
+                            let (a, b) = (&rest[j], &rest[(j + 1) % n]);
+                            let (da, db) = (nx * a[0] + ny * a[1] - line, nx * b[0] + ny * b[1] - line);
+                            if da <= 0.0 { below.push(*a); }
+                            if da >= 0.0 { above.push(*a); }
+                            if (da < 0.0 && db > 0.0) || (da > 0.0 && db < 0.0) {
+                                let x = lerp(a, b, da / (da - db));
+                                below.push(x);
+                                above.push(x);
+                            }
+                        }
+                        if below.len() >= 3 { next.push(below); }
+                        rest = above;
+                        if rest.len() < 3 { break; }
+                    }
+                    if rest.len() >= 3 { next.push(rest); }
+                }
+                polys = next;
+            }
+            for poly in polys.iter() {
+                let area: f64 = (0..poly.len()).map(|j| {
+                    let (a, b) = (&poly[j], &poly[(j + 1) % poly.len()]);
+                    a[0] * b[1] - b[0] * a[1]
+                }).sum::<f64>() / 2.0;
+                if area.abs() < 1e-8 { continue; }
+                let base = p_out.len() as i64;
+                for q in poly.iter() {
+                    p_out.push([q[0], q[1], ter(q[0], q[1])]);
+                    uv_out.push([q[2], q[3]]);
+                }
+                for a in 1..(poly.len() as i64 - 1) {
+                    t_out.push([base, base + a, base + a + 1]);
+                    src.push(ti as i64);
+                }
+            }
+        }
+        (p_out, uv_out, t_out, src)
+    });
+    let pa = numpy::ndarray::Array2::from_shape_vec((p_out.len(), 3), p_out.into_iter().flatten().collect()).unwrap();
+    let ua = numpy::ndarray::Array2::from_shape_vec((uv_out.len(), 2), uv_out.into_iter().flatten().collect()).unwrap();
+    let ta = numpy::ndarray::Array2::from_shape_vec((t_out.len(), 3), t_out.into_iter().flatten().collect()).unwrap();
+    (pa.into_pyarray(py), ua.into_pyarray(py), ta.into_pyarray(py), src.into_pyarray(py))
+}
+
 #[pymodule]
 fn earthfast(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(island_ring_rays, m)?)?;
@@ -2616,6 +2771,7 @@ fn earthfast(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(points_near_segments, m)?)?;
     m.add_function(wrap_pyfunction!(over_tunnel, m)?)?;
     m.add_function(wrap_pyfunction!(veg_rows_json, m)?)?;
-    m.add("VERSION", 32)?;
+    m.add_function(wrap_pyfunction!(follow_tris, m)?)?;
+    m.add("VERSION", 33)?;
     Ok(())
 }

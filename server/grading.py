@@ -58,7 +58,8 @@ WALL_FLAT_M = 2.0           # ... after one terrain grid step at the road's leve
 TUNNEL_TAG = ":tun"          # in the fid of the tunnels' own plans (open sections, mouths): apply(roads_only) skips them
 MOUTH_PLAN_M = 4.0          # m into a tunnel from a portal its floor is a grading plan too (Grader._mouth_plans)
 TUNNEL_KEEP_IN_M = 3.0      # (roads.LOW_HOLE_M: a low arch's mouths, flat at its floor)
-TUNNEL_KEEP_M = 5.0         # m beside a covered tunnel's road where the ground over it is left ungraded
+TUNNEL_KEEP_M = 5.0         # m beside a covered tunnel's road where the ground over it is left ungraded ...
+OVER_TUNNEL_SMALL_M = 0.5   # ... but for a change smaller than this (a road crossing over it, graded flush)
 WALL_AHEAD_M = 2.5          # ... only beside a segment or this little past its end (a joint between two: VERTEX_STEP)
 RETRY_S = 60.0              # s before a cell whose road data failed is asked for again
 
@@ -376,6 +377,9 @@ class Grader:
         out = grade_points(e, n, base.ravel(), plans, lift)
         keep = self._over_tunnels(e, n)
         if keep is not None:
+            # (a small change stays: a road over the tunnel lies on its own graded profile, the ground over the tunnel
+            # left ungraded under it stood a few cm over the E6's lanes as patches of bare ground, GitHub #2)
+            keep &= np.abs(out - base.ravel()) >= OVER_TUNNEL_SMALL_M
             out[keep] = base.ravel()[keep]
         return out.reshape(shape)
 

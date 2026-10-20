@@ -194,7 +194,9 @@ AHEAD_LAYERS = ("buildings", "building_parts", "infrastructure", "land_use")    
 BASE_PX = 1024                  # detail mode: the block's base photo (1 km -> 1 m per texel; USGS is ~1.9 m)
 BASE_AO_VFS = "/levels/beamng_earth/art/terrains/bngEarth_base_ao.png"   # every surface layer's aoBaseTex
 BASE_AO = 251                   # its flat value (tools/make_level_assets.py)
-DETAIL_ROAD_LIFT = 0.05         # detail mode: road surfaces over the drawn block (its 2 m triangles + slack)
+DETAIL_ROAD_LIFT = 0.025        # detail mode: road surfaces over the drawn block, within roadmesh.FOLLOW_TOL of it (0.05
+                                # before, over a coarser surface it still cut through on hills: the tyres sank into it,
+                                # the user 2026-10-20)
 TEX_NEAR, TEX_FAR = 256, 256    # 32 cells: texture edge (px) of the two finest levels / of the others (512
                                  # near was 15x finer than USGS: no visible gain for 2x build time and VRAM);
                                  # --tex gives one per level (64 cells: farfield.TEX_DEFAULT)
@@ -977,7 +979,7 @@ class Server:
             res = self.road_pool.submit(
                 blockworker.roads_tile, aid, anchor.lat, anchor.lon, anchor.zooms[0], tx, ty, self.out_dir,
                 self.vfs_dir, self.sidewalks, DETAIL_ROAD_LIFT if self.near_visual == "detail" else 0.0,
-                self.buildings, self.left_hand(anchor), self.mph(anchor)).result()
+                self.buildings, self.left_hand(anchor), self.mph(anchor), self.anchor_q(anchor)).result()
             log.debug("road tile %d_%d: %.2f s (queue + build)", tx, ty, time.perf_counter() - t0)
             return res
         cells = [self.mapdata.cell(k, layers=("roads",), kind="demand").layers.get("roads")
@@ -1033,8 +1035,15 @@ class Server:
             park = parkingmod.clear_of(park, props, drives)
             park = parkingmod.tile_lot_spots(anchor.frame, tx, ty, self.mapdata, elev, items, park)
             buildingsmod.brick_walks(walks, items, anchor.lat, anchor.lon)
+        box = roadsmod.tile_bbox(tx, ty)
+        cell_fn = lambda key: self.mapdata.cell(key, layers=("roads",), kind="demand").layers.get("roads")  # noqa: E731
+
+        def drawn(la, lo):      # the block's ground: raised over the low arches as the terrain is (_make_heightmap_here)
+            return roadsmod.block_arch_raise(anchor.tunnels, cell_fn, anchor.frame, la, lo, elev(la, lo),
+                                             (box[0] - 8, box[1] - 8, box[2] + 8, box[3] + 8))
         mesh = roadmeshmod.build(anchor.frame, chunks, elev, (x0, y0, 0.0),
-                                 DETAIL_ROAD_LIFT if self.near_visual == "detail" else 0.0)
+                                 DETAIL_ROAD_LIFT if self.near_visual == "detail" else 0.0,
+                                 clip=box, follow=True, q=self.anchor_q(anchor), drawn=drawn)
         mesh = blockworker._with_plazas(mesh, anchor.frame, tx, ty, elev, (x0, y0, 0.0), self.surface)
         dmesh = roadmeshmod.deck(chunks, (x0, y0, 0.0),
                                  anchor.bridges.piers_in(roadsmod.tile_bbox(tx, ty)) if anchor.bridges is not None else (),

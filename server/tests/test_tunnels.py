@@ -7,6 +7,7 @@ from pathlib import Path
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import grading  # noqa: E402
 import roadmesh  # noqa: E402
 import roads  # noqa: E402
 
@@ -318,3 +319,42 @@ class RustParity(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PortalClearTest(unittest.TestCase):
+    """GitHub #2: an underpass under the E6 in Norway mapped to end 0.7 m off the carriageway: its floor rose to the
+    road's level at that end and its portal stood across the lanes."""
+
+    def ends(self, lines, classes, flags):
+        from test_roads import features, LAT, LON, M_LAT, M_LON
+        f = features(lines, classes, flags=flags)
+        out = []
+        for ring in roads.tunnel_parts(f, 0):
+            out.append([((p[0] - LON) * M_LON, (p[1] - LAT) * M_LAT) for p in (ring[0], ring[-1])])
+        return out
+
+    def test_end_under_a_road_carried_past_it(self):
+        (a, b), = self.ends([[(0, -40), (0, 7)], [(-200, 0), (200, 0)]], ["service", "trunk"], [(0, "is_tunnel")])
+        hw = roads.carriageway("trunk", "paved", False) / 2
+        self.assertAlmostEqual(a[1], -40.0, delta=0.1, msg="the far end stays")
+        self.assertGreaterEqual(b[1], hw + grading.T_MAX - 0.1, "past the road's graded ground")
+        self.assertLessEqual(b[1], 7.0 + roads.PORTAL_EXTEND_MAX_M + 0.1)
+        self.assertAlmostEqual(b[0], 0.0, delta=0.1, msg="straight on")
+
+    def test_road_beside_it_not_over_it(self):
+        (a, b), = self.ends([[(0, -60), (0, -10)], [(8, -100), (8, 100)]], ["service", "trunk"], [(0, "is_tunnel")])
+        self.assertAlmostEqual(a[1], -60.0, delta=0.1)
+        self.assertAlmostEqual(b[1], -10.0, delta=0.1)
+
+
+class ShallowFullTest(unittest.TestCase):
+    def kinds(self, length, cover):
+        s = np.arange(0.0, length + 40.0 + 1e-9, 2.0)
+        g = np.full(len(s), 10.0)
+        g[(s > 20) & (s < 20 + length)] = 10.0 + cover
+        return roads.tunnel_sections(s, g)[1][(s > 24) & (s < 16 + length)]
+
+    def test_short_embankment_low_arch(self):
+        self.assertTrue((self.kinds(30.0, 9.0) == 1).all(), "under an embankment: a low arch")
+        self.assertTrue((self.kinds(80.0, 9.0) == 2).all(), "long: a full tunnel")
+        self.assertTrue((self.kinds(30.0, 20.0) == 2).all(), "deep: a full tunnel")

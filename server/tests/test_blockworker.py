@@ -49,7 +49,8 @@ class RoadsTileTest(unittest.TestCase):
             chunks = roads.build_tile(FRAME, 0, 0, cells, elev, None, walks=walks, bridges=bridges)
             x0, y0, _, _ = roads.tile_bbox(0, 0)
             want = roads.write_tile(b, "/temp/x", 1, 0, 0, chunks, walks,
-                                    roadmesh.build(FRAME, chunks, elev, (x0, y0, 0.0), 0.05),
+                                    roadmesh.build(FRAME, chunks, elev, (x0, y0, 0.0), 0.05, clip=roads.tile_bbox(0, 0),
+                                                   follow=True),
                                     roadmesh.deck(chunks, (x0, y0, 0.0)))
             self.assertEqual(got, want)
             self.assertGreater(got[1], 0)

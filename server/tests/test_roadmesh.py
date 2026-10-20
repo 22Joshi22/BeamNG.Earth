@@ -10,7 +10,8 @@ import numpy as np
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 import cdae  # noqa: E402
 import roadmesh  # noqa: E402
-from test_roads import FRAME  # noqa: E402
+import math  # noqa: E402
+from test_roads import FRAME, LAT, LON, M_LAT, M_LON  # noqa: E402
 
 
 def chunk(m, w, pts, tl=10.0):
@@ -51,6 +52,96 @@ class RoadMeshTest(unittest.TestCase):
         self.assertEqual([m["name"] for m in shape["materials"]], ["road_asphalt_2lane", "gutter1"])
         self.assertEqual(roadmesh.layer_of({"m": "line_white"}), "mark")
         self.assertIsNone(roadmesh.build(FRAME, [], lambda la, lo: la, (0, 0, 0)))
+
+
+    def test_clipped_to_the_tile(self):
+        """Two tiles' ribbons each reach roads.OVERLAP past their edge; overlapping at one height they flickered along
+        every seam (the user, 2026-10-20): each is cut exactly at its tile's edge, the two together cover the road
+        once."""
+        flat = lambda la, lo: np.zeros(np.shape(la))     # noqa: E731
+        area = 0.0
+        for box in ((0.0, 0.0, 256.0, 256.0), (256.0, 0.0, 512.0, 256.0)):
+            chunks = [chunk("road_asphalt_2lane", 6.0, [(box[0] - 2, 98, 0), (box[2] + 2, 130, 0)])]  # oblique
+            P, T, UV, mats, M = roadmesh.build(FRAME, chunks, flat, (box[0], box[1], 0.0), clip=box)
+            xy = P[:, :2] + box[:2]
+            used = xy[np.unique(T)]
+            self.assertTrue((used[:, 0] >= box[0] - 1e-6).all() and (used[:, 0] <= box[2] + 1e-6).all())
+            self.assertTrue(np.isfinite(UV).all())
+            a = xy[T]
+            e1, e2 = a[:, 1] - a[:, 0], a[:, 2] - a[:, 0]
+            area += float(np.abs(e1[:, 0] * e2[:, 1] - e1[:, 1] * e2[:, 0]).sum() / 2)
+        L = np.hypot(512.0 - 0.0 + 4.0, 32.0) * 512.0 / 516.0       # the road's length over both tiles
+        self.assertAlmostEqual(area, 6.0 * L, delta=6.0 * L * 0.01)
+
+    def test_slanted_road_covered_at_the_seam(self):
+        """A road crossing the seam at 50 degrees (the E6 in Norway): no triangle of it left uncovered between the
+        two tiles' square ribbon ends."""
+        flat = lambda la, lo: np.zeros(np.shape(la))     # noqa: E731
+        k = 1.2                                          # y = k x
+        area = 0.0
+        for box in ((0.0, -1000.0, 256.0, 1000.0), (256.0, -1000.0, 512.0, 1000.0)):
+            a, b = box[0] - 2.0, box[2] + 2.0           # cut roads.OVERLAP past the tile, as roads.build_tile does
+            chunks = [chunk("road_asphalt_2lane", 11.0, [(a, k * a, 0), (b, k * b, 0)])]
+            P, T, UV, mats, M = roadmesh.build(FRAME, chunks, flat, (box[0], 0.0, 0.0), clip=box)
+            xy = P[:, :2] + [box[0], 0.0]
+            t = xy[T]
+            e1, e2 = t[:, 1] - t[:, 0], t[:, 2] - t[:, 0]
+            area += float(np.abs(e1[:, 0] * e2[:, 1] - e1[:, 1] * e2[:, 0]).sum() / 2)
+        L = 512.0 * np.hypot(1.0, k)
+        self.assertAlmostEqual(area, 11.0 * L, delta=1.0)
+
+
+class FollowTest(unittest.TestCase):
+    """The road surface on the terrain block's own triangles (the user, 2026-10-20: the tyres sank into a road
+    drawn 5 cm over the ground)."""
+
+    def bumpy(self):
+        def elev(la, lo):
+            e = (np.asarray(lo) - LON) * M_LON
+            n = (np.asarray(la) - LAT) * M_LAT
+            return 10.0 + 0.8 * np.sin(e / 3.1) * np.cos(n / 2.3) + 0.05 * e
+        return elev
+
+    def test_kernel_and_python_agree(self):
+        import fast
+        if not (fast.AVAILABLE and hasattr(fast._ef, "follow_tris")):
+            self.skipTest("no kernel")
+        rng = np.random.default_rng(5)
+        P = rng.uniform(-9, 9, (60, 2))
+        T = np.array([rng.choice(60, 3, replace=False) for _ in range(40)], np.int64)
+        UV = rng.uniform(0, 1, (60, 2))
+        gx, gy = np.meshgrid(np.arange(-7, 8) * 2.0, np.arange(-7, 8) * 2.0)
+        grid = np.round((np.sin(gx / 3) * np.cos(gy / 2) + 0.03 * gx) * 32) / 32
+        a = fast._ef.follow_tris(P, UV, T, 2.0, grid, -7, -7, 0.005)
+        b = roadmesh._follow_py(P, UV, T, 2.0, grid, -7, -7, 0.005)
+        for x, y in zip(a, b):
+            self.assertTrue(np.allclose(np.asarray(x), y, equal_nan=True))
+
+    def test_on_the_ground_everywhere(self):
+        elev = self.bumpy()
+        chunks = [chunk("road_asphalt_2lane", 9.0, [(3.3, 1.7, 0), (61.9, 40.2, 0), (90.0, 20.0, 0)])]
+        P, T, UV, mats, M = roadmesh.build(FRAME, chunks, elev, (0.0, 0.0, 0.0), 0.015, follow=True, q=1 / 32)
+        # the engine's terrain: samples every 2 m (rounded to 1/32 m), each square cut south-west to north-east
+        def ground(x, y):
+            la, lo, _ = FRAME.enu_to_geodetic(np.array([x]), np.array([y]), 0.0)
+            i, j = math.floor(x / 2), math.floor(y / 2)
+            def s(a, b):
+                la_, lo_, _ = FRAME.enu_to_geodetic(np.array([2.0 * a]), np.array([2.0 * b]), 0.0)
+                return round(float(FRAME.geodetic_to_enu(la_, lo_, elev(la_, lo_))[2][0]) * 32) / 32
+            u, v = x / 2 - i, y / 2 - j
+            if v > u:
+                return s(i, j) + v * (s(i, j + 1) - s(i, j)) + u * (s(i + 1, j + 1) - s(i, j + 1))
+            return s(i, j) + u * (s(i + 1, j) - s(i, j)) + v * (s(i + 1, j + 1) - s(i + 1, j))
+        rng = np.random.default_rng(2)
+        worst = 0.0
+        for t in T[rng.choice(len(T), 300)]:
+            w = rng.dirichlet((1, 1, 1))
+            p = (P[t] * w[:, None]).sum(0)
+            worst = max(worst, abs(p[2] - 0.015 - ground(p[0], p[1])))
+        self.assertLess(worst, roadmesh.FOLLOW_TOL + 1e-6, "the surface is the drawn ground + the lift")
+        a = P[T][:, :, :2]
+        e1, e2 = a[:, 1] - a[:, 0], a[:, 2] - a[:, 0]
+        self.assertTrue((e1[:, 0] * e2[:, 1] - e1[:, 1] * e2[:, 0] > 0).all(), "facing up")
 
 
 if __name__ == "__main__":
