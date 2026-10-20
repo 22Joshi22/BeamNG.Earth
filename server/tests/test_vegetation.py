@@ -151,6 +151,36 @@ class VegetationTest(unittest.TestCase):
         self.assertEqual([r for r in full if r in capped], capped, "in the tile's own order")
 
 
+    def test_rocks_on_bare_ground_follow_its_slope(self):
+        # the Bonneville Salt Flats had a rock every ~75 m2 (the user, 2026-10-20): none on flat bare ground
+        class Bare(Raster):
+            def sample(self, lon, lat):
+                return np.full(np.shape(lon), veg.WC["bare"], np.uint8)
+
+        class Ground:
+            def __init__(self, grade):
+                self.grade = grade
+
+            def sample(self, lat, lon, zoom):
+                return np.asarray(lat, np.float64) * 111320.0 * self.grade
+
+        def rocks(dem):
+            md = FakeMapData()
+            md.cd.layers["landcover"] = Bare(None, 0, 0, 1)
+            v = veg.Vegetation(md, None)
+            v.dem = dem
+            it = v.cell(KEY)
+            return int(np.isin(it.group, (veg.G_ROCK, veg.G_DESERT_ROCK)).sum()), len(it)
+        none, _ = rocks(None)
+        self.assertGreater(none, 100)
+        flat, n_flat = rocks(Ground(0.0))
+        self.assertEqual(flat, 0, "a salt pan: bare")
+        steep, _ = rocks(Ground(0.2))
+        self.assertEqual(steep, none, "a slope over ROCK_SLOPE: every rock")
+        some, _ = rocks(Ground(0.06))
+        self.assertTrue(0 < some < none, "half way: some")
+
+
 class RegionalTest(unittest.TestCase):
     def g(self, group, h, lat, lon, lcls, u=0.9):
         return int(veg.regional(np.array([group]), np.array([h]), np.array([lat]), np.array([lon]),

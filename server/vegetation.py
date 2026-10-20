@@ -35,7 +35,7 @@ import staging
 
 log = logging.getLogger("earthd.vegetation")
 
-VERSION = 11
+VERSION = 12
 TREE_MIN_M = 3.0
 CROWN_SPACING = 0.5          # tops kept this many crown radii apart (0.8 looked sparse: the user, 2026-10-13)
 BUSH_MIN_M = 1.0
@@ -59,6 +59,13 @@ SCATTER_CELL_M = 6.0        # the hashed scatter's grid (one candidate per cell)
 SCATTER_P = {10: (0.30, 0.0), 20: (0.10, 0.04), 30: (0.01, 0.003), 60: (0.0, 0.08), 100: (0.02, 0.02)}
 UNDERSTORY = 10
 BUILT_NEAR_M = 60.0         # bare ground with built-up land this far around gets no scatter (squares, lots)
+# Rocks on bare ground lie on slopes, outcrops and fans, not on flat playas, salt pans and dry lake beds (the
+# Bonneville Salt Flats had a rock every ~75 m2, the user 2026-10-20; photos: a bare white crust for miles). A bare
+# cell's rock is kept with the share of the ground's slope between these (the DEM ROCK_SLOPE_D m either side, at
+# ROCK_SLOPE_ZOOM: coarse tiles, few downloads); without a DEM, as before.
+ROCK_SLOPE = (0.02, 0.10)
+ROCK_SLOPE_D = 40.0
+ROCK_SLOPE_ZOOM = 12
 # Forest edges along roads in humid country (Columbia's photos: a wall of shrubs, saplings and vines from the
 # ground up, where ours showed bare trunks over grass): a denser band of bigger bushes within EDGE_M of a road.
 EDGE_M = 7.0
@@ -189,6 +196,7 @@ def _conifer_share(lat, lon):
 class Vegetation:
     def __init__(self, md, cache_dir=None):
         self.md = md
+        self.dem = None                 # (set by the server: rocks on bare ground by slope, ROCK_SLOPE)
         self.dir = os.path.join(cache_dir, "vegetation", f"v{VERSION}") if cache_dir else None
         self._mem = OrderedDict()
         self._lock = threading.Lock()
@@ -418,6 +426,21 @@ class Vegetation:
                      _hash01(GI, GJ, 26).astype(np.float32), (_hash01(GI, GJ, 27) * 360.0).astype(np.float32),
                      (0.8 + 0.4 * _hash01(GI, GJ, 28)).astype(np.float32))
 
+    def _slope(self, px, py):
+        """The ground's slope (rise over run) at Web Mercator points (px, py), from the DEM ROCK_SLOPE_D m either side
+        in x and y; None when the DEM cannot say."""
+        k = np.cos(np.radians(_to4326(px[:1], py[:1])[1][0]))       # Web Mercator m per ground m (one cell)
+        d = ROCK_SLOPE_D / max(k, 0.05)
+        x = np.concatenate([px + d, px - d, px, px])
+        y = np.concatenate([py, py, py + d, py - d])
+        lon, lat = _to4326(x, y)
+        try:
+            z = np.asarray(self.dem.sample(lat, lon, ROCK_SLOPE_ZOOM), np.float64).reshape(4, len(px))
+        except Exception as e:          # (offline, no tile): rocks as without a DEM
+            log.debug("vegetation: no slope: %s", e)
+            return None
+        return np.hypot(z[0] - z[1], z[2] - z[3]) / (2 * ROCK_SLOPE_D)
+
     def _scatter(self, cd, lc, blocked, chm, hs):
         """Bushes and rocks on a hashed SCATTER_CELL_M grid over shrubland, grass and bare ground."""
         if lc is None:
@@ -458,6 +481,14 @@ class Vegetation:
                 near += lc.sample(lo2, la2) == WC["built"]
             free[bare[near >= 2]] = False
         rock = free & (u < pr)
+        bare_rock = np.flatnonzero(rock & (cls == WC["bare"]))
+        if len(bare_rock) and self.dem is not None:
+            slope = self._slope(px[bare_rock], py[bare_rock])
+            if slope is not None:
+                lo_s, hi_s = ROCK_SLOPE
+                keep = _hash01(GI[bare_rock], GJ[bare_rock], 19) < np.clip((slope - lo_s) / (hi_s - lo_s), 0.0, 1.0)
+                rock[bare_rock[~keep]] = False
+                free[bare_rock[~keep]] = False     # (nor a bush there: bare ground stays bare)
         bush = free & ~rock & (u < pr + pb)
         sel = rock | bush
         n = int(sel.sum())
