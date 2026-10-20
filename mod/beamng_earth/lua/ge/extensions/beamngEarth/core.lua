@@ -401,6 +401,7 @@ local function finishRebase()
   gov:heavyNow() -- phase 2 must follow phase 1's vehicle move; its frame is a heavy slot anyway
   local sw = stopwatch.new()
   local msg, tr, xf = rb.msg, rb.terrain, rb.xf
+  st.recouple = rebase.recoupleStart(rb.couplings, st.clock)   -- (trailers hitched again: rebase.lua)
   local ok, err = loadBlock(tr)
   -- the world shifts under the grass: made fresh (with tools/gcpatch the engine would keep it)
   groundcover.rebuild()
@@ -468,14 +469,17 @@ local function commitRebase(msg, purpose)
   -- nothing to move for an identity transform (resync); setClusterPosRelRot from the GE-side
   -- position would only pull the car back to where GE last saw it
   local moved, playerId = {}, nil
+  local couplings = {}
   if not isIdentity(xf) then
     holdMotionBlur()
+    couplings = rebase.couplings()      -- (re-hitched after phase 2: rebase.recoupleStart)
     moved, playerId = rebase.moveVehicles(xf, geodesy)
   end
   local m = playerId and moved[playerId]
   st.rebasing = { msg = msg, terrain = tr, purpose = purpose, newAnchor = newAnchor, xf = xf,
     wait = rebaseLag, waited = 0,
-    playerOld = m and m.old or { st.player and st.player.x or 0, st.player and st.player.y or 0, st.player and st.player.z or 0 } }
+    playerOld = m and m.old or { st.player and st.player.x or 0, st.player and st.player.y or 0, st.player and st.player.z or 0 },
+    couplings = couplings }
   st.lagProbe = { moved = moved, playerId = playerId, frames = 0 }
   st.rebasing.phase1Ms = sw()
   if moveVisible(st.lagProbe) then
@@ -1385,6 +1389,10 @@ local function onUpdate(dtReal, dtSim)
       drawUi(dtReal)
       return -- positions are in neither frame for decisions this frame
     end
+  end
+  if st.recouple then                   -- a rebase's trailers hitched again over a few seconds (rebase.lua)
+    local okR, plan = pcall(rebase.recoupleTick, st.recouple, st.clock)
+    st.recouple = okR and plan or nil
   end
 
   updatePlayer(dtReal)
