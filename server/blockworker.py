@@ -8,7 +8,7 @@ street widths, height chunks and land-cover reader over the same disk caches. Al
 so a block built here is the one the server would build (the far tiles, graded in the server process, agree
 with it).
 
-init(...) runs once in the process (ProcessPoolExecutor initializer); build(...), base_entry(...) and
+init(...) runs once in the process (ProcessPoolExecutor initializer); build(...), base_entry(...), base_photo(...) and
 far_geometry(...) (the far-tile workers, the same state) are its jobs. warm_q (a multiprocessing queue) carries the road cells to plan ahead of the player: (anchor id, lat,
 lon, [mapcells.CellKey]), the latest list replacing the earlier one.
 """
@@ -458,6 +458,63 @@ def far_geometry(aid, lat, lon, tile, zoom, q, ref_zoom, with_sink, layout):
 WORKER_IMAGERY_TILES = 96      # decoded imagery tiles a far-tile worker keeps (imagery.MEM_TILES: 512, the server's)
 
 
+def _imagery(tex):
+    """This process's imagery.Imagery for the server's chain settings (tex: chain, tone, leaf_on, season_mode): the
+    imagery tiles on disk alone (strict: a missing tile fails the render)."""
+    import imagery as imagerymod
+    key = (tuple(tex["chain"]), tex["tone"], tex["leaf_on"], tex["season_mode"])
+    if _s.imagery is None or _s.imagery[0] != key:
+        im = imagerymod.Imagery(os.path.join(_s.cache_dir, "imagery"), key[0], fetch_workers=1,
+                                mem_tiles=WORKER_IMAGERY_TILES, tone=key[1], fetcher=netfetch.Fetcher(offline=True),
+                                leaf_on=key[2], season_mode=key[3])
+        im.strict = True
+        _s.imagery = (key, im)
+    return _s.imagery[1]
+
+
+def base_photo(lat, lon, x0, y0, size, px, tex, buildings, rock_zoom, path, cache):
+    """earthd.Server.write_base here, for a server without its imagery analyses (a small machine): the block's base
+    photo from the imagery tiles on disk, its building footprints filled and its cliffs as rock, written to path
+    (PNG) and packed into the game's terrain texture cache (cache: terraincache.base_entry's arguments but the rgb).
+    Returns (rgb, sources used, lazy tiles still to come), or None when an imagery tile it needs is not on disk (the
+    server renders it, fetching what is missing). In the server process it ran 2 s alone but 8-11 s next to the
+    rest of the world's threads on a Steam Deck (one interpreter lock), and the next block waited for it."""
+    import imagery as imagerymod
+    import rockface as rockfacemod
+    import staging
+    from PIL import Image
+    import buildings as buildingsmod
+    im = _imagery(tex)
+    frame = geodesy.EnuFrame(lat, lon)
+    pending = set()
+    try:
+        rgb, used = im.render(frame, x0, y0, size, px, pending)
+    except imagerymod.ImageryError:
+        return None
+    rgb = np.asarray(rgb, np.uint8)
+    if buildings and _s.md is not None:
+        try:
+            mask = buildingsmod.photo_mask(frame, x0, y0, size, px, _s.md)
+            if mask is not None:
+                rgb = buildingsmod.fill_photo(rgb, mask, size, px)
+        except Exception as e:      # the photo stays as it is
+            log.info("base photo: building mask: %s", e)
+    try:            # (earthd.Server.write_base)
+        n = 65
+        xs = x0 + np.arange(n) * (size / (n - 1))
+        ys = y0 + np.arange(n) * (size / (n - 1))
+        _, U = heightmap.surface(frame, lambda la, lo: _s.dem.sample(la, lo, rock_zoom), xs, ys)
+        rgb = rockfacemod.rock(rgb, frame, x0, y0, size, U, x0, y0, size / (n - 1))
+    except Exception as e:
+        log.debug("base photo: rock faces: %s", e)
+    tmp = staging.tmp_for(path)
+    Image.fromarray(rgb, "RGB").save(tmp, format="PNG", compress_level=1)
+    staging.replace(tmp, path)
+    user_dir, base_vfs, ao_vfs, ao_value = cache
+    terraincache.base_entry(user_dir, base_vfs, ao_vfs, rgb, ao_value)
+    return rgb, used, pending
+
+
 def far_tile(aid, lat, lon, tile, zoom, q, ref_zoom, with_sink, layout, tex):
     """far_geometry and the tile's texture here, written to tex["path"] (the server without its imagery analyses:
     de-shadow and colour match off, a small machine). The texture from the imagery tiles on disk alone, the server's
@@ -468,14 +525,7 @@ def far_tile(aid, lat, lon, tile, zoom, q, ref_zoom, with_sink, layout, tex):
     import rockface as rockfacemod
     geometry = getattr(far_geometry, "__wrapped__", far_geometry)        # (its CPU counted once, here)
     built = geometry(aid, lat, lon, tile, zoom, q, ref_zoom, with_sink, layout)
-    key = (tuple(tex["chain"]), tex["tone"], tex["leaf_on"], tex["season_mode"])
-    if _s.imagery is None or _s.imagery[0] != key:
-        im = imagerymod.Imagery(os.path.join(_s.cache_dir, "imagery"), key[0], fetch_workers=1,
-                                mem_tiles=WORKER_IMAGERY_TILES, tone=key[1], fetcher=netfetch.Fetcher(offline=True),
-                                leaf_on=key[2], season_mode=key[3])
-        im.strict = True
-        _s.imagery = (key, im)
-    im = _s.imagery[1]
+    im = _imagery(tex)
     frame = geodesy.EnuFrame(lat, lon)
     x0, y0, _, _ = tile.bbox
     px = tex["px"]
@@ -526,3 +576,4 @@ far_buildings_tile = _accounted(far_buildings_tile)
 base_entry = _accounted(base_entry)
 far_geometry = _accounted(far_geometry)
 far_tile = _accounted(far_tile)
+base_photo = _accounted(base_photo)

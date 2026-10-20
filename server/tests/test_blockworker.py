@@ -60,30 +60,35 @@ class RoadsTileTest(unittest.TestCase):
 
 
 
+class NoiseFetcher:
+    """Every imagery source tile a seeded noise JPEG."""
+
+    def register_chain(self, *a):
+        pass
+
+    def miss_alive(self, miss, url):
+        return False
+
+    def get(self, url, kind="demand"):
+        import io
+        import zlib
+        from PIL import Image
+        rng = np.random.default_rng(zlib.crc32(url.encode()))
+        buf = io.BytesIO()
+        Image.fromarray(rng.integers(20, 220, (256, 256, 3), dtype=np.uint8)).save(buf, "JPEG")
+        return SimpleNamespace(body=buf.getvalue(), elapsed=0.01)
+
+
 class FarTileTest(unittest.TestCase):
     """blockworker.far_tile: the texture from the imagery on disk is the one the server renders, byte for byte; with
     a tile not on disk, none (the server renders it)."""
 
     def test_texture_from_disk(self):
-        import io
-        import zlib
         import farfield
         import imagery
         import rockface
-        from PIL import Image
 
-        class Fetcher:                  # every source tile a seeded noise JPEG
-            def register_chain(self, *a):
-                pass
-
-            def miss_alive(self, miss, url):
-                return False
-
-            def get(self, url, kind="demand"):
-                rng = np.random.default_rng(zlib.crc32(url.encode()))
-                buf = io.BytesIO()
-                Image.fromarray(rng.integers(20, 220, (256, 256, 3), dtype=np.uint8)).save(buf, "JPEG")
-                return SimpleNamespace(body=buf.getvalue(), elapsed=0.01)
+        Fetcher = NoiseFetcher
         layout = farfield.Layout(cells=64)
         tile = farfield.Tile(3, 1, -2)
         px = 128
@@ -106,6 +111,72 @@ class FarTileTest(unittest.TestCase):
             self.assertEqual(got[0], n)
             self.assertEqual(set(got[1]), set(used))
             self.assertEqual(Path(out, "worker.dds").read_bytes(), Path(out, "server.dds").read_bytes())
+
+
+class BasePhotoTest(unittest.TestCase):
+    """blockworker.base_photo: the block's base photo from the imagery on disk is the one earthd.write_base renders
+    (render, rock faces, PNG), and its packed copy is in the game's cache; with a tile not on disk, none."""
+
+    def test_photo_from_disk(self):
+        import heightmap
+        import imagery
+        import rockface
+        import terraincache
+        from PIL import Image
+        x0, y0, size, px = -512.0, -512.0, 1024.0, 256
+        with tempfile.TemporaryDirectory() as cache, tempfile.TemporaryDirectory() as out, \
+                tempfile.TemporaryDirectory() as user:
+            blockworker._s = SimpleNamespace(dem=FakeDem(), md=None, cache_dir=cache, imagery=None)
+            tex = {"chain": ["usgs"], "tone": 1.0, "leaf_on": True, "season_mode": "off"}
+            args = (LAT, LON, x0, y0, size, px, tex, True, 15, os.path.join(out, "worker.png"),
+                    (user, "/temp/x/worker.png", "/levels/x/ao.png", 251))
+            self.assertIsNone(blockworker.base_photo(*args), "nothing on disk: the server renders it")
+            im = imagery.Imagery(os.path.join(cache, "imagery"), ("usgs",), fetcher=NoiseFetcher())
+            rgb, used = im.render(FRAME, x0, y0, size, px, set())
+            n = 65
+            xs = x0 + np.arange(n) * (size / (n - 1))
+            ys = y0 + np.arange(n) * (size / (n - 1))
+            _, U = heightmap.surface(FRAME, lambda la, lo: FakeDem().sample(la, lo, 15), xs, ys)
+            rgb = rockface.rock(np.asarray(rgb, np.uint8), FRAME, x0, y0, size, U, x0, y0, size / (n - 1))
+            Image.fromarray(rgb, "RGB").save(os.path.join(out, "server.png"), format="PNG", compress_level=1)
+            got = blockworker.base_photo(*args)
+            self.assertIsNotNone(got, "the tiles on disk now")
+            np.testing.assert_array_equal(got[0], rgb)
+            self.assertEqual(set(got[1]), set(used))
+            self.assertEqual(got[2], set())
+            self.assertEqual(Path(out, "worker.png").read_bytes(), Path(out, "server.png").read_bytes())
+            self.assertTrue(os.path.exists(os.path.join(terraincache.cache_dir(user), terraincache.base_key(
+                "/temp/x/worker.png", "/levels/x/ao.png") + ".dds")))
+
+
+class BaseRoutingTest(unittest.TestCase):
+    """earthd: the base photo goes to the other lane's block process when the server has no imagery analyses; with
+    them (or a tile missing on disk) it is rendered in the server (write_base)."""
+
+    def test_routing_and_fallback(self):
+        import earthd
+        S = earthd.Server
+        s = SimpleNamespace(block_pools=[("request", None), ("prefetch", None)], imagery=object(), deshadow=None,
+                            colormatch=None)
+        self.assertEqual(S._base_process(s, earthd.LANE_REQUEST), "prefetch")
+        self.assertEqual(S._base_process(s, earthd.LANE_PREFETCH), "request")
+        for k in ("deshadow", "colormatch"):
+            self.assertIsNone(S._base_process(SimpleNamespace(**{**vars(s), k: object()}), earthd.LANE_REQUEST), k)
+        self.assertIsNone(S._base_process(SimpleNamespace(**{**vars(s), "block_pools": []}), earthd.LANE_REQUEST))
+        calls = []
+
+        def write_base(anchor, cx, cy, photo=None):
+            calls.append((cx, cy))
+            photo.append("here")
+            return "here.png"
+        s.write_base = write_base
+        s._base_elsewhere = lambda anchor, cx, cy, pool, photo: None         # a tile not on disk
+        name, photo, _ = S._base_photo(s, None, 1, 2, "pool")
+        self.assertEqual((name, photo, calls), ("here.png", ["here"], [(1, 2)]))
+        s._base_elsewhere = lambda anchor, cx, cy, pool, photo: photo.append("there") or "there.png"
+        name, photo, _ = S._base_photo(s, None, 3, 4, "pool")
+        self.assertEqual((name, photo, calls), ("there.png", ["there"], [(1, 2)]))
+
 
 if __name__ == "__main__":
     unittest.main()

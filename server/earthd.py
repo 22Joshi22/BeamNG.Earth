@@ -551,6 +551,7 @@ class Server:
                         if imagery else None)
         self.imagery_failures = 0           # tiles that fell back to the palette (network trouble)
         self.imagery_worker = 0             # far textures the far-tile processes rendered (blockworker.far_tile)
+        self.base_worker = 0                # base photos the block processes rendered (blockworker.base_photo)
         self.map_port = None                # the in-game map's tile endpoint (maptiles.py), hello.mapPort
         self.map_tiles = None               # its MapTiles: also written as files on request (map_tiles message)
         self.map_files = None               # the maptiles.TileFiles writing them (made by the first request)
@@ -1206,7 +1207,7 @@ class Server:
         if queued_at is not None and t0 - queued_at > 0.2:
             log.debug("terrain %s waited %.2f s for a heightmap worker", (anchor.id, cx, cy), t0 - queued_at)
         q = self.anchor_q(anchor)
-        base = (self.base_pool.submit(self._base_photo, anchor, cx, cy)
+        base = (self.base_pool.submit(self._base_photo, anchor, cx, cy, self._base_process(lane))
                 if self.near_visual == "detail" and self.imagery is not None else None)
         pool = self.block_pools[lane][0] if self.block_pools and progress is None else None
         if pool is not None:
@@ -1348,13 +1349,58 @@ class Server:
         info["tunnelHoles"] = int(holes.sum())
         return idx
 
-    def _base_photo(self, anchor, cx, cy):
-        """base_pool: the block's base photo (write_base) while its heights are built: (file name or None, [rgb] or
-        [], seconds)."""
+    def _base_process(self, lane):
+        """The block process that renders the base photo of a block built in lane (blockworker.base_photo): the
+        other lane's, usually idle while this one builds the heights; None (rendered here) with the imagery
+        analyses on (they live in this process) or without block processes."""
+        if not self.block_pools or self.imagery is None or self.deshadow is not None or self.colormatch is not None:
+            return None
+        return self.block_pools[LANE_PREFETCH if lane == LANE_REQUEST else LANE_REQUEST][0]
+
+    def _base_photo(self, anchor, cx, cy, pool=None):
+        """base_pool: the block's base photo (write_base; in the block process pool when given and its imagery
+        tiles are on disk) while its heights are built: (file name or None, [rgb] or [], seconds)."""
         t1 = time.perf_counter()
         photo = []
-        name = self.write_base(anchor, cx, cy, photo=photo)
+        name = self._base_elsewhere(anchor, cx, cy, pool, photo) if pool is not None else None
+        if name is None:
+            name = self.write_base(anchor, cx, cy, photo=photo)
         return name, photo, time.perf_counter() - t1
+
+    def _base_elsewhere(self, anchor, cx, cy, pool, photo):
+        """write_base in a block process (blockworker.base_photo): the file name, or None when it lacked an imagery
+        tile on disk or failed (then rendered here)."""
+        size = self.layout.block * heightmap.SQUARE
+        key = (anchor.id, cx, cy)
+        name = self.base_name(key)
+        im = self.imagery
+        tex = {"chain": [s.name for s in im.chain], "tone": self.tone, "leaf_on": im.leaf_on,
+               "season_mode": im.season_mode}
+        try:
+            got = pool.submit(blockworker.base_photo, anchor.lat, anchor.lon, cx - size / 2, cy - size / 2, size,
+                              BASE_PX, tex, bool(self.buildings and self.mapdata is not None), anchor.zooms[0],
+                              os.path.join(self.out_dir, name),
+                              (self.user_dir, f"{self.vfs_dir}/{name}", BASE_AO_VFS, BASE_AO)).result()
+        except Exception as e:
+            log.info("base photo %s in the block process: %s", key, e)
+            return None
+        if got is None:
+            return None
+        rgb, _, pending = got
+        self._base_kept(anchor, cx, cy, pending)
+        photo.append(rgb)
+        self.base_worker += 1
+        return name
+
+    def _base_kept(self, anchor, cx, cy, pending):
+        """A base photo was rendered with these (imagery.render pending) still to come: base_refresh renders it
+        again once they are here."""
+        key = (anchor.id, cx, cy)
+        self.base_pending[key] = frozenset(pending)
+        if self.base_ready(anchor, cx, cy):
+            self.base_stale.discard(key)
+        else:
+            self.base_stale.add(key)
 
     def _finish_heightmap(self, anchor, cx, cy, info, t0, base=None):
         """The base photo (detail mode; rendered here: the imagery corrections live in this process; base: its
@@ -1415,11 +1461,7 @@ class Server:
         # a lazy source (NAIP) not fetched yet for all of it: rendered again once it is (base_refresh)
         # ... and the analyses (de-shadow, colour match) it was rendered without (never waited for)
         key = (anchor.id, cx, cy)
-        self.base_pending[key] = frozenset(pending)
-        if self.base_ready(anchor, cx, cy):
-            self.base_stale.discard(key)
-        else:
-            self.base_stale.add(key)
+        self._base_kept(anchor, cx, cy, pending)
         if photo is not None:
             photo.append(rgb)
         t1 = time.perf_counter()
@@ -3265,6 +3307,9 @@ class Connection:
                          self.s.level_summary())
                 if self.s.imagery is not None:
                     log.info("imagery: %s", self.s.imagery.summary())
+                    if self.s.imagery_worker or self.s.base_worker:
+                        log.info("imagery in the worker processes: %d far textures, %d base photos",
+                                 self.s.imagery_worker, self.s.base_worker)
                 if self.s.retex_stats["started"]:
                     log.info("live retexture: %s, %d waiting", self.s.retex_stats, len(self.s.retex_todo))
                 if not any(ck[0] != anchor.id for ck in self.shown):

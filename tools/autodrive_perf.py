@@ -58,7 +58,7 @@ return jsonEncode({ roadsQ = rs.walksQueued, roadMeshes = rs.roadMeshes, t = os.
            slowSim = p.slowSimFrames, minSim = p.minSimRatio },
   backlog = (beamngEarth_core._state() or {}).serverBacklog,
   gps = { remaining = g.remaining, off = g.off, arrows = g.arrows, autodrive = g.autodrive, planning = g.planning },
-  pending = s.pending, anchor = s.anchorId,
+  pending = s.pending, anchor = s.anchorId, guard = s.guard, banner = s.banner, terrainLatency = s.terrainLatency,
   hitches = beamngEarth_core.hitches and beamngEarth_core.hitches() or {} })
 '''
 
@@ -100,6 +100,14 @@ def _cpu_rss(pids):
     return cpu, rss
 
 
+def _is_server(cmd):
+    """The world server's process: earthd.py from the source folder, or the launcher's --server mode (the source
+    launcher, the AppImage, the .exe)."""
+    head = cmd.split(" ", 2)
+    return "grep" not in cmd and ("earthd.py" in cmd or (" --server " in cmd + " " and any(
+        h.endswith(("launcher.py", ".AppImage", ".exe")) for h in head)))
+
+
 class ProcSampler:
     """CPU % (of one core) and memory of the world server (with its worker processes) and of the game, per poll."""
 
@@ -108,7 +116,7 @@ class ProcSampler:
 
     def groups(self):
         ps = _procs()
-        server = [p for p, (_, c) in ps.items() if "earthd.py" in c and "grep" not in c]
+        server = [p for p, (_, c) in ps.items() if _is_server(c)]
         kids = set(server)
         changed = True
         while changed:                  # the server's process pools (spawned workers) and their children
@@ -118,7 +126,9 @@ class ProcSampler:
                     kids.add(p)
                     changed = True
         exe = os.path.expanduser("~/.local/share/Steam/steamapps/common/BeamNG.drive/BinLinux/BeamNG.drive.x64")
-        game = [p for p, (_, c) in ps.items() if c.startswith(exe) and "--type=" not in c]
+        exe = os.path.realpath(exe)     # (Steam's runtime starts it as ~/.steam/steam/..., a link to the same)
+        game = [p for p, (_, c) in ps.items()
+                if c and "--type=" not in c and os.path.realpath(c.split(" ", 1)[0]) == exe]
         return {"server": sorted(kids), "game": game}
 
     def sample(self):
@@ -278,7 +288,20 @@ def summarize(rows):
         "arrows_fallback_polls": sum(1 for r in rows if not str(r["gps"].get("arrows") or "").startswith(("r", "final"))),
         "remaining_m": rows[-1]["gps"].get("remaining"),
         "hitch_causes": _causes(rows),
+        "edge": {m: sum(1 for r in rows if r.get("guard") == m) for m in ("warn", "hold")},
+        "cpu_cores": _cpu(rows),
     }
+
+
+def _cpu(rows):
+    """Average and peak cores busy (a poll's CPU %/100) of the server (with its workers) and of the game."""
+    out = {}
+    for name in ("server", "game"):
+        v = [r["procs"][name]["cpu"] for r in rows if (r.get("procs") or {}).get(name, {}).get("cpu") is not None]
+        if v:
+            out[name] = {"avg": round(sum(v) / len(v) / 100, 2), "max": round(max(v) / 100, 2),
+                         "rssMB": max(r["procs"][name]["rssMB"] for r in rows if r.get("procs"))}
+    return out
 
 
 def _causes(rows):
