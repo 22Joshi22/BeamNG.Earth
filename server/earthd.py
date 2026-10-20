@@ -85,6 +85,7 @@ import colormatch as colormatchmod  # noqa: E402
 import credits as creditsmod  # noqa: E402
 import surface as surfacemod  # noqa: E402
 import navgraph as navgraphmod  # noqa: E402
+import prewarm as prewarmmod  # noqa: E402
 import parking as parkingmod  # noqa: E402
 import roads as roadsmod  # noqa: E402
 import grading as gradingmod  # noqa: E402
@@ -488,6 +489,7 @@ class Server:
         self.out_dir = os.path.join(root, self.sid)
         self.cdae_dir = os.path.join(user_dir, *CDAE_ROOT, self.sid.lower())
         self.vfs_dir = f"/temp/beamngEarth/{self.sid}"
+        self.prewarm_vfs = None             # the materials' prewarm shape (prewarm.py), written at the first hello
         self.matslots = matslotsmod.MatSlots(self.sid[-4:], held=self.slot_held)    # pooled names and shape files
         self.reslot_serial = itertools.count(1)
         self.slot_serial = itertools.count(1)      # far_tile slotSerial (matslots.py)
@@ -2491,6 +2493,15 @@ class Connection:
                 m["season"] = season_mode
             if self.s.map_port:                 # the world map's tiles (maptiles.py; --map-tiles on)
                 m["mapPort"] = self.s.map_port
+            if self.s.mapdata is not None:      # our shapes' materials, set up by the mod now (prewarm.py)
+                if self.s.prewarm_vfs is None:
+                    try:
+                        self.s.prewarm_vfs = prewarmmod.write(self.s.out_dir, self.s.vfs_dir)
+                    except Exception as e:      # (nothing to prewarm: the first tiles set them up)
+                        log.info("prewarm shape: %s", e)
+                        self.s.prewarm_vfs = ""
+                if self.s.prewarm_vfs:
+                    m["prewarm"] = self.s.prewarm_vfs
             # a mod reconnecting to this server: the pooled slots its objects still hold (matslots.py)
             if msg.get("slotSession") == self.s.sid and isinstance(msg.get("slotsHeld"), list):
                 for g in msg["slotsHeld"]:

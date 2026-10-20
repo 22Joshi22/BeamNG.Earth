@@ -141,6 +141,7 @@ SERVER_TO_MOD = {
               "colormatch": F(str, OPT),        # --colormatch s2 only (likewise)
               "season": F(str, OPT),           # --season auto / fall (seasonlook.lua tints the leaves)
               "mapPort": F(int, OPT),           # the world map's tile endpoint on 127.0.0.1 (maptiles.py)
+              "prewarm": F(str, OPT),           # the shape listing our shapes' materials (prewarm.py; with map data)
               # the world map's credits for its view: [[credit, w, s, e, n] or [credit]] per imagery source, and
               # the rest (weather, elevation); with imagery on only
               "imageryCredits": F(list, OPT), "otherCredits": F(str, OPT)},

@@ -611,6 +611,7 @@ local function onMessage(msg)
       roads.clear()
       roadsSession = msg.sessionId
     end
+    roads.prewarm(msg.prewarm)  -- the materials of the server's shapes set up now, not at their first tile
     st.serverNote, st.serverNoteDetail = nil, nil
     -- a new server session: its own gravity message follows the first pose (none with --gravity off)
     local w = rawget(_G, 'beamngEarth_weather')
@@ -1477,6 +1478,8 @@ local function onLevelStart()
   navgraph.takeChoice(rawget(_G, 'freeroam_freeroam') and freeroam_freeroam.spawningOptionsHelper)
 
   activateWorld()
+  -- the connected server's shape materials (its hello came at the main menu, before this level's objects)
+  if lastHello and lastHello.prewarm then roads.prewarm(lastHello.prewarm) end
   -- Something to stand on until the first anchor arrives (our level has no GroundPlane).
   local ok, err = terrain.loadFlat()
   if ok then

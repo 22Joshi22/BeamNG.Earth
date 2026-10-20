@@ -621,6 +621,10 @@ end
 
 -- Once per frame (core onUpdate): deletions, then creations, within the governor's budget.
 function M.update(gov, currentAnchor, player)
+  if prewarmWant then prewarmNow()
+  elseif prewarmId and not scenetree.findObjectById(prewarmId) then   -- (the level loaded again: gone with it)
+    prewarmId, prewarmWant = nil, prewarmPath
+  end
   if currentAnchor then switchAnchor(currentAnchor) end
   releaseGhosts(player)
   while #deleteQ > 0 and gov:try('roadDelete') do
@@ -863,6 +867,36 @@ function M.collisionRebuilt()
 end
 
 -- Every road removed now (setting off, mod unload).
+-- Server hello.prewarm: a tiny shape listing every material the server's shapes use, loaded once when it connects
+-- (server/prewarm.py): a material's first shape in a session set it up (a tunnel's first tile 65 ms, later ones ~2 ms),
+-- now while the level starts. Kept far below the map (one per path; nil: an older server, nothing).
+local prewarmId, prewarmPath, prewarmWant = nil, nil, nil
+local function prewarmNow()
+  local path = prewarmWant
+  -- (the hello comes at the main menu, before the level's objects and with the roads off outside our level)
+  if not path or not M.enabled or not scenetree.MissionGroup then return end
+  prewarmWant = nil
+  if path == prewarmPath and prewarmId and scenetree.findObjectById(prewarmId) then return end   -- (made already)
+  if prewarmId then
+    local o = scenetree.findObjectById(prewarmId)
+    if o then o:delete() end
+    prewarmId = nil
+  end
+  loadMaterials()
+  local t = stopwatch.new()
+  local ok, id = pcall(createWalk, { shape = path, pos = { 0, 0, -5000 } }, false)
+  if not ok then lastError = tostring(id); return end
+  prewarmId, prewarmPath = id, path
+  log('I', 'beamngEarth', string.format('roads: materials prewarmed in %.0f ms (%s)', t(), path))
+end
+
+function M.prewarm(path)
+  if type(path) ~= 'string' then return false end
+  prewarmWant = path
+  prewarmNow()
+  return true
+end
+
 function M.clear()
   for key in pairs(tiles) do dropTile(key) end
   for _, f in pairs(far) do
