@@ -60,6 +60,17 @@ class FlatpakSteam(unittest.TestCase):
                         and launcher.is_proton("proton_experimental"))
         self.assertFalse(launcher.is_proton("steamlinuxruntime_4") or launcher.is_proton("") or launcher.is_proton(None))
 
+    def test_game_mode_overlay(self):
+        # a Steam Deck's Game Mode shows only windows Steam's overlay tags as the game: found in the Steam root
+        lib = os.path.join(self.home, *FP, ".local", "share", "Steam", "ubuntu12_64", "gameoverlayrenderer.so")
+        touch(lib)
+        self.assertEqual(launcher.steam_overlay_lib(), lib)
+        with mock.patch.dict(os.environ, {"GAMESCOPE_WAYLAND_DISPLAY": "gamescope-0"}):
+            self.assertTrue(launcher.under_gamescope())
+        with mock.patch.dict(os.environ, {"XDG_CURRENT_DESKTOP": "KDE"}):
+            os.environ.pop("GAMESCOPE_WAYLAND_DISPLAY", None)
+            self.assertFalse(launcher.under_gamescope())
+
     def test_flatpak_folder_before_the_first_start(self):
         import shutil
         shutil.rmtree(os.path.join(self.home, ".local"))

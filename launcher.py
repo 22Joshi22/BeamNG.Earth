@@ -358,6 +358,23 @@ def steam_runtime(exe):
     return entry if os.path.isfile(entry) and os.access(entry, os.X_OK) else None
 
 
+def under_gamescope():
+    """Linux: running in a Steam Deck's Game Mode (gamescope's session)."""
+    return bool(os.environ.get("GAMESCOPE_WAYLAND_DISPLAY")) or os.environ.get("XDG_CURRENT_DESKTOP") == "gamescope"
+
+
+def steam_overlay_lib():
+    """Steam's 64-bit overlay library (gameoverlayrenderer.so), or None. In Game Mode gamescope shows only the windows
+    it tags as the running Steam game, which this library does: the game started directly without it ran, but the
+    screen kept Steam's loading spinner (a Steam Deck, 2026-10-20)."""
+    import install
+    for root in install._steam_roots():
+        lib = os.path.join(root, "ubuntu12_64", "gameoverlayrenderer.so")
+        if os.path.isfile(lib):
+            return lib
+    return None
+
+
 def sandboxed_game(exe):
     """The game is installed by a Flatpak / snap Steam: it only runs inside that sandbox (through Steam)."""
     home = os.path.expanduser("~")
@@ -488,7 +505,13 @@ def start_game(use_gcpatch, build="native", gfx="", user_dir=None):
             exe = None
         if exe and steam_running():
             env = clean_env()
-            env["SteamAppId"] = env["SteamGameId"] = APP_ID
+            env["SteamAppId"] = APP_ID
+            # (Game Mode: started from a Steam shortcut, the shortcut's id is the game gamescope shows)
+            env["SteamGameId"] = os.environ.get("SteamGameId") if under_gamescope() and os.environ.get("SteamGameId") \
+                else APP_ID
+            overlay = steam_overlay_lib() if under_gamescope() else None
+            if overlay and overlay not in env.get("LD_PRELOAD", ""):
+                env["LD_PRELOAD"] = overlay + (":" + env["LD_PRELOAD"] if env.get("LD_PRELOAD") else "")
             lib = gcpatch_lib() if use_gcpatch else None
             if lib:
                 env["LD_PRELOAD"] = lib + (":" + env["LD_PRELOAD"] if env.get("LD_PRELOAD") else "")
