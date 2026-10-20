@@ -51,7 +51,9 @@ WALLS_VERSION = 1
 class Walls:
     """Building wall segments (metres, a local frame) with a bucket index for ray casts."""
 
-    def __init__(self, segs):
+    def __init__(self, segs, index=None):
+        """index: (buckets (3, B) int64 rows key, first, count, seg_of (P,) int64) as index_arrays() gives (the
+        store's, memory-mapped), else made here."""
         # x0 y0 x1 y1: float32 kept as given (the store's file, memory-mapped: one copy in the page cache for every
         # server process; their float64 copies were ~100-160 MB a process on a small machine, 2026-10-20), widened to
         # float64 wherever they are computed with (exact: the same numbers as a float64 copy)
@@ -59,6 +61,10 @@ class Walls:
             self.segs = segs
         else:
             self.segs = np.asarray(segs, np.float64).reshape(-1, 4)
+        if index is not None:
+            bk, self.seg_of = index
+            self.keys, self.first, self.counts = bk[0], bk[1], bk[2]     # (rows: contiguous, as the Rust loop takes)
+            return
         # bucket index, vectorised (a Python loop per segment took ~18 s for a city's 9 cells, 2026-10-12):
         # one (segment, bucket) pair per bucket a segment's box touches, sorted by bucket key
         s = np.asarray(self.segs, np.float64)
@@ -79,6 +85,11 @@ class Walls:
         first = np.flatnonzero(np.r_[True, ks[1:] != ks[:-1]]) if len(ks) else np.zeros(0, np.int64)
         self.keys = ks[first]
         self.first, self.counts, self.seg_of = first, np.diff(np.r_[first, len(ks)]), seg[order]
+
+    def index_arrays(self):
+        """(buckets (3, B) int64 rows key, first, count, seg_of (P,) int64): the bucket index, for the store."""
+        return (np.stack([self.keys, self.first, self.counts]).astype(np.int64),
+                np.asarray(self.seg_of, np.int64))
 
     @staticmethod
     def _key(bx, by):
@@ -216,6 +227,36 @@ def _read_segs(path):
     return a if a.dtype == np.float32 and a.ndim == 2 and a.shape[1] == 4 else None
 
 
+def _index_paths(path):
+    return path[:-4] + ".bk.npy", path[:-4] + ".so.npy"
+
+
+def complete_store(path):
+    """The walls' own file is in the store (their index may be kept beside it)."""
+    return os.path.exists(path)
+
+
+def _read_index(path, nsegs):
+    """The bucket index stored beside a cell's walls (memory-mapped), or None (none, or not of these walls)."""
+    pb, ps = _index_paths(path)
+    try:
+        bk = np.load(pb, mmap_mode="r", allow_pickle=False)
+        so = np.load(ps, mmap_mode="r", allow_pickle=False)
+    except FileNotFoundError:
+        return None
+    except (OSError, ValueError, EOFError) as e:
+        log.debug("road widths: %s: %s", pb, e)
+        return None
+    ok = (bk.dtype == np.int64 and bk.ndim == 2 and bk.shape[0] == 3 and so.dtype == np.int64 and so.ndim == 1
+          and (bk.shape[1] == 0 or int(bk[1, -1]) + int(bk[2, -1]) == len(so)) and (nsegs > 0 or len(so) == 0))
+    return (bk, so) if ok else None
+
+
+def _write_index(path, index):
+    for p, a in zip(_index_paths(path), index):
+        _write_segs(p, a)
+
+
 def _write_segs(path, segs):
     tmp = f"{path}.{os.getpid()}.{threading.get_ident()}.tmp"
     try:
@@ -290,7 +331,20 @@ class RoadWidths:
                 segs = _read_segs(path)         # (the file's mapping: shared with the other processes)
                 if segs is None:
                     segs = (np.concatenate(parts) if parts else np.zeros((0, 4))).astype(np.float32)
-        walls = Walls(segs)
+        walls = None
+        if path:            # the bucket index beside them (memory-mapped too), made once
+            index = _read_index(path, len(segs))
+            if index is not None:
+                walls = Walls(segs, index)
+            else:
+                walls = Walls(segs)
+                if complete_store(path):
+                    _write_index(path, walls.index_arrays())
+                    index = _read_index(path, len(segs))
+                    if index is not None:
+                        walls = Walls(segs, index)
+        if walls is None:
+            walls = Walls(segs)
         with self.lock:
             got = self.walls.setdefault(str(key), (frame, walls))
             self.walls.move_to_end(str(key))

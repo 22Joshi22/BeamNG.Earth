@@ -106,6 +106,20 @@ class StoreTest(unittest.TestCase):
             b = roadwidth.RoadWidths(cell_fn, d).get("r1", road)
             self.assertEqual(len(calls), n, "read from disk: no buildings loaded")
             self.assertEqual(a, b)
+            # the walls and their bucket index read memory-mapped (float32, shared by the processes), the same rays
+            rw = roadwidth.RoadWidths(cell_fn, d)
+            _, walls = rw._walls(home)
+            self.assertIsInstance(walls.segs, np.memmap)
+            self.assertEqual(walls.segs.dtype, np.float32)
+            self.assertIsInstance(walls.seg_of, np.memmap)
+            fresh = roadwidth.Walls(np.asarray(walls.segs))
+            for name in ("keys", "first", "counts", "seg_of"):
+                np.testing.assert_array_equal(getattr(walls, name), getattr(fresh, name), name)
+            p = np.array([[0.0, 0.0], [10.0, -3.0]])
+            dd = np.array([[0.0, 1.0], [0.0, -1.0]])
+            np.testing.assert_array_equal(walls.rays(p, dd), fresh.rays(p, dd))
+            np.testing.assert_array_equal(fresh.rays(p, dd),
+                                          roadwidth.Walls(np.asarray(walls.segs, np.float64)).rays(p, dd))
 
             def flaky(key):
                 if (key.x, key.y) != (home.x, home.y):
