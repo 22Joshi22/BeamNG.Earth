@@ -181,6 +181,20 @@ class VegetationTest(unittest.TestCase):
         self.assertTrue(0 < some < none, "half way: some")
 
 
+    def test_no_canopy_trees_on_barren_ground(self):
+        # the canopy map misread the Bonneville Salt Flats' bright salt as ~19k trees up to 21 m: on bare ground with no
+        # vegetated land within BARREN_NEAR_M, its tops are dropped
+        class Cover(Raster):
+            def sample(self, lon, lat):
+                return np.full(np.shape(lon), self.data, np.uint8)
+        md = FakeMapData()
+        md.cd.layers["landcover"] = Cover(veg.WC["bare"], 0, 0, 1)
+        it = veg.Vegetation(md, None).cell(KEY)
+        self.assertEqual(int((it.kind == veg.KIND_TREE).sum()), 0)
+        md.cd.layers["landcover"] = Cover(veg.WC["grass"], 0, 0, 1)
+        self.assertGreater(int((veg.Vegetation(md, None).cell(KEY).kind == veg.KIND_TREE).sum()), 0, "on grass: kept")
+
+
 class RegionalTest(unittest.TestCase):
     def g(self, group, h, lat, lon, lcls, u=0.9):
         return int(veg.regional(np.array([group]), np.array([h]), np.array([lat]), np.array([lon]),

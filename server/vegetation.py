@@ -35,7 +35,7 @@ import staging
 
 log = logging.getLogger("earthd.vegetation")
 
-VERSION = 12
+VERSION = 13
 TREE_MIN_M = 3.0
 CROWN_SPACING = 0.5          # tops kept this many crown radii apart (0.8 looked sparse: the user, 2026-10-13)
 BUSH_MIN_M = 1.0
@@ -64,6 +64,7 @@ BUILT_NEAR_M = 60.0         # bare ground with built-up land this far around get
 # cell's rock is kept with the share of the ground's slope between these (the DEM ROCK_SLOPE_D m either side, at
 # ROCK_SLOPE_ZOOM: coarse tiles, few downloads); without a DEM, as before.
 ROCK_SLOPE = (0.02, 0.10)
+BARREN_NEAR_M = 20.0        # m: a canopy top on bare ground or snow needs vegetated land this near (_build)
 ROCK_SLOPE_D = 40.0
 ROCK_SLOPE_ZOOM = 12
 # Forest edges along roads in humid country (Columbia's photos: a wall of shrubs, saplings and vines from the
@@ -357,6 +358,22 @@ class Vegetation:
         # the landcover class at each top (rocks / bushes scatter below)
         lcls = lc.sample(tlon, tlat) if lc is not None else np.zeros(len(tlon), np.uint8)
         is_tree &= lcls != WC["water"]
+        # canopy heights on bare ground or permanent snow with no vegetated land around: the canopy map misreading
+        # bright ground (the Bonneville Salt Flats had ~19k "trees" up to 21 m tall on bare salt, 2026-10-20). By
+        # its definition bare land has under 10 % plant cover; an edge tree, or one by an oasis, has some within
+        # BARREN_NEAR_M and stays
+        barren = np.flatnonzero((lcls == WC["bare"]) | (lcls == WC["snow"])) if lc is not None else []
+        if len(barren):
+            k = max(0.05, float(np.cos(np.radians(tlat[barren[0]]))))
+            dm = BARREN_NEAR_M / k
+            near = np.zeros(len(barren), bool)
+            for ox, oy in ((dm, 0.0), (-dm, 0.0), (0.0, dm), (0.0, -dm)):
+                lo2, la2 = _to4326(mx[ii[barren]] + ox, my[jj[barren]] + oy)
+                near |= ~np.isin(lc.sample(lo2, la2), (WC["bare"], WC["snow"], WC["water"]))
+            keep = np.ones(len(jj), bool)
+            keep[barren[~near]] = False
+            jj, ii, th, tlon, tlat, lcls, is_tree = jj[keep], ii[keep], th[keep], tlon[keep], tlat[keep], lcls[keep], \
+                is_tree[keep]
         # hashed choices keyed on the global pixel (z17 Web-Mercator index: the CHM grid)
         gx = np.floor((mx[ii] + 20037508.342789244) / chm.dx).astype(np.int64)
         gy = np.floor((20037508.342789244 - my[jj]) / chm.dy).astype(np.int64)
