@@ -23,6 +23,7 @@ local roads = require('beamngEarth/roads')
 local gov = { tries = 0 }
 function gov:try() self.tries = self.tries + 1; return self.allow == nil or self.tries <= self.allow end
 function gov:charge() end
+function gov:chargeMotion() end
 
 local function chunk(x)
   return string.format('{ m = "road_asphalt_2lane", w = 6, tl = 11, p = 20, n = { {%d, 0, 10}, {%d, 10, 10}, {%d, 20, 10} } }', x, x, x)

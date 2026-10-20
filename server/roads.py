@@ -3355,7 +3355,9 @@ def write_tile(out_dir, vfs_dir, aid, tx, ty, chunks, walks=None, road_mesh=None
     import sidewalks
     name = f"roads_{aid}_{tx}_{ty}.json"
     path = os.path.join(out_dir, name)
-    data = {"v": VERSION, "chunks": chunks}
+    # (from PR #41, Madderose) with a road mesh the mod makes no DecalRoads: their chunks were ~36 % of the file it
+    # parses on its main thread
+    data = {"v": VERSION, "chunks": [] if road_mesh is not None else chunks}
     if road_mesh is not None:
         x0, y0, _, _ = tile_bbox(tx, ty)
         shape = f"road_{aid}_{tx}_{ty}.cdae"

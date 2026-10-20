@@ -712,7 +712,9 @@ function M.update(gov, currentAnchor, player)
     lastReloadAt = now()
     collisionDirty, deletesDirty, sinceReload = false, false, stopwatch.new()
     local ms = now() - t0
-    gov:charge('roadWalk', ms)
+    -- out of the frame's budget, not into the meshes' cost estimate (from PR #41: a ~40 ms rebuild in the roadWalk
+    -- EMA held the next sidewalk and building meshes back as if each cost that much more)
+    gov:chargeMotion(ms)
     noteUnit('reloadCollision', ms)
   end
 end
