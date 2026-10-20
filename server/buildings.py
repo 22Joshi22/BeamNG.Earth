@@ -201,11 +201,17 @@ def _area2(p):
     return float(np.dot(x, np.concatenate((y[1:], y[:1]))) - np.dot(np.concatenate((x[1:], x[:1])), y))
 
 
+def _close2(a, b):
+    """np.allclose(a, b) of two 2-vectors (rtol 1e-5, atol 1e-8; NaN never close) without its per-call cost."""
+    ax, ay, bx, by = float(a[0]), float(a[1]), float(b[0]), float(b[1])
+    return abs(ax - bx) <= 1e-08 + 1e-05 * abs(bx) and abs(ay - by) <= 1e-08 + 1e-05 * abs(by)
+
+
 def clean_ring(p):
     """The ring (n, 2) without its closing point, duplicate and nearly collinear vertices, counter-clockwise;
     None if fewer than 3 are left."""
     p = np.asarray(p, np.float64)[:, :2]
-    if len(p) > 1 and np.allclose(p[0], p[-1]):
+    if len(p) > 1 and _close2(p[0], p[-1]):
         p = p[:-1]
     tol = SIMPLIFY_M
     for _ in range(8):
@@ -237,6 +243,7 @@ def triangulate(p):
     """Ear clipping of the counter-clockwise simple ring p (n, 2): (n-2, 3) indices into p (fewer if the
     ring is not simple: the rest is left out)."""
     n = len(p)
+    p = np.asarray(p, np.float64)[:, :2].tolist()      # plain floats: the same products, without numpy's per-scalar cost
     idx = list(range(n))
     out = []
 
@@ -276,23 +283,33 @@ def triangulate(p):
 def oriented_box(p):
     """The minimum-area rectangle around ring p along one of its edges: (centre (2,), axis u (2,) along the
     long side, half length, half width)."""
+    # in plain floats (numpy's per-edge calls on a handful of points were ~8 % of a far buildings tile); the same
+    # products and sums as p @ u, bit for bit (checked on Baltimore's 17.5k building rings, 2026-10-20)
+    pts = np.asarray(p, np.float64).tolist()
+    n = len(pts)
     best = None
-    for i in range(len(p)):
-        e = p[(i + 1) % len(p)] - p[i]
-        L = math.hypot(*e)
+    for i in range(n):
+        x0, y0 = pts[i]
+        x1, y1 = pts[(i + 1) % n]
+        ex, ey = x1 - x0, y1 - y0
+        L = math.hypot(ex, ey)
         if L < 1e-6:
             continue
-        u = e / L
-        v = np.array([-u[1], u[0]])
-        a, b = p @ u, p @ v
-        area = (a.max() - a.min()) * (b.max() - b.min())
+        ux, uy = ex / L, ey / L
+        vx, vy = -uy, ux
+        a = [x * ux + y * uy for x, y in pts]
+        b = [x * vx + y * vy for x, y in pts]
+        amin, amax, bmin, bmax = min(a), max(a), min(b), max(b)
+        area = (amax - amin) * (bmax - bmin)
         if best is None or area < best[0]:
-            best = (area, u, v, a, b)
-    _, u, v, a, b = best
-    c = u * (a.max() + a.min()) / 2 + v * (b.max() + b.min()) / 2
-    hl, hw = (a.max() - a.min()) / 2, (b.max() - b.min()) / 2
+            best = (area, ux, uy, vx, vy, amin, amax, bmin, bmax)
+    _, ux, uy, vx, vy, amin, amax, bmin, bmax = best
+    sa, sb = amax + amin, bmax + bmin
+    c = np.array([ux * sa / 2 + vx * sb / 2, uy * sa / 2 + vy * sb / 2])
+    hl, hw = np.float64((amax - amin) / 2), np.float64((bmax - bmin) / 2)     # (numpy scalars, as before)
+    u = np.array([ux, uy])
     if hw > hl:
-        u, hl, hw = v, hw, hl
+        u, hl, hw = np.array([vx, vy]), hw, hl
     return c, u, hl, hw
 
 
@@ -1812,8 +1829,13 @@ def road_lines(frame, road_layers, x0, y0, margin=50.0, size=256.0):
         if f is None or len(f.kind) == 0:
             continue
         cls = f.attrs.get("class")
-        for i in range(len(f.kind)):
-            if cls is None or str(cls[i]) not in THROUGH_CLASSES or roadsmod.level_ranges(f, i):
+        if cls is None:
+            continue
+        bb = f.boxes(frame)             # (only the roads near the tile: the test below, all at once)
+        near = np.flatnonzero((bb[:, 2] - x0 >= -margin) & (bb[:, 0] - x0 <= size + margin)
+                              & (bb[:, 3] - y0 >= -margin) & (bb[:, 1] - y0 <= size + margin))
+        for i in near.tolist():
+            if str(cls[i]) not in THROUGH_CLASSES or roadsmod.level_ranges(f, i):
                 continue
             a = f.coord_off[f.ring_off[f.part_off[i]]]
             b = f.coord_off[f.ring_off[f.part_off[i + 1]]]

@@ -156,6 +156,32 @@ class Features:
             got = memo[key] = (cx, cy)
         return got
 
+    def boxes(self, frame):
+        """(n, 4): per feature the [min e, min n, max e, max n] of all its coordinates in frame (xy_in's numbers);
+        +inf / -inf for a feature without any. Kept per frame like xy_in: a tile's loops over a cell's features test
+        these first (a far buildings tile went through every road of its cells for the few near it)."""
+        key = (frame.lat0, frame.lon0, frame.h0)
+        memo = self.__dict__.setdefault("_boxes", {})
+        got = memo.get(key)
+        if got is None:
+            n = len(self.part_off) - 1
+            got = np.empty((max(n, 0), 4))
+            got[:, :2], got[:, 2:] = np.inf, -np.inf
+            if n > 0 and len(self.lonlat):
+                c = self.coord_off[self.ring_off[self.part_off]]           # each feature's first coordinate
+                c0, c1 = c[:-1], c[1:]
+                xy = self.xy_in(frame)
+                has = c1 > c0
+                if has.any():
+                    got[has, 0] = _reduce(np.minimum, xy[:, 0], c0[has], c1[has])
+                    got[has, 1] = _reduce(np.minimum, xy[:, 1], c0[has], c1[has])
+                    got[has, 2] = _reduce(np.maximum, xy[:, 0], c0[has], c1[has])
+                    got[has, 3] = _reduce(np.maximum, xy[:, 1], c0[has], c1[has])
+            if len(memo) >= 2:
+                memo.pop(next(iter(memo)))
+            got = memo[key] = got
+        return got
+
     def localize(self, frame):
         """Fill `en` from `lonlat` with an EnuFrame (the cell's)."""
         if len(self.lonlat):
@@ -396,6 +422,18 @@ def clip_polygon_parts(parts, bounds):
                 new.append(c)
         out.append(new)
     return out, changed
+
+
+def _reduce(ufunc, v, a, b):
+    """ufunc.reduce of v[a[k]:b[k]] for each k (every range non-empty, ascending, not overlapping)."""
+    out = ufunc.reduceat(v, a)
+    # reduceat runs each range to the next start: a range that ends before it (a gap) is cut at its own end
+    gap = np.flatnonzero(b[:-1] < a[1:])
+    for k in gap:
+        out[k] = ufunc.reduce(v[a[k]:b[k]])
+    if len(b) and b[-1] < len(v):
+        out[-1] = ufunc.reduce(v[a[-1]:b[-1]])
+    return out
 
 
 def enu_xy(feats, frame, ring):
