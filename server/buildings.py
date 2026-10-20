@@ -1771,7 +1771,10 @@ def support_rings(frame, infra_layers, x0, y0, margin=50.0, size=256.0):
         cs = cls.astype(str)
         # a bridge's supports, and its own outlines mapped as buildings (Tower Bridge's high walkways: building:colour
         # lightblue, 45 m); not a bare bridge outline (Ponte Vecchio's shops stand on one)
-        three_d = np.array(['"building' in str(t) for t in tags], bool) if tags is not None else np.zeros(len(cs), bool)
+        three_d = f.__dict__.get("_three_d")         # (once per cell's features: every tile of it asked)
+        if three_d is None:
+            three_d = f._three_d = (np.array(['"building' in str(t) for t in tags], bool) if tags is not None
+                                    else np.zeros(len(cs), bool))
         for i in np.flatnonzero(((cs == "bridge_support") | ((cs == "bridge") & three_d)) & (f.kind == 3)):
             fid = f.ids[i]
             if fid in seen:
