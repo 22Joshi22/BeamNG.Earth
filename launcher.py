@@ -454,7 +454,7 @@ def windows_game_dir():
     return None
 
 
-def start_game(use_gcpatch, build="native", gfx=""):
+def start_game(use_gcpatch, build="native", gfx="", user_dir=None):
     """Start the game; returns a Popen when this process started it directly, else None (through Steam)."""
     win_args = ["-gfx", gfx] if gfx else []
     if IS_WIN:
@@ -482,6 +482,8 @@ def start_game(use_gcpatch, build="native", gfx=""):
             lib = gcpatch_lib() if use_gcpatch else None
             if lib:
                 env["LD_PRELOAD"] = lib + (":" + env["LD_PRELOAD"] if env.get("LD_PRELOAD") else "")
+                if user_dir:        # where the mod raises the patch's level flag (tools/gcpatch)
+                    env["BNGEARTH_USER_DIR"] = user_dir
             row("Game", "starting" + ("  (with the grass patch)" if lib else ""))
             proc = subprocess.Popen([exe], cwd=os.path.dirname(os.path.dirname(exe)), env=env,
                                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
@@ -832,7 +834,7 @@ def run(args):
         else:
             if wine:
                 say("(under Wine / Proton: on Linux the AppImage runs the server natively, faster)")
-            proc = start_game(not args.no_gcpatch, build, args.gfx)
+            proc = start_game(not args.no_gcpatch, build, args.gfx, user_dir)
         say()
         say("In the game: Freeroam > BeamNG.Earth.  Closing the game stops the server.")
         say()

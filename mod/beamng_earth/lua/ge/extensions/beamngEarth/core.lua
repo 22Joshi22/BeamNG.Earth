@@ -1313,6 +1313,16 @@ end
 local function onUpdate(dtReal, dtSim)
   dtReal = dtReal or 0
   local frameMs0 = frameTimer and frameTimer:stopAndReset() or dtReal * 1000
+  if not st.inOurLevel and not st.active then
+    -- Other levels and the menus: nothing but the connection to the world server, kept open (on Linux the
+    -- launcher's sign that the game still runs, launcher.game_connected; its messages only store what the
+    -- server is). The user, 2026-10-20: the mod should be effectively off when not playing the BeamNG.Earth map.
+    for _, msg in ipairs(net.update(dtReal)) do
+      local ok, err = pcall(onMessage, msg)
+      if not ok then log('E', 'beamngEarth', 'message ' .. tostring(msg.type) .. ' failed: ' .. tostring(err)) end
+    end
+    return
+  end
   if frameMs0 > M.HITCH_MS and st.inOurLevel then pcall(noteHitch, frameMs0) end
   prevMarks, marks = marks, prevMarks
   for k in pairs(marks) do marks[k] = nil end
@@ -1461,6 +1471,7 @@ local function onLevelStart()
   -- the window opens by itself only in our level; elsewhere use beamngEarth_core.toggleUI(). With
   -- the pause-menu settings page it is a compact HUD, hidden unless the settings show it.
   ui.visible = st.inOurLevel and not settings.hudHiddenAtStart()
+  groundcover.enginePatch(st.inOurLevel)
   if not st.inOurLevel then return end
   -- the player's traffic / parked cars choice, before freeroam spawns them on a map without our roads yet
   navgraph.takeChoice(rawget(_G, 'freeroam_freeroam') and freeroam_freeroam.spawningOptionsHelper)
@@ -1515,6 +1526,7 @@ local function onClientEndMission()
   farfield.clear()
   horizon.restoreSky() -- M1h: the level's sky planet radius (its LevelInfo goes with the level)
   groundcover.reset() -- its objects go with the level
+  groundcover.enginePatch(false)
   roads.reset()
   sea.reset()
   trees.reset()
@@ -1527,11 +1539,13 @@ end
 
 local function onExtensionLoaded()
   log('I', 'beamngEarth', 'beamngEarth_core loaded')
+  groundcover.enginePatch(false)    -- a flag a crashed game left: stock until our level starts
   -- loaded while a level is already running (e.g. extensions.reload from the console)
   if scenetree.MissionGroup and getCurrentLevelIdentifier() then onLevelStart() end
 end
 
 local function onExtensionUnloaded()
+  groundcover.enginePatch(false)
   net.close()
   farfield.clear()
   roads.clear()

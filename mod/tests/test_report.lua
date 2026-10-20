@@ -25,6 +25,14 @@ FS = { directoryExists = function() return false end, directoryCreate = function
 -- 1) no engine at all: every hardware field missing, no error
 Engine = {}
 local report = require('beamngEarth/report')
+-- other levels: the hotkeys do nothing (the user, 2026-10-20: the mod effectively off there)
+getCurrentLevelIdentifier = function() return 'gridmap_v2' end
+report.onClientStartMission()
+report.note()
+T.check(not report.inOurLevel() and not report.status().formOpen, 'Ctrl+Shift+E does nothing on another level')
+getCurrentLevelIdentifier = function() return 'beamng_earth' end
+report.onClientStartMission()
+T.check(report.inOurLevel(), 'our level')
 local ok, hw = pcall(report.collectHardware)
 T.check(ok, 'collectHardware without the engine APIs: ' .. tostring(hw))
 T.check(ok and hw.os == nil and hw.gpu == nil and hw.graphicsApi == nil, 'missing APIs leave fields out')
