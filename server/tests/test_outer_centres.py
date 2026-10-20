@@ -45,5 +45,37 @@ class OuterCentresTest(unittest.TestCase):
         self.assertIs(f.outer_centres(fr)[0], cx)           # kept per frame
 
 
+class BoxesTest(unittest.TestCase):
+    def test_exact_boxes_of_all_coordinates(self):
+        # features of several parts and rings, some without any: each box is the min / max of xy_in over all of
+        # the feature's coordinates, exactly (the far buildings' road_lines test uses them in its place)
+        rng = np.random.default_rng(5)
+        lonlat, part_off, ring_off, coord_off = [], [0], [0], [0]
+        for i in range(200):
+            nparts = 0 if i % 23 == 0 else int(rng.integers(1, 4))
+            for _ in range(nparts):
+                for _ in range(int(rng.integers(1, 3))):
+                    k = int(rng.integers(1, 7))
+                    lonlat.append(np.array([-76.6, 39.28]) + rng.normal(0, 0.01, (k, 2)))
+                    coord_off.append(coord_off[-1] + k)
+                    ring_off.append(ring_off[-1] + 1)
+            part_off.append(len(ring_off) - 1)
+        f = mapgeom.Features(layer="r", ids=np.array([f"{i:04d}" for i in range(200)]), kind=np.full(200, 2, np.uint8),
+                             part_off=np.array(part_off), ring_off=np.array(ring_off), coord_off=np.array(coord_off),
+                             lonlat=np.vstack(lonlat))
+        fr = geodesy.EnuFrame(39.28, -76.6, 0.0)
+        bb = f.boxes(fr)
+        xy = f.xy_in(fr)
+        for i in range(200):
+            a = f.coord_off[f.ring_off[f.part_off[i]]]
+            b = f.coord_off[f.ring_off[f.part_off[i + 1]]]
+            if b == a:
+                self.assertTrue(np.isinf(bb[i]).all(), i)
+                continue
+            want = [xy[a:b, 0].min(), xy[a:b, 1].min(), xy[a:b, 0].max(), xy[a:b, 1].max()]
+            self.assertEqual(bb[i].tolist(), want, i)
+        self.assertIs(f.boxes(fr), bb, "kept per frame")
+
+
 if __name__ == "__main__":
     unittest.main()
