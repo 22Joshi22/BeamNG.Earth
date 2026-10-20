@@ -1905,12 +1905,28 @@ def _passages(rings, attrs, looks, mins, bridges_xy, decks=None, ground_at=None)
 
 
 ML_BRIDGE_M = 6.0          # m of a road bridge's line through a machine-learned footprint: the deck, not a building
+ML_ROAD_M = 4.0            # m from a public road's centre line to a machine-learned footprint's centre: a vehicle on it
 
 
-def _ml_false(ring, bridges_xy, water_xy):
-    """A machine-learned footprint (Microsoft's, Google's) that is a bridge deck or a boat: a road bridge runs
-    through it, or its centre lies on mapped water (Tower Bridge's river: barges as brick buildings, 2026-10-18)."""
+def _line_dist(p, lines):
+    """Distance from point p (2,) to the nearest of the polylines lines (k, 2), or inf."""
+    best = np.inf
+    for ln in lines:
+        a, b = ln[:-1], ln[1:]
+        d = b - a
+        t = np.clip(((p - a) * d).sum(1) / np.maximum((d * d).sum(1), 1e-12), 0.0, 1.0)
+        q = a + t[:, None] * d
+        best = min(best, float(np.hypot(*(q - p).T).min()))
+    return best
+
+
+def _ml_false(ring, bridges_xy, water_xy, roads_xy=None):
+    """A machine-learned footprint (Microsoft's, Google's) that is a bridge deck, a boat or a vehicle: a road bridge
+    runs through it, its centre lies on mapped water (Tower Bridge's river: barges as brick buildings, 2026-10-18) or
+    on a public road (a lorry on a Norwegian trunk road stood as a white building over the lanes, GitHub #2)."""
     if bridges_xy and road_through(ring, bridges_xy) >= ML_BRIDGE_M:
+        return True
+    if roads_xy and _line_dist(ring.mean(0), roads_xy) <= ML_ROAD_M:
         return True
     if water_xy:
         from polygon import Path
@@ -1989,7 +2005,8 @@ CENTRE_PREFILTER_M = 1.0       # m of slack for Features.outer_centres (cumulati
 
 
 def tile_buildings(frame, x0, y0, x1, y1, layers, elev, water=None, part_layers=(), west_town=False, roads_xy=None,
-                   tunnels_xy=None, garages_xy=None, supports=None, bridges_xy=None, water_xy=None, decks=None):
+                   tunnels_xy=None, garages_xy=None, supports=None, bridges_xy=None, water_xy=None, decks=None,
+                   ml_roads_xy=None):
     """[(Spec, gmin, gmax)] of the buildings whose footprint centroid is in the tile [x0, x1) x [y0, y1)
     (anchor frame), rings relative to (x0, y0). layers: mapgeom.Features of buildings (one per map cell; a
     building in two cells is taken once, by id); elev(lat, lon) the physics ground. part_layers: the
@@ -1997,7 +2014,8 @@ def tile_buildings(frame, x0, y0, x1, y1, layers, elev, water=None, part_layers=
     (each from its bottom to its top, the building's look). garages_xy: garage_rings (a building one covers, or
     covering one's centre, is a parking structure). supports: support_rings (a building or part on one is the
     bridge's painted steel). bridges_xy / water_xy (bridge_lines, water_rings): a machine-learned footprint (not
-    OSM) on a road bridge or over water is a deck or a boat, left out (_ml_false)."""
+    OSM) on a road bridge, over water or on a public road (roads_xy, or ml_roads_xy for that test alone: the far
+    buildings) is a deck, a boat or a vehicle, left out (_ml_false)."""
     parts_of = {}                       # building id -> [(ring in the anchor frame, own height, bottom)]
     pseen = set()
     for f in part_layers:
@@ -2085,7 +2103,7 @@ def tile_buildings(frame, x0, y0, x1, y1, layers, elev, water=None, part_layers=
             if ring is None or _area2(ring) / 2 < MIN_AREA_M2:
                 continue
             if "src_dataset" in a and str(a["src_dataset"][i]) != "OpenStreetMap" and \
-                    _ml_false(ring, bridges_xy, water_xy):
+                    _ml_false(ring, bridges_xy, water_xy, ml_roads_xy if ml_roads_xy is not None else roads_xy):
                 continue
             if key is not None:
                 seen.add(key)
@@ -2517,7 +2535,8 @@ def far_tile(frame, tx, ty, md, ground, out_dir, vfs_dir, aid):
                            garages_xy=garage_rings(frame, [c.layers.get("infrastructure") for c in cds], x0, y0),
                            supports=support_rings(frame, [c.layers.get("infrastructure") for c in cds], x0, y0),
                            bridges_xy=bridge_lines(frame, [c.layers.get("roads") for c in cds], x0, y0),
-                           water_xy=water_rings(frame, [c.layers.get("water") for c in cds], x0, y0))
+                           water_xy=water_rings(frame, [c.layers.get("water") for c in cds], x0, y0),
+                           ml_roads_xy=road_lines(frame, [c.layers.get("roads") for c in cds], x0, y0))
     mesh = build(items, lite=True)
     data = {"v": 1}
     if mesh is not None:

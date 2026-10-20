@@ -613,6 +613,16 @@ class MachineLearnedFootprintTest(unittest.TestCase):
         self.assertFalse(bld._ml_false(sq(75, 75), bridge, river))
         self.assertFalse(bld._ml_false(sq(150, 20), bridge, river))
 
+    def test_vehicle_on_a_road(self):
+        """GitHub #2: a lorry on a Norwegian trunk road (Microsoft's footprint 4 x 17 m) stood as a white building
+        over the lanes; a house beside the road stays."""
+        road = [np.array([[0.0, 0.0], [200.0, 0.0]])]
+        lorry = np.array([[50, 0.5], [67, 0.5], [67, 4.5], [50, 4.5]], float)      # in the outer lane
+        house = np.array([[50, 9], [62, 9], [62, 19], [50, 19]], float)
+        self.assertTrue(bld._ml_false(lorry, None, None, road))
+        self.assertFalse(bld._ml_false(house, None, None, road))
+        self.assertFalse(bld._ml_false(lorry, None, None, None))
+
 
 class BridgeStructureTest(unittest.TestCase):
     """A bridge's tower (Overture bridge_structure: the Queensboro Bridge's, 33 x 4.6 x 110 m) is an open steel frame
