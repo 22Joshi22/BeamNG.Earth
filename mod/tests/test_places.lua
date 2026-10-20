@@ -43,8 +43,9 @@ local F = places.FILE
 
 local list = places.list() -- lazy load
 T.check(#list == #places.SEED and #list >= 12, 'first run: the seed list (' .. #list .. ')')
-T.check(list[1].name:match('Fells Point') and list[2].name:match('Whitney') and list[2].lat == 36.5785
-  and list[2].lon == -118.2923, 'seed: the PLACES.md table first (Fells Point, Mount Whitney summit, ...)')
+T.check(list[1].name:match('Fells Point') and list[2].name:match('Whitney') and list[2].lat == 36.596718
+  and list[2].lon == -118.169991, 'seed: Fells Point, then Mount Whitney on its road (not the summit)')
+T.check(#places.OLD_SEED == #places.SEED, 'every earlier seed place has its new spot')
 local names = {}
 for _, p in ipairs(list) do names[#names + 1] = p.name end
 names = table.concat(names, '|')
@@ -376,5 +377,31 @@ end
 T.check(distinct and #places.list() == 4, 'huge / fractional ids: renumbered, all distinct small integers')
 places.remove(x1.id)
 T.check(places.find(x2.id).name == 'X2' and #places.list() == 3 and places.list()[1].name == 'Big', 'huge ids: Delete removes the right place')
+
+-- an earlier first-run place still as it was moves to its new spot (on a road); an edited one stays
+files[F] = { version = 1, nextId = 4, places = {
+  { id = 1, name = 'Mount Whitney summit', lat = 36.5785, lon = -118.2923 },
+  { id = 2, name = 'My summit', lat = 36.5785, lon = -118.2923 },
+  { id = 3, name = 'Fells Point, Baltimore MD', lat = 39.2834, lon = -76.5934 } }, recent = {} }
+places.load()
+local l2 = places.list()
+T.check(l2[1].name == 'Mount Whitney, Whitney Portal Road' and l2[1].lat == 36.596718 and l2[1].id == 1,
+  'old seed: moved to its road, its id kept')
+T.check(l2[2].name == 'My summit' and l2[2].lat == 36.5785, 'renamed by the player: left as it is')
+T.check(l2[3].lat == 39.283309 and files[F].places[3].lat == 39.283309, 'Fells Point off its building, and saved')
+
+-- the level select's spawn points (levelinfo.lua): default, Random, then a place each
+local li = require('beamngEarth/levelinfo')
+local info = li.build(l2, function(key) return key == li.previewKey(l2[2].lat, l2[2].lon) end)
+T.check(info.spawnPoints[1].objectname == li.DEFAULT and info.spawnPoints[2].objectname == li.RANDOM,
+  'level info: the default start and Random first')
+T.check(#info.spawnPoints == 2 + #l2 and info.spawnPoints[3].objectname == li.PREFIX .. l2[1].id
+  and info.spawnPoints[3].translationId == l2[1].name, 'level info: a spawn point per place, by id, named')
+T.check(info.spawnPoints[3].preview == li.PREVIEW and info.spawnPoints[4].preview:match('^places/'),
+  'level info: a place\'s own picture when there is one, else the Earth')
+T.check(info.size[1] * info.size[2] > 5.1e14 and info.size[1] * info.size[2] < 5.102e14,
+  'level info: the Earth\'s surface')
+T.check(li.placeId(li.PREFIX .. '12') == 12 and li.placeId(li.RANDOM) == nil and li.placeId(nil) == nil, 'placeId')
+T.check(not li.previewKey(-33.731908, 150.312007):find('[-.]'), 'preview keys: file-name safe')
 
 T.done('test_places')

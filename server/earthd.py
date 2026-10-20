@@ -88,6 +88,8 @@ import navgraph as navgraphmod  # noqa: E402
 import prewarm as prewarmmod  # noqa: E402
 import parking as parkingmod  # noqa: E402
 import roads as roadsmod  # noqa: E402
+import randomplace as randomplacemod  # noqa: E402
+import placepreview as placepreviewmod  # noqa: E402
 import grading as gradingmod  # noqa: E402
 import roadmesh as roadmeshmod  # noqa: E402
 import roadwidth as roadwidthmod  # noqa: E402
@@ -208,6 +210,7 @@ SESSION_MARKER = ".earthd-session"
 # 1.8 GB / 24k files after one v1 session). Those caches are deleted along with their sources.
 # Server-written .cdae tiles (the default) have no such duplicate.
 CDAE_ROOT = ("temp", "temp", "beamngearth")
+PLACE_PREVIEWS_MAX = 100     # place pictures made per request (a long list: the rest next time)
 
 HM_CACHE = 6                # heightmaps kept beyond the protected ones
 HM_KEEP_COMMITTED = 3       # the current terrain and the last two
@@ -2345,6 +2348,36 @@ class Connection:
             log.info("update available: %s -> %s (%s)", r["current"], r["latest"], r["url"])
             self.send({"type": "update", **r})
 
+    async def place_previews(self, msg):
+        """{"places": [{"key", "lat", "lon"}]} -> place_previews_ready {"keys"}: each place's picture for the level
+        select, written into the game's user folder (placepreview.write) when the server has imagery."""
+        items = [(p.get("key"), p.get("lat"), p.get("lon")) for p in (msg.get("places") or []) if isinstance(p, dict)]
+        if not items or self.s.imagery is None:
+            return
+        try:
+            keys = await asyncio.get_running_loop().run_in_executor(
+                self.s.ui_pool, placepreviewmod.write, self.s.imagery, self.s.user_dir, items[:PLACE_PREVIEWS_MAX])
+        except Exception as e:
+            log.warning("place previews: %s: %s", type(e).__name__, e)
+            return
+        self.send({"type": "place_previews_ready", "keys": keys})
+
+    async def random_place(self, msg):
+        """{"id"} -> random_place_result {"id", "lat", "lon", "name"} on a road near a random town (randomplace.pick),
+        or without lat / lon when none was found (the mod then starts where it would have)."""
+        out = {"type": "random_place_result", "id": msg.get("id")}
+        md = getattr(self.s, "mapdata", None)
+        if md is not None:
+            try:
+                got = await asyncio.get_running_loop().run_in_executor(self.s.ui_pool, randomplacemod.pick, md)
+            except Exception as e:
+                log.warning("random place: %s: %s", type(e).__name__, e)
+                got = None
+            if got is not None:
+                out["lat"], out["lon"], out["name"] = got
+                log.info("random place: %s (%.5f, %.5f)", got[2], got[0], got[1])
+        self.send(out)
+
     async def where(self, msg):
         """The status bar's location {"id", "lat", "lon", "online"} -> where_result {"id", "street", "place", "region",
         "country"}: the street from the cached map cells (never waits for a download), the town, state and country from
@@ -2546,6 +2579,10 @@ class Connection:
             self.spawn(self.route(msg))
         elif kind == "where":                   # the status bar's street, town and country (geocode.py)
             self.spawn(self.where(msg))
+        elif kind == "random_place":            # the level select's "Random location" (randomplace.py)
+            self.spawn(self.random_place(msg))
+        elif kind == "place_previews":          # the level select's place pictures (placepreview.py)
+            self.spawn(self.place_previews(msg))
         elif kind == "open_page":               # the update notice's button: the releases page (updates.open_page)
             if not updatesmod.open_page(msg.get("url")):
                 log.info("open_page: refused %r", msg.get("url"))
