@@ -37,6 +37,8 @@ SIGMA_M = 12.0              # m, profile smoothing of built roads
 DIRT_SIGMA_M = 5.0          # m, profile smoothing of gravel / dirt roads
 SHOULDER_M = 1.0            # m of flat shoulder beyond the carriageway, each side
 SIDEWALK_MARGIN_M = 0.5     # m of flat ground beyond a sidewalk (roads.SIDEWALK_CLASSES)
+LONG_PART_M = 3000.0        # a road part longer than this is planned per cell, only within CLIP_MARGIN_M of the cell
+CLIP_MARGIN_M = 400.0
 SPREAD_CELLS = 16           # plans(): more map cells in the points' bbox: only the cells around the points
 T_MIN, T_MAX = 5.0, 12.0    # m, transition back to the natural ground (5: roads close together meet gently)
 SLOPE_RUN = 2.0             # transition = SLOPE_RUN x the height difference (1:2 slope)
@@ -101,6 +103,53 @@ class Plan:
         self.xy, self.z, self.half = xy, z, float(half)
         pad = half + T_MAX
         self.bbox = (xy[:, 0].min() - pad, xy[:, 1].min() - pad, xy[:, 0].max() + pad, xy[:, 1].max() + pad)
+
+
+def clip_polyline(xy, box):
+    """The runs (each (k, 2), k >= 2) of polyline xy (k, 2) inside box (x0, y0, x1, y1), segments cut at its edges
+    (Liang-Barsky). Pure."""
+    x0, y0, x1, y1 = box
+    runs, cur = [], None
+    for i in range(len(xy) - 1):
+        px, py = float(xy[i, 0]), float(xy[i, 1])
+        dx, dy = float(xy[i + 1, 0]) - px, float(xy[i + 1, 1]) - py
+        ta, tb, ok = 0.0, 1.0, True
+        for p, q in ((-dx, px - x0), (dx, x1 - px), (-dy, py - y0), (dy, y1 - py)):
+            if p == 0.0:
+                if q < 0.0:
+                    ok = False
+                    break
+                continue
+            r = q / p
+            if p < 0.0:
+                if r > tb:
+                    ok = False
+                    break
+                ta = max(ta, r)
+            else:
+                if r < ta:
+                    ok = False
+                    break
+                tb = min(tb, r)
+        if not ok or tb <= ta:
+            if cur is not None:
+                runs.append(cur)
+                cur = None
+            continue
+        a = (px + dx * ta, py + dy * ta) if ta > 0.0 else (px, py)
+        b = (px + dx * tb, py + dy * tb) if tb < 1.0 else (float(xy[i + 1, 0]), float(xy[i + 1, 1]))
+        if cur is not None and ta == 0.0:
+            cur.append(b)
+        else:
+            if cur is not None:
+                runs.append(cur)
+            cur = [a, b]
+        if tb < 1.0:
+            runs.append(cur)
+            cur = None
+    if cur is not None:
+        runs.append(cur)
+    return [np.array(r, np.float64) for r in runs if len(r) >= 2]
 
 
 def plan_road(frame, lonlat, spec, elev):
@@ -200,12 +249,14 @@ class Grader:
         if feats is not None and len(feats):
             specs = roadsmod.road_specs(feats, None, self.widths)
             parts, ids = [], []
+            box = self._clip_box(key)
             for i in range(len(feats)):
                 if specs[i] is None:
                     continue
                 for ring in roadsmod.ground_parts(feats, i):     # not bridges / tunnels
-                    parts.append((np.asarray(ring, np.float64), specs[i]))
-                    ids.append(str(feats.ids[i]))
+                    for r in self._near_cell(np.asarray(ring, np.float64), box):
+                        parts.append((r, specs[i]))
+                        ids.append(str(feats.ids[i]))
             for fid, p in zip(ids, plan_roads(self.frame, parts, self.elev)):
                 if p is not None:
                     plans.append((fid, p))
@@ -222,6 +273,35 @@ class Grader:
             self.covers.setdefault(key, covers)
             self.opens.setdefault(key, opens)
             return self.cells[key]
+
+    def _clip_box(self, key):
+        """The cell's box in the frame (east / north), CLIP_MARGIN_M wider each side; None for a key without bounds."""
+        if not hasattr(key, "bounds"):
+            return None
+        lon0, lat0, lon1, lat1 = key.bounds()
+        e, n, _ = self.frame.geodetic_to_enu(np.array([lat0, lat0, lat1, lat1]), np.array([lon0, lon1, lon0, lon1]),
+                                             0.0)
+        e, n = np.asarray(e), np.asarray(n)
+        m = CLIP_MARGIN_M
+        return float(e.min()) - m, float(n.min()) - m, float(e.max()) + m, float(n.max()) + m
+
+    def _near_cell(self, ring, box):
+        """A road part (lon/lat ring) as planned for a cell: as it is, or, longer than LONG_PART_M, the pieces of it
+        within the cell's box (each its own plan). A cell's plans sampled the ground along every road through it
+        to its ends: on the Bonneville salt flats, tracks one segment 27 km long, ~2,500 DEM tiles for one road
+        tile's four cells (2026-10-20). The profile's smoothing (SIGMA_M) reaches a few tens of metres: the plan
+        within the cell is the same."""
+        if box is None or len(ring) < 2:
+            return [ring]
+        e, n, _ = self.frame.geodetic_to_enu(ring[:, 1], ring[:, 0], 0.0)
+        xy = np.stack([np.asarray(e, np.float64), np.asarray(n, np.float64)], axis=1)
+        if float(np.hypot(*np.diff(xy, axis=0).T).sum()) <= LONG_PART_M:
+            return [ring]
+        out = []
+        for run in clip_polyline(xy, box):
+            la, lo, _ = self.frame.enu_to_geodetic(run[:, 0], run[:, 1], 0.0)
+            out.append(np.stack([np.asarray(lo, np.float64), np.asarray(la, np.float64)], axis=1))
+        return out
 
     def _longest(self, fid, j, ring, key):
         """Part j of tunnel fid as the cells at its ends have it, the longest (a part comes clipped differently in
