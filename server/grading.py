@@ -37,6 +37,7 @@ SIGMA_M = 12.0              # m, profile smoothing of built roads
 DIRT_SIGMA_M = 5.0          # m, profile smoothing of gravel / dirt roads
 SHOULDER_M = 1.0            # m of flat shoulder beyond the carriageway, each side
 SIDEWALK_MARGIN_M = 0.5     # m of flat ground beyond a sidewalk (roads.SIDEWALK_CLASSES)
+SPREAD_CELLS = 16           # plans(): more map cells in the points' bbox: only the cells around the points
 T_MIN, T_MAX = 5.0, 12.0    # m, transition back to the natural ground (5: roads close together meet gently)
 SLOPE_RUN = 2.0             # transition = SLOPE_RUN x the height difference (1:2 slope)
 VERTEX_STEP = 4.0           # m between the plan's vertices (segments for the grading pass; linear between: at 16 m a
@@ -345,17 +346,19 @@ class Grader:
         lon = np.asarray(lon, np.float64)
         pad = (T_MAX + 40.0) / 111320.0
         padlon = pad / max(0.05, math.cos(math.radians(float(np.mean(lat)))))
-        seen, out = set(), []
-        for key in mapcells.cells_for_bbox(float(lat.min()) - pad, float(lon.min()) - padlon,
-                                           float(lat.max()) + pad, float(lon.max()) + padlon):
+        keys = mapcells.cells_for_bbox(float(lat.min()) - pad, float(lon.min()) - padlon,
+                                       float(lat.max()) + pad, float(lon.max()) + padlon)
+        if len(keys) > SPREAD_CELLS:        # points far apart: only the cells around them
+            keys = mapcells.cells_near_points(lat, lon, pad, padlon)
+        got = {}
+        for key in keys:
             for fid_part, p in self._cell_plans(key):
                 if roads_only and TUNNEL_TAG in fid_part:
                     continue
-                k = (fid_part, p.xy[0, 0], p.xy[0, 1])
-                if k not in seen:
-                    seen.add(k)
-                    out.append(p)
-        return out
+                got.setdefault((fid_part, float(p.xy[0, 0]), float(p.xy[0, 1])), p)
+        # in the order of their keys: grade_points' sums run in plan order, so every caller (the block, a road
+        # tile, a far tile) gets the same heights at a point whatever other cells its points reached
+        return [got[k] for k in sorted(got)]
 
     def apply(self, lat, lon, base, lift=0.0, roads_only=False):
         """base (the ungraded heights at the points) graded under the roads. Same shape as base.

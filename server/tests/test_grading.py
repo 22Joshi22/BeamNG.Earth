@@ -160,6 +160,32 @@ class GraderTest(unittest.TestCase):
         self.assertEqual(gd.other, 42, "other attributes pass through")
 
 
+    def test_points_far_apart_plan_only_their_cells(self):
+        # two points 27 km apart (a straight salt-flats track's ends): the cells around each, not the ~240 of their
+        # bbox (one road tile planned them all: 53 s, 2026-10-20); the same heights, in an order of their own
+        f = features([[(-300, 20), (300, 20)]], ["residential"])
+        md = FakeMD(f)
+        g = grading.Grader(FRAME, md, lambda la, lo: np.full(np.shape(la), 10.0))
+        la, lo, _ = FRAME.enu_to_geodetic(np.array([0.0, 19000.0]), np.array([20.0, 19000.0]), 0.0)
+        bbox = mapcells.cells_for_bbox(float(la.min()), float(lo.min()), float(la.max()), float(lo.max()))
+        self.assertGreater(len(bbox), 100)
+        out = g.apply(la, lo, np.zeros(2))
+        self.assertLessEqual(md.calls, 8, "the cells around the two points")
+        self.assertAlmostEqual(float(out[0]), 10.0, delta=0.05)
+        near = mapcells.cells_near_points(la, lo, 1e-4, 1e-4)
+        self.assertTrue(set(near) <= set(bbox))
+        self.assertEqual(near, sorted(near, key=lambda k: (k.y, k.x)), "row-major")
+        self.assertEqual({mapcells.cell_of(float(a), float(b)) for a, b in zip(la, lo)} - set(near), set())
+
+    def test_plan_order_independent_of_the_cells(self):
+        f = features([[(-300, 20), (300, 20)], [(0, -300), (0, 300)]], ["residential", "secondary"])
+        g = grading.Grader(FRAME, FakeMD(f), lambda la, lo: np.full(np.shape(la), 10.0))
+        la, lo, _ = FRAME.enu_to_geodetic(np.array([0.0, 5.0]), np.array([20.0, 25.0]), 0.0)
+        a = g.plans(la, lo)
+        la2, lo2, _ = FRAME.enu_to_geodetic(np.array([0.0, 5.0, 3000.0]), np.array([20.0, 25.0, -3000.0]), 0.0)
+        b = g.plans(la2, lo2)
+        self.assertEqual([id(p) for p in a], [id(p) for p in b])
+
 
 class OverTunnelsParity(unittest.TestCase):
     """Grader._over_tunnels: Rust (earthfast.over_tunnel) and numpy, point for point."""
