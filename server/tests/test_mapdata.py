@@ -13,6 +13,7 @@ import sys
 import tempfile
 import threading
 import unittest
+from unittest import mock
 from contextlib import redirect_stderr, redirect_stdout
 from dataclasses import replace
 from pathlib import Path
@@ -715,6 +716,35 @@ class CacheTest(Sources, SmallBlocks, unittest.TestCase):
         self.assertEqual(md3.cell(mf.CELL).digest(), cd.digest())
         with self.assertRaises(netfetch.Offline):
             md3.cell(mapcells.cell_of(10.0, 10.0), ("landcover",))
+
+    def test_mirror_shared_and_kept_fresh(self):
+        """The uncompressed mirror: a second process reads the layers memory-mapped (the same digest, `en` included),
+        a rewritten layer file makes its mirror stale, and the mirror is cut back to MIRROR_MB."""
+        cache = os.path.join(self.tmp, "cache")
+        md, _ = self.mapdata(cache=cache)
+        digest = md.cell(mf.CELL).digest()
+        md2, t2 = self.mapdata(cache=cache)
+        cd2 = md2.cell(mf.CELL)
+        self.assertEqual(cd2.digest(), digest)
+        self.assertEqual(t2.count(), 0)
+        roads = cd2.layers["roads"]
+        np.testing.assert_array_equal(roads.en, mg.Features.from_arrays(
+            "roads", {k: v for k, v in md2._load(md2.path(mf.CELL, "roads")).items() if k != "provenance"},
+            "").localize(cd2.frame).en)
+        arrays, hit = md2.layer_arrays(mf.CELL, "roads")
+        self.assertTrue(hit)
+        big = [a for a in arrays.values() if a.nbytes > mapdata.MIRROR_SMALL]
+        self.assertTrue(all(not a.flags.owndata and not a.flags.writeable for a in big), "mapped from the mirror")
+        p = md.path(mf.CELL, "roads")
+        os.utime(p, ns=(os.stat(p).st_atime_ns, os.stat(p).st_mtime_ns + 10**9))      # the file written again
+        self.assertIsNone(md2._mirror_load(p), "stale")
+        self.assertEqual(self.mapdata(cache=cache)[0].cell(mf.CELL).digest(), digest)
+        self.assertIsNotNone(md2._mirror_load(p), "mirrored again")
+        with mock.patch.object(mapdata, "MIRROR_MB", 1e-6):
+            md2._mirror_prune()
+        root = os.path.join(cache, "mapdata-mirror")
+        left = [d for d, _, f in os.walk(root) if "ok" in f]
+        self.assertEqual(left, [])
 
     def test_corrupt_layer_files_are_rebuilt(self):
         """A damaged layer file (truncated, a flipped byte in the deflate stream, an old layout without

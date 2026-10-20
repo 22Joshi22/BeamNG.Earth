@@ -109,9 +109,9 @@ class StoreTest(unittest.TestCase):
             # the walls and their bucket index read memory-mapped (float32, shared by the processes), the same rays
             rw = roadwidth.RoadWidths(cell_fn, d)
             _, walls = rw._walls(home)
-            self.assertIsInstance(walls.segs, np.memmap)
+            self.assertFalse(walls.segs.flags.owndata or walls.segs.flags.writeable, "the file's mapping")
             self.assertEqual(walls.segs.dtype, np.float32)
-            self.assertIsInstance(walls.seg_of, np.memmap)
+            self.assertFalse(walls.seg_of.flags.owndata or walls.seg_of.flags.writeable)
             fresh = roadwidth.Walls(np.asarray(walls.segs))
             for name in ("keys", "first", "counts", "seg_of"):
                 np.testing.assert_array_equal(getattr(walls, name), getattr(fresh, name), name)

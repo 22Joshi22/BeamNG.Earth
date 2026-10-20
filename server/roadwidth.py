@@ -218,7 +218,7 @@ def polygon_walls(feats, frame):
 def _read_segs(path):
     """A cell's walls from the store, memory-mapped read-only (shared by the server's processes), or None."""
     try:
-        a = np.load(path, mmap_mode="r", allow_pickle=False)
+        a = np.asarray(np.load(path, mmap_mode="r", allow_pickle=False))     # (a plain view of the mapping)
     except FileNotFoundError:
         return None
     except (OSError, ValueError, EOFError) as e:        # damaged: built again
@@ -240,8 +240,8 @@ def _read_index(path, nsegs):
     """The bucket index stored beside a cell's walls (memory-mapped), or None (none, or not of these walls)."""
     pb, ps = _index_paths(path)
     try:
-        bk = np.load(pb, mmap_mode="r", allow_pickle=False)
-        so = np.load(ps, mmap_mode="r", allow_pickle=False)
+        bk = np.asarray(np.load(pb, mmap_mode="r", allow_pickle=False))
+        so = np.asarray(np.load(ps, mmap_mode="r", allow_pickle=False))
     except FileNotFoundError:
         return None
     except (OSError, ValueError, EOFError) as e:
