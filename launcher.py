@@ -348,6 +348,16 @@ def steam_running():
     return False
 
 
+def steam_runtime(exe):
+    """The Steam Linux Runtime ("sniper") container's entry point in the game's Steam library, or None. Steam runs the
+    native game inside it; started on the host instead, the game's UI (CEF) failed on SteamOS: "failed to initialize
+    application, shutting down" right after its window opened (a Steam Deck, 2026-10-20). LD_PRELOAD reaches the
+    game through it (pressure-vessel carries preloaded libraries into the container)."""
+    common = os.path.dirname(os.path.dirname(os.path.dirname(exe)))       # .../steamapps/common
+    entry = os.path.join(common, "SteamLinuxRuntime_sniper", "_v2-entry-point")
+    return entry if os.path.isfile(entry) and os.access(entry, os.X_OK) else None
+
+
 def sandboxed_game(exe):
     """The game is installed by a Flatpak / snap Steam: it only runs inside that sandbox (through Steam)."""
     home = os.path.expanduser("~")
@@ -484,8 +494,10 @@ def start_game(use_gcpatch, build="native", gfx="", user_dir=None):
                 env["LD_PRELOAD"] = lib + (":" + env["LD_PRELOAD"] if env.get("LD_PRELOAD") else "")
                 if user_dir:        # where the mod raises the patch's level flag (tools/gcpatch)
                     env["BNGEARTH_USER_DIR"] = user_dir
+            runtime = steam_runtime(exe)
             row("Game", "starting" + ("  (with the grass patch)" if lib else ""))
-            proc = subprocess.Popen([exe], cwd=os.path.dirname(os.path.dirname(exe)), env=env,
+            proc = subprocess.Popen(([runtime, "--verb=waitforexitandrun", "--"] if runtime else []) + [exe],
+                                    cwd=os.path.dirname(os.path.dirname(exe)), env=env,
                                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
             t0 = time.time()
             while time.time() - t0 < DIRECT_FAIL_S:

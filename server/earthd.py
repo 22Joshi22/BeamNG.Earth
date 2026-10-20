@@ -216,6 +216,7 @@ TILE_CACHE = {32: 6000, 64: 2500}
 HM_THREADS = 4
 LAG_TICK_S, LAG_REPORT_S = 0.1, 0.25     # the event-loop stall report (-v)
 ROAD_PROCESSES = 2              # road-tile processes (--block-process on, --roads on)
+WORKERS = 3                     # far-tile workers (--workers)
 LANE_REQUEST, LANE_PREFETCH = 0, 1     # Server.block_pools: the blocks the mod asks for / the prefetch
 HM_BUSY_TILE_WORKERS = 1    # far tiles built at once while a physics block is building
 WARM_STEPS_S = (0.0, 10.0, 20.0, 30.0)   # s ahead on the player's straight path whose road cells are planned early
@@ -3447,7 +3448,7 @@ def main():
                     help="BeamNG user folder; output goes to <user-dir>/temp/beamngEarth/<sessionId>/")
     ap.add_argument("--cache-dir", default=os.path.join(home, ".cache/beamng-earth"),
                     help="download cache root (DEM tiles go to <cache-dir>/dem/)")
-    ap.add_argument("--workers", type=int, default=3, help="far-tile worker threads (keep <= 3: the game needs the cores)")
+    ap.add_argument("--workers", type=int, default=WORKERS, help="far-tile worker threads (keep <= 3: the game needs the cores)")
     ap.add_argument("--far-format", choices=farfield.FORMATS, default="cdae",
                     help="far-tile shape format: binary .cdae (default, ~5x faster to load) or Collada .dae")
     ap.add_argument("--lod-k", type=float, default=None,
@@ -3628,9 +3629,20 @@ def main():
         except OSError as e:
             log.warning("could not set idle scheduling: %s", e)
     game_cpus = server_cpus = None
+    import budget
+    small = budget.apply()
+    if small:
+        # a small machine (a Steam Deck): fewer worker processes, each with smaller caches (budget.py), where the
+        # player left the defaults
+        if args.road_processes == ROAD_PROCESSES:
+            args.road_processes = budget.SMALL_ROAD_PROCESSES
+        if args.workers == WORKERS:
+            args.workers = budget.SMALL_FAR_WORKERS
+        log.info("small machine (%.1f GB): %d far-tile and %d road-tile processes, smaller caches (budget.py; "
+                 "BNGE_BUDGET=desktop for the desktop sizes)", budget.total_gb() or 0, args.workers, args.road_processes)
     if args.pin == "on" and sys.platform.startswith("linux"):
         try:
-            server_cpus, game_cpus = cpupin.split()
+            server_cpus, game_cpus = cpupin.split(budget.SMALL_SERVER_SHARE if small else cpupin.SERVER_SHARE)
             cpupin.pin_self(server_cpus)
             if server_cpus:
                 log.info("cores: the server on CPUs %s, the game on %s (cpupin.py; --pin off)",

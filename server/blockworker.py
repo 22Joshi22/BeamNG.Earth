@@ -104,6 +104,8 @@ def init(cache_dir, offline, roads, grading, road_widths, surface, warm_q, log_l
         except OSError:
             pass
     logging.basicConfig(level=log_level, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    import budget
+    budget.apply()              # (this process's caches: smaller on a small machine)
     _s = _State(cache_dir, offline, roads, grading, road_widths, surface, airports, sea)
     threading.Thread(target=_watch_parent, args=(os.getppid(),), daemon=True, name="parent-watch").start()
     threading.Thread(target=_read_warm, args=(warm_q,), daemon=True, name="warm-read").start()

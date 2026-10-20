@@ -311,7 +311,7 @@ DS_PENDING = "ds"
 class Imagery:
     disk = cachemod.NONE    # the server's cache.Cache (last use per file, the size cap); set by earthd
 
-    def __init__(self, cache_dir, chain=DEFAULT_CHAIN, fetch_workers=FETCH_WORKERS, mem_tiles=MEM_TILES,
+    def __init__(self, cache_dir, chain=DEFAULT_CHAIN, fetch_workers=FETCH_WORKERS, mem_tiles=None,
                  tone=1.0, deshadow=None, colormatch=None, fetcher=None, leaf_on=True, season_mode="off"):
         """deshadow: an optional deshadow.Deshadow (--deshadow lambert|full): _mosaic relights its
         source's tiles; None = the imagery as served (byte-identical textures).
@@ -325,7 +325,7 @@ class Imagery:
         self.fetcher = fetcher if fetcher is not None else netfetch.Fetcher()
         self.fetcher.register_chain("imagery", [s.url for s in self.chain])
         self.pool = ThreadPoolExecutor(min(fetch_workers, FETCH_WORKERS), thread_name_prefix="img-fetch")
-        self.mem_tiles = mem_tiles
+        self.mem_tiles = MEM_TILES if mem_tiles is None else mem_tiles
         self.leaf_on = leaf_on
         self.season_mode = season_mode
         self.lut = tone_lut(tone)

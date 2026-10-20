@@ -40,6 +40,7 @@ import netfetch
 log = logging.getLogger("earthd.dem")
 
 TILE = 512                  # sampling grid tile size (Mapterhorn)
+MEM_TILES = 512             # decoded tiles kept per process (Dem's default; budget.py: fewer on a small machine)
 URGENT_WORKERS = 16         # Dem.urgent(): its own fetch threads (with the 16 shared: Mapterhorn's 32 at once)
 MAX_ZOOM = 15               # AWS stops at z15; nothing in v1 needs more
 GLOBAL_ZOOM = 12            # Mapterhorn is complete on land up to here
@@ -93,7 +94,7 @@ class Dem:
 
     # mem_tiles: decoded float32 512² tiles kept in memory (1 MB each; 512 per docs/V1_2_DESIGN.md §4.3).
     # fetcher: the server's netfetch.Fetcher (shared rate limits); None = a Fetcher of its own.
-    def __init__(self, cache_dir, fetch_workers=16, mem_tiles=512, fetcher=None):
+    def __init__(self, cache_dir, fetch_workers=16, mem_tiles=None, fetcher=None):
         self.cache_dir = cache_dir
         self.fetcher = fetcher if fetcher is not None else netfetch.Fetcher()
         self.fetcher.register_chain("dem", (MAPTERHORN["url"], AWS["url"]))
@@ -102,7 +103,7 @@ class Dem:
         # behind hundreds queued by the far field, the road plans and the ground ahead (2026-10-16; alone 0.9 s).
         self.urgent_pool = ThreadPoolExecutor(URGENT_WORKERS, thread_name_prefix="dem-urgent")
         self._local = threading.local()
-        self.mem_tiles = mem_tiles
+        self.mem_tiles = MEM_TILES if mem_tiles is None else mem_tiles
         self._lru = OrderedDict()       # (z, x, y) -> float32 [TILE, TILE]
         self._inflight = {}             # (z, x, y) -> Future
         self._lock = threading.Lock()
