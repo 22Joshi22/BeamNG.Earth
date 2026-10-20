@@ -26,6 +26,7 @@ import numpy as np
 
 import geodesy
 import mapcells
+import staging
 
 log = logging.getLogger("earthd.roadwidth")
 
@@ -263,7 +264,7 @@ def _write_segs(path, segs):
         os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(tmp, "wb") as fh:
             np.save(fh, segs)
-        os.replace(tmp, path)
+        staging.replace_cached(tmp, path)
     except OSError as e:
         log.debug("road widths: %s: %s", path, e)
         try:

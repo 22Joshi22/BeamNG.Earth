@@ -37,6 +37,7 @@ import numpy as np
 import mapgeom as mg
 import netfetch
 import rangeread
+import staging
 
 log = logging.getLogger("earthd.mapdata")
 
@@ -182,7 +183,7 @@ class StacIndex:
         tmp = f"{path}.{os.getpid()}.{threading.get_ident()}.tmp"
         with open(tmp, "wb") as f:
             f.write(body)
-        os.replace(tmp, path)
+        staging.replace_cached(tmp, path)
         return data
 
     def _dir(self, theme, typ):

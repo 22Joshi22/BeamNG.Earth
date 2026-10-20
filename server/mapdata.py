@@ -67,6 +67,7 @@ import maprasters
 import netfetch
 import overture
 import rangeread
+import staging
 
 log = logging.getLogger("earthd.mapdata")
 
@@ -308,7 +309,7 @@ class MapData:
         os.makedirs(os.path.dirname(path), exist_ok=True)
         tmp = f"{path}.{os.getpid()}.{threading.get_ident()}.tmp.npz"
         np.savez_compressed(tmp, **arrays)
-        os.replace(tmp, path)
+        staging.replace_cached(tmp, path)
 
     def _build(self, key, layer, kind):
         """(content arrays, provenance record or None) of one layer, from the sources."""

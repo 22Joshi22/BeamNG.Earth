@@ -29,6 +29,7 @@ from polygon import Path
 
 import mapcells
 import pacer
+import staging
 
 log = logging.getLogger("earthd.seacarve")
 
@@ -120,7 +121,7 @@ def _write_raw(raw, r):
         os.makedirs(os.path.dirname(raw), exist_ok=True)
         with open(tmp, "wb") as fh:
             np.save(fh, a)
-        os.replace(tmp, raw)
+        staging.replace_cached(tmp, raw)
     except OSError as e:                # (the npz serves)
         log.debug("sea: %s: %s", raw, e)
         try:
@@ -320,7 +321,7 @@ class SeaCarver:
                 else:
                     np.savez_compressed(fh, any=True, depth=np.round(r[0] * 100.0).astype(np.int16), level=r[1],
                                         outline=r[2])
-            os.replace(tmp, p)
+            staging.replace_cached(tmp, p)
             if r is not None:
                 _write_raw(raw, r)
         return r, complete

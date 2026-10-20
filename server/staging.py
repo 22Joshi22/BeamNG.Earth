@@ -14,6 +14,7 @@ import itertools
 import logging
 import os
 import threading
+import time
 
 STAGING = "beamngEarth_staging"
 _made = set()
@@ -85,3 +86,28 @@ def replace(tmp, path):
         if first:
             log.warning("folder %s was deleted while in use (cleared temp folder?): made again", d)
         os.replace(tmp, path)
+
+
+REPLACE_WAITS = (0.02, 0.05, 0.1, 0.25, 0.5)    # s between the tries of replace_cached (~0.9 s in all)
+
+
+def replace_cached(tmp, path):
+    """replace(tmp, path) for a cache file whose content is the same whoever writes it (a download, a decoded or built
+    copy of one). On Windows a file another thread or process has open, or memory-mapped, cannot be replaced
+    (PermissionError, WinError 5: GitHub #67, the DEM tile cache on a cloud PC failed terrain requests): retried
+    REPLACE_WAITS; still held but there, that copy is kept and tmp removed. True when tmp went in, False when the
+    copy already there was kept."""
+    for wait in REPLACE_WAITS + (None,):
+        try:
+            replace(tmp, path)
+            return True
+        except PermissionError:
+            if wait is None:
+                if not os.path.exists(path):
+                    raise
+                try:
+                    os.remove(tmp)
+                except OSError:
+                    pass
+                return False
+            time.sleep(wait)

@@ -37,6 +37,7 @@ import cache as cachemod
 import dsmground
 import fast
 import netfetch
+import staging
 
 log = logging.getLogger("earthd.dem")
 
@@ -160,7 +161,7 @@ class Dem:
         tmp = f"{path}.{threading.get_ident()}.tmp"
         with open(tmp, "wb") as f:
             f.write(data)
-        os.replace(tmp, path)
+        staging.replace_cached(tmp, path)
         self.disk.wrote(path, len(data))
         if os.path.exists(miss):            # an expired marker: the host has data there now
             os.remove(miss)
@@ -265,7 +266,7 @@ class Dem:
             os.makedirs(os.path.dirname(path), exist_ok=True)
             with open(tmp, "wb") as f:
                 np.save(f, np.ascontiguousarray(a, np.float32), allow_pickle=False)
-            os.replace(tmp, path)
+            staging.replace_cached(tmp, path)
         except OSError as e:
             log.debug("dem mirror %s: %s", path, e)
             try:

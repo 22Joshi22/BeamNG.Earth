@@ -59,6 +59,41 @@ class StagingTest(unittest.TestCase):
             self.assertFalse(os.path.exists(old))
             self.assertTrue(os.path.exists(new))
 
+    def test_cache_file_held_elsewhere(self):
+        # Windows: a file open or mapped in another process cannot be replaced (PermissionError, GitHub #67)
+        real, calls = os.replace, []
+
+        def held(n):
+            def fake(a, b):
+                calls.append(a)
+                if len(calls) <= n:
+                    raise PermissionError(13, "Access is denied")
+                real(a, b)
+            return fake
+        old_waits = staging.REPLACE_WAITS
+        staging.REPLACE_WAITS = (0.0,) * len(old_waits)
+        try:
+            with tempfile.TemporaryDirectory() as d:
+                path, tmp = os.path.join(d, "t.webp"), os.path.join(d, "t.webp.1.tmp")
+                Path(tmp).write_bytes(b"new")
+                staging.os.replace = held(2)                # freed after two tries: ours goes in
+                self.assertTrue(staging.replace_cached(tmp, path))
+                self.assertEqual(Path(path).read_bytes(), b"new")
+                Path(tmp).write_bytes(b"newer")
+                calls.clear()
+                staging.os.replace = held(99)               # held throughout: the copy there is kept
+                self.assertFalse(staging.replace_cached(tmp, path))
+                self.assertEqual(Path(path).read_bytes(), b"new")
+                self.assertFalse(os.path.exists(tmp))
+                self.assertEqual(len(calls), len(staging.REPLACE_WAITS) + 1)
+                os.remove(path)
+                Path(tmp).write_bytes(b"x")
+                with self.assertRaises(PermissionError):    # nothing there to keep: the error stands
+                    staging.replace_cached(tmp, path)
+        finally:
+            staging.os.replace = real
+            staging.REPLACE_WAITS = old_waits
+
 
 if __name__ == "__main__":
     unittest.main()

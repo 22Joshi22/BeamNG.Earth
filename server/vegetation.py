@@ -271,7 +271,7 @@ class Vegetation:
             tmp = f"{p}.{os.getpid()}.{threading.get_ident()}.tmp"
             with open(tmp, "wb") as fh:
                 np.savez_compressed(fh, **{n: getattr(items, n) for n in fields})
-            os.replace(tmp, p)
+            staging.replace_cached(tmp, p)
         return items
 
     # --- the build ------------------------------------------------------------------------------

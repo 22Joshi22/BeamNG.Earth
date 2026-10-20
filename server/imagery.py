@@ -441,7 +441,7 @@ class Imagery:
         tmp = f"{path}.{threading.get_ident()}.tmp"
         with open(tmp, "wb") as f:
             f.write(data)
-        os.replace(tmp, path)
+        staging.replace_cached(tmp, path)
         self.disk.wrote(path, len(data))
         if os.path.exists(miss):                # an expired marker: the source has data there now
             os.remove(miss)
@@ -510,7 +510,7 @@ class Imagery:
                     tmp = f"{cpath}.{threading.get_ident()}.tmp"
                     with open(tmp, "wb") as f:
                         f.write(b)
-                    os.replace(tmp, cpath)
+                    staging.replace_cached(tmp, cpath)
                     self.disk.wrote(cpath, len(b))
                     if (cx, cy) == (x, y):
                         out = b
