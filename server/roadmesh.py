@@ -38,7 +38,7 @@ def layer_of(chunk):
 def _resample(pts, step):
     """Points every `step` m along a polyline (k, 3), ends kept: (xy (m, 2), distance (m,), z (m,))."""
     seg = np.hypot(*np.diff(pts[:, :2], axis=0).T)
-    s = np.r_[0.0, np.cumsum(seg)]
+    s = np.concatenate(([0.0], np.cumsum(seg)))
     if s[-1] <= 1e-6:
         return pts[:1, :2], s[:1], pts[:1, 2]
     n = max(1, int(np.ceil(s[-1] / step)))
@@ -362,12 +362,12 @@ def build(frame, chunks, elev, origin, lift=0.0, clip=None, follow=False, q=None
             z = u[k0:k0 + 2 * k] + LIFT[layer] + lift
             k0 += 2 * k
         else:                                   # on a deck: over its opaque concrete top
-            z = np.r_[fz, fz] + LIFT[layer] + DECK_SKIN
+            z = np.concatenate((fz, fz)) + LIFT[layer] + DECK_SKIN
         if m not in mats:
             mats.append(m)
         mi = mats.index(m)
         P.append(np.c_[np.concatenate([left, right]), z])
-        UV.append(np.c_[np.r_[np.zeros(k), np.ones(k)], np.r_[v, v]])
+        UV.append(np.column_stack((np.concatenate((np.zeros(k), np.ones(k))), np.concatenate((v, v)))))
         i = np.arange(k - 1)
         A, A1, B, B1 = nverts + i, nverts + i + 1, nverts + k + i, nverts + k + i + 1
         # left edge to the left of the direction: (A, B, B1) is counter-clockwise seen from above
@@ -476,7 +476,7 @@ def deck(chunks, origin, piers=(), context=(), beams=()):
         nonlocal nv
         k = len(a)
         P.append(np.concatenate([a, b]))
-        UV.append(np.c_[np.r_[np.full(k, ua), np.full(k, ub)], np.r_[va, vb]])
+        UV.append(np.column_stack((np.concatenate((np.full(k, ua), np.full(k, ub))), np.concatenate((va, vb)))))
         i = np.arange(k - 1)
         A, A1, B, B1 = nv + i, nv + i + 1, nv + k + i, nv + k + i + 1
         tri = np.concatenate([np.stack([A, B, B1], 1), np.stack([A, B1, A1], 1)])
@@ -789,7 +789,7 @@ def _retaining_walls(walls, origin, P, T, UV, M, nv):
         k = len(b)
         if k < 2:
             continue
-        s = np.r_[0.0, np.cumsum(np.hypot(*np.diff(b, axis=0).T))]
+        s = np.concatenate(([0.0], np.cumsum(np.hypot(*np.diff(b, axis=0).T))))
         back = b - tw * WALL_THICK_M
         face_lo = np.c_[b, foot] - origin
         face_hi = np.c_[b, top] - origin
@@ -799,10 +799,10 @@ def _retaining_walls(walls, origin, P, T, UV, M, nv):
                                         (cop_hi, back_hi, None, WALL_THICK_M - WALL_COPING_M, 4)):
             P.append(np.concatenate([lo_, hi_]))
             if vlo is not None:
-                UV.append(np.c_[np.r_[s, s] / STONE_UV_M, np.r_[vlo, vhi] / STONE_UV_M])
+                UV.append(np.column_stack((np.concatenate((s, s)) / STONE_UV_M, np.concatenate((vlo, vhi)) / STONE_UV_M)))
             else:
                 sc = SOIL_UV_M if mat == 4 else STONE_UV_M
-                UV.append(np.c_[np.r_[s, s] / sc, np.r_[np.zeros(k), np.full(k, vhi)] / sc])
+                UV.append(np.column_stack((np.concatenate((s, s)) / sc, np.concatenate((np.zeros(k), np.full(k, vhi))) / sc)))
             i = np.arange(k - 1)
             A, A1, B, B1 = nv + i, nv + i + 1, nv + k + i, nv + k + i + 1
             tri = np.concatenate([np.stack([A, B, B1], 1), np.stack([A, B1, A1], 1)])
@@ -876,10 +876,10 @@ def tunnel(chunks, origin, walls=()):
             if low:                                         # the stone at its scale: around the section, along
                 sj = float(np.hypot(*(sec[min(j + 1, m - 1)] - sec[j])))
                 s0 = float(np.sum(np.hypot(*np.diff(sec[:j + 1], axis=0).T))) if j else 0.0
-                along = np.r_[0.0, np.cumsum(np.hypot(*np.diff(mid, axis=0).T))]
-                UV.append(np.c_[np.r_[np.full(k, s0), np.full(k, s0 + sj)] / STONE_UV_M, np.r_[along, along] / STONE_UV_M])
+                along = np.concatenate(([0.0], np.cumsum(np.hypot(*np.diff(mid, axis=0).T))))
+                UV.append(np.column_stack((np.concatenate((np.full(k, s0), np.full(k, s0 + sj))) / STONE_UV_M, np.concatenate((along, along)) / STONE_UV_M)))
             else:
-                UV.append(np.c_[np.r_[np.full(k, j / 4.0), np.full(k, (j + 1) / 4.0)], np.r_[v, v]])
+                UV.append(np.column_stack((np.concatenate((np.full(k, j / 4.0), np.full(k, (j + 1) / 4.0))), np.concatenate((v, v)))))
             i = np.arange(k - 1)
             A, A1, B, B1 = nv + i, nv + i + 1, nv + k + i, nv + k + i + 1
             tri = np.concatenate([np.stack([A, B, B1], 1), np.stack([A, B1, A1], 1)])
@@ -921,7 +921,7 @@ def tunnel(chunks, origin, walls=()):
             outer -= origin
             P.append(np.concatenate([inner, outer]))
             sc = STONE_UV_M if low else 4.0
-            UV.append(np.c_[np.r_[sec[:, 0], o[:, 0]] / sc, np.r_[sec[:, 1], o[:, 1]] / sc])
+            UV.append(np.column_stack((np.concatenate((sec[:, 0], o[:, 0])) / sc, np.concatenate((sec[:, 1], o[:, 1])) / sc)))
             i = np.arange(m - 1)
             A, A1, B, B1 = nv + i, nv + i + 1, nv + m + i, nv + m + i + 1
             tri = np.concatenate([np.stack([A, B, B1], 1), np.stack([A, B1, A1], 1)])
@@ -980,7 +980,7 @@ def _tunnel_lamps(P, T, UV, M, nv, mid, u, z, hw, origin):
     k = len(mid)
     if k < 2:
         return nv
-    s = np.r_[0.0, np.cumsum(np.hypot(*np.diff(mid, axis=0).T))]
+    s = np.concatenate(([0.0], np.cumsum(np.hypot(*np.diff(mid, axis=0).T))))
     h = TUNNEL_WALL_H - TUNNEL_LAMP_DROP
     for sc in np.arange(TUNNEL_LAMP_EVERY / 2, s[-1] - TUNNEL_LAMP_L / 2, TUNNEL_LAMP_EVERY):
         j = min(int(np.searchsorted(s, sc)), k - 1)

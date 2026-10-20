@@ -216,8 +216,8 @@ class Builder:
                 mats[tactile] = 2
                 UV = UV.copy()
                 tu = s / TACTILE_REPEAT_M
-                UV[:k, 0] = np.where(np.r_[tactile, tactile[-1:]], tu, UV[:k, 0])
-                UV[k:, 0] = np.where(np.r_[tactile, tactile[-1:]], tu, UV[k:, 0])
+                UV[:k, 0] = np.where(np.concatenate((tactile, tactile[-1:])), tu, UV[:k, 0])
+                UV[k:, 0] = np.where(np.concatenate((tactile, tactile[-1:])), tu, UV[k:, 0])
             base = self._add(P, UV)
             i = np.arange(k - 1)
             A, A1, B1, B = base + i, base + i + 1, base + k + i + 1, base + k + i
@@ -241,7 +241,7 @@ class Builder:
             return
         if self.col is not None:
             self.col.add_run(curb, toward_out, w, h, caps, ramps)
-        s = np.r_[0.0, np.cumsum(np.hypot(*np.diff(curb[:, :2], axis=0).T))]
+        s = np.concatenate(([0.0], np.cumsum(np.hypot(*np.diff(curb[:, :2], axis=0).T))))
         if ramps:
             s2 = refine(s, ramps)
             curb = np.stack([np.interp(s2, s, curb[:, c]) for c in range(3)], axis=1)
@@ -284,7 +284,7 @@ class Builder:
         inward = np.asarray(inward, np.float64)
         if self.col is not None:
             self.col.add_corner(arc, inward, outer, h, ramps)
-        s = np.r_[0.0, np.cumsum(np.hypot(*np.diff(arc[:, :2], axis=0).T))]
+        s = np.concatenate(([0.0], np.cumsum(np.hypot(*np.diff(arc[:, :2], axis=0).T))))
         if ramps:
             s2 = refine(s, ramps)
             arc = np.stack([np.interp(s2, s, arc[:, c]) for c in range(3)], axis=1)

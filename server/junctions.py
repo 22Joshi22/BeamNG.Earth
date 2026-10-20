@@ -214,12 +214,12 @@ def _across(roads, bi, bj, cr, X, walk_w, debug=None):
     if _branch_len(roads[ri][2], vi, si) < ti + 1.0 or _branch_len(roads[rj][2], vj, sj) < tj + 1.0:
         return None
     curb2 = np.vstack([a1, a2])
-    keep = np.r_[True, np.hypot(*np.diff(curb2, axis=0).T) > 0.05]
+    keep = np.concatenate(([True], np.hypot(*np.diff(curb2, axis=0).T) > 0.05))
     curb2 = curb2[keep]
     if len(curb2) < 2:
         return None
     zi, zj = _z_along(roads[ri][2], vi, si, ti), _z_along(roads[rj][2], vj, sj, tj)
-    s = np.r_[0.0, np.cumsum(np.hypot(*np.diff(curb2, axis=0).T))]
+    s = np.concatenate(([0.0], np.cumsum(np.hypot(*np.diff(curb2, axis=0).T))))
     z = zi + (zj - zi) * s / max(s[-1], 1e-9)
     curb = np.c_[curb2, z]
     g = np.gradient(curb2, axis=0)
@@ -297,7 +297,7 @@ def find(roads, has_walk, walk_w, parking_m=0.0, has_parking=lambda spec: False,
     connector = {}                              # {node a, node b} -> the road joining them (merged)
     for ri, (fid, spec, pts, lon) in enumerate(roads):
         seg = np.hypot(*np.diff(pts[:, :2], axis=0).T)
-        s_at = np.r_[0.0, np.cumsum(seg)]
+        s_at = np.concatenate(([0.0], np.cumsum(seg)))
         on = [(vi, node_of[(ri, vi)]) for vi in range(len(pts)) if (ri, vi) in node_of]
         for (v0, a), (v1, b) in zip(on[:-1], on[1:]):
             L = s_at[v1] - s_at[v0]
@@ -472,7 +472,7 @@ def find(roads, has_walk, walk_w, parking_m=0.0, has_parking=lambda spec: False,
                 corners.append(corner)
                 cuts.setdefault((roads[ri][0], li), []).append((Pi.copy(), ui, ci))
                 cuts.setdefault((roads[rj][0], -lj), []).append((Pj.copy(), uj, cj))
-                seg = np.r_[0.0, np.cumsum(np.hypot(*np.diff(curb2, axis=0).T))]
+                seg = np.concatenate(([0.0], np.cumsum(np.hypot(*np.diff(curb2, axis=0).T))))
                 # arc length along the curb of a point t m along each branch (for the crosswalk's ramp)
                 side_t[(i, "L")] = (ti, corner, ("dec", seg[len(pre) - 1] if pi_ else None, ti + bi), bi)
                 side_t[(j, "R")] = (tj, corner, ("inc", seg[len(pre) + k - 1] if pj_ else None, tj), bj)
@@ -532,7 +532,7 @@ def apply_cuts(line, cuts, near=40.0):
         return [(pts, (False, False))]
     # densify to 0.5 m so a cut lands within the resolution, then exact ends
     seg = np.hypot(*np.diff(pts[:, :2], axis=0).T)
-    s = np.r_[0.0, np.cumsum(seg)]
+    s = np.concatenate(([0.0], np.cumsum(seg)))
     if s[-1] <= 0:
         return []
     t = np.linspace(0.0, s[-1], max(2, int(s[-1] / 0.5) + 1))
@@ -578,7 +578,7 @@ def ramp_ranges(run, ramps):
     if not ramps:
         return []
     seg = np.hypot(*np.diff(run[:, :2], axis=0).T)
-    s = np.r_[0.0, np.cumsum(seg)]
+    s = np.concatenate(([0.0], np.cumsum(seg)))
     out = []
     for X, u, t0, t1 in ramps:
         along = (run[:, :2] - X) @ u

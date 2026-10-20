@@ -1008,7 +1008,7 @@ def _portal_lift(frame, ring, x0, y0, tunnels_xy, elev):
         if len(ln) < 2:
             continue
         seg = np.hypot(*np.diff(ln, axis=0).T)
-        s = np.r_[0.0, np.cumsum(seg)]
+        s = np.concatenate(([0.0], np.cumsum(seg)))
         t = np.arange(0.0, s[-1] + 1e-9, 2.0)
         p = np.stack([np.interp(t, s, ln[:, 0]), np.interp(t, s, ln[:, 1])], axis=1)
         p = p[(p[:, 0] >= lo[0]) & (p[:, 0] <= hi[0]) & (p[:, 1] >= lo[1]) & (p[:, 1] <= hi[1])]
@@ -2748,8 +2748,8 @@ def cell_footprints(key, layer):
         x = ll[:, 0] * 111320.0 * math.cos(math.radians(lat0))
         y = ll[:, 1] * 111320.0
         cross = np.r_[x[:-1] * y[1:] - x[1:] * y[:-1], 0.0]
-        C = np.r_[0.0, np.cumsum(cross)]
-        CX, CY = np.r_[0.0, np.cumsum(ll[:, 0])], np.r_[0.0, np.cumsum(ll[:, 1])]
+        C = np.concatenate(([0.0], np.cumsum(cross)))
+        CX, CY = np.concatenate(([0.0], np.cumsum(ll[:, 0]))), np.concatenate(([0.0], np.cumsum(ll[:, 1])))
         n = np.maximum(b - a, 1)
         last = np.maximum(b - 1, a)
         area = np.abs(C[last] - C[a] + x[last] * y[a] - x[a] * y[last]) / 2
