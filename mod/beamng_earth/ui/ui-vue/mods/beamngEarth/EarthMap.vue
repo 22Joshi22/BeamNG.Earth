@@ -30,6 +30,9 @@
           @error="onTileError($event, t)"
         />
       </template>
+      <!-- a controller: the point A picks (the centre; padTick) -->
+      <div v-if="padMode" class="pad-cross" />
+      <div v-if="padMode" class="pad-hint">Left stick: move &middot; LT / RT: zoom &middot; A: set GPS here &middot; B: back</div>
       <svg class="map-grid" :width="w" :height="h">
         <g v-if="layersOn" :transform="lineTransform">
           <polyline v-for="(p, i) in stateLines" :key="'s' + i" class="layer-state" :points="p" />
@@ -237,6 +240,8 @@
 
 <script setup>
 import { ref, computed, watch, onMounted, onUnmounted, nextTick } from "vue"
+import { useEvents } from "@/services/events"
+import { getUINavServiceInstance } from "@/services/uiNav"
 import * as mm from "./mapmath.js"
 import layerData from "./maplayers.js"
 
@@ -587,6 +592,90 @@ function centreOnMe() {
   if (p) view.value = { ...view.value, lat: p.lat, lon: p.lon, z: Math.max(view.value.z, 12) }
 }
 
+// ---- controller (settings.lua mapControls: the stock big map's actions and bindings while this map is open) ---------
+// As the stock map (freeroam/bigMapMode.lua): the left stick moves the view (squared: fine near the centre), the
+// triggers zoom, A picks; here A sets the GPS route to the centre crosshair, as a click does. The stick's own menu
+// focus events are filtered while the map is open (they moved the focus between the panels' buttons as it panned);
+// the d-pad still walks the buttons, and A on a focused button is the button's.
+const padMode = ref(false)
+const PAD_PAN_PX_S = 900          // px a second at a full stick
+const PAD_ZOOM_S = 2.5            // zoom levels a second at a full trigger
+const PAD_DEAD = 0.08
+const pad = { lr: 0, ud: 0, zin: 0, zout: 0, zaxis: 0, keys: [0, 0, 0, 0] }
+let padFrame = 0, padLast = 0
+
+function padActive() {
+  return Math.abs(pad.lr) > PAD_DEAD || Math.abs(pad.ud) > PAD_DEAD || pad.zin > PAD_DEAD || pad.zout > PAD_DEAD ||
+    Math.abs(pad.zaxis) > PAD_DEAD || pad.keys.some(k => k > 0)
+}
+
+function padTick(ts) {
+  padFrame = 0
+  const dt = padLast ? Math.min(0.1, (ts - padLast) / 1000) : 1 / 60
+  padLast = ts
+  const sq = v => (Math.abs(v) > PAD_DEAD ? Math.sign(v) * v * v : 0)
+  const kx = pad.keys[3] - pad.keys[2], ky = pad.keys[0] - pad.keys[1]       // (camMoveKey: 1 fwd, 2 back, 3 left, 4 right)
+  const sx = sq(pad.lr) + kx, sy = sq(pad.ud) + ky
+  const dz = (pad.zin > PAD_DEAD ? pad.zin : 0) - (pad.zout > PAD_DEAD ? pad.zout : 0) + sq(pad.zaxis)
+  if (sx || sy || dz) {
+    follow.value = false
+    const v = view.value
+    let nv = v
+    if (sx || sy) {
+      const c = mm.pan(v.lat, v.lon, v.z, -sx * PAD_PAN_PX_S * dt, sy * PAD_PAN_PX_S * dt)
+      nv = { ...nv, lat: c.lat, lon: c.lon }
+    }
+    if (dz) nv = { ...nv, z: Math.max(mm.MIN_Z, Math.min(mm.MAX_Z, nv.z + dz * PAD_ZOOM_S * dt)) }
+    view.value = nv
+  }
+  if (padActive()) padFrame = nextFrame(padTick) || 1
+  else padLast = 0
+}
+
+function padStart() {
+  if (!padMode.value) {
+    padMode.value = true
+    // the buttons give the stick up (as the stock map hands the UI's focus back to the map)
+    if (rootEl.value) rootEl.value.querySelectorAll(".focus-visible").forEach(el => el.blur && el.blur())
+    if (document.activeElement && rootEl.value && rootEl.value.contains(document.activeElement)) document.activeElement.blur()
+  }
+  if (!padFrame && padActive()) padFrame = nextFrame(padTick) || 1
+}
+
+function padSelect() {
+  // A on a focused button is the button's (the menu's own 'ok')
+  if (rootEl.value && rootEl.value.querySelector(".focus-visible")) return
+  if (!padMode.value) { padMode.value = true; return }      // the first A shows the crosshair
+  const v = view.value
+  setGps(v.lat, v.lon, "")
+}
+
+const mapEvents = useEvents()
+mapEvents.on("BeamNGEarthMapInput", d => {
+  if (!d) return
+  const a = Number(d.a) || 0
+  switch (d.kind) {
+    case "move_lr": pad.lr = a; padStart(); break
+    case "move_ud": pad.ud = a; padStart(); break
+    case "zoom_trigger": if (d.b) pad.zin = Math.abs(a) * 2; else pad.zout = Math.abs(a) * 2; padStart(); break
+    case "zoom_axis": pad.zaxis = -a * 2; padStart(); break
+    case "move_key": if (d.b >= 1 && d.b <= 4) pad.keys[d.b - 1] = a; if (a) padStart(); break
+    case "select": padSelect(); break
+  }
+})
+// the mouse takes over again: no crosshair
+watch(cursor, () => { if (padMode.value && !padActive()) padMode.value = false })
+
+const STICK_FOCUS = ["focus_lr", "focus_ud"]
+function stickFocus(off) {
+  try {
+    const nav = getUINavServiceInstance()
+    if (!nav) return
+    if (off) nav.setFilteredEvents(STICK_FOCUS)
+    else nav.clearFilteredEvents()
+  } catch (e) { /* an older game's UI: the stick also moves the focus */ }
+}
+
 // ---- Places panel (settings.lua uiPlace* -> places.lua; every call answers with both lists) ---------
 // the places panel; closed, the saved places' pins leave the map too (the user, 2026-10-14). Remembered.
 const PANEL_KEY = "beamngEarth.map.placesOpen"
@@ -914,6 +1003,7 @@ onMounted(() => {
   }
   viewEl.value.addEventListener("mousemove", onHover)
   engineLua("if beamngEarth_settings and beamngEarth_settings.mapOpened then beamngEarth_settings.mapOpened(true) end")
+  stickFocus(true)
   poll()
   pollTimer = setInterval(poll, 1000)
   nextTick(() => rootEl.value && rootEl.value.focus())
@@ -924,6 +1014,9 @@ onUnmounted(() => {
   if (resizeObs) resizeObs.disconnect()
   window.removeEventListener("mousemove", onMove)
   window.removeEventListener("mouseup", onUp)
+  stickFocus(false)
+  if (padFrame && window.cancelAnimationFrame) window.cancelAnimationFrame(padFrame)
+  padFrame = 0
   engineLua("if beamngEarth_settings and beamngEarth_settings.mapOpened then beamngEarth_settings.mapOpened(false) end")
 })
 
@@ -931,6 +1024,21 @@ const fmtLatLon = mm.fmtLatLon
 </script>
 
 <style scoped>
+.pad-cross {
+  position: absolute; left: 50%; top: 50%; width: 34px; height: 34px; margin: -17px 0 0 -17px;
+  border: 2px solid rgba(255, 255, 255, 0.95); border-radius: 50%; box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.6);
+  pointer-events: none; z-index: 5;
+}
+.pad-cross::before, .pad-cross::after {
+  content: ""; position: absolute; background: rgba(255, 255, 255, 0.95); box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.5);
+}
+.pad-cross::before { left: 15px; top: -9px; width: 2px; height: 50px; }
+.pad-cross::after { top: 15px; left: -9px; height: 2px; width: 50px; }
+.pad-hint {
+  position: absolute; left: 50%; top: 3.4em; transform: translateX(-50%); padding: 0.35em 0.9em;
+  background: rgba(0, 0, 0, 0.6); color: #fff; border-radius: 4px; font-size: 0.9em; pointer-events: none;
+  white-space: nowrap; z-index: 5;
+}
 .earth-map {
   position: absolute;
   inset: 0;

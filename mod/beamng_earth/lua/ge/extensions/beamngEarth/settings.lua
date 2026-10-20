@@ -546,7 +546,64 @@ function M.uiMapParse(text)
   return { lat = lat, lon = lon }
 end
 
-function M.mapOpened(on) mapOpen = on and true or false end
+-- A controller on the map (the user, 2026-10-20: "make sure our map is controller compatible; see how the default map
+-- handles controllers"): as the stock big map does (freeroam/bigMapMode.lua), its own action map "BigMap" is on while
+-- the map is open, with the player's bindings for it (stock pads: left stick pans, the triggers zoom, A selects). Its
+-- actions call freeroam_bigMapMode's functions by name; while our map is open those go to EarthMap.vue
+-- (guihooks 'BeamNGEarthMapInput'). The stock map pauses the game; ours does not (the GPS autodrive drives on), so the
+-- player's own driving controls are held off instead (the triggers would rev and brake the car), the car's inputs let
+-- go first (a pedal held when the map opened would stay down), with the stock map's blocked groups.
+M.MAP_INPUT_EVENT = 'BeamNGEarthMapInput'
+M.MAP_BLOCKED = { 'vehicle', 'gameCam', 'vehicleTeleporting', 'funStuff', 'freeCam', 'physicsControls',
+  'vehicleSwitching', 'walkingMode', 'vehicleMenues', 'aiControls', 'photoMode', 'couplers', 'missionPopup',
+  'resetPhysics', 'miniMap' }
+local mapCtl = nil      -- the stock map's functions while ours has its controls
+
+local function mapInput(kind, a, b)
+  local gh = rawget(_G, 'guihooks')
+  if gh then gh.trigger(M.MAP_INPUT_EVENT, { kind = kind, a = a, b = b }) end
+end
+
+function M.mapControls(on)
+  local bm = rawget(_G, 'freeroam_bigMapMode')
+  local filter = rawget(_G, 'core_input_actionFilter')
+  if on and not mapCtl and bm then
+    mapCtl = { bm = bm }
+    for _, f in ipairs({ 'camMoveController', 'camMoveKey', 'zoomInOut', 'controllerZoom', 'zoom', 'onControllerSelect',
+        'onChangeUiFilter' }) do mapCtl[f] = bm[f] end
+    bm.camMoveController = function(upDown, v) mapInput(upDown and 'move_ud' or 'move_lr', v) end
+    bm.camMoveKey = function(v, dir) mapInput('move_key', v, dir) end
+    bm.zoomInOut = function(v, zoomIn) mapInput('zoom_trigger', v, zoomIn) end
+    bm.controllerZoom = function(v) mapInput('zoom_axis', v) end
+    bm.zoom = function(v) mapInput('zoom_axis', v) end
+    bm.onControllerSelect = function() mapInput('select') end
+    bm.onChangeUiFilter = function(v, dir) mapInput('filter', v, dir) end
+    local veh = rawget(_G, 'getPlayerVehicle') and getPlayerVehicle(0)
+    if veh then
+      pcall(veh.queueLuaCommand, veh, "input.event('throttle', 0, 2) input.event('brake', 0, 2) "
+        .. "input.event('steering', 0, 2) input.event('clutch', 0, 2)")
+    end
+    if filter and filter.createActionTemplate then
+      pcall(function()
+        filter.setGroup('beamngEarthMapBlocked', filter.createActionTemplate(M.MAP_BLOCKED))
+        filter.addAction(0, 'beamngEarthMapBlocked', true)
+      end)
+    end
+    pcall(pushActionMap, 'BigMap')
+    local am = scenetree.findObject('BigMapActionMap')
+    if am then am.trapHandledEvents = false end      -- (as the stock map: nothing else gets stuck behind it)
+  elseif not on and mapCtl then
+    for f, fn in pairs(mapCtl) do if f ~= 'bm' then mapCtl.bm[f] = fn end end
+    mapCtl = nil
+    pcall(popActionMap, 'BigMap')
+    if filter and filter.addAction then pcall(filter.addAction, 0, 'beamngEarthMapBlocked', false) end
+  end
+end
+
+function M.mapOpened(on)
+  mapOpen = on and true or false
+  M.mapControls(mapOpen)
+end
 function M.isMapOpen() return mapOpen end
 
 -- Go to a UI screen (route): extensions.ui_router.navigate, BeamNG 0.40's way (its patch notes: "Use
