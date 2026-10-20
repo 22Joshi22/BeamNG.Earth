@@ -411,7 +411,7 @@ class DoorTest(unittest.TestCase):
                     bld._signs(m, spec, spec.ring, 4.2, bld._Looks(spec.seed))
                     if m.n:                     # a few shops have none (hashed)
                         signed += 1
-                        ys = np.array(m.P)[:, 1]
+                        ys = m.arrays()[0][:, 1]
                         self.assertTrue((ys < 0.01).all() and (ys > -bld.SIGN_OUT - 0.01).all(),
                                         "boxes just out from the south wall")
         self.assertGreater(shops, 8)
@@ -441,7 +441,7 @@ class DoorTest(unittest.TestCase):
             with_porch += 1
             m = bld.Mesh()
             bld._porch(m, spec, 1.0, bld._Looks(spec.seed))
-            P = np.array(m.P)
+            P = m.arrays()[0]
             self.assertTrue(m.n > 0)
             self.assertAlmostEqual(P[:, 1].min(), -(bld.PORCH_DEPTH_M + 0.2), delta=0.01, msg="out in front of the south wall")
             self.assertGreaterEqual(P[:, 1].max(), -0.01)

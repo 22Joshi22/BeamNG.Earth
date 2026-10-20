@@ -39,6 +39,8 @@ _s = None       # this process's state (init)
 
 class _State:
     def __init__(self, cache_dir, offline, roads, grading, road_widths, surface, airports=False, sea=False):
+        self.cache_dir = cache_dir
+        self.imagery = None         # (its settings, imagery.Imagery from the disk alone): far_tile's textures
         net = netfetch.Fetcher(offline=offline)
         self.dem = demmod.Dem(os.path.join(cache_dir, "dem"), fetcher=net)
         # runways graded in (--airports on): the copy the server loaded, never refreshed here
@@ -49,7 +51,8 @@ class _State:
         self.md = md if roads else None
         self.grading = bool(grading) and self.md is not None
         self.widths = (roadwidthmod.RoadWidths(
-            lambda key: md.cell(key, layers=("buildings",), kind="demand").layers.get("buildings")).get
+            lambda key: md.cell(key, layers=("buildings",), kind="demand").layers.get("buildings"),
+            roadwidthmod.store_dir(cache_dir, md)).get
             if road_widths and self.md is not None else None)
         self.surface = surfacemod.Surface(md) if surface else None
         self.graders = {}           # anchor id -> grading.Grader
@@ -91,6 +94,32 @@ def load_airports(cache_dir, dem):
     return airportgrade.AirportGrader(db, dem)
 
 
+def _rss_mb():
+    try:
+        with open("/proc/self/statm") as f:
+            return int(f.read().split()[1]) * os.sysconf("SC_PAGE_SIZE") / 1e6
+    except (OSError, ValueError):
+        return 0.0
+
+
+def _trace_memory(every_s=60.0, top=10):
+    """BNGE_TRACEMALLOC: log this worker's resident size, what Python and numpy hold of it and its top allocation
+    sites every every_s (the rest is native: DuckDB, the allocator's free lists)."""
+    import tracemalloc
+    tracemalloc.start(1)
+
+    def loop():
+        log = logging.getLogger("earthd.worker")
+        while True:
+            time.sleep(every_s)
+            snap = tracemalloc.take_snapshot()
+            total = sum(st.size for st in snap.statistics("filename"))
+            log.info("memory pid %d: rss %.0f MB, traced %.0f MB; top: %s", os.getpid(), _rss_mb(), total / 1e6,
+                     "; ".join(f"{os.path.basename(st.traceback[0].filename)}:{st.traceback[0].lineno} "
+                               f"{st.size / 1e6:.0f} MB" for st in snap.statistics("lineno")[:top]))
+    threading.Thread(target=loop, daemon=True, name="trace-mem").start()
+
+
 def init(cache_dir, offline, roads, grading, road_widths, surface, warm_q, log_level=logging.INFO, airports=False,
          sea=False, nice=0):
     """nice: this worker's niceness on top of the server's (earthd NICE_*): the terrain blocks' workers keep the
@@ -106,6 +135,10 @@ def init(cache_dir, offline, roads, grading, road_widths, surface, warm_q, log_l
     logging.basicConfig(level=log_level, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     import budget
     budget.apply()              # (this process's caches: smaller on a small machine)
+    if os.environ.get("BNGE_TRACEMALLOC"):      # debug: this worker's memory (earthd's trace_mem)
+        _trace_memory()
+    import sampler
+    sampler.maybe_start(f".{os.getpid()}")      # BNGE_SAMPLE: this worker's own sampling profile (debugging)
     _s = _State(cache_dir, offline, roads, grading, road_widths, surface, airports, sea)
     threading.Thread(target=_watch_parent, args=(os.getppid(),), daemon=True, name="parent-watch").start()
     threading.Thread(target=_read_warm, args=(warm_q,), daemon=True, name="warm-read").start()
@@ -422,6 +455,44 @@ def far_geometry(aid, lat, lon, tile, zoom, q, ref_zoom, with_sink, layout):
                                layout=layout)
 
 
+WORKER_IMAGERY_TILES = 96      # decoded imagery tiles a far-tile worker keeps (imagery.MEM_TILES: 512, the server's)
+
+
+def far_tile(aid, lat, lon, tile, zoom, q, ref_zoom, with_sink, layout, tex):
+    """far_geometry and the tile's texture here, written to tex["path"] (the server without its imagery analyses:
+    de-shadow and colour match off, a small machine). The texture from the imagery tiles on disk alone, the server's
+    chain (Imagery.strict): (Built, (texture bytes, sources used)), or (Built, None) when a tile it needs is not on
+    disk (the server renders it, fetching what is missing). On a Steam Deck the textures were most of the server
+    process's own CPU, one interpreter for every thread (55 s of a drive), and the far field waited on it."""
+    import imagery as imagerymod
+    import rockface as rockfacemod
+    geometry = getattr(far_geometry, "__wrapped__", far_geometry)        # (its CPU counted once, here)
+    built = geometry(aid, lat, lon, tile, zoom, q, ref_zoom, with_sink, layout)
+    key = (tuple(tex["chain"]), tex["tone"], tex["leaf_on"], tex["season_mode"])
+    if _s.imagery is None or _s.imagery[0] != key:
+        im = imagerymod.Imagery(os.path.join(_s.cache_dir, "imagery"), key[0], fetch_workers=1,
+                                mem_tiles=WORKER_IMAGERY_TILES, tone=key[1], fetcher=netfetch.Fetcher(offline=True),
+                                leaf_on=key[2], season_mode=key[3])
+        im.strict = True
+        _s.imagery = (key, im)
+    im = _s.imagery[1]
+    frame = geodesy.EnuFrame(lat, lon)
+    x0, y0, _, _ = tile.bbox
+    px = tex["px"]
+    sq = imagerymod.gutter_square(x0, y0, tile.size, px)
+    try:
+        rgb, used = im.render(frame, *sq, px)
+    except imagerymod.ImageryError:
+        return built, None
+    if built.grid is not None:          # (earthd.Server.rock_faces)
+        try:
+            g = np.asarray(built.grid)
+            rgb = rockfacemod.rock(rgb, frame, *sq, g, x0, y0, tile.size / (g.shape[1] - 1))
+        except Exception as e:
+            log.debug("rock faces of %s: %s", tile.key, e)
+    return built, (imagerymod.write_dds(tex["path"], rgb), used)
+
+
 # --- CPU accounting ---------------------------------------------------------------------------------------------------
 # Each job's CPU seconds by kind, logged by the process every CPU_LOG_S at debug level ("worker <pid> cpu: ..."), so a
 # recorded session says which pool (road tiles, far buildings, far geometry, terrain blocks) the server's CPU went to.
@@ -454,3 +525,4 @@ roads_tile = _accounted(roads_tile)
 far_buildings_tile = _accounted(far_buildings_tile)
 base_entry = _accounted(base_entry)
 far_geometry = _accounted(far_geometry)
+far_tile = _accounted(far_tile)

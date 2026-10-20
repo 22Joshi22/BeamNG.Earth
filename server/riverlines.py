@@ -342,13 +342,17 @@ def _widths(frame, kind, pts, outline_at):
     nrm = np.stack([-t[:, 1], t[:, 0]], -1)
     steps = np.arange(WIDTH_STEP_M / 2, WIDTH_MAX_M / 2, WIDTH_STEP_M)
     here = np.asarray(outline_at(*_lalo(frame, pts)), bool)
+    hi = np.flatnonzero(here)           # (the probes across only from the nodes in an outline: 0 elsewhere)
     side = []
     for sgn in (1.0, -1.0):
-        q = pts[:, None, :] + sgn * nrm[:, None, :] * steps[None, :, None]       # [n, s, 2]
-        inside = np.asarray(outline_at(*_lalo(frame, q.reshape(-1, 2))), bool).reshape(len(pts), len(steps))
-        # the distance to the first sample outside the outline
-        first_out = np.where(inside.all(axis=1), len(steps) - 1, np.argmin(inside, axis=1))
-        side.append(np.where(here, steps[first_out], 0.0))
+        s = np.zeros(len(pts))
+        if len(hi):
+            q = pts[hi, None, :] + sgn * nrm[hi, None, :] * steps[None, :, None]       # [n, s, 2]
+            inside = np.asarray(outline_at(*_lalo(frame, q.reshape(-1, 2))), bool).reshape(len(hi), len(steps))
+            # the distance to the first sample outside the outline
+            first_out = np.where(inside.all(axis=1), len(steps) - 1, np.argmin(inside, axis=1))
+            s[hi] = steps[first_out]
+        side.append(s)
     left, right = side
     measured = left + right
     w = np.where(here & (measured > 0), np.maximum(measured, WIDTH_M[kind] / 2), w)

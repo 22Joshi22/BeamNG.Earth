@@ -30,6 +30,7 @@ import fast
 from polygon import Path
 
 import mapcells
+import pacer
 import staging
 
 log = logging.getLogger("earthd.vegetation")
@@ -236,6 +237,7 @@ class Vegetation:
 
     def _warm_loop(self):
         while True:
+            pacer.hold()                # (a teleport's first block first)
             with self._warm_cv:
                 while not self._warm:
                     self._warm_cv.wait()

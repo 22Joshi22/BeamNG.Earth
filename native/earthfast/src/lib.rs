@@ -4,6 +4,20 @@ use numpy::{PyArray1, PyArray2, PyReadonlyArray1, PyReadonlyArray2, PyReadonlyAr
 use pyo3::types::PyBytes;
 use pyo3::prelude::*;
 
+/// Work (about the number of inner-loop steps) below which a kernel keeps the GIL: a thread that lets it go waits for
+/// it again behind the interpreter's busy threads, up to the switch interval (5 ms), so a call of a few microseconds
+/// cost milliseconds (the server's event loop on a Steam Deck spent ~22 s of a Baltimore teleport there, 2026-10-20).
+const RELEASE_MIN: usize = 200_000;
+
+fn release<T, F>(py: Python<'_>, work: usize, f: F) -> T
+where
+    F: pyo3::marker::Ungil + FnOnce() -> T,
+    T: pyo3::marker::Ungil,
+{
+    if work >= RELEASE_MIN { py.allow_threads(f) } else { f() }
+}
+
+
 /// Even-odd point-in-polygon (the polygon's last vertex joins its first), as islands._inside.
 #[inline]
 fn inside(px: &[f64], py: &[f64], x: f64, y: f64) -> bool {
@@ -55,7 +69,7 @@ fn island_ring_rays<'py>(py: Python<'py>, poly: PyReadonlyArray2<'py, f64>, segs
     let pys: Vec<f64> = p.column(1).to_vec();
     let s = to_segs(&segs);
     let h = hw.as_slice().unwrap().to_vec();
-    let out = py.allow_threads(|| {
+    let out = release(py, px.len() * s.len().max(1), || {
         let mut out = Vec::with_capacity(rays * 2);
         for k in 0..rays {
             let a = 2.0 * std::f64::consts::PI * (k as f64) / (rays as f64);
@@ -313,7 +327,7 @@ fn geodetic_to_enu<'py>(py: Python<'py>, lat: PyReadonlyArray1<'py, f64>, lon: P
     const E2: f64 = F * (2.0 - F);
     let (la, lo, hh, o, r) = (lat.as_array(), lon.as_array(), h.as_array(), origin.as_array(), rot.as_array());
     let n = la.len();
-    let (e, nn, u) = py.allow_threads(|| {
+    let (e, nn, u) = release(py, n * 40, || {
     let (mut e, mut nn, mut u) = (Vec::with_capacity(n), Vec::with_capacity(n), Vec::with_capacity(n));
     for i in 0..n {
         let (phi, lam, hv) = (la[i].to_radians(), lo[i].to_radians(), hh[i]);
@@ -347,7 +361,7 @@ fn enu_to_geodetic<'py>(py: Python<'py>, e: PyReadonlyArray1<'py, f64>, n: PyRea
     const EP2: f64 = E2 / (1.0 - E2);
     let (ea, na, ua, o, r) = (e.as_array(), n.as_array(), u.as_array(), origin.as_array(), rot.as_array());
     let m = ea.len();
-    let (lat, lon, hgt) = py.allow_threads(|| {
+    let (lat, lon, hgt) = release(py, m * 60, || {
     let (mut lat, mut lon, mut hgt) = (Vec::with_capacity(m), Vec::with_capacity(m), Vec::with_capacity(m));
     for i in 0..m {
         let (ev, nv, uv) = (ea[i], na[i], ua[i]);
@@ -1600,7 +1614,7 @@ fn season_grade<'py>(py: Python<'py>, rgb: PyReadonlyArray3<'py, u8>, n: PyReado
 fn tangents<'py>(py: Python<'py>, v: PyReadonlyArray2<'py, f64>, uv: PyReadonlyArray2<'py, f64>,
                  nrm: PyReadonlyArray2<'py, f64>, idx: PyReadonlyArray2<'py, i64>) -> Bound<'py, PyArray2<f64>> {
     let (v, uv, nr, ix) = (v.as_array(), uv.as_array(), nrm.as_array(), idx.as_array());
-    let out = py.allow_threads(|| {
+    let out = release(py, ix.shape()[0] * 20, || {
         let n = v.nrows();
         let m = ix.nrows();
         let mut sd = vec![[0f64; 3]; m];
@@ -1917,7 +1931,7 @@ fn view_distances<'py>(py: Python<'py>, bboxes: PyReadonlyArray2<'py, f64>, px: 
                        penalty: f64) -> Bound<'py, PyArray1<f64>> {
     let b = bboxes.as_array();
     let n = b.shape()[0];
-    let out: Vec<f64> = py.allow_threads(|| {
+    let out: Vec<f64> = release(py, n * cone.len().max(1), || {
         (0..n).map(|k| {
             let (x0, y0, x1, y1) = (b[[k, 0]], b[[k, 1]], b[[k, 2]], b[[k, 3]]);
             let dx = (x0 - px).max(0.0).max(px - x1);
@@ -2036,7 +2050,7 @@ fn over_tunnel(py: Python<'_>, mut mask: numpy::PyReadwriteArray1<'_, bool>, e: 
                n: PyReadonlyArray1<'_, f64>, xy: PyReadonlyArray2<'_, f64>, hw: f64, keep_in: f64) {
     let (ev, nv, xv) = (e.as_array(), n.as_array(), xy.as_array());
     let mut mv = mask.as_array_mut();
-    py.allow_threads(|| {
+    release(py, ev.len() * xv.shape()[0].max(1), || {
         let np_ = ev.len();
         let k = xv.shape()[0];
         if np_ == 0 || k < 2 {
@@ -2091,7 +2105,7 @@ fn over_tunnel(py: Python<'_>, mut mask: numpy::PyReadwriteArray1<'_, bool>, e: 
 fn points_near_segments<'py>(py: Python<'py>, p: PyReadonlyArray2<'py, f64>, a: PyReadonlyArray2<'py, f64>,
                              b: PyReadonlyArray2<'py, f64>, hw: PyReadonlyArray1<'py, f64>) -> Bound<'py, PyArray1<bool>> {
     let (pv, av, bv, hv) = (p.as_array(), a.as_array(), b.as_array(), hw.as_array());
-    let out: Vec<bool> = py.allow_threads(|| {
+    let out: Vec<bool> = release(py, pv.shape()[0] * av.shape()[0].max(1), || {
         let ns = av.shape()[0];
         let seg: Vec<[f64; 6]> = (0..ns).map(|k| {
             let (a0, a1) = (av[[k, 0]], av[[k, 1]]);
@@ -2175,7 +2189,7 @@ fn arch_raise_part(py: Python<'_>, mut z: numpy::PyReadwriteArray1<'_, f64>, px:
     let pxs = px.as_slice().expect("contiguous px");
     let pys = pyy.as_slice().expect("contiguous py");
     let zs = z.as_slice_mut().expect("contiguous z");
-    py.allow_threads(|| {
+    release(py, zs.len() * xv.shape()[0].max(1), || {
         let k = xv.shape()[0];
         if k < 2 { return; }
         // per segment: start, direction, squared length, its length, arc at its start, floor at both ends
@@ -2221,7 +2235,7 @@ fn arch_raise_part(py: Python<'_>, mut z: numpy::PyReadwriteArray1<'_, f64>, px:
 fn subdivide_tris<'py>(py: Python<'py>, pts: PyReadonlyArray2<'py, f64>, tris: PyReadonlyArray2<'py, i64>, max_edge: f64)
                        -> (Bound<'py, PyArray2<f64>>, Bound<'py, PyArray2<i64>>) {
     let (pv, tv) = (pts.as_array(), tris.as_array());
-    let (p_out, t_out) = py.allow_threads(|| {
+    let (p_out, t_out) = release(py, tv.shape()[0] * 50, || {
         let mut p: Vec<[f64; 2]> = (0..pv.shape()[0]).map(|i| [pv[[i, 0]], pv[[i, 1]]]).collect();
         let mut stack: Vec<[usize; 3]> = (0..tv.shape()[0]).rev()
             .map(|i| [tv[[i, 0]] as usize, tv[[i, 1]] as usize, tv[[i, 2]] as usize]).collect();
@@ -2263,7 +2277,7 @@ fn deck_edges_covered<'py>(py: Python<'py>, p: PyReadonlyArray2<'py, f64>, op: P
                            a: PyReadonlyArray2<'py, f64>, b: PyReadonlyArray2<'py, f64>, hw: PyReadonlyArray1<'py, f64>,
                            os: PyReadonlyArray1<'py, i64>, dz: f64) -> Bound<'py, PyArray1<bool>> {
     let (pv, opv, av, bv, hv, osv) = (p.as_array(), op.as_array(), a.as_array(), b.as_array(), hw.as_array(), os.as_array());
-    let out: Vec<bool> = py.allow_threads(|| {
+    let out: Vec<bool> = release(py, pv.shape()[0] * av.shape()[0].max(1), || {
         let ns = av.shape()[0];
         // per segment: start, direction, squared length, half width, z at both ends, owner
         let seg: Vec<[f64; 9]> = (0..ns).map(|k| {
@@ -2601,7 +2615,7 @@ fn follow_tris<'py>(py: Python<'py>, pts: PyReadonlyArray2<'py, f64>, uv: PyRead
                     -> (Bound<'py, PyArray2<f64>>, Bound<'py, PyArray2<f64>>, Bound<'py, PyArray2<i64>>,
                         Bound<'py, PyArray1<i64>>) {
     let (pv, uvv, tv, gv) = (pts.as_array(), uv.as_array(), tris.as_array(), grid.as_array());
-    let (p_out, uv_out, t_out, src) = py.allow_threads(|| {
+    let (p_out, uv_out, t_out, src) = release(py, tv.shape()[0] * 200, || {
         type V = [f64; 4];
         let cell = if cell > 0.0 { cell } else { 2.0 };
         let fams: [(f64, f64); 3] = [(1.0, 0.0), (0.0, 1.0), (-1.0, 1.0)];

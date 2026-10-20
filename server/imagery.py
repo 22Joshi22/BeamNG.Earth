@@ -310,6 +310,10 @@ DS_PENDING = "ds"
 
 class Imagery:
     disk = cachemod.NONE    # the server's cache.Cache (last use per file, the size cap); set by earthd
+    # strict: a source that fails (offline: its tile not on disk) fails the render instead of the next source
+    # standing in, so a far-tile worker's texture (blockworker.far_tile, from the disk alone) is the one the server
+    # would render, or none (the server renders it)
+    strict = False
 
     def __init__(self, cache_dir, chain=DEFAULT_CHAIN, fetch_workers=FETCH_WORKERS, mem_tiles=None,
                  tone=1.0, deshadow=None, colormatch=None, fetcher=None, leaf_on=True, season_mode="off"):
@@ -961,6 +965,8 @@ class Imagery:
                 try:
                     m = self._mosaic(src, z, fx, fy, i == len(self.chain) - 1, pending, cm_keys)
                 except ImageryError as e:   # this source is unreachable: the next one may do
+                    if self.strict:
+                        raise
                     error, m = e, False
                     break
                 if m is not None or z <= src.min_zoom:

@@ -17,7 +17,10 @@ F = 1 / 298.257223563            # flattening
 B = A * (1 - F)                  # semi-minor axis
 E2 = F * (2 - F)                 # first eccentricity squared
 EP2 = E2 / (1 - E2)              # second eccentricity squared
-ENU_RUST_MAX = 1024              # EnuFrame.enu_to_geodetic: the Rust kernel below this many points (64: 16 vs 55 us)
+# EnuFrame.enu_to_geodetic: the Rust kernel for any number of points. It once stopped at 1024 (numpy was ahead on
+# large grids); now ahead at every size, 2x on a Steam Deck (262k points: 51 vs 102 ms, 2026-10-20), where the rivers'
+# width probes spent 22 s of a drive in numpy's version holding the interpreter
+ENU_RUST_MAX = 1 << 62
 
 
 def geodetic_to_ecef(lat, lon, h=0.0):
@@ -93,7 +96,7 @@ class EnuFrame:
             # the Rust kernel (the same closed form; ground-ahead and the far tiles call this with many small grids)
             f64 = np.float64
             E, N, U = np.broadcast_arrays(np.asarray(e, f64), np.asarray(n, f64), np.asarray(u, f64))
-            if 0 < E.size < ENU_RUST_MAX:       # (numpy's vector maths wins on large grids: 318 vs 485 us at 4096)
+            if 0 < E.size < ENU_RUST_MAX:
                 shape = E.shape
                 la, lo, h = _ef.enu_to_geodetic(np.ascontiguousarray(E.ravel()), np.ascontiguousarray(N.ravel()),
                                                 np.ascontiguousarray(U.ravel()), self.origin, self.rot)

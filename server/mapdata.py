@@ -137,8 +137,10 @@ def digest_arrays(arrays):
     return h.hexdigest()
 
 
-MEM_MB = 64         # decoded cell layers kept in memory per process (a road tile reads its ~4 cells, each read by
-                    # its neighbours too: ~8 ms of decompression and a coordinate transform each time, 2026-10-15)
+MEM_MB = 192        # decoded cell layers kept in memory per process (a road tile reads its ~4 cells, each read by
+                    # its neighbours too: ~8 ms of decompression and a coordinate transform each time, 2026-10-15).
+                    # A road tile's layers of Baltimore's 4 cells are ~124 MB by _nbytes (the infrastructure 65):
+                    # at 64 every tile decoded them again, 446 loads for 36 tiles (7.5 s of 87 on a Steam Deck)
 
 
 def _nbytes(arrays):

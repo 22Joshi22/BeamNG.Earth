@@ -162,7 +162,7 @@ def surface_class(raw, lighted=False):
 
 
 # --- the model ----------------------------------------------------------------------------------
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class RunwayEnd:
     ident: str                      # "10", "28L", "N", "" ...
     lat: float
@@ -174,7 +174,7 @@ class RunwayEnd:
     position: str                   # "data" / "computed"
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class Runway:
     id: int                         # OurAirports runway id (persistent)
     airport_id: int
@@ -223,7 +223,7 @@ class Runway:
         return self.surface == "water"
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class Helipad:
     id: int
     airport_ident: str
@@ -245,7 +245,7 @@ class Helipad:
         return f"oa:{self.id}"
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class Airport:
     id: int
     ident: str
@@ -573,6 +573,10 @@ class AirportDB:
         stats["runways"] = len(runways)
         stats["helipads"] = len(helipads)
         stats["runway_rows"] = len(rrows)
+        # only the airports with a runway or helipad kept (every lookup goes through those; the rest, ~70k strips
+        # and heliports without one, cost ~50 MB of strings in every server process, a Steam Deck 2026-10-20)
+        used = {r.airport_ident for r in runways} | {h.airport_ident for h in helipads}
+        airports = {k: a for k, a in airports.items() if k in used}
         return cls(airports, runways, helipads, stats, snapshot)
 
     # --- lookups ----------------------------------------------------------------------------
@@ -829,13 +833,52 @@ class Store:
             if self._db is not None and self._db[0] == p["gen"]:
                 return self._db[1]
             d = os.path.join(self.root, p["gen"])
-            with open(os.path.join(d, "airports.csv"), "rb") as f:
-                a = f.read()
-            with open(os.path.join(d, "runways.csv"), "rb") as f:
-                r = f.read()
-            db = AirportDB.from_csv(a, r)
+            db = self._parsed(d)
+            if db is None:
+                with open(os.path.join(d, "airports.csv"), "rb") as f:
+                    a = f.read()
+                with open(os.path.join(d, "runways.csv"), "rb") as f:
+                    r = f.read()
+                db = AirportDB.from_csv(a, r)
+                self._keep_parsed(d, db)
             self._db = (p["gen"], db)
             return db
+
+    # The parsed snapshot, pickled next to its CSV files: the server's main process and every worker parsed the
+    # 86k airports themselves, ~257 MB a process for ~50 MB kept (a Steam Deck, 2026-10-20). PARSED_V: raise it when
+    # the classes change.
+    PARSED_V = 3
+
+    def _parsed(self, d):
+        import pickle
+        path = os.path.join(d, f"parsed.v{self.PARSED_V}.pickle")
+        try:
+            with open(path, "rb") as f:
+                db = pickle.load(f)
+            return db if isinstance(db, AirportDB) else None
+        except (OSError, EOFError, pickle.UnpicklingError, AttributeError, ImportError, TypeError, ValueError):
+            return None
+
+    def _keep_parsed(self, d, db):
+        import pickle
+        path = os.path.join(d, f"parsed.v{self.PARSED_V}.pickle")
+        for old in os.listdir(d):           # an older version's copy
+            if old.startswith("parsed.v") and old.endswith(".pickle") and old != os.path.basename(path):
+                try:
+                    os.remove(os.path.join(d, old))
+                except OSError:
+                    pass
+        tmp = f"{path}.{os.getpid()}.{threading.get_ident()}.tmp"
+        try:
+            with open(tmp, "wb") as f:
+                pickle.dump(db, f, protocol=pickle.HIGHEST_PROTOCOL)
+            os.replace(tmp, path)
+        except OSError as e:
+            log.debug("airports: parsed copy not kept: %s", e)
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
 
 
 # --- CLI ----------------------------------------------------------------------------------------

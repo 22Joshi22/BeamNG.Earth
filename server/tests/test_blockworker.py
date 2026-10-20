@@ -59,5 +59,53 @@ class RoadsTileTest(unittest.TestCase):
                 self.assertEqual(Path(a, name).read_bytes(), Path(b, name).read_bytes(), name)
 
 
+
+class FarTileTest(unittest.TestCase):
+    """blockworker.far_tile: the texture from the imagery on disk is the one the server renders, byte for byte; with
+    a tile not on disk, none (the server renders it)."""
+
+    def test_texture_from_disk(self):
+        import io
+        import zlib
+        import farfield
+        import imagery
+        import rockface
+        from PIL import Image
+
+        class Fetcher:                  # every source tile a seeded noise JPEG
+            def register_chain(self, *a):
+                pass
+
+            def miss_alive(self, miss, url):
+                return False
+
+            def get(self, url, kind="demand"):
+                rng = np.random.default_rng(zlib.crc32(url.encode()))
+                buf = io.BytesIO()
+                Image.fromarray(rng.integers(20, 220, (256, 256, 3), dtype=np.uint8)).save(buf, "JPEG")
+                return SimpleNamespace(body=buf.getvalue(), elapsed=0.01)
+        layout = farfield.Layout(cells=64)
+        tile = farfield.Tile(3, 1, -2)
+        px = 128
+        with tempfile.TemporaryDirectory() as cache, tempfile.TemporaryDirectory() as out:
+            blockworker._s = SimpleNamespace(dem=FakeDem(), airports=None, sea=None, cache_dir=cache, imagery=None,
+                                             anchor=lambda aid, lat, lon: (None, None))
+            tex = {"path": os.path.join(out, "worker.dds"), "px": px, "chain": ["usgs"], "tone": 1.0,
+                   "leaf_on": True, "season_mode": "off"}
+            built, got = blockworker.far_tile(1, LAT, LON, tile, 12, None, 11, True, layout, tex)
+            self.assertIsNone(got, "nothing on disk: the server renders it")
+            im = imagery.Imagery(os.path.join(cache, "imagery"), ("usgs",), fetcher=Fetcher())
+            x0, y0, _, _ = tile.bbox
+            sq = imagery.gutter_square(x0, y0, tile.size, px)
+            rgb, used = im.render(FRAME, *sq, px)
+            g = np.asarray(built.grid)
+            rgb = rockface.rock(rgb, FRAME, *sq, g, x0, y0, tile.size / (g.shape[1] - 1))
+            n = imagery.write_dds(os.path.join(out, "server.dds"), rgb)
+            built2, got = blockworker.far_tile(1, LAT, LON, tile, 12, None, 11, True, layout, tex)
+            self.assertIsNotNone(got, "the tiles on disk now")
+            self.assertEqual(got[0], n)
+            self.assertEqual(set(got[1]), set(used))
+            self.assertEqual(Path(out, "worker.dds").read_bytes(), Path(out, "server.dds").read_bytes())
+
 if __name__ == "__main__":
     unittest.main()

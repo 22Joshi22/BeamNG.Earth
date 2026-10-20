@@ -10,14 +10,22 @@ import budget  # noqa: E402
 import dem  # noqa: E402
 import imagery  # noqa: E402
 import mapdata  # noqa: E402
+import roadwidth  # noqa: E402
+import seacarve  # noqa: E402
 
 
 class BudgetTest(unittest.TestCase):
     def setUp(self):
-        self.saved = (dem.MEM_TILES, imagery.MEM_TILES, mapdata.MEM_MB)
+        import copy
+        import farfield
+        self.saved = (dem.MEM_TILES, imagery.MEM_TILES, mapdata.MEM_MB, seacarve.MEM_CELLS, roadwidth.WALL_CELLS)
+        self.far = (copy.deepcopy(farfield.K_TABLE), copy.deepcopy(farfield.TEX_DEFAULT))
 
     def tearDown(self):
-        dem.MEM_TILES, imagery.MEM_TILES, mapdata.MEM_MB = self.saved
+        import farfield
+        dem.MEM_TILES, imagery.MEM_TILES, mapdata.MEM_MB, seacarve.MEM_CELLS, roadwidth.WALL_CELLS = self.saved
+        farfield.K_TABLE.clear(), farfield.K_TABLE.update(self.far[0])
+        farfield.TEX_DEFAULT.clear(), farfield.TEX_DEFAULT.update(self.far[1])
 
     def test_profile_by_ram(self):
         with mock.patch.dict(os.environ, {"BNGE_BUDGET": ""}):
@@ -33,8 +41,11 @@ class BudgetTest(unittest.TestCase):
         self.assertFalse(budget.apply(False))
         self.assertEqual(dem.MEM_TILES, self.saved[0], "the desktop sizes stay")
         self.assertTrue(budget.apply(True))
-        self.assertEqual((dem.MEM_TILES, imagery.MEM_TILES, mapdata.MEM_MB),
-                         (budget.SMALL_DEM_TILES, budget.SMALL_IMAGERY_TILES, budget.SMALL_MAPDATA_MB))
+        self.assertEqual((dem.MEM_TILES, roadwidth.WALL_CELLS, mapdata.MEM_MB),
+                         (budget.SMALL_DEM_TILES, budget.SMALL_WALL_CELLS, budget.SMALL_MAPDATA_MB))
+        self.assertEqual((imagery.MEM_TILES, seacarve.MEM_CELLS), (self.saved[1], self.saved[3]),
+                         "these keep theirs (smaller, they thrashed)")
+        self.assertGreaterEqual(mapdata.MEM_MB, 128, "a road tile's cells fit (Baltimore's: ~124 MB)")
         d = dem.Dem(os.path.join(os.path.dirname(__file__), "_no_cache"), fetcher=mock.Mock())
         self.assertEqual(d.mem_tiles, budget.SMALL_DEM_TILES, "read when the cache is made")
 

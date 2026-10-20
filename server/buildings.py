@@ -14,7 +14,6 @@ its windows a whole number of bays along every wall (no window cut at a corner).
 footprints and a ground-height function; no game state.
 """
 import hashlib
-import itertools
 import math
 
 import numpy as np
@@ -692,7 +691,8 @@ def plan(ring, attrs, neighbours=0, lat=None, lon=None, look=None, town=False, d
 
 class Mesh:
     """Positions, uvs, colours, triangles and their material index, appended to. A material is a token
-    (index, RGBA) as _Looks gives."""
+    (index, RGBA) as _Looks gives. Kept as flat lists of numbers (x y z x y z ..., one material per triangle):
+    a road tile adds ~25k quads, and lists of tuples flattened at the end took ~2.5 s of a Steam Deck's 87 s."""
 
     def __init__(self):
         self.P, self.UV, self.C, self.T, self.M = [], [], [], [], []
@@ -701,19 +701,19 @@ class Mesh:
     def quad(self, a, b, c, d, uva, uvb, uvc, uvd, mat):
         """Corners counter-clockwise seen from outside."""
         i = self.n
-        self.P += [a, b, c, d]
-        self.UV += [uva, uvb, uvc, uvd]
-        self.C += [mat[1]] * 4
-        self.T += [(i, i + 1, i + 2), (i, i + 2, i + 3)]
-        self.M += [mat[0], mat[0]]
+        self.P += (*a, *b, *c, *d)
+        self.UV += (*uva, *uvb, *uvc, *uvd)
+        self.C += mat[1] * 4
+        self.T += (i, i + 1, i + 2, i, i + 2, i + 3)
+        self.M += (mat[0], mat[0])
         self.n += 4
 
     def tri(self, a, b, c, uva, uvb, uvc, mat):
         i = self.n
-        self.P += [a, b, c]
-        self.UV += [uva, uvb, uvc]
-        self.C += [mat[1]] * 3
-        self.T.append((i, i + 1, i + 2))
+        self.P += (*a, *b, *c)
+        self.UV += (*uva, *uvb, *uvc)
+        self.C += mat[1] * 3
+        self.T += (i, i + 1, i + 2)
         self.M.append(mat[0])
         self.n += 3
 
@@ -729,19 +729,17 @@ class Mesh:
         else:
             tris = triangulate(xy)
         i = self.n
-        self.P += [tuple(p) for p in pts3]
-        self.UV += [tuple(u) for u in uv]
-        self.C += [mat[1]] * len(pts3)
-        self.T += [(i + a, i + b, i + c) for a, b, c in tris]
+        self.P += np.asarray(pts3, np.float64)[:, :3].ravel().tolist()
+        self.UV += np.asarray(uv, np.float64)[:, :2].ravel().tolist()
+        self.C += tuple(mat[1]) * len(pts3)
+        self.T += (np.asarray(tris, np.int64).reshape(-1, 3) + i).ravel().tolist()
         self.M += [mat[0]] * len(tris)
         self.n += len(pts3)
 
     def arrays(self):
-        # fromiter over the flattened tuples: the same arrays, ~2x faster than np.array of a list of tuples
-        def flat(L, k, dt):
-            return np.fromiter(itertools.chain.from_iterable(L), dt, len(L) * k).reshape(-1, k)
-        return (flat(self.P, 3, np.float64), flat(self.UV, 2, np.float64), flat(self.T, 3, np.int64),
-                np.array(self.M, np.int64), flat(self.C, 4, np.uint8))
+        return (np.array(self.P, np.float64).reshape(-1, 3), np.array(self.UV, np.float64).reshape(-1, 2),
+                np.array(self.T, np.int64).reshape(-1, 3), np.array(self.M, np.int64),
+                np.array(self.C, np.uint8).reshape(-1, 4))
 
 
 def _band_v(band, k):
@@ -802,6 +800,7 @@ def _walls(m, spec, ring, z0, z_eave, mat_idx, lite=False):
     """Each wall of the ring, floor by floor: one band of the window sheet, a whole number of bays."""
     n = len(ring)
     fac = mat_idx[spec.facade]
+    pts = np.asarray(ring, np.float64)[:, :2].tolist()     # (plain floats: the arithmetic below, per bay)
     for i in range(n):
         a, b = ring[i], ring[(i + 1) % n]
         L = float(math.hypot(*(b - a)))
@@ -810,9 +809,10 @@ def _walls(m, spec, ring, z0, z_eave, mat_idx, lite=False):
         if spec.wall:
             _plain_wall_with_windows(m, spec, a, b, L, z0, z_eave, fac, mat_idx, i)
             continue
+        (ax, ay), (bx, by) = pts[i], pts[(i + 1) % n]
         if spec.plain:
             u1 = L / SIDING_UV_M
-            m.quad((a[0], a[1], z0), (b[0], b[1], z0), (b[0], b[1], z_eave), (a[0], a[1], z_eave),
+            m.quad((ax, ay, z0), (bx, by, z0), (bx, by, z_eave), (ax, ay, z_eave),
                    (0, z0 / SIDING_UV_M), (u1, z0 / SIDING_UV_M), (u1, z_eave / SIDING_UV_M), (0, z_eave / SIDING_UV_M),
                    fac)
             continue
@@ -844,9 +844,11 @@ def _walls(m, spec, ring, z0, z_eave, mat_idx, lite=False):
                     dk = None
                     if f == 0 and spec.door and spec.door[0] == i and spec.roof == "flat":
                         dk = min(nb - 1, int(spec.door[1] / L * nb))      # the bay behind the front door
+                    dx, dy = bx - ax, by - ay
                     for k in range(nb):
                         g = good[int(_hash01(spec.seed, i, f, k) * len(good))]
-                        pa, pb = a + (b - a) * (k / nb), a + (b - a) * ((k + 1) / nb)
+                        t0, t1 = k / nb, (k + 1) / nb
+                        pa, pb = (ax + dx * t0, ay + dy * t0), (ax + dx * t1, ay + dy * t1)
                         if k == dk:
                             _plain_strip(m, pa, pb, za, zb, bays_per_tile, bay, v0, v1, mat)
                             continue
@@ -875,7 +877,7 @@ def _walls(m, spec, ring, z0, z_eave, mat_idx, lite=False):
                 za = zb
                 continue
             # the foundation and the parapet stretch the band a little; the windows stay a floor's height
-            m.quad((a[0], a[1], za), (b[0], b[1], za), (b[0], b[1], zb), (a[0], a[1], zb),
+            m.quad((ax, ay, za), (bx, by, za), (bx, by, zb), (ax, ay, zb),
                    (0, v0), (uu, v0), (uu, v1), (0, v1), mat)
             za = zb
 
@@ -887,16 +889,19 @@ def _plain_strip(m, pa, pb, za, zb, bays_per_tile, bay_w, v0, v1, mat):
     """The wall from pa to pb (za..zb) in slices of the band's plain strip between its first two windows, at the
     sheet's own scale (a bay of the sheet = bay_w m). The wall behind a front door was one texel of the sheet
     stretched over it, a blurred smear round every door (the user, 2026-10-17)."""
-    L = float(np.hypot(*(pb - pa)))
+    ax, ay, bx, by = float(pa[0]), float(pa[1]), float(pb[0]), float(pb[1])
+    dx, dy = bx - ax, by - ay
+    L = math.hypot(dx, dy)
     if L < 1e-3:
         return
     c, h = 1.0 / bays_per_tile, 0.5 * PLAIN_STRIP / bays_per_tile
     sw = max(0.1, PLAIN_STRIP * bay_w)                  # m one slice covers
     n = max(1, int(round(L / sw)))
+    uva, uvb, uvc, uvd = (c - h, v0), (c + h, v0), (c + h, v1), (c - h, v1)
     for j in range(n):
-        qa, qb = pa + (pb - pa) * (j / n), pa + (pb - pa) * ((j + 1) / n)
-        m.quad((qa[0], qa[1], za), (qb[0], qb[1], za), (qb[0], qb[1], zb), (qa[0], qa[1], zb),
-               (c - h, v0), (c + h, v0), (c + h, v1), (c - h, v1), mat)
+        t0, t1 = j / n, (j + 1) / n
+        qax, qay, qbx, qby = ax + dx * t0, ay + dy * t0, ax + dx * t1, ay + dy * t1
+        m.quad((qax, qay, za), (qbx, qby, za), (qbx, qby, zb), (qax, qay, zb), uva, uvb, uvc, uvd, mat)
 
 
 def _cornice(m, spec, ring, z_eave, mat_idx):
@@ -1985,13 +1990,31 @@ def water_rings(frame, water_layers, x0, y0, margin=50.0, size=256.0):
     return out
 
 
+_BOXES = {}                     # id(list of polylines) -> (that list, its boxes (n, 4)): the last few lists asked
+
+
+def line_boxes(lines):
+    """(n, 4) x0 y0 x1 y1 of each polyline (k, 2+) of the list, made once per list (a tile's buildings test the same
+    lists of roads one footprint after another: ~1.2M small numpy min / max calls a Baltimore tile set)."""
+    got = _BOXES.get(id(lines))
+    if got is not None and got[0] is lines:
+        return got[1]
+    b = np.array([(ln[:, 0].min(), ln[:, 1].min(), ln[:, 0].max(), ln[:, 1].max()) for ln in lines],
+                 np.float64).reshape(-1, 4)
+    if len(_BOXES) >= 16:
+        _BOXES.clear()
+    _BOXES[id(lines)] = (lines, b)      # (the list kept: its id cannot be another list's meanwhile)
+    return b
+
+
 def road_through(ring, lines, step=2.0):
     """Metres of the polylines lines (k, 2) inside ring (sampled every step m)."""
     lo, hi = ring.min(0), ring.max(0)
+    b = line_boxes(lines)
+    near = np.flatnonzero((b[:, 2] >= lo[0]) & (b[:, 0] <= hi[0]) & (b[:, 3] >= lo[1]) & (b[:, 1] <= hi[1]))
     total = 0.0
-    for ln in lines:
-        if ln[:, 0].max() < lo[0] or ln[:, 0].min() > hi[0] or ln[:, 1].max() < lo[1] or ln[:, 1].min() > hi[1]:
-            continue
+    for li in near:
+        ln = lines[li]
         for p, q in zip(ln[:-1], ln[1:]):
             L = float(np.hypot(*(q - p)))
             k = max(1, int(L / step))

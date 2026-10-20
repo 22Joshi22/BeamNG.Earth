@@ -3290,7 +3290,13 @@ class Tracker:
         try:
             res = fut.result()
         except Exception as e:      # network trouble: the next pose asks again
-            log.debug("roads tile %s: %s: %s", key, type(e).__name__, e)
+            # (a bug failed every tile on a Steam Deck with nothing in the log, 2026-10-20: each kind once, in full)
+            kind = f"{type(e).__name__}: {e}"[:200]
+            if kind not in _FAILS_SEEN and not isinstance(e, (OSError, TimeoutError)):
+                _FAILS_SEEN.add(kind)
+                log.warning("roads tile %s failed: %s", key, kind, exc_info=e)
+            else:
+                log.debug("roads tile %s: %s: %s", key, type(e).__name__, e)
             return
         if res is None:
             return
@@ -3305,6 +3311,7 @@ class Tracker:
         conn.send(m)
 
 
+_FAILS_SEEN = set()             # the kinds of road tile failures logged in full (Tracker._built)
 BLD_PARTS_MAX = 4               # building meshes per road tile ("bld", "bld2".."bld4": the mod's list)
 
 

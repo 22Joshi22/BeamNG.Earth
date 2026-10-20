@@ -124,18 +124,36 @@ def _seg_dist(p, line):
     return np.hypot(*(p[:, None, :] - q).transpose(2, 0, 1)).min(axis=1)
 
 
+_BOXES = {}                     # id(roads list) -> (that list, its boxes (n, 4))
+
+
+def _boxes(roads):
+    """(n, 4) x0 y0 x1 y1 of each road's line, made once per roads list (find() asks ~70 times a tile)."""
+    got = _BOXES.get(id(roads))
+    if got is not None and got[0] is roads:
+        return got[1]
+    b = np.array([(ln[:, 0].min(), ln[:, 1].min(), ln[:, 0].max(), ln[:, 1].max()) for _, _, ln, _ in roads],
+                 np.float64).reshape(-1, 4)
+    if len(_BOXES) >= 16:
+        _BOXES.clear()
+    _BOXES[id(roads)] = (roads, b)      # (the list kept: its id cannot be another list's meanwhile)
+    return b
+
+
 def _on_carriageway(pts, roads, near, margin=0.3, half=None, skip=()):
     """The fid of a road with any point (m, 2) on its carriageway (centreline distance < width / 2 -
     margin), among the roads within `near` (centre (2,), radius), or None. half: {fid: half width}
     overrides; skip: fids not checked."""
     c, r = near
     half = half or {}
-    for fid, spec, line, lon in roads:
+    b = _boxes(roads)
+    near_i = np.flatnonzero((b[:, 2] >= c[0] - r) & (b[:, 3] >= c[1] - r) & (b[:, 0] <= c[0] + r)
+                            & (b[:, 1] <= c[1] + r))
+    for i in near_i:
+        fid, spec, line, lon = roads[i]
         if fid in skip:
             continue
         xy = line[:, :2]
-        if (xy.max(0) < c - r).any() or (xy.min(0) > c + r).any():
-            continue
         h = half.get(fid, spec.width / 2) - margin
         if _ef is not None:             # the Rust test (the same distances)
             if _ef.any_within(np.ascontiguousarray(pts, np.float64)[:, :2], np.ascontiguousarray(xy, np.float64), h):
