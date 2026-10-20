@@ -2530,7 +2530,7 @@ def far_tile(frame, tx, ty, md, ground, out_dir, vfs_dir, aid):
     tmp = staging.tmp_for(path)
     with open(tmp, "w") as f:
         f.write(json.dumps(data))       # (json.dump to a file: the pure-Python encoder)
-    os.replace(tmp, path)
+    staging.replace(tmp, path)
     return f"{vfs_dir}/{name}", len(items)
 
 

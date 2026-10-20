@@ -431,7 +431,7 @@ def write(out_dir, vfs_dir, aid, serial, graph):
     tmp = staging.tmp_for(path)
     with open(tmp, "w") as f:
         f.write(json.dumps(graph, separators=(",", ":")))    # the C encoder (json.dump streams in Python)
-    os.replace(tmp, path)
+    staging.replace(tmp, path)
     return f"{vfs_dir}/{name}"
 
 

@@ -318,7 +318,7 @@ def write_masks(idx, out_dir, stem):
         path = os.path.join(out_dir, name)
         tmp = staging.tmp_for(path)
         Image.fromarray(np.where(idx == i, 255, 0).astype(np.uint8), "L").save(tmp, format="PNG", compress_level=1)
-        os.replace(tmp, path)
+        staging.replace(tmp, path)
     return names
 
 
@@ -381,13 +381,13 @@ def photo_lawns(out_dir, ter_name, mask_names_, rgb):
     tmp = staging.tmp_for(path)
     with open(tmp, "wb") as f:
         f.write(data)
-    os.replace(tmp, path)
+    staging.replace(tmp, path)
     north = lay[::-1]
     for i in (LAWN, DIRT, SNOW, LOOSE):
         p = os.path.join(out_dir, mask_names_[i])
         tmp = staging.tmp_for(p)
         Image.fromarray(np.where(north == i, 255, 0).astype(np.uint8), "L").save(tmp, format="PNG", compress_level=1)
-        os.replace(tmp, p)
+        staging.replace(tmp, p)
     return k
 
 

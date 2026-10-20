@@ -1379,7 +1379,7 @@ class Server:
         t1 = time.perf_counter()
         tmp = staging.tmp_for(path)
         Image.fromarray(rgb, "RGB").save(tmp, format="PNG", compress_level=1)
-        os.replace(tmp, path)
+        staging.replace(tmp, path)
         t2 = time.perf_counter()
         try:            # after the photo: the cache entry must be the newer file
             args = (self.user_dir, f"{self.vfs_dir}/{name}", BASE_AO_VFS, rgb, BASE_AO)
@@ -1844,7 +1844,7 @@ class Server:
             tmp = staging.tmp_for(dst)
             with open(tmp, "wb") as fh:
                 fh.write(data)
-            os.replace(tmp, dst)
+            staging.replace(tmp, dst)
         except (OSError, ValueError) as e:
             log.warning("tile %s of anchor %d: material name not renewed (%s)", ck[1], ck[0], e)
             return info

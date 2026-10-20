@@ -230,7 +230,7 @@ def write_png(path, u, q=Q_DEFAULT):
     # Uncompressed: the game decodes it on the main thread during the terrain-follow commit,
     # and level 0 imports ~7 ms faster than level 1 (43 vs 50 ms for 1024², measured in-game).
     img.save(tmp, format="PNG", compress_level=0)
-    os.replace(tmp, path)
+    staging.replace(tmp, path)
     return q, z_base, max_height, qgrid
 
 
@@ -262,7 +262,7 @@ def write_ter(path, qgrid, idx, materials):
         for name in materials:
             b = name.encode()
             f.write(struct.pack("<B", len(b)) + b)
-    os.replace(tmp, path)
+    staging.replace(tmp, path)
 
 
 def heights(qgrid, z_base, max_height):

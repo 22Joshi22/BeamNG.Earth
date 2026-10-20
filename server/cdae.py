@@ -584,7 +584,7 @@ def write(path, positions, tris, **kw):
     tmp = staging.tmp_for(path)
     with open(tmp, "wb") as f:
         f.write(data)
-    os.replace(tmp, path)
+    staging.replace(tmp, path)
     return len(data)
 
 

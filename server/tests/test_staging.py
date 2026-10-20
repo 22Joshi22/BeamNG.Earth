@@ -25,6 +25,23 @@ class StagingTest(unittest.TestCase):
             self.assertTrue(os.path.exists(target))
             self.assertNotEqual(staging.tmp_for(target), staging.tmp_for(target))   # one per write
 
+    def test_session_folder_deleted_mid_run(self):
+        """GitHub #27: the session folder was gone (temp cleared) and every terrain write after it failed."""
+        with tempfile.TemporaryDirectory() as root:
+            session = os.path.join(root, "BeamNG.drive", "current", "temp", "beamngEarth", "s1")
+            target = os.path.join(session, "hm_11_0_0.png")
+            os.makedirs(session)
+            tmp = staging.tmp_for(target)
+            with open(tmp, "wb") as f:
+                f.write(b"x")
+            os.rmdir(session)
+            with self.assertLogs("earthd.staging", "WARNING"):
+                staging.replace(tmp, target)
+            with open(target, "rb") as f:
+                self.assertEqual(f.read(), b"x")
+            with self.assertRaises(FileNotFoundError):     # a missing temporary file is still an error
+                staging.replace(tmp, target)
+
     def test_elsewhere_beside_the_file(self):
         self.assertEqual(staging.tmp_for("/home/x/.cache/beamng-earth/dem/1/2.webp"),
                          "/home/x/.cache/beamng-earth/dem/1/2.webp.tmp")

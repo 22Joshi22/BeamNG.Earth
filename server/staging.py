@@ -6,8 +6,12 @@ A write as "<path>.tmp" then os.replace() made two events per tile file (3,220 i
 tmp_for(path) puts the temporary file in "beamngEarth_staging" next to the user folder (the same disk: the rename stays
 atomic), so only the finished file shows up. Paths outside a user folder's "temp" (the download cache) keep
 "<path>.tmp". Pure but for creating that folder.
+
+replace() is the atomic rename into the game's folder; a destination folder that vanished mid-session is made again
+(GitHub #27: a player's session folder under temp/beamngEarth was gone, and every terrain write after it failed).
 """
 import itertools
+import logging
 import os
 import threading
 
@@ -15,6 +19,8 @@ STAGING = "beamngEarth_staging"
 _made = set()
 _lock = threading.Lock()
 _serial = itertools.count()
+_remade = set()
+log = logging.getLogger("earthd.staging")
 
 
 SWEEP_AGE_S = 3600
@@ -61,3 +67,21 @@ def tmp_for(path):
     if d is None:
         return path + ".tmp"
     return os.path.join(d, f"{os.getpid()}_{threading.get_ident()}_{next(_serial)}_{os.path.basename(path)}.tmp")
+
+
+def replace(tmp, path):
+    """os.replace(tmp, path), making path's folder again if it was deleted under us (the game or the player
+    clearing its temp folder) instead of failing every write after it."""
+    try:
+        os.replace(tmp, path)
+    except FileNotFoundError:
+        if not os.path.exists(tmp):
+            raise
+        d = os.path.dirname(path)
+        os.makedirs(d, exist_ok=True)
+        with _lock:
+            first = d not in _remade
+            _remade.add(d)
+        if first:
+            log.warning("folder %s was deleted while in use (cleared temp folder?): made again", d)
+        os.replace(tmp, path)
