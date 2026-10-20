@@ -322,6 +322,13 @@ class BridgeProfilesTest(unittest.TestCase):
         (z,) = roads.deck_profile([ln], flat, [(0, 6.0, 10.0), (0, 30.0, 10.0)])
         self.assertLess(float(np.interp(6.0, s, z)), 10.0 + 0.15, "no hump across the cross street")
         self.assertGreater(z.max(), 10.0 + 0.06 * 18 - 0.3, "the crossing farther on still lifts the deck")
+        # abutments 3.5 m apart in height over 44 m (8 %), the roads meeting them listed as crossings at its ends: both
+        # ends keep their ground, no step onto the deck (the I-20 bridge near Temple, GA, its approaches raised)
+        ln3 = np.c_[np.arange(0.0, 44.1, 4.0), np.zeros(12)]
+        slope = lambda xy: 10.0 + 3.5 * (np.asarray(xy)[:, 0] > 22.0)
+        (z3,) = roads.deck_profile([ln3], slope, [(0, 0.0, 10.0), (0, 20.0, 5.0), (0, 44.0, 13.5)])
+        self.assertAlmostEqual(float(z3[0]), 10.0, places=6)
+        self.assertAlmostEqual(float(z3[-1]), 13.5, places=6)
         # no sag between two crossings 120 m apart (the Queensboro Bridge over Roosevelt Island)
         ln2 = np.c_[np.arange(0.0, 401.0, 4.0), np.zeros(101)]
         (z2,) = roads.deck_profile([ln2], flat, [(0, 140.0, 10.0, 20.0), (0, 260.0, 10.0, 20.0)])
