@@ -52,10 +52,16 @@ class Walls:
     """Building wall segments (metres, a local frame) with a bucket index for ray casts."""
 
     def __init__(self, segs):
-        self.segs = np.asarray(segs, np.float64).reshape(-1, 4)       # x0 y0 x1 y1
+        # x0 y0 x1 y1: float32 kept as given (the store's file, memory-mapped: one copy in the page cache for every
+        # server process; their float64 copies were ~100-160 MB a process on a small machine, 2026-10-20), widened to
+        # float64 wherever they are computed with (exact: the same numbers as a float64 copy)
+        if isinstance(segs, np.ndarray) and segs.dtype == np.float32 and segs.ndim == 2:
+            self.segs = segs
+        else:
+            self.segs = np.asarray(segs, np.float64).reshape(-1, 4)
         # bucket index, vectorised (a Python loop per segment took ~18 s for a city's 9 cells, 2026-10-12):
         # one (segment, bucket) pair per bucket a segment's box touches, sorted by bucket key
-        s = self.segs
+        s = np.asarray(self.segs, np.float64)
         bx0 = np.floor(np.minimum(s[:, 0], s[:, 2]) / BUCKET).astype(np.int64)
         bx1 = np.floor(np.maximum(s[:, 0], s[:, 2]) / BUCKET).astype(np.int64)
         by0 = np.floor(np.minimum(s[:, 1], s[:, 3]) / BUCKET).astype(np.int64)
@@ -111,7 +117,7 @@ class Walls:
         c = self.counts[i]
         ray = np.repeat(ray, c)
         j = np.arange(c.sum()) - np.repeat(np.cumsum(c) - c, c) + np.repeat(self.first[i], c)
-        s = self.segs[self.seg_of[j]]
+        s = np.asarray(self.segs[self.seg_of[j]], np.float64)
         pr, dr = p[ray], d[ray]
         a, e = s[:, :2], s[:, 2:] - s[:, :2]
         den = dr[:, 0] * e[:, 1] - dr[:, 1] * e[:, 0]
@@ -133,11 +139,13 @@ def measure_row(centreline, walls):
     import fast
     if fast.AVAILABLE and len(walls.keys):     # the Rust loop (the same result; ~3000 streets a 9-tile set)
         k = walls.__dict__.get("_rs")
+        f32 = walls.segs.dtype == np.float32 and getattr(fast._ef, "VERSION", 0) >= 34
         if k is None:
             k = walls._rs = tuple(np.ascontiguousarray(a, t) for a, t in
                                   ((walls.keys, np.int64), (walls.first, np.int64), (walls.counts, np.int64),
-                                   (walls.seg_of, np.int64), (walls.segs, np.float64)))
-        return fast._ef.measure_row(np.ascontiguousarray(np.asarray(centreline, np.float64)[:, :2]), *k, BUCKET,
+                                   (walls.seg_of, np.int64), (walls.segs, np.float32 if f32 else np.float64)))
+        fn = fast._ef.measure_row32 if f32 else fast._ef.measure_row
+        return fn(np.ascontiguousarray(np.asarray(centreline, np.float64)[:, :2]), *k, BUCKET,
                                     STEP, END_SKIP, REACH, MIN_SAMPLES, WALLED, AGREE)
     xy = np.asarray(centreline, np.float64)[:, :2]
     seg = np.hypot(*np.diff(xy, axis=0).T)
@@ -197,8 +205,9 @@ def polygon_walls(feats, frame):
 
 
 def _read_segs(path):
+    """A cell's walls from the store, memory-mapped read-only (shared by the server's processes), or None."""
     try:
-        a = np.load(path, allow_pickle=False)
+        a = np.load(path, mmap_mode="r", allow_pickle=False)
     except FileNotFoundError:
         return None
     except (OSError, ValueError, EOFError) as e:        # damaged: built again
@@ -278,7 +287,10 @@ class RoadWidths:
             segs = (np.concatenate(parts) if parts else np.zeros((0, 4))).astype(np.float32)
             if path and complete:
                 _write_segs(path, segs)
-        walls = Walls(segs.astype(np.float64))
+                segs = _read_segs(path)         # (the file's mapping: shared with the other processes)
+                if segs is None:
+                    segs = (np.concatenate(parts) if parts else np.zeros((0, 4))).astype(np.float32)
+        walls = Walls(segs)
         with self.lock:
             got = self.walls.setdefault(str(key), (frame, walls))
             self.walls.move_to_end(str(key))

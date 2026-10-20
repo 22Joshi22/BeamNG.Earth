@@ -654,8 +654,9 @@ fn densify<'py>(py: Python<'py>, pts: PyReadonlyArray2<'py, f64>, spacing: f64) 
 
 /// roadwidth.Walls.rays for one ray: the distance to the first wall from (px, py) along unit (dx, dy) within
 /// reach, or NaN. keys / first / counts / seg_of: the Walls bucket index, segs (m, 4).
-fn wall_ray(keys: &[i64], first: &[i64], counts: &[i64], seg_of: &[i64], segs: &numpy::ndarray::ArrayView2<f64>,
-            bucket: f64, px: f64, py: f64, dx: f64, dy: f64, reach: f64) -> f64 {
+fn wall_ray<T: Copy + Into<f64>>(keys: &[i64], first: &[i64], counts: &[i64], seg_of: &[i64],
+                                  segs: &numpy::ndarray::ArrayView2<T>, bucket: f64, px: f64, py: f64, dx: f64, dy: f64,
+                                  reach: f64) -> f64 {
     let (qx, qy) = (px + dx * reach, py + dy * reach);
     let bx0 = (px.min(qx) / bucket).floor() as i64;
     let bx1 = (px.max(qx) / bucket).floor() as i64;
@@ -668,8 +669,9 @@ fn wall_ray(keys: &[i64], first: &[i64], counts: &[i64], seg_of: &[i64], segs: &
             let Ok(i) = keys.binary_search(&key) else { continue };
             for j in first[i]..first[i] + counts[i] {
                 let sgi = seg_of[j as usize] as usize;
-                let (ax, ay) = (segs[[sgi, 0]], segs[[sgi, 1]]);
-                let (ex, ey) = (segs[[sgi, 2]] - ax, segs[[sgi, 3]] - ay);
+                // (float32 walls widened as read: exactly the float64 numbers the arithmetic used before)
+                let (ax, ay): (f64, f64) = (segs[[sgi, 0]].into(), segs[[sgi, 1]].into());
+                let (ex, ey) = (Into::<f64>::into(segs[[sgi, 2]]) - ax, Into::<f64>::into(segs[[sgi, 3]]) - ay);
                 let den = dx * ey - dy * ex;
                 if den.abs() <= 1e-12 {
                     continue;
@@ -733,12 +735,11 @@ fn np_percentile(v: &[f64], q: f64) -> f64 {
 }
 
 /// roadwidth.measure_row: the right-of-way between the building walls of a street (centreline (k, >=2)), or None.
-#[pyfunction]
 #[allow(clippy::too_many_arguments)]
-fn measure_row(line: PyReadonlyArray2<f64>, keys: PyReadonlyArray1<i64>, first: PyReadonlyArray1<i64>,
-               counts: PyReadonlyArray1<i64>, seg_of: PyReadonlyArray1<i64>, segs: PyReadonlyArray2<f64>,
-               bucket: f64, step: f64, end_skip: f64, reach: f64, min_samples: usize, walled: f64, agree: f64)
-               -> Option<f64> {
+fn measure_row_any<T: Copy + Into<f64> + numpy::Element>(
+        line: PyReadonlyArray2<f64>, keys: PyReadonlyArray1<i64>, first: PyReadonlyArray1<i64>,
+        counts: PyReadonlyArray1<i64>, seg_of: PyReadonlyArray1<i64>, segs: PyReadonlyArray2<T>, bucket: f64,
+        step: f64, end_skip: f64, reach: f64, min_samples: usize, walled: f64, agree: f64) -> Option<f64> {
     let l = line.as_array();
     let k = l.nrows();
     if k < 2 {
@@ -793,6 +794,26 @@ fn measure_row(line: PyReadonlyArray2<f64>, keys: PyReadonlyArray1<i64>, first: 
         return None;
     }
     Some(med)
+}
+
+#[pyfunction]
+#[allow(clippy::too_many_arguments)]
+fn measure_row(line: PyReadonlyArray2<f64>, keys: PyReadonlyArray1<i64>, first: PyReadonlyArray1<i64>,
+               counts: PyReadonlyArray1<i64>, seg_of: PyReadonlyArray1<i64>, segs: PyReadonlyArray2<f64>,
+               bucket: f64, step: f64, end_skip: f64, reach: f64, min_samples: usize, walled: f64, agree: f64)
+               -> Option<f64> {
+    measure_row_any(line, keys, first, counts, seg_of, segs, bucket, step, end_skip, reach, min_samples, walled, agree)
+}
+
+/// measure_row with the walls as float32 (roadwidth keeps them as the shared memory-mapped file: one copy for every
+/// server process instead of a float64 copy in each).
+#[pyfunction]
+#[allow(clippy::too_many_arguments)]
+fn measure_row32(line: PyReadonlyArray2<f64>, keys: PyReadonlyArray1<i64>, first: PyReadonlyArray1<i64>,
+                 counts: PyReadonlyArray1<i64>, seg_of: PyReadonlyArray1<i64>, segs: PyReadonlyArray2<f32>,
+                 bucket: f64, step: f64, end_skip: f64, reach: f64, min_samples: usize, walled: f64, agree: f64)
+                 -> Option<f64> {
+    measure_row_any(line, keys, first, counts, seg_of, segs, bucket, step, end_skip, reach, min_samples, walled, agree)
 }
 
 /// grading.grade_points: base heights at the points (px, py) graded under the plans' segments a-b (heights za-zb,
@@ -2754,6 +2775,7 @@ fn earthfast(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(inside_blockers, m)?)?;
     m.add_function(wrap_pyfunction!(densify, m)?)?;
     m.add_function(wrap_pyfunction!(measure_row, m)?)?;
+    m.add_function(wrap_pyfunction!(measure_row32, m)?)?;
     m.add_function(wrap_pyfunction!(grade_points, m)?)?;
     m.add_function(wrap_pyfunction!(resample, m)?)?;
     m.add_function(wrap_pyfunction!(tunnel_sections, m)?)?;
@@ -2786,6 +2808,6 @@ fn earthfast(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(over_tunnel, m)?)?;
     m.add_function(wrap_pyfunction!(veg_rows_json, m)?)?;
     m.add_function(wrap_pyfunction!(follow_tris, m)?)?;
-    m.add("VERSION", 33)?;
+    m.add("VERSION", 34)?;
     Ok(())
 }
