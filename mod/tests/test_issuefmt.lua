@@ -64,6 +64,15 @@ T.check(pmd:find('**Performance profiler (30 s):** 45.0 fps avg, 1% low 20.0 fps
 T.check(pmd:find('3 hitches over 50 ms', 1, true), 'hitch count')
 T.check(pmd:find('**Mod status:** World server connected', 1, true), 'mod status for perf')
 T.check(pmd:find('Location:** unknown', 1, true), 'no location')
+-- 0.40's FPS-limit reason is a table, not a string (GitHub issue #38 showed "table: 0x...")
+local lim = { kind = 'bug', fpsLimit = { backgroundCap = 30, backgroundActive = false, fpsCap = 0, windowFocused = true,
+  vr = false, foregroundCap = 60, foregroundActive = true, vsync = true } }
+local lmd = fmt.buildIssue(lim, {})
+T.check(lmd:find('**FPS limited by:** vsync, foreground cap 60', 1, true), 'FPS limit table spelled out')
+T.check(not lmd:find('table: ', 1, true), 'no table address')
+local none = fmt.buildIssue({ kind = 'bug', fpsLimit = { fpsCap = 0, vsync = false } }, {})
+T.check(none:find('**FPS limited by:** nothing', 1, true), 'no cap active')
+T.check(fmt.buildIssue({ kind = 'bug', fpsLimit = 'vsync' }, {}):find('**FPS limited by:** vsync', 1, true), 'old string reason')
 -- empty everything
 local emd = fmt.buildIssue({}, nil)
 T.check(emd:match('^# %[[^%]]+%] %(short title%)'), 'empty report still makes an issue')

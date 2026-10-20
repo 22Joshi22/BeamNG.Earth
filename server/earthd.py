@@ -1483,11 +1483,12 @@ class Server:
     def net_note(self):
         """The network state for the status text: "" when all is well, "Offline - using cached data"
         (--offline, or every imagery / DEM host unreachable), else the unreachable hosts and the
-        tiles drawn without imagery."""
+        tiles drawn without imagery. Hosts the world builds without (gravity, weather, search, routing, the update
+        check) are not named: a player in a country that blocks SourceForge saw "Degraded" for good (GitHub #23)."""
         if self.net.offline:
             return netfetch.OFFLINE_TEXT
         parts = []
-        down = self.net.unavailable_hosts()
+        down = self.net.unavailable_hosts(optional=False)
         if down:
             parts.append(", ".join(down) + " unreachable")
         if self.degraded:
