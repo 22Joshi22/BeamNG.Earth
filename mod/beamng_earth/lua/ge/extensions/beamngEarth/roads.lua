@@ -205,6 +205,20 @@ end
 
 local function now() return os.clock() * 1000 end
 
+-- Main-thread cost of each kind of unit (n, total ms, worst ms) since the level loaded: road chunks, deletes, each
+-- mesh kind of a road tile (road, walk, bld, bldcol, deck ...), far building tiles, collision reloads. status().units
+local unitStats = {}
+local unitLog = {}       -- the last UNIT_LOG units: { kind, ms, shape } (status().unitLog)
+M.UNIT_LOG = 400
+local function noteUnit(kind, ms, shape)
+  unitLog[#unitLog + 1] = { kind, ms, shape }
+  if #unitLog > M.UNIT_LOG then table.remove(unitLog, 1) end
+  local u = unitStats[kind]
+  if not u then u = { n = 0, ms = 0, max = 0 }; unitStats[kind] = u end
+  u.n, u.ms = u.n + 1, u.ms + ms
+  if ms > u.max then u.max = ms end
+end
+
 local function dropTile(key)
   local t = tiles[key]
   if not t then return end
@@ -465,7 +479,9 @@ local function updateFar(gov)
       loadMaterials()
       local ok, id = pcall(createWalk, { shape = f.shape, pos = f.pos }, false)
       if ok then f.id = id; slotMade(id, f.shape) else lastError = tostring(id) end
-      gov:charge('roadWalk', now() - t0)
+      local ms = now() - t0
+      gov:charge('roadWalk', ms)
+      noteUnit('bldfar', ms, f.shape)
     end
   end
 end
@@ -618,7 +634,9 @@ function M.update(gov, currentAnchor, player)
       o:delete()
     end
     slotObjGone(did)
-    gov:charge('roadDelete', now() - t0)
+    local ms = now() - t0
+    gov:charge('roadDelete', ms)
+    noteUnit('delete', ms)
     sinceChange = stopwatch.new()
   end
   while #createQ > 0 and gov:try('roadChunk') do
@@ -630,7 +648,9 @@ function M.update(gov, currentAnchor, player)
       local ok, id = pcall(createChunk, q.chunk)
       if ok then t.objs[#t.objs + 1] = id else lastError = tostring(id) end
       t.queued = t.queued - 1
-      gov:charge('roadChunk', now() - t0)
+      local ms = now() - t0
+      gov:charge('roadChunk', ms)
+      noteUnit('chunk', ms)
       sinceChange = stopwatch.new()
     end
   end
@@ -660,7 +680,9 @@ function M.update(gov, currentAnchor, player)
           t.colAt = t.colAt or {}; t.colAt[q.what] = now()
         end
       else lastError = tostring(id) end
-      gov:charge('roadWalk', now() - t0)
+      local ms = now() - t0
+      gov:charge('roadWalk', ms)
+      noteUnit(tostring(q.what), ms, q.walk and q.walk.shape)
       sinceChange = stopwatch.new()
     end
   end
@@ -677,7 +699,9 @@ function M.update(gov, currentAnchor, player)
     be:reloadCollision()
     lastReloadAt = now()
     collisionDirty, deletesDirty, sinceReload = false, false, stopwatch.new()
-    gov:charge('roadWalk', now() - t0)
+    local ms = now() - t0
+    gov:charge('roadWalk', ms)
+    noteUnit('reloadCollision', ms)
   end
 end
 
@@ -924,7 +948,7 @@ function M.status()
   for _, f in pairs(far) do if f.id and not f.hidden then nf = nf + 1 end end
   return { enabled = M.enabled, tiles = nt, roads = no, queued = #createQ, deleting = #deleteQ, anchor = anchorId,
     walks = nw, roadMeshes = nr, decks = nd, buildings = nb, farBuildings = nf, walksQueued = #walkQ, solidAround = M.solidAround or 0,
-    quietS = sinceChange() / 1000, error = lastError }
+    quietS = sinceChange() / 1000, error = lastError, units = unitStats, unitLog = unitLog }
 end
 
 local okSweep, swept = pcall(M.sweep)
