@@ -2178,23 +2178,31 @@ def tile_buildings(frame, x0, y0, x1, y1, layers, elev, water=None, part_layers=
             alpine = np.isfinite(gz) and gz > tree_line_m(clat)
         except Exception:
             alpine = False
+    # the ground at every building's corners in one call (elev and the frame's conversions are point by point; a
+    # call per building cost a far buildings tile ~20 % of its time, 2026-10-20)
+    ends = np.cumsum([len(r) for r in rings])
+    allr = np.concatenate(rings)
+    la_all, lo_all, _ = frame.enu_to_geodetic(allr[:, 0] + x0, allr[:, 1] + y0, np.zeros(len(allr)))
+    la_all, lo_all = np.asarray(la_all, np.float64), np.asarray(lo_all, np.float64)
+    g_all = np.asarray(elev(la_all, lo_all), np.float64)
+    ok = np.isfinite(g_all)
+    # heights above the ellipsoid -> the anchor frame's up (the Earth's curvature, as the terrain and the roads):
+    # without it a building stood (d^2 / 2R) over the ground at d from the anchor's origin, 5 m at 8 km, up to
+    # 18 m at the 15 km rebase distance (the user, 2026-10-18 at Santa Maria Val Muestair: floating houses)
+    up_all = np.full(len(allr), np.nan)
+    if ok.any():
+        up_all[ok] = np.asarray(frame.geodetic_to_enu(la_all[ok], lo_all[ok], g_all[ok])[2], np.float64)
     out = []
-    for ring, at, sh, look, mh in zip(rings, attrs, shared, looks, mins):
+    for k, (ring, at, sh, look, mh) in enumerate(zip(rings, attrs, shared, looks, mins)):
         if mh > 0.5 and at.get("height") is not None and np.isfinite(at["height"]) and look is None:
             at = dict(at, height=max(2.5, float(at["height"]) - mh))     # a building's own height range
         spec = plan(ring, at, int(sh) if look is None else 0, clat, clon, look, town, dense, west_town, alpine)
         spec.min_h = mh
         spec.portal = bool(at.get("portal"))
-        e = ring[:, 0] + x0
-        n = ring[:, 1] + y0
-        la, lo, _ = frame.enu_to_geodetic(e, n, np.zeros(len(e)))
-        g = np.asarray(elev(la, lo), np.float64)
-        if not np.all(np.isfinite(g)):
+        i0, i1 = (ends[k - 1] if k else 0), ends[k]
+        if not ok[i0:i1].all():
             continue
-        # heights above the ellipsoid -> the anchor frame's up (the Earth's curvature, as the terrain and the roads):
-        # without it a building stood (d^2 / 2R) over the ground at d from the anchor's origin, 5 m at 8 km, up to
-        # 18 m at the 15 km rebase distance (the user, 2026-10-18 at Santa Maria Val Muestair: floating houses)
-        g = np.asarray(frame.geodetic_to_enu(la, lo, g)[2], np.float64)
+        g = up_all[i0:i1].copy()
         if water is not None:
             c = ring.mean(0)
             cla, clo, _ = frame.enu_to_geodetic(c[0] + x0, c[1] + y0, 0.0)
