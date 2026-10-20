@@ -199,21 +199,31 @@ def paint_roads(idx, lat, lon, feats_list, square, urban_fn=None, widths=None, e
     draws = {k: ImageDraw.Draw(im) for k, im in layers.items()}
     lawn = Image.new("L", (w, h), 0)            # divided roads' medians (under the roads: they paint over it)
     lawn_draw = ImageDraw.Draw(lawn)
+    verge = Image.new("L", (w, h), 0)           # a bare strip beside roads without sidewalks (VERGE_M)
+    verge_draw = ImageDraw.Draw(verge)
     seen = set()
 
     def line(x, y, spec, aisle):
         width, kind = spec.width, spec.kind
         if aisle:
             width += 2 * AISLE_STALLS_M         # the stalls either side (parking.aisle_spots): no grass under cars
-        if roadsmod.has_sidewalks(spec):
+        walks = roadsmod.has_sidewalks(spec)
+        if walks:
             width += 2 * (spec.walk + square)   # the sidewalks (+ a sample: tufts at the outer edge): grass grew up
                                                 # through them (ground cover is the terrain's: Lauterbrunnen, Baltimore
                                                 # 2026-10-15)
-        px = max(1, int(round(width / square)))
+        # rounded up to an odd number of samples: a 9 m road was painted 8 m wide (round(4.5) = 4), and an even width
+        # sits half a sample off the line (PIL), its one edge a metre short
+        px = max(1, int(math.ceil(width / square - 1e-9)))
+        px += 1 - px % 2
         c, r = to_px(x, y)
-        if c.max() < -px or c.min() > w + px or r.max() < -px or r.min() > h + px:
+        vx = 0 if walks else 2 * int(math.ceil(VERGE_M / square))     # (even: the verge stays odd, centred)
+        if c.max() < -px - vx or c.min() > w + px + vx or r.max() < -px - vx or r.min() > h + px + vx:
             return
-        draws[kind].line(list(zip(c.tolist(), r.tolist())), fill=255, width=px, joint="curve")
+        pts = list(zip(c.tolist(), r.tolist()))
+        draws[kind].line(pts, fill=255, width=px, joint="curve")
+        if vx:
+            verge_draw.line(pts, fill=255, width=px + vx, joint="curve")
 
     for feats in feats_list:
         if feats is None or len(feats) == 0:
@@ -243,12 +253,20 @@ def paint_roads(idx, lat, lon, feats_list, square, urban_fn=None, widths=None, e
         line(np.asarray(lo), np.asarray(la), spec, False)
     out = idx.copy()
     out[np.asarray(lawn) > 0] = LAWN
+    v = np.asarray(verge) > 0
+    out[v & np.isin(out, VERGE_FROM)] = VERGE
     for k in ROAD_ORDER:
         m = np.asarray(layers[k]) > 0
         out[m] = ROAD_MATERIAL[k]
     return out
 
 
+# A road without sidewalks gets a verge of VERGE_M a side painted bare where the ground would carry grass or shrubs:
+# the ground cover goes by the 2 m layer samples, and tufts stood on the asphalt along its edges in many places (the
+# user, 2026-10-20: "grass on the road")
+VERGE_M = 2.0
+VERGE_FROM = (GRASS, LAWN, DUSTY)
+VERGE = DIRT
 AISLE_STALLS_M = 5.5        # a parking aisle's stall rows (parking.LOT_SPOT_D_M), painted with it
 PARKING_CLASSES = {"parking"}     # Overture infrastructure (transit) polygons drawn as asphalt: no grass on a lot
 # Squares and pedestrian areas (Overture land_use subtype "pedestrian": Mexico City's Zocalo read as bare dirt,

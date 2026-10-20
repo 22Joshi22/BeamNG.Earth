@@ -661,6 +661,24 @@ class PaintRoadsTest(unittest.TestCase):
         self.assertEqual(int(out[64, 74]), sf.ASPHALT, "paved wins at the crossing")
         self.assertEqual(int(idx[64, 10]), sf.GRASS, "input untouched")
 
+    def test_bare_verge_beside_roads(self):
+        """Grass tufts stood on the asphalt along road edges (the user, 2026-10-20): a road without sidewalks gets a
+        bare verge (VERGE_M a side) where the ground carries grass; rock stays rock."""
+        lat, lon = self.grid()
+        f = features([[(-200, 0), (200, 0)]], ["residential"])
+        out = sf.paint_roads(np.full(lat.shape, sf.GRASS, np.uint8), lat, lon, [f], 2.0)
+        col = [int(v) for v in out[:, 10]]
+        self.assertEqual(col[64 - 2], sf.ASPHALT, "4 m north: the 8 m road's edge, painted")
+        self.assertEqual(col[64 + 2], sf.ASPHALT, "4 m south: likewise (centred, not half a sample off)")
+        self.assertEqual((col[64 - 3], col[64 + 3]), (sf.VERGE, sf.VERGE), "6 m either side: the verge")
+        self.assertEqual(col[64 - 6], sf.GRASS, "12 m north: grass again")
+        rock = sf.paint_roads(np.full(lat.shape, sf.ROCK, np.uint8), lat, lon, [f], 2.0)
+        self.assertEqual(int(rock[64 - 3, 10]), sf.ROCK)
+        f9 = features([[(-200, 0), (200, 0)]], ["residential"], widths=[(0, 9.0)])
+        out9 = sf.paint_roads(np.full(lat.shape, sf.GRASS, np.uint8), lat, lon, [f9], 2.0)
+        n = int((out9[:, 10] == sf.ASPHALT).sum())
+        self.assertGreaterEqual(n * 2.0, 9.0, "a 9 m road painted at least 9 m wide (was 8)")
+
     def test_cobbles_under_the_tyres(self):
         lat, lon = self.grid()
         f = features([[(-200, 0), (200, 0)]], ["residential"], surfaces=[(0, "paving_stones")])
