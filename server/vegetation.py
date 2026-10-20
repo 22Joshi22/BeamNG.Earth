@@ -619,6 +619,9 @@ def _mask_roads(f, mask, chm, push=None, clear=ROAD_CLEAR_M):
 
 # --- tiles for the mod --------------------------------------------------------------------------------
 TILE = 256.0                # m, as the road tiles (roads.tile_bbox)
+TILE_ROWS_MAX = 6000        # items a tile sends at most, the lowest ranks: the most the mod shows of one (trees.lua
+                            # TILE_CAP). Dense forest has 10-20k a tile: Bodø's 145 tiles held 1.66 M rows in the game's
+                            # Lua (394 MB of heap, 1.25 s garbage collection pauses on a Steam Deck; GitHub #66)
 SEND_M = 1280.0             # tiles this close to the player (Chebyshev) are sent ...
 DROP_M = 1536.0             # ... and dropped beyond this
 BUILD_PER_POSE = 8
@@ -657,6 +660,9 @@ def tile_items(frame, tx, ty, veg, cell_ready, elev, sea=None, as_json=False):
         it, e, n = it.take(dry), e[dry], n[dry]
     if len(it) == 0:
         return []
+    if len(it) > TILE_ROWS_MAX:         # dense forest: the lowest ranks only (the mod shows no more of a tile)
+        keep = np.sort(np.argpartition(it.rank, TILE_ROWS_MAX - 1)[:TILE_ROWS_MAX])
+        it, e, n = it.take(keep), e[keep], n[keep]
     zg = np.asarray(elev(it.lat, it.lon), np.float64)
     _, _, z = frame.geodetic_to_enu(it.lat, it.lon, zg)
     z = _sink_rocks(frame, it, e, n, np.asarray(z, np.float64), elev)

@@ -128,6 +128,29 @@ class VegetationTest(unittest.TestCase):
                                delta=0.5)
 
 
+    def test_dense_tile_sends_its_lowest_ranks(self):
+        # GitHub #66: Bodø's forest tiles held 10-20k items each; a tile sends TILE_ROWS_MAX at most, the lowest ranks
+        md = FakeMapData()
+        v = veg.Vegetation(md, None)
+        f = geodesy.EnuFrame(LAT, LON)
+        items = v.cell(KEY)
+        e, n, _ = f.geodetic_to_enu(items.lat, items.lon, np.zeros(len(items)))
+        tx, ty = int(np.floor(e[0] / veg.TILE)), int(np.floor(n[0] / veg.TILE))
+        ground = lambda la, lo: np.full(np.shape(la), 12.0)        # noqa: E731
+        full = veg.tile_items(f, tx, ty, v, lambda k: True, ground)
+        self.assertGreater(len(full), 20)
+        old = veg.TILE_ROWS_MAX
+        veg.TILE_ROWS_MAX = 10
+        try:
+            capped = veg.tile_items(f, tx, ty, v, lambda k: True, ground)
+        finally:
+            veg.TILE_ROWS_MAX = old
+        self.assertEqual(len(capped), 10)
+        lowest = sorted(r[7] for r in full)[:10]
+        self.assertEqual(sorted(r[7] for r in capped), lowest)
+        self.assertEqual([r for r in full if r in capped], capped, "in the tile's own order")
+
+
 class RegionalTest(unittest.TestCase):
     def g(self, group, h, lat, lon, lcls, u=0.9):
         return int(veg.regional(np.array([group]), np.array([h]), np.array([lat]), np.array([lon]),
