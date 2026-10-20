@@ -130,7 +130,7 @@ def _write_raw(raw, r):
 
 
 def _open_raw(raw):
-    a = np.load(raw, mmap_mode="r", allow_pickle=False)
+    a = np.asarray(np.load(raw, mmap_mode="r", allow_pickle=False))     # (a plain view: np.memmap's per-slice hooks)
     if a.dtype != RAW_DTYPE or a.ndim != 2:
         raise ValueError(f"not a raster: {a.dtype} {a.shape}")
     return a["depth"], a["level"], a["outline"]

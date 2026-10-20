@@ -139,7 +139,8 @@ class SeaCarveTest(unittest.TestCase):
         self.assertTrue(raws)
         sc = seacarve.SeaCarver(BathyMapData(), self.tmp.name)
         b = sc.water(lat, lon)
-        self.assertIsInstance(next(r for r, _, _ in sc._mem.values() if r is not None)[0], np.memmap)
+        mapped = next(r for r, _, _ in sc._mem.values() if r is not None)[0]
+        self.assertFalse(mapped.flags.owndata or mapped.flags.writeable, "a view of the raw copy's mapping")
         for r in raws:
             os.remove(r)
         c = seacarve.SeaCarver(BathyMapData(), self.tmp.name).water(lat, lon)
