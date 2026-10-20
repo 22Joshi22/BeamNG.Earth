@@ -844,7 +844,7 @@ def _walls(m, spec, ring, z0, z_eave, mat_idx, lite=False):
             pv0, pv1 = _band_v(spec.band, spec.band[0])
             hp = (base - 0.3) - z0                      # the plinth: the band's plain strip at its scale
             _plain_strip(m, a, b, z0, base - 0.3, bays_per_tile, bay, pv0,
-                         pv0 + (pv1 - pv0) * min(1.0, hp / max(spec.floor_h, 1e-3)), fac)
+                         pv0 + (pv1 - pv0) * min(1.0, hp / max(spec.floor_h, 1e-3)), fac, whole=lite)
             za = base - 0.3
         for f in range(spec.floors):
             zb = z_eave if f == spec.floors - 1 else base + (f + 1) * spec.floor_h
@@ -890,7 +890,7 @@ def _walls(m, spec, ring, z0, z_eave, mat_idx, lite=False):
                     m.quad((pa[0], pa[1], za), (pb[0], pb[1], za), (pb[0], pb[1], zb), (pa[0], pa[1], zb),
                            (uu * ta / L, v0), (uu * tb / L, v0), (uu * tb / L, v1), (uu * ta / L, v1), mat)
                 pa, pb = a + (b - a) * (s0 / L), a + (b - a) * (s1 / L)
-                _plain_strip(m, pa, pb, za, zb, bays_per_tile, bay, v0, v1, mat)
+                _plain_strip(m, pa, pb, za, zb, bays_per_tile, bay, v0, v1, mat, whole=lite)
                 za = zb
                 continue
             # the foundation and the parapet stretch the band a little; the windows stay a floor's height
@@ -902,10 +902,12 @@ def _walls(m, spec, ring, z0, z_eave, mat_idx, lite=False):
 PLAIN_STRIP = 0.3           # of a bay: the plain wall between two windows of a sheet's band (centred on a bay edge)
 
 
-def _plain_strip(m, pa, pb, za, zb, bays_per_tile, bay_w, v0, v1, mat):
+def _plain_strip(m, pa, pb, za, zb, bays_per_tile, bay_w, v0, v1, mat, whole=False):
     """The wall from pa to pb (za..zb) in slices of the band's plain strip between its first two windows, at the
     sheet's own scale (a bay of the sheet = bay_w m). The wall behind a front door was one texel of the sheet
-    stretched over it, a blurred smear round every door (the user, 2026-10-17)."""
+    stretched over it, a blurred smear round every door (the user, 2026-10-17). whole (the lite mesh: far buildings,
+    a near tile's distant detail): one slice stretched over it (the plinths of buildings on a slope were ~78 % of a
+    far buildings tile's quads, ~1 m slices nobody sees from 600 m)."""
     ax, ay, bx, by = float(pa[0]), float(pa[1]), float(pb[0]), float(pb[1])
     dx, dy = bx - ax, by - ay
     L = math.hypot(dx, dy)
@@ -913,7 +915,7 @@ def _plain_strip(m, pa, pb, za, zb, bays_per_tile, bay_w, v0, v1, mat):
         return
     c, h = 1.0 / bays_per_tile, 0.5 * PLAIN_STRIP / bays_per_tile
     sw = max(0.1, PLAIN_STRIP * bay_w)                  # m one slice covers
-    n = max(1, int(round(L / sw)))
+    n = 1 if whole else max(1, int(round(L / sw)))
     uva, uvb, uvc, uvd = (c - h, v0), (c + h, v0), (c + h, v1), (c - h, v1)
     for j in range(n):
         t0, t1 = j / n, (j + 1) / n
