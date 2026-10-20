@@ -742,23 +742,39 @@ class Imagery:
 
     def _warm_loop(self):
         self._local.kind = "prefetch"
+        done, want = set(), None    # keys of this list found done: not looked at on disk again at every wake
         while True:
             with self._warm_cv:
                 key = None
                 while key is None:
-                    key = next((k for k in self._warm_want if not self._warm_done(k)), None)
+                    if self._warm_want is not want:     # a new list (the player moved on): looked at afresh
+                        done, want = set(), self._warm_want
+                    for k in self._warm_want:
+                        if k in done:
+                            continue
+                        if self._warm_done(k):
+                            done.add(k)
+                            continue
+                        key = k
+                        break
                     if key is None:
                         self._warm_cv.wait()
+            src, z, x, y = key
+            last = (1 << src.export) - 1
             try:
-                self._download(*key)
-                self._count(key[0].name + ":warm")
+                # the child _warm_done looks for: with only some children on disk (the cache cap evicted the
+                # others) the first one was a disk hit, the key never done, and this thread read it in a loop
+                # (170 s of the server process's CPU in a 4-minute drive, 2026-10-20)
+                self._download(src, z, x | last, y | last)
+                self._count(src.name + ":warm")
             except ImageryError as e:       # the host takes no prefetch now / failed: later
                 with self._warm_cv:
                     self._warm_cv.wait(5.0 if e.deferred else 30.0)
+                continue
             except Exception:
                 log.exception("imagery warm %s", key[1:])
-                with self._warm_cv:
-                    self._warm_want = [k for k in self._warm_want if k != key]
+            with self._warm_cv:             # fetched (or no use asking again): never the same key in a loop
+                done.add(key)
 
     def _warm_done(self, key):
         """Nothing (more) to fetch for key's parent: it was fetched (its last child, the one written last, is
