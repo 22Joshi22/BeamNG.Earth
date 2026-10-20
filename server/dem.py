@@ -26,6 +26,7 @@ import logging
 import math
 import os
 import threading
+import time
 from collections import Counter, OrderedDict
 from concurrent.futures import ThreadPoolExecutor
 
@@ -42,6 +43,15 @@ log = logging.getLogger("earthd.dem")
 TILE = 512                  # sampling grid tile size (Mapterhorn)
 MEM_TILES = 512             # decoded tiles kept per process (Dem's default; budget.py: fewer on a small machine)
 URGENT_WORKERS = 16         # Dem.urgent(): its own fetch threads (with the 16 shared: Mapterhorn's 32 at once)
+# Decoded tiles mirrored on disk (<cache>/dem/decoded/...: float32 .npy), memory-mapped read-only: every server process
+# decoded the same tiles (WebP + Terrarium, ~3 ms a tile here, the z12 ground filter far more) and kept its own copy
+# (up to MEM_TILES MB a process, outside Python's traced memory); a mirrored tile is decoded once per machine and its
+# pages shared, dropped instead of swapped under memory pressure. At most MIRROR_MB on disk (the oldest go first);
+# older than MIRROR_MAX_AGE_S it is made again (Mapterhorn adds lidar areas). DECODED_VERSION: raise it when what a
+# tile holds changes (the decoding, the ground filter).
+MIRROR_MB = 1024
+MIRROR_MAX_AGE_S = 30 * 86400
+DECODED_VERSION = 1
 MAX_ZOOM = 15               # AWS stops at z15; nothing in v1 needs more
 GLOBAL_ZOOM = 12            # Mapterhorn is complete on land up to here
 GROUND_MARGIN = 96          # px of the neighbouring z12 tiles the ground filter sees around a tile
@@ -225,7 +235,106 @@ class Dem:
                     found = True
         return _resize(mosaic, TILE) if found else None
 
+    # --- the decoded mirror (MIRROR_MB) ----------------------------------------------------------
+    def _mirror_path(self, key):
+        z, x, y = key
+        return os.path.join(self.cache_dir, "decoded", f"v{DECODED_VERSION}", f"g{int(self.ground_filter)}", str(z),
+                            str(x), f"{y}.npy")
+
+    def _mirror_get(self, key):
+        """A tile from the decoded mirror (a read-only view of its memory map), or None."""
+        if MIRROR_MB <= 0:
+            return None
+        path = self._mirror_path(key)
+        try:
+            if time.time() - os.path.getmtime(path) > MIRROR_MAX_AGE_S:
+                return None
+            a = np.asarray(np.load(path, mmap_mode="r", allow_pickle=False))
+        except (OSError, ValueError, EOFError):
+            return None
+        if a.shape != (TILE, TILE) or a.dtype != np.float32:
+            return None
+        self._count("dem:mirror")
+        return a
+
+    def _mirror_put(self, key, a):
+        """a written to the mirror and read back from it (shared by the processes), or None when it cannot be."""
+        path = self._mirror_path(key)
+        tmp = f"{path}.{os.getpid()}.{threading.get_ident()}.tmp"
+        try:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(tmp, "wb") as f:
+                np.save(f, np.ascontiguousarray(a, np.float32), allow_pickle=False)
+            os.replace(tmp, path)
+        except OSError as e:
+            log.debug("dem mirror %s: %s", path, e)
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+            return None
+        with Dem._mirror_lock:
+            Dem._mirror_written += TILE * TILE * 4
+            prune = Dem._mirror_written >= MIRROR_MB * 1e6 / 8
+            if prune:
+                Dem._mirror_written = 0
+        if prune:
+            self._mirror_prune()
+        return self._mirror_get(key)
+
+    _mirror_written = 0
+    _mirror_lock = threading.Lock()
+
+    def _mirror_prune(self):
+        """The mirror cut back to 80 % of MIRROR_MB, the least recently written first."""
+        files = []
+        for dirpath, _, names in os.walk(os.path.join(self.cache_dir, "decoded")):
+            for n in names:
+                if n.endswith(".npy"):
+                    p = os.path.join(dirpath, n)
+                    try:
+                        st = os.stat(p)
+                    except OSError:
+                        continue
+                    files.append((st.st_mtime, st.st_size, p))
+        total = sum(f[1] for f in files)
+        if total <= MIRROR_MB * 1e6:
+            return
+        for _, size, p in sorted(files):
+            try:
+                os.remove(p)
+            except OSError:
+                continue
+            total -= size
+            if total <= 0.8 * MIRROR_MB * 1e6:
+                break
+
+    def _partial(self):
+        """This load used a stand-in (a failed fetch): its tile is not mirrored."""
+        self._local.partial = True
+
     def _load_tile(self, key):
+        """A decoded tile: from the mirror, else made (_make_tile) and, when it is all Mapterhorn's data as it will
+        stay (no failover, no fetch failed on the way), written to the mirror."""
+        got = self._mirror_get(key)
+        if got is not None:
+            self.served.setdefault(key, MAPTERHORN["name"])
+            return got
+        prev = getattr(self._local, "partial", False)
+        self._local.partial = False
+        partial = True
+        try:
+            a = self._make_tile(key)
+            partial = self._local.partial
+        finally:
+            self._local.partial = prev or partial
+        if not partial and a is not None and self.served.get(key) == MAPTERHORN["name"] and MIRROR_MB > 0:
+            got = self._mirror_put(key, a)
+            if got is not None:
+                return got
+        return a
+
+    def _make_tile(self, key):
         z, x, y = key
         try:
             data = self._download(MAPTERHORN, z, x, y)
@@ -234,6 +343,7 @@ class Dem:
             # Mapterhorn cannot be asked (circuit open, rate limited, failing): the same tile from AWS,
             # as it is (with AWS bathymetry: a failure says nothing about where the sea is).
             self._count("mapterhorn:failover")
+            self._partial()
             try:
                 a = self._aws_tile(z, x, y)
             except netfetch.FetchError as e2:
@@ -272,7 +382,7 @@ class Dem:
                 if self._download(MAPTERHORN, GLOBAL_ZOOM + 1, cx, cy) is not None:
                     return True
             except netfetch.FetchError:
-                pass
+                self._partial()
         return False
 
     def _raw12(self, x, y):
@@ -284,6 +394,7 @@ class Dem:
         try:
             data = self._download(MAPTERHORN, GLOBAL_ZOOM, x, y)
         except netfetch.FetchError:
+            self._partial()
             return None
         if data is None:
             return np.zeros((TILE, TILE), np.float32)

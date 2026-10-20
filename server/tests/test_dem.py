@@ -69,6 +69,69 @@ class FakeFetcher:
         pass
 
 
+class TerrariumFetcher:
+    """Terrarium PNG tiles (height = 100 + x, the whole tile), Mapterhorn 512 px, AWS 256 px; Mapterhorn can be
+    made to fail."""
+
+    def __init__(self, mapterhorn_fails=False):
+        self.calls, self.mapterhorn_fails = [], mapterhorn_fails
+
+    def get(self, url, *, kind="demand", headers=None):
+        import io
+        import netfetch
+        from PIL import Image
+        self.calls.append(url)
+        if "mapterhorn" in url and self.mapterhorn_fails:
+            raise netfetch.HostUnavailable("down")
+        size = 512 if "mapterhorn" in url else 256
+        x = int(url.rsplit("/", 2)[1])
+        v = (100 + x % 1000) + 32768
+        a = np.zeros((size, size, 3), np.uint8)
+        a[..., 0], a[..., 1] = v // 256, v % 256
+        buf = io.BytesIO()
+        Image.fromarray(a).save(buf, "PNG")
+
+        class R:
+            body = buf.getvalue()
+        return R()
+
+    def miss_alive(self, path, url):
+        return False
+
+    def register_chain(self, name, urls):
+        pass
+
+
+class MirrorTest(unittest.TestCase):
+    """The decoded mirror: a tile decoded once is read by another process memory-mapped, the same numbers; a tile
+    made from a stand-in (Mapterhorn failing: AWS) is not kept."""
+
+    def test_mirror(self):
+        with tempfile.TemporaryDirectory() as d:
+            f = TerrariumFetcher()
+            key = (15, 9300, 12500)
+            a = demmod.Dem(d, fetcher=f)._load_tile(key)
+            self.assertEqual(float(a[0, 0]), 100 + 9300 % 1000)
+            n = len(f.calls)
+            other = demmod.Dem(d, fetcher=f)
+            got = []
+            orig = demmod.decode_terrarium
+            demmod.decode_terrarium = lambda *a_: got.append(1) or orig(*a_)
+            try:
+                b = other._load_tile(key)
+            finally:
+                demmod.decode_terrarium = orig
+            self.assertEqual((len(f.calls), got), (n, []), "neither fetched nor decoded")
+            np.testing.assert_array_equal(a, b)
+            self.assertFalse(b.flags.owndata or b.flags.writeable, "the mirror's mapping")
+            self.assertEqual(other.served[key], demmod.MAPTERHORN["name"])
+            k2 = (15, 9301, 12500)
+            down = demmod.Dem(d, fetcher=TerrariumFetcher(mapterhorn_fails=True))
+            down._load_tile(k2)
+            self.assertEqual(down.served[k2], demmod.AWS["name"])
+            self.assertFalse(Path(down._mirror_path(k2)).exists(), "a failover tile is not kept")
+
+
 class DemPrefetchTest(unittest.TestCase):
     def test_downloads_missing_tiles_at_prefetch_priority(self):
         with tempfile.TemporaryDirectory() as d:
