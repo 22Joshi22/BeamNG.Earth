@@ -278,7 +278,9 @@ class BuildTileTest(unittest.TestCase):
                 data = json.load(fh)
             self.assertEqual(data["walk"]["pos"], [x0, y0, 0.0])
             shape = cdae.read(os.path.join(d, os.path.basename(data["walk"]["shape"])))
-            self.assertEqual([m["name"] for m in shape["materials"]], list(sidewalks.MATERIALS))
+            names = [m["name"] for m in shape["materials"]]      # the ones it uses, in the list's order (cdae.encode)
+        self.assertEqual(names, [m for m in sidewalks.MATERIALS if m in names])
+        self.assertIn("curbs", names)
 
     def test_sidewalk_profile_faces_out(self):
         import sidewalks
@@ -358,7 +360,9 @@ class BuildTileTest(unittest.TestCase):
             path, n = roads.write_tile(d, "/vfs", 1, 0, 0, chunks, walks, mesh)
             import cdae
             shape = cdae.read(os.path.join(d, "walks_1_0_0.cdae"))
-            self.assertEqual([m["name"] for m in shape["materials"]], list(sidewalks.MATERIALS))
+            names = [m["name"] for m in shape["materials"]]      # the ones it uses, in the list's order (cdae.encode)
+        self.assertEqual(names, [m for m in sidewalks.MATERIALS if m in names])
+        self.assertIn("curbs", names)
 
     def test_acute_corner_is_rounded(self):
         # two streets leaving a junction 30 degrees apart (a triangular block's tip, Fells Point, report #46): a curb
