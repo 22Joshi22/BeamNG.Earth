@@ -263,6 +263,53 @@ def build(aid, lat, lon, hm_zoom, q, cx, cy, size, out_dir, name, ter_name=None)
     return info
 
 
+def _bridges(aid, frame, elev):
+    """The anchor's roads.BridgeProfiles (deck heights of whole bridge chains), made once per anchor in this process."""
+    import roads as roadsmod
+    with _s.lock:
+        bridges = _s.bridges.get(aid)
+        if bridges is None:
+            bridges = _s.bridges[aid] = roadsmod.BridgeProfiles(
+                frame, lambda key: _s.md.cell(key, layers=("roads",), kind="demand").layers.get("roads"), elev)
+            sea = getattr(_s, "sea", None)
+            bridges.wet = sea.depth if sea is not None else None        # (decks clear the water: roads.water_clear)
+            bridges.infra_fn = lambda key: _s.md.cell(key, layers=("infrastructure",), kind="demand").layers.get(
+                "infrastructure")                                       # (bridge:structure tags: bridgetypes)
+            for old in sorted(_s.bridges)[:-ANCHORS_KEPT]:
+                del _s.bridges[old]
+    return bridges
+
+
+def navgraph(aid, lat, lon, zoom, x, y, out_dir, vfs_dir, serial, left_hand, mph, rules):
+    """earthd.Server.build_navgraph here (a road-tile process): the AI road graph around (x, y) written to out_dir;
+    returns (vfs path, nodes, edges). The bridges' deck heights are this process's (the road tiles' own); in the
+    server they were built a second time, in its interpreter (13 s of its CPU in a 4-minute drive, 2026-10-20)."""
+    import navgraph as navgraphmod
+    import mapcells
+    g, _ = _s.anchor(aid, lat, lon)
+    frame = geodesy.EnuFrame(lat, lon)
+    w = navgraphmod.WINDOW_M + 200.0
+    la, lo, _ = frame.enu_to_geodetic(np.array([x - w, x + w]), np.array([y - w, y + w]), 0.0)
+    keys = mapcells.cells_for_bbox(float(la.min()), float(lo.min()), float(la.max()), float(lo.max()))
+    feats = [_s.md.cell(k, layers=("roads",), kind="demand").layers.get("roads") for k in keys]
+
+    def elev(la_, lo_):         # the physics ground, lifted under roads (as the road tiles')
+        z = ground(frame, la_, lo_, _s.dem.sample(la_, lo_, zoom))
+        return g.apply(la_, lo_, z, gradingmod.ROAD_LIFT) if g is not None else z
+    decks = {}
+    try:
+        for fid, _spec, xy, z, _lon in _bridges(aid, frame, elev).parts(feats, (x - w, y - w, x + w, y + w)):
+            decks.setdefault(fid, []).append((np.asarray(xy, np.float64)[:, :2], np.asarray(z, np.float64)))
+    except Exception as e:          # no decks: the graph follows the ground under bridges
+        log.debug("navgraph decks: %s: %s", type(e).__name__, e)
+    urban = _s.surface.urban if _s.surface is not None else None
+    graph = navgraphmod.build(frame, feats, elev, (x, y), urban, decks=decks, widths=_s.widths, left_hand=left_hand,
+                              mph=mph)
+    graph["rules"] = rules
+    path = navgraphmod.write(out_dir, vfs_dir, aid, serial, graph)
+    return path, len(graph["nodes"]), len(graph["edges"])
+
+
 def roads_tile(aid, lat, lon, zoom, tx, ty, out_dir, vfs_dir, sidewalks, lift, buildings=False, left_hand=False,
                mph=True, q=None):
     """earthd.Server.build_roads_tile here (road-tile pool): the anchor's road tile (tx, ty) built and
@@ -280,17 +327,7 @@ def roads_tile(aid, lat, lon, zoom, tx, ty, out_dir, vfs_dir, sidewalks, lift, b
     def elev(la, lo):           # the physics ground (lifted under roads: grading.ROAD_LIFT)
         z = ground(frame, la, lo, _s.dem.sample(la, lo, zoom))
         return g.apply(la, lo, z, gradingmod.ROAD_LIFT) if g is not None else z
-    with _s.lock:
-        bridges = _s.bridges.get(aid)
-        if bridges is None:
-            bridges = _s.bridges[aid] = roadsmod.BridgeProfiles(
-                frame, lambda key: _s.md.cell(key, layers=("roads",), kind="demand").layers.get("roads"), elev)
-            sea = getattr(_s, "sea", None)
-            bridges.wet = sea.depth if sea is not None else None        # (decks clear the water: roads.water_clear)
-            bridges.infra_fn = lambda key: _s.md.cell(key, layers=("infrastructure",), kind="demand").layers.get(
-                "infrastructure")                                       # (bridge:structure tags: bridgetypes)
-            for old in sorted(_s.bridges)[:-ANCHORS_KEPT]:
-                del _s.bridges[old]
+    bridges = _bridges(aid, frame, elev)
     tunnels = tunnel_profiles(aid, frame, elev, g)
     walks = []
     urban = _s.surface.urban if _s.surface is not None else None
@@ -577,3 +614,4 @@ base_entry = _accounted(base_entry)
 far_geometry = _accounted(far_geometry)
 far_tile = _accounted(far_tile)
 base_photo = _accounted(base_photo)
+navgraph = _accounted(navgraph)

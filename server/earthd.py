@@ -907,6 +907,24 @@ class Server:
         anchor = self.anchors.get(aid)
         if anchor is None or self.mapdata is None:
             return None
+        if self.road_pool is not None:      # in a road process, with its bridges (blockworker.navgraph)
+            t0 = time.perf_counter()
+            cla, clo, _ = anchor.frame.enu_to_geodetic(x, y, 0.0)
+            rules = navgraphmod.road_rules(navgraphmod.country_near(self.airports_db, float(cla), float(clo)))
+            path, n_nodes, n_edges = self.road_pool.submit(
+                blockworker.navgraph, aid, anchor.lat, anchor.lon, anchor.zooms[0], x, y, self.out_dir,
+                self.vfs_dir, serial, self.left_hand(anchor), self.mph(anchor), rules).result()
+            log.debug("navgraph %d of anchor %d: %d nodes in %.2f s (queue + build)", serial, aid, n_nodes,
+                     time.perf_counter() - t0)
+            keep = os.path.join(self.out_dir, os.path.basename(path))
+            for old in glob.glob(os.path.join(self.out_dir, f"navgraph_{aid}_*.json")):    # one file at a time
+                if old != keep:
+                    try:
+                        os.remove(old)
+                    except OSError:
+                        pass
+            return path, n_nodes, n_edges
+        t0 = time.perf_counter()
         w = navgraphmod.WINDOW_M + 200.0
         la, lo, _ = anchor.frame.enu_to_geodetic(np.array([x - w, x + w]), np.array([y - w, y + w]), 0.0)
         keys = mapcells.cells_for_bbox(float(la.min()), float(lo.min()), float(la.max()), float(lo.max()))
@@ -942,6 +960,8 @@ class Server:
             except OSError:
                 pass
         path = navgraphmod.write(self.out_dir, self.vfs_dir, aid, serial, graph)
+        log.debug("navgraph %d of anchor %d: %d nodes in %.2f s", serial, aid, len(graph["nodes"]),
+                 time.perf_counter() - t0)
         return path, len(graph["nodes"]), len(graph["edges"])
 
     boost_on = False
