@@ -117,6 +117,15 @@ class FollowTest(unittest.TestCase):
         for x, y in zip(a, b):
             self.assertTrue(np.allclose(np.asarray(x), y, equal_nan=True))
 
+    def test_with_filled_polygons(self):
+        """A tile with corner asphalt (a filled polygon) follows the ground too: the polygon's points once took the
+        name of the height quantum and every such road tile failed (a Steam Deck in Baltimore, 2026-10-20)."""
+        chunks = [chunk("road_asphalt_2lane", 9.0, [(3.3, 1.7, 0), (61.9, 40.2, 0)]),
+                  {"m": "road_asphalt_2lane", "tl": 10.0, "poly": [(0.0, 0.0, 0), (8.0, 0.0, 0), (8.0, 6.0, 0)], "n": []}]
+        P, T, UV, mats, M = roadmesh.build(FRAME, chunks, self.bumpy(), (0.0, 0.0, 0.0), 0.015, follow=True,
+                                           q=1 / 32)
+        self.assertGreater(len(T), 0)
+
     def test_on_the_ground_everywhere(self):
         elev = self.bumpy()
         chunks = [chunk("road_asphalt_2lane", 9.0, [(3.3, 1.7, 0), (61.9, 40.2, 0), (90.0, 20.0, 0)])]

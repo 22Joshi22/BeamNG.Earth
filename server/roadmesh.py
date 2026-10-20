@@ -384,16 +384,16 @@ def build(frame, chunks, elev, origin, lift=0.0, clip=None, follow=False, q=None
         TL.append(np.full(int(keep.sum()), np.nan if fz is not None else LIFT[layer] + lift))
         nverts += 2 * k
     for c in polys:                             # filled polygons (corner asphalt): a fan from vertex 0
-        q = np.asarray(c["poly"], np.float64)
-        k = len(q)
+        pq = np.asarray(c["poly"], np.float64)
+        k = len(pq)
         z = u[k0:k0 + k] + LIFT[layer_of(c)] + lift
         k0 += k
         if c["m"] not in mats:
             mats.append(c["m"])
-        P.append(np.c_[q[:, :2], z])
-        UV.append(np.c_[q[:, 0] / 8.0, q[:, 1] / float(c.get("tl") or 10.0)])
+        P.append(np.c_[pq[:, :2], z])
+        UV.append(np.c_[pq[:, 0] / 8.0, pq[:, 1] / float(c.get("tl") or 10.0)])
         fan = np.array([(nverts, nverts + a, nverts + a + 1) for a in range(1, k - 1)])
-        pts = np.c_[q[:, :2], z]
+        pts = np.c_[pq[:, :2], z]
         nrm = np.cross(pts[fan[:, 1] - nverts] - pts[fan[:, 0] - nverts], pts[fan[:, 2] - nverts] - pts[fan[:, 0] - nverts])
         flip = nrm[:, 2] < 0
         fan[flip] = fan[flip][:, ::-1]
