@@ -72,7 +72,7 @@ import time  # noqa: E402
 from collections import OrderedDict, deque  # noqa: E402
 import concurrent.futures  # noqa: E402
 import multiprocessing  # noqa: E402
-from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor  # noqa: E402
+from concurrent.futures import ThreadPoolExecutor  # noqa: E402
 from dataclasses import dataclass, field, replace  # noqa: E402
 
 import numpy as np  # noqa: E402
@@ -90,6 +90,7 @@ import parking as parkingmod  # noqa: E402
 import roads as roadsmod  # noqa: E402
 import randomplace as randomplacemod  # noqa: E402
 import placepreview as placepreviewmod  # noqa: E402
+import pools as poolsmod  # noqa: E402
 import grading as gradingmod  # noqa: E402
 import roadmesh as roadmeshmod  # noqa: E402
 import roadwidth as roadwidthmod  # noqa: E402
@@ -3497,14 +3498,14 @@ async def main_async(args):
         ctx = multiprocessing.get_context("spawn")
         for _ in (LANE_REQUEST, LANE_PREFETCH):
             warm_q = ctx.Queue(maxsize=64)
-            block_pools.append((ProcessPoolExecutor(
-                1, mp_context=ctx, initializer=blockworker.init,
+            block_pools.append((poolsmod.RespawningPool(
+                "block", 1, mp_context=ctx, initializer=blockworker.init,
                 initargs=(args.cache_dir, args.offline, args.roads == "on",
                           args.grading == "on" and args.roads == "on",
                           args.road_widths == "on" and args.roads == "on", args.surface == "on", warm_q,
                           logging.getLogger().level, args.airports == "on", args.sea == "on")), warm_q))
-        far_pool = ProcessPoolExecutor(
-            args.workers, mp_context=ctx, initializer=blockworker.init,
+        far_pool = poolsmod.RespawningPool(
+            "far tile", args.workers, mp_context=ctx, initializer=blockworker.init,
             initargs=(args.cache_dir, args.offline, args.roads == "on",
                       args.grading == "on" and args.roads == "on",
                       args.road_widths == "on" and args.roads == "on", False, ctx.Queue(maxsize=1),
@@ -3518,15 +3519,15 @@ async def main_async(args):
             log.warning("airports: no runway grading (%s)", e)
     road_pool = None
     if args.block_process == "on" and args.roads == "on" and args.road_processes > 0:
-        road_pool = ProcessPoolExecutor(          # road tiles (blockworker.roads_tile)
-            args.road_processes, mp_context=ctx, initializer=blockworker.init,
+        road_pool = poolsmod.RespawningPool(      # road tiles (blockworker.roads_tile)
+            "road tile", args.road_processes, mp_context=ctx, initializer=blockworker.init,
             initargs=(args.cache_dir, args.offline, True, args.grading == "on", args.road_widths == "on",
                       args.surface == "on", ctx.Queue(maxsize=1), logging.getLogger().level,
                       args.airports == "on", args.sea == "on", NICE_ROADS))
     far_bld_pool = None
     if road_pool is not None and args.buildings == "on":
-        far_bld_pool = ProcessPoolExecutor(       # far building tiles (blockworker.far_buildings_tile)
-            1, mp_context=ctx, initializer=blockworker.init,
+        far_bld_pool = poolsmod.RespawningPool(   # far building tiles (blockworker.far_buildings_tile)
+            "far building", 1, mp_context=ctx, initializer=blockworker.init,
             initargs=(args.cache_dir, args.offline, True, args.grading == "on", args.road_widths == "on",
                       args.surface == "on", ctx.Queue(maxsize=1), logging.getLogger().level,
                       args.airports == "on", args.sea == "on", NICE_FAR_BUILDINGS))
