@@ -725,6 +725,19 @@ if __name__ == "__main__":
     unittest.main()
 
 
+class PyramidTest(unittest.TestCase):
+    def test_a_mapped_pyramid_is_a_pyramid(self):
+        # GitHub #47: Menkaure's pyramid (66 m, roof pyramidal 66 m high) was a 66 m box with windows
+        s = bld.plan(rect(0, 0, 100, 100), {"class": "", "height": 66.0, "roof_shape": "pyramidal",
+                                            "roof_height": 66.0}, 0, 29.97, 31.13)
+        self.assertEqual((s.cls, s.roof), ("pyramid", "hipped"))
+        P = bld.build([(s, 0.0, 0.0)])[0]
+        self.assertAlmostEqual(float(np.max(P[:, 2])), 66.0, delta=2.0)
+        house = bld.plan(rect(0, 0, 8, 8), {"class": "house", "roof_shape": "pyramidal", "height": 8.0,
+                                            "roof_height": 3.0}, 0, 29.97, 31.13)
+        self.assertNotEqual(house.cls, "pyramid", "a house's pyramidal roof: a house")
+
+
 class ElevatorTest(unittest.TestCase):
     def test_a_tall_slender_footprint_in_a_plains_town_is_a_grain_elevator(self):
         # Strasburg, CO: two 25 m tall footprints by the railroad came out as 8-storey brick apartments

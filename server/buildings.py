@@ -176,6 +176,11 @@ SHED_CLASSES = {"shed", "garage", "garages", "carport", "roof", "hut", "cabin", 
                 "greenhouse", "service", "storage_tank", "toilets", "kiosk", "parking", "shelter"}
 # A grain elevator (the plains' small towns: Strasburg, CO by I-70 had two 8-storey brick apartment blocks with windows
 # in the farmland): a tall slender footprint of no class (or a silo's) in a US small town, plain concrete
+# A pyramid (Giza's, GitHub #47: drawn as 66-140 m boxes with windows): a pyramidal roof mapped as (nearly) the whole
+# height over a monument-sized footprint is a stone pyramid on a low plinth (pitched roofs are otherwise flat past 28 m)
+PYRAMID_ROOF_SHARE = 0.8
+PYRAMID_MIN_M2 = 500.0
+PYRAMID_PLINTH_M = 1.0
 ELEVATOR_CLASSES = {"", "industrial", "silo", "grain_silo", "storage_tank", "farm_auxiliary", "agricultural"}
 ELEVATOR_MIN_H = 15.0       # m mapped (a height, no floors)
 ELEVATOR_MAX_M2 = 1500.0
@@ -485,6 +490,15 @@ def plan(ring, attrs, neighbours=0, lat=None, lon=None, look=None, town=False, d
         nf = 1                                          # a nave: one tall storey under a steep gable
     h = None if h is None or not np.isfinite(h) or h <= 0 else float(h)
     nf = None if nf is None or not np.isfinite(nf) or nf <= 0 else int(round(nf))
+    rh = attrs.get("roof_height")
+    rh = float(rh) if rh is not None and np.isfinite(rh) else None
+    if ((attrs.get("roof_shape") or "").lower() == "pyramidal" and h is not None and rh is not None
+            and rh >= PYRAMID_ROOF_SHARE * h and area >= PYRAMID_MIN_M2 and hw > 1.0):
+        look = f"{STONE}|0"
+        return Spec(ring=ring, floors=1, floor_h=PYRAMID_PLINTH_M, height=PYRAMID_PLINTH_M, roof="hipped", roof_mat=look,
+                    facade=look, band=None, shop=False, plain=True, seed=seed, min_h=0.0, wall=None, windows=False,
+                    steeple=False, porch=False, cls="pyramid", deck=False,
+                    pitch=math.degrees(math.atan2(max(h - PYRAMID_PLINTH_M, 0.1), hw)))
     if (town and style.name.startswith("us_") and cls in ELEVATOR_CLASSES and h is not None and h >= ELEVATOR_MIN_H
             and nf is None and area <= ELEVATOR_MAX_M2 and h / math.sqrt(max(area, 1.0)) >= ELEVATOR_SLENDER
             and not (church or terminal or garage)):
