@@ -679,7 +679,7 @@ function M.update(gov, currentAnchor, player, view)
     -- (only a colliding mesh waits: a render-only one (q.renderOnly: the drawn sidewalks and buildings beside their lean
     -- collision meshes) cannot catch the car, and holding it hid a whole tile's sidewalks while the car stood in their
     -- box: a roundabout's island band was never drawn, 2026-10-17 Harbor Point)
-    if t and q.what ~= 'road' and not q.renderOnly and playerIn(t.colliders[q.what]) then
+    if t and q.what ~= 'road' and not q.renderOnly and playerIn(t.colliders[q.what], q.what) then
       held[#held + 1] = q           -- the car is on it: made once the car is clear (playerIn)
       t = nil
     end
@@ -730,6 +730,9 @@ end
 -- the last reloadCollision, is removed again before it, and made once the car is clear.
 M.PLAYER_R = 3.0    -- m around the player's position (half a car's length, and some)
 M.PLAYER_DZ = 2.5   -- m above / below
+M.DECK_BOX_BELOW_M = 2.2    -- a deck box's floor is this far under its lowest surface (server roads.collider_boxes:
+                            -- roadmesh.DECK_DEPTH 1.2 + 1.0)
+M.DECK_ON_M = 0.2           -- the car's position this far under that surface or less: on the deck (not held)
 
 -- Is world position p within r m (horizontally) of the player's car? (no car: yes, to be safe)
 function M.nearPlayer(p, r)
@@ -740,7 +743,7 @@ function M.nearPlayer(p, r)
   return dx * dx + dy * dy <= r * r
 end
 
-playerIn = function(boxes)
+playerIn = function(boxes, what)
   -- (a drop hold: the car does not move until its ground and colliders are in, then it is set on top of them)
   if holdActive or type(boxes) ~= 'table' or #boxes == 0 then return false end
   local veh = getPlayerVehicle and getPlayerVehicle(0)
@@ -748,9 +751,16 @@ playerIn = function(boxes)
   local p = veh:getPosition()
   local r, dz = M.PLAYER_R, M.PLAYER_DZ
   for _, b in ipairs(boxes) do
-    if p.x >= b[1] - r and p.x <= b[4] + r and p.y >= b[2] - r and p.y <= b[5] + r
-        and p.z >= b[3] - dz and p.z <= b[6] + dz then
-      return true
+    if p.x >= b[1] - r and p.x <= b[4] + r and p.y >= b[2] - r and p.y <= b[5] + r then
+      if what == 'deck' then
+        -- a deck: only with the car under its surface (in its slab, or under it within a car's height): driving up
+        -- onto a late deck the car was always in its box, the deck held until the car was past, and the car fell
+        -- through it (I-95, Baltimore, a Deck test drive 2026-10-20)
+        local surf = b[3] + M.DECK_BOX_BELOW_M
+        if p.z < surf - M.DECK_ON_M and p.z > surf - M.DECK_BOX_BELOW_M - dz then return true end
+      elseif p.z >= b[3] - dz and p.z <= b[6] + dz then
+        return true
+      end
     end
   end
   return false
@@ -762,7 +772,7 @@ releaseHeld = function()
   for _, q in ipairs(held) do
     local t = tiles[q.key]
     if t then
-      if playerIn(t.colliders[q.what]) then keep[#keep + 1] = q else walkQ[#walkQ + 1] = q end
+      if playerIn(t.colliders[q.what], q.what) then keep[#keep + 1] = q else walkQ[#walkQ + 1] = q end
     end
   end
   held = keep
@@ -773,7 +783,7 @@ noteNewColliders = function()
   for _, c in ipairs(newColliders) do
     local q = c[2]
     local t = tiles[q.key]
-    if t and t[q.what] == c[1] and playerIn(t.colliders[q.what]) then
+    if t and t[q.what] == c[1] and playerIn(t.colliders[q.what], q.what) then
       local o = scenetree.findObjectById(c[1])
       if o then o:delete() end
       t[q.what] = nil

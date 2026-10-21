@@ -224,6 +224,25 @@ T.check(#statics() == 1, 'made again once clear')
 roads.RELOAD_EVERY_S = 0
 roads.onDrop({ anchorId = 2, key = '0_0' })
 roads.update(gov, 2)
+-- a deck is held only with the car under its surface: a car on the approach at the deck's height (in its box) gets
+-- it at once (held, a late deck stayed out until the car was past and the car fell through it, 2026-10-20)
+files['/t/d.json'] = '{ chunks = { }, deck = { shape = "/t/deck_2_9_9.cdae", pos = { 0, 0, 0 } }, ' ..
+  'colliders = { deck = { { 100, 100, 7.8, 120, 110, 12 } } } }'      -- (surface 10 m: 10 - 2.2 .. 10 + 2)
+car.pos = vec3(110, 105, 10.5)
+roads.onTile({ anchorId = 2, key = '0_0', path = '/t/d.json', n = 0 }, 2)
+roads.update(gov, 2)
+T.check(#statics() == 1, 'a deck made with the car driving onto it')
+roads.onDrop({ anchorId = 2, key = '0_0' })
+roads.update(gov, 2)
+car.pos = vec3(110, 105, 9.0)          -- in its slab
+roads.onTile({ anchorId = 2, key = '0_0', path = '/t/d.json', n = 0 }, 2)
+roads.update(gov, 2)
+T.check(#statics() == 0, 'held with the car in its slab')
+car.pos = vec3(200, 105, 0.5)
+roads.update(gov, 2)
+T.check(#statics() == 1, 'made once the car is clear')
+roads.onDrop({ anchorId = 2, key = '0_0' })
+roads.update(gov, 2)
 -- with a lean collision mesh the drawn sidewalk is render-only: made with the car in its box (it cannot catch the car;
 -- held, a roundabout's island band was never drawn, 2026-10-17); the collision mesh still waits
 files['/t/hl.json'] = '{ chunks = { }, walk = { shape = "/t/walks_2_8_8.cdae", pos = { 0, 0, 0 } }, ' ..
