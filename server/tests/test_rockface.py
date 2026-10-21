@@ -33,13 +33,15 @@ class RockFaceTest(unittest.TestCase):
         self.assertLess(np.mean(wall[:, 1] - wall[:, 0]), 40, "the wall's green mostly gone")
         self.assertGreater(wall.std(), 0.0, "not one flat colour")
 
-    def test_noise_is_smooth_and_deterministic(self):
-        x = np.linspace(0, 3, 50)
-        a = rockface.value_noise3(x, x * 0, x * 0)
-        b = rockface.value_noise3(x, x * 0, x * 0)
+    def test_deterministic_and_smooth(self):
+        """The same wall gives the same rock every time, varied but without texel-to-texel jumps."""
+        rgb = np.full((64, 64, 3), (60, 140, 50), np.uint8)
+        U = np.tile(np.linspace(0.0, 400.0, 9), (9, 1))
+        a = rockface.rock(rgb, self.frame, 0.0, 0.0, 256.0, U, 0.0, 0.0, 32.0)
+        b = rockface.rock(rgb, self.frame, 0.0, 0.0, 256.0, U, 0.0, 0.0, 32.0)
         np.testing.assert_array_equal(a, b)
-        self.assertLess(np.abs(np.diff(a)).max(), 0.2)
-        self.assertTrue(((a >= 0) & (a < 1)).all())
+        self.assertGreater(np.abs(np.diff(a.astype(int), axis=1)).max(), 0, "the noise varies")
+        self.assertLess(np.abs(np.diff(a.astype(int), axis=1)).mean(), 20, "and is smooth")
 
 
 if __name__ == "__main__":

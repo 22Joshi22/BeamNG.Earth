@@ -32,12 +32,7 @@ def _area(xy):
 
 def _inside(xy, p):
     x, y = p
-    if fast._ef is not None and xy.dtype == np.float64 and xy.ndim == 2:
-        return fast._ef.point_inside(xy, float(x), float(y))
-    xs, ys = xy[:, 0], xy[:, 1]
-    xj, yj = np.roll(xs, 1), np.roll(ys, 1)
-    cross = ((ys > y) != (yj > y)) & (x < (xj - xs) * (y - ys) / np.where(yj - ys == 0, 1e-12, yj - ys) + xs)
-    return bool(np.count_nonzero(cross) % 2)
+    return fast._ef.point_inside(np.asarray(xy, np.float64), float(x), float(y))     # (Rust; even-odd)
 
 
 def _length(pts):
@@ -218,20 +213,9 @@ def _crosses(poly, pts):
     """Does road pts (k, 3) run through the inside of loop poly (k, 2) (points every ~2 m, those within CROSS_MARGIN_M
     of the loop's line not counted: roads joining at its corners)?"""
     xy = np.asarray(pts, np.float64)[:, :2]
-    if fast._ef is not None and hasattr(fast._ef, "loop_crossed"):        # the Rust loop (the same samples)
-        return fast._ef.loop_crossed(np.ascontiguousarray(poly, np.float64), np.ascontiguousarray(xy),
-                                     float(CROSS_MARGIN_M))
-    lo, hi = poly.min(0) - 1.0, poly.max(0) + 1.0
-    if (xy.max(0) < lo).any() or (xy.min(0) > hi).any():
-        return False
-    ring = np.vstack([poly, poly[:1]])
-    for a, b in zip(xy[:-1], xy[1:]):
-        n = max(1, int(np.hypot(*(b - a)) / 2.0))
-        for t in (np.arange(n) + 0.5) / n:
-            p = a + (b - a) * t
-            if _inside(poly, p) and _seg_dist(ring, p) > CROSS_MARGIN_M:
-                return True
-    return False
+    fast.require(1, "loop_crossed")
+    return fast._ef.loop_crossed(np.ascontiguousarray(poly, np.float64), np.ascontiguousarray(xy),
+                                 float(CROSS_MARGIN_M))
 
 
 def _seg_dist(pts, p):
@@ -253,20 +237,7 @@ def _island_ring(poly, roads_hw, z):
         return None
     rmax = float(np.max(np.hypot(*(poly - c).T)))
     import fast
-    ring = fast.island_ring_rays(poly, roads_hw, c, RAYS, RAY_STEP_M, rmax)
-    if ring is not None:
-        return _ring_finish(ring, z)
-    out = []
-    for a in np.linspace(0.0, 2 * math.pi, RAYS, endpoint=False):
-        u = np.array([math.cos(a), math.sin(a)])
-        r = 0.0
-        while r < rmax:
-            q = c + u * (r + RAY_STEP_M)
-            if not _inside(poly, q) or any(_seg_dist(pts, q) <= hw for pts, hw in roads_hw):
-                break
-            r += RAY_STEP_M
-        out.append(c + u * r)
-    return _ring_finish(np.array(out), z)
+    return _ring_finish(fast.island_ring_rays(poly, roads_hw, c, RAYS, RAY_STEP_M, rmax), z)
 
 
 def _ring_finish(ring, z):

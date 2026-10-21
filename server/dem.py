@@ -79,18 +79,16 @@ def zoom_for(lat, pixel_m, max_zoom=MAX_ZOOM):
 
 
 def decode_terrarium(data, size):
+    """float32 heights of a Terrarium tile (Rust: no RGB copy, no float temporaries; ~2/3 of a tile's decode, and
+    the worker processes each decode the DEM tiles they read)."""
     im = Image.open(io.BytesIO(data))
-    if fast._ef is not None and hasattr(fast._ef, "terrarium_heights") and im.mode in ("RGB", "RGBA") \
-            and im.size == (size, size):
-        # the same float32 heights from the decoded bytes (Rust): no RGB copy, no float temporaries (~2/3 of a
-        # tile's decode; the worker processes each decode the DEM tiles they read)
-        return fast._ef.terrarium_heights(np.asarray(im))
-    im = im.convert("RGB")
+    if im.mode not in ("RGB", "RGBA"):
+        im = im.convert("RGB")
     if im.size != (size, size):
         log.warning("unexpected DEM tile size %s (expected %d), resampling", im.size, size)
         im = im.resize((size, size), Image.BILINEAR)
-    a = np.asarray(im).astype(np.float32)
-    return a[..., 0] * 256.0 + a[..., 1] + a[..., 2] / 256.0 - 32768.0
+    fast.require(1, "decode_terrarium")
+    return fast._ef.terrarium_heights(np.ascontiguousarray(np.asarray(im)))
 
 
 def _resize(a, size):

@@ -974,12 +974,7 @@ def _cornice(m, spec, ring, z_eave, mat_idx):
 def _inside(ring, p):
     """Point p inside the ring (even-odd)."""
     x, y = p
-    if fast._ef is not None and ring.dtype == np.float64 and ring.ndim == 2:
-        return fast._ef.point_inside(ring, float(x), float(y))
-    xs, ys = ring[:, 0], ring[:, 1]
-    xj, yj = np.roll(xs, 1), np.roll(ys, 1)
-    cross = ((ys > y) != (yj > y)) & (x < (xj - xs) * (y - ys) / np.where(yj - ys == 0, 1e-12, yj - ys) + xs)
-    return bool(np.count_nonzero(cross) % 2)
+    return fast._ef.point_inside(np.asarray(ring, np.float64), float(x), float(y))     # (Rust; even-odd)
 
 
 def _box(m, c, u, hx, hy, z0, z1, mat):
@@ -1667,31 +1662,13 @@ def _shared_walls(rings, tol=0.6):
     cents = np.array([r.mean(0) for r in rings])
     rads = np.array([np.hypot(*(r - r.mean(0)).T).max() for r in rings])
     order = np.argsort(cents[:, 0])
-    if fast._ef is not None and hasattr(fast._ef, "shared_walls"):     # the Rust loop: the same counts
-        offs = np.zeros(n + 1, np.int64)
-        offs[1:] = np.cumsum([len(r) for r in rings])
-        coords = np.ascontiguousarray(np.concatenate(rings)[:, :2], np.float64)
-        return np.asarray(fast._ef.shared_walls(coords, offs, np.ascontiguousarray(cents, np.float64),
-                                                np.ascontiguousarray(rads, np.float64), order.astype(np.int64),
-                                                float(tol)), np.int64)
-    xs = cents[order, 0]
-    for oi, i in enumerate(order):
-        lo = np.searchsorted(xs, cents[i, 0] - rads[i] - 30.0)
-        hi = np.searchsorted(xs, cents[i, 0] + rads[i] + 30.0)
-        for j in order[lo:hi]:
-            if j == i or np.hypot(*(cents[j] - cents[i])) > rads[i] + rads[j] + tol:
-                continue
-            ri, rj = rings[i], rings[j]
-            a, b = ri, np.roll(ri, -1, 0)
-            d = b - a
-            L2 = np.maximum((d * d).sum(1), 1e-9)
-            t = np.clip(((rj[:, None, :] - a[None]) * d[None]).sum(2) / L2[None], 0, 1)
-            q = a[None] + t[..., None] * d[None]
-            dist = np.hypot(*(rj[:, None, :] - q).transpose(2, 0, 1))
-            if (dist < tol).sum() >= 2:
-                cnt[i] += 1
-    return cnt
-
+    fast.require(1, "shared_walls")
+    offs = np.zeros(n + 1, np.int64)
+    offs[1:] = np.cumsum([len(r) for r in rings])
+    coords = np.ascontiguousarray(np.concatenate(rings)[:, :2], np.float64)
+    return np.asarray(fast._ef.shared_walls(coords, offs, np.ascontiguousarray(cents, np.float64),
+                                            np.ascontiguousarray(rads, np.float64), order.astype(np.int64),
+                                            float(tol)), np.int64)
 
 def _part_heights(a, i):
     """A building part's (own height, its bottom) from its attributes, or None without a height."""

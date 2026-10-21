@@ -615,8 +615,8 @@ def _mask_roads(f, mask, chm, push=None, clear=ROAD_CLEAR_M):
         return
     n_r, n_c = mask.shape
     cls = f.attrs.get("class", np.full(len(f.kind), "", object))
-    rust = fast._ef is not None and hasattr(fast._ef, "road_corridors")
-    segs, hws = [], []                  # (Rust) every segment in order: one call at the end
+    fast.require(0, "road_corridors")
+    segs, hws = [], []                  # every segment in order: one Rust call at the end
     for i in np.flatnonzero(f.kind == 2):
         if str(cls[i]) in PATH_CLASSES:
             continue
@@ -631,36 +631,9 @@ def _mask_roads(f, mask, chm, push=None, clear=ROAD_CLEAR_M):
                 if (q[:, 0].max() < -hw or q[:, 1].max() < -hw or q[:, 0].min() > n_c + hw
                         or q[:, 1].min() > n_r + hw):
                     continue
-                if rust:
-                    segs.append(np.concatenate([q[:-1], q[1:]], 1))
-                    hws.append(np.full(len(q) - 1, hw))
-                    continue
-                for a, b in zip(q[:-1], q[1:]):
-                    c0, r0 = max(int(min(a[0], b[0]) - hw), 0), max(int(min(a[1], b[1]) - hw), 0)
-                    c1, r1 = min(int(max(a[0], b[0]) + hw) + 2, n_c), min(int(max(a[1], b[1]) + hw) + 2, n_r)
-                    if c1 <= c0 or r1 <= r0:
-                        continue
-                    gc, gr = np.meshgrid(np.arange(c0, c1) + 0.5, np.arange(r0, r1) + 0.5)
-                    ab = b - a
-                    L2 = float(ab @ ab) or 1e-9
-                    t = np.clip(((gc - a[0]) * ab[0] + (gr - a[1]) * ab[1]) / L2, 0, 1)
-                    ox, oy = gc - (a[0] + t * ab[0]), gr - (a[1] + t * ab[1])
-                    d = np.hypot(ox, oy)
-                    mask[r0:r1, c0:c1] |= d <= hw
-                    if push is not None:
-                        win = push[:, r0:r1, c0:c1]
-                        closer = (d <= hw) & (d < win[2])
-                        if closer.any():
-                            # away from the centreline (sideways if on it: the segment's normal)
-                            nx, ny = -ab[1], ab[0]
-                            nl = math.hypot(nx, ny) or 1.0
-                            ux = np.where(d > 1e-3, ox / np.maximum(d, 1e-3), nx / nl)
-                            uy = np.where(d > 1e-3, oy / np.maximum(d, 1e-3), ny / nl)
-                            go = hw + 0.6 - d
-                            win[0][closer] = (ux * go)[closer]
-                            win[1][closer] = (uy * go)[closer]
-                            win[2][closer] = d[closer]
-    if rust and segs:                   # the same, without the GIL and the per-segment numpy calls
+                segs.append(np.concatenate([q[:-1], q[1:]], 1))
+                hws.append(np.full(len(q) - 1, hw))
+    if segs:                            # the distances, the nearest road's push, without the GIL
         fast._ef.road_corridors(mask, push, np.ascontiguousarray(np.concatenate(segs), np.float64),
                                 np.ascontiguousarray(np.concatenate(hws), np.float64))
 
@@ -714,8 +687,9 @@ def tile_items(frame, tx, ty, veg, cell_ready, elev, sea=None, as_json=False):
     zg = np.asarray(elev(it.lat, it.lon), np.float64)
     _, _, z = frame.geodetic_to_enu(it.lat, it.lon, zg)
     z = _sink_rocks(frame, it, e, n, np.asarray(z, np.float64), elev)
-    if as_json and fast._ef is not None and hasattr(fast._ef, "veg_rows_json"):
+    if as_json:
         # Rust: the same text json.dumps would write for the rows below, without a Python list per tree
+        fast.require(0, "veg_rows_json")
         f64 = lambda a: np.ascontiguousarray(a, np.float64)     # noqa: E731
         out = JsonRows(fast._ef.veg_rows_json(np.ascontiguousarray(it.group, np.int64), f64(e), f64(n), f64(z),
                                                f64(it.yaw), f64(it.scale), f64(it.height), f64(it.rank)))

@@ -195,24 +195,6 @@ class Sections(unittest.TestCase):
         _f, k = roads.tunnel_sections(s, g)
         self.assertTrue((k[(s > 204) & (s < 296)] == 2).all())
 
-    def test_rust_and_python_agree(self):
-        import fast
-        if not (fast.AVAILABLE and getattr(fast._ef, "VERSION", 0) >= 28):
-            self.skipTest("no kernel")
-        rng = np.random.default_rng(3)
-        for _ in range(20):
-            s = np.cumsum(rng.uniform(2.0, 5.0, 120))
-            g = np.cumsum(rng.normal(0, 1.5, 120))
-            f1, k1 = roads.tunnel_sections(s, g)
-            ef, fast._ef = fast._ef, None
-            try:
-                avail, fast.AVAILABLE = fast.AVAILABLE, False
-                f2, k2 = roads.tunnel_sections(s, g)
-            finally:
-                fast._ef, fast.AVAILABLE = ef, avail
-            self.assertTrue(np.allclose(f1, f2))
-            self.assertTrue(np.array_equal(k1, k2))
-
     def test_one_line_three_parts(self):
         from test_roads import features, FRAME, LON, M_LON
         f = features([[(-200, 0), (200, 0)]], ["residential"], flags=[(0, "is_tunnel")])
@@ -289,7 +271,6 @@ class TwinTunnels(unittest.TestCase):
         self.assertGreater(float(P[:, 1].max()), 9.5 + 5.5)
 
     def test_holes_round_both_and_their_mouths(self):
-        import fast
         parts = self.parts()
         n, sq = 128, 2.0
         u = np.full((n, n), 30.0)                       # a hill over them: the tubes' insides are not cut ...
@@ -299,14 +280,6 @@ class TwinTunnels(unittest.TestCase):
         mid_row = int(np.argmin(np.abs(ys - 4.75)))
         self.assertTrue(m[mid_row, (xs > 0) & (xs < 4)].any(), "... but the shared mouth is, between them too")
         self.assertFalse(m[mid_row, (xs > 20) & (xs < 200)].any())
-        if hasattr(fast._ef, "tunnel_holes"):
-            ef, avail = fast._ef, fast.AVAILABLE
-            try:
-                fast.AVAILABLE = False
-                b = roads.tunnel_hole_mask(parts, u, 110.0, 0.0, sq)
-            finally:
-                fast._ef, fast.AVAILABLE = ef, avail
-            self.assertTrue(np.array_equal(m, b), "Rust and numpy alike")
 
 
 class FloorAt(unittest.TestCase):
@@ -331,55 +304,6 @@ class SegmentalArch(unittest.TestCase):
         r = (36 + (5.0 * roadmesh.LOW_RISE) ** 2) / (2 * 5.0 * roadmesh.LOW_RISE)
         d = np.hypot(vault[:, 0], vault[:, 1] - (5.0 - r))
         self.assertTrue(np.allclose(d, r))
-
-
-class RustParity(unittest.TestCase):
-    """tunnel_hole_mask and arch_raise in Rust (earthfast.tunnel_holes / arch_raise_part) and numpy, sample for
-    sample (the user, 2026-10-17: move the tunnel code to Rust)."""
-
-    def parts(self, rng):
-        out, heights, mouths = [], {}, {}
-        for k in range(4):
-            xy = np.cumsum(rng.uniform(-8, 12, (rng.integers(3, 9), 2)), axis=0)
-            z = 10 + np.cumsum(rng.normal(0, 0.3, len(xy)))
-            fid = f"p{k}"
-            out.append((fid, Spec(float(rng.uniform(5, 12)), "paved", False, "residential"), xy, z, 0.0))
-            if k % 2:
-                heights[fid] = float(rng.uniform(3.6, 6.0))
-                mouths[fid] = (bool(rng.integers(0, 2)), bool(rng.integers(0, 2)))
-        return out, heights, mouths
-
-    def both(self, f):
-        import fast
-        a = f()
-        ef, avail = fast._ef, fast.AVAILABLE
-        try:
-            fast.AVAILABLE = False
-            b = f()
-        finally:
-            fast._ef, fast.AVAILABLE = ef, avail
-        return a, b
-
-    def test_holes_and_raise_agree(self):
-        import fast
-        if not hasattr(fast._ef, "tunnel_holes"):
-            self.skipTest("no kernel")
-        rng = np.random.default_rng(11)
-        for _ in range(8):
-            parts, heights, mouths = self.parts(rng)
-            n, sq = 64, 2.0
-            u = 10 + rng.normal(0, 3, (n, n))
-            a, b = self.both(lambda: roads.tunnel_hole_mask(parts, u, 20.0, 20.0, sq, heights, mouths))
-            self.assertTrue(np.array_equal(a, b))
-            px, py = rng.uniform(-20, 80, 500), rng.uniform(-20, 80, 500)
-            zz = 10 + rng.normal(0, 3, 500)
-            a, b = self.both(lambda: roads.arch_raise(parts, heights, px, py, zz, mouths))
-            self.assertTrue(np.array_equal(a, b))
-
-
-if __name__ == "__main__":
-    unittest.main()
-
 
 class PortalClearTest(unittest.TestCase):
     """GitHub #2: an underpass under the E6 in Norway mapped to end 0.7 m off the carriageway: its floor rose to the
