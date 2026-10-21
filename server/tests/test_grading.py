@@ -144,6 +144,40 @@ class SeparationTest(unittest.TestCase):
         self.assertGreater(np.ptp(old), 1.0, "(the bank pulled its edge up before)")
 
 
+class SharpCutTest(unittest.TestCase):
+    """_add_cuts: a street along y = 0 with a smoothed 4 m wall rising beside its left side (+y) gets a cutting there:
+    the wall where the climb is half done, its top 4 m up; the open right side none."""
+
+    def test_wall_on_one_side(self):
+        import types
+        xy = np.c_[np.arange(0.0, 81.0, 8.0), np.zeros(11)]
+        p = types.SimpleNamespace(xy=xy, z=np.full(11, 10.0), half=5.0, road_half=4.0, cut=None)
+
+        def elev(la, lo):
+            _e, n, _ = FRAME.geodetic_to_enu(np.asarray(la), np.asarray(lo), np.zeros(np.shape(la)))
+            return 10.0 + 4.0 / (1.0 + np.exp(-(n - 8.0) / 0.8))
+        grading._add_cuts(FRAME, [p], elev)
+        self.assertIsNotNone(p.cut)
+        self.assertEqual(p.cut.shape, (10, 6))
+        wall, top, reach = p.cut[:, 0], p.cut[:, 1], p.cut[:, 2]
+        self.assertTrue(np.isfinite(wall).all() and np.isfinite(top).all())
+        np.testing.assert_allclose(wall, 8.0, atol=1.01)                # the half-way point of the climb
+        np.testing.assert_allclose(top, 10.0 + 3.6, atol=0.4)          # 90 % of it
+        self.assertTrue((reach > wall).all())
+        self.assertTrue(np.isnan(p.cut[:, 3:]).all(), "the open side: no cutting")
+
+    def test_gentle_slope_is_no_wall(self):
+        import types
+        xy = np.c_[np.arange(0.0, 81.0, 8.0), np.zeros(11)]
+        p = types.SimpleNamespace(xy=xy, z=np.full(11, 10.0), half=5.0, road_half=4.0, cut=None)
+
+        def elev(la, lo):
+            _e, n, _ = FRAME.geodetic_to_enu(np.asarray(la), np.asarray(lo), np.zeros(np.shape(la)))
+            return 10.0 + 0.2 * np.abs(n)                                # 1 in 5: a bank, not a wall
+        grading._add_cuts(FRAME, [p], elev)
+        self.assertIsNone(p.cut)
+
+
 class ShoulderTest(unittest.TestCase):
     def test_sidewalk_classes_keep_the_sidewalk_flat(self):
         res = roads.Spec(6.0, "paved", True, "residential")

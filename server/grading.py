@@ -248,73 +248,31 @@ def _add_cuts(frame, plans, elev):
     """Sets Plan.cut on the plans (None entries skipped): per segment and side a cutting's wall (SHARP_*), from the raw
     ground elev(lat, lon) sampled outward from the carriageway's edge: the ground rising SHARP_MIN_M or more at
     SHARP_GRADE or steeper on average. The data spreads a vertical wall evenly round where it stands: its wall is put
-    where the climb is half done (never on the carriageway), its top where it is done."""
-    offs = np.arange(0.0, SHARP_REACH_M + 1e-9, SHARP_STEP_M)
-    pts, owners = [], []
-    for j, p in enumerate(plans):
+    where the climb is half done (never on the carriageway), its top where it is done (the Rust kernels
+    earthfast.sharp_probes / sharp_cuts; the ground lookup between them)."""
+    import fast
+    fast.require(40, "sharp cuttings")
+    f64 = np.float64
+    jobs = []
+    for p in plans:
         if p is None or len(p.xy) < 2:
             continue
-        xy = p.xy[:, :2]
-        t = np.gradient(xy, axis=0)
-        t /= np.maximum(np.hypot(*t.T), 1e-9)[:, None]
-        nl = np.stack([-t[:, 1], t[:, 0]], axis=1)
-        o = p.road_half + offs + (p.half - p.road_half)      # from the carriageway edge to past the core
-        o = np.r_[p.road_half + offs[offs < p.half - p.road_half], o]
-        for side in (1.0, -1.0):
-            q = xy[:, None, :] + nl[:, None, :] * side * o[None, :, None]
-            pts.append(q.reshape(-1, 2))
-        owners.append((j, o))
-    if not pts:
+        q, o = fast._ef.sharp_probes(np.ascontiguousarray(p.xy[:, :2], f64), float(p.road_half), float(p.half),
+                                     float(SHARP_REACH_M), float(SHARP_STEP_M))
+        jobs.append((p, q, o))
+    if not jobs:
         return
-    allp = np.concatenate(pts)
+    allp = np.concatenate([q for _, q, _ in jobs])
     la, lo, _ = frame.enu_to_geodetic(allp[:, 0], allp[:, 1], 0.0)
-    g = np.asarray(elev(np.asarray(la), np.asarray(lo)), np.float64)       # (as plan_roads' heights)
+    g = np.asarray(elev(np.asarray(la), np.asarray(lo)), f64)       # (as plan_roads' heights)
     k = 0
-    for j, o in owners:
-        p = plans[j]
-        n = len(p.xy)
-        res = []
-        for _side in (1.0, -1.0):
-            gg = g[k:k + n * len(o)].reshape(n, len(o))
-            k += n * len(o)
-            rise = gg - p.z[:, None]
-
-            def wall_of(r):
-                """(ok, wall offset, top rise, top offset) of a climb r (n, len(o)) per vertex."""
-                top = r.max(axis=1)
-                ti = np.argmax(r >= 0.9 * top[:, None], axis=1)     # (where the climb is done, not a plateau's creep)
-                half_i = np.argmax(r >= (top / 2.0)[:, None], axis=1)
-                foot_i = np.argmax(r >= 0.25 * top[:, None], axis=1)
-                steep = (top * 0.75) / np.maximum(o[ti] - o[foot_i], SHARP_STEP_M)
-                ok_ = (top >= SHARP_MIN_M) & (steep >= SHARP_GRADE)
-                return ok_, np.maximum(o[half_i], p.road_half + 0.2), top, o[ti]
-
-            ok_up, wall_up, top, reach_o = wall_of(rise)
-            ok_dn, wall_dn, _drop, _ = wall_of(-rise)       # the ground falls away: the core ends there, nothing raised
-            ok_dn &= ~ok_up
-            ok = ok_up | ok_dn
-            wall = np.where(ok_up, wall_up, wall_dn)
-            # runs of SHARP_RUN_N vertices at least (a single steep sample is noise, not a wall)
-            run = np.zeros(n, bool)
-            i = 0
-            while i < n:
-                if not ok[i]:
-                    i += 1
-                    continue
-                e = i
-                while e + 1 < n and ok[e + 1]:
-                    e += 1
-                if e - i + 1 >= SHARP_RUN_N:
-                    run[i:e + 1] = True
-                i = e + 1
-            seg = run[:-1] & run[1:]
-            ztop = np.where(ok_up, p.z + top, np.nan)
-            up = seg & np.isfinite(ztop[:-1]) & np.isfinite(ztop[1:])
-            res.append(np.where(seg, np.maximum(wall[:-1], wall[1:]), np.nan))
-            res.append(np.where(up, np.minimum(ztop[:-1], ztop[1:]), np.nan))
-            res.append(np.where(up, np.maximum(reach_o[:-1], reach_o[1:]), np.nan))
-        if np.isfinite(res[0]).any() or np.isfinite(res[3]).any():
-            p.cut = np.stack(res, axis=1)
+    for p, q, o in jobs:
+        cut = fast._ef.sharp_cuts(np.ascontiguousarray(g[k:k + len(q)]), np.ascontiguousarray(p.z, f64), o,
+                                  float(p.road_half), float(SHARP_MIN_M), float(SHARP_GRADE), float(SHARP_STEP_M),
+                                  int(SHARP_RUN_N))
+        k += len(q)
+        if cut is not None:
+            p.cut = cut
 
 
 def _plan(xy, z, spec, abut=(False, False)):

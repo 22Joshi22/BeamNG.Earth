@@ -2830,6 +2830,135 @@ fn follow_tris<'py>(py: Python<'py>, pts: PyReadonlyArray2<'py, f64>, uv: PyRead
     (pa.into_pyarray(py), ua.into_pyarray(py), ta.into_pyarray(py), src.into_pyarray(py))
 }
 
+/// grading._add_cuts, its probes: per vertex of a road's centreline xy (n, 2), points on its left, then its right, at
+/// the offsets o from the carriageway's edge (road_half) out past the core (half): road_half + every step m short of
+/// the core's edge, then half + 0, step, .. reach. Returns (points (2 * n * m, 2) in side, vertex, offset order, o (m,)).
+#[pyfunction]
+fn sharp_probes<'py>(py: Python<'py>, xy: PyReadonlyArray2<'py, f64>, road_half: f64, half: f64, reach: f64, step: f64)
+                     -> (Bound<'py, PyArray2<f64>>, Bound<'py, PyArray1<f64>>) {
+    let p = xy.as_array();
+    let n = p.nrows();
+    let count = ((reach + 1e-9) / step).ceil().max(0.0) as usize;       // numpy.arange(0, reach + 1e-9, step)
+    let offs: Vec<f64> = (0..count).map(|i| i as f64 * step).collect();
+    let mut o: Vec<f64> = offs.iter().filter(|&&v| v < half - road_half).map(|&v| road_half + v).collect();
+    o.extend(offs.iter().map(|&v| (road_half + v) + (half - road_half)));
+    let m = o.len();
+    let mut out = Vec::with_capacity(2 * n * m * 2);
+    // the unit tangents (numpy.gradient: central differences inside, one-sided at the ends) and left normals
+    let mut nl = Vec::with_capacity(n);
+    for i in 0..n {
+        let (a, b, d) = if n < 2 { (0, 0, 1.0) } else if i == 0 { (1, 0, 1.0) } else if i == n - 1 { (n - 1, n - 2, 1.0) }
+                        else { (i + 1, i - 1, 2.0) };
+        let (tx, ty) = ((p[[a, 0]] - p[[b, 0]]) / d, (p[[a, 1]] - p[[b, 1]]) / d);
+        let l = tx.hypot(ty).max(1e-9);
+        nl.push((-(ty / l), tx / l));
+    }
+    for side in [1.0f64, -1.0] {
+        for i in 0..n {
+            let (nx, ny) = (nl[i].0 * side, nl[i].1 * side);
+            for &ov in &o {
+                out.push(p[[i, 0]] + nx * ov);
+                out.push(p[[i, 1]] + ny * ov);
+            }
+        }
+    }
+    let a = numpy::ndarray::Array2::from_shape_vec((2 * n * m, 2), out).unwrap();
+    (a.into_pyarray(py), o.into_pyarray(py))
+}
+
+/// grading._add_cuts, the walls: from the raw ground g at sharp_probes' points (2 * n * m,) and the road's heights z
+/// (n,) at its vertices, per segment and side (left, then right) a cutting's (wall offset, top height, top offset), NaN
+/// where none (a drop: its wall only), as Plan.cut (n - 1, 6); None when there is no cutting at all. A climb counts
+/// where the ground rises min_m or more at grade or steeper on average (from a quarter to 90 % of it), over runs of
+/// run_n vertices at least; its wall is where the climb is half done (never nearer than road_half + 0.2), its top
+/// where it is 90 % done. The same reading of a fall: the road's core ends there, nothing raised.
+#[pyfunction]
+fn sharp_cuts<'py>(py: Python<'py>, g: PyReadonlyArray1<'py, f64>, z: PyReadonlyArray1<'py, f64>,
+                   o: PyReadonlyArray1<'py, f64>, road_half: f64, min_m: f64, grade: f64, step: f64, run_n: usize)
+                   -> Option<Bound<'py, PyArray2<f64>>> {
+    let (g, z, o) = (g.as_array(), z.as_array(), o.as_array());
+    let n = z.len();
+    let m = o.len();
+    if n < 2 || m == 0 || g.len() != 2 * n * m {
+        return None;
+    }
+    let first = |r: &[f64], v: f64| r.iter().position(|&x| x >= v).unwrap_or(0);    // numpy.argmax of r >= v
+    // (ok, wall offset, top rise, top offset) of a climb r (m,)
+    let wall_of = |r: &[f64]| -> (bool, f64, f64, f64) {
+        let top = r.iter().fold(f64::NEG_INFINITY, |a, &b| if a.is_nan() || b.is_nan() { f64::NAN } else { a.max(b) });
+        let ti = first(r, 0.9 * top);
+        let half_i = first(r, top / 2.0);
+        let foot_i = first(r, 0.25 * top);
+        let steep = (top * 0.75) / (o[ti] - o[foot_i]).max(step);
+        (top >= min_m && steep >= grade, o[half_i].max(road_half + 0.2), top, o[ti])
+    };
+    let nan = f64::NAN;
+    let mut cols: Vec<Vec<f64>> = Vec::with_capacity(6);
+    for side in 0..2 {
+        let (mut ok, mut wall, mut ztop, mut reach) = (vec![false; n], vec![0.0; n], vec![nan; n], vec![0.0; n]);
+        let mut rise = vec![0.0f64; m];
+        let mut fall = vec![0.0f64; m];
+        for i in 0..n {
+            let base = (side * n + i) * m;
+            for k in 0..m {
+                rise[k] = g[base + k] - z[i];
+                fall[k] = -rise[k];
+            }
+            let (ok_up, wall_up, top, reach_o) = wall_of(&rise);
+            let (ok_dn, wall_dn, _, _) = wall_of(&fall);
+            ok[i] = ok_up || ok_dn;
+            wall[i] = if ok_up { wall_up } else { wall_dn };
+            if ok_up {
+                ztop[i] = z[i] + top;
+            }
+            reach[i] = reach_o;
+        }
+        // runs of run_n vertices at least (a single steep sample is noise, not a wall)
+        let mut run = vec![false; n];
+        let mut i = 0;
+        while i < n {
+            if !ok[i] {
+                i += 1;
+                continue;
+            }
+            let mut e = i;
+            while e + 1 < n && ok[e + 1] {
+                e += 1;
+            }
+            if e + 1 - i >= run_n {
+                for q in i..=e {
+                    run[q] = true;
+                }
+            }
+            i = e + 1;
+        }
+        let (mut cw, mut ct, mut cr) = (vec![nan; n - 1], vec![nan; n - 1], vec![nan; n - 1]);
+        for s in 0..n - 1 {
+            if !(run[s] && run[s + 1]) {
+                continue;
+            }
+            cw[s] = wall[s].max(wall[s + 1]);
+            if ztop[s].is_finite() && ztop[s + 1].is_finite() {
+                ct[s] = ztop[s].min(ztop[s + 1]);
+                cr[s] = reach[s].max(reach[s + 1]);
+            }
+        }
+        cols.push(cw);
+        cols.push(ct);
+        cols.push(cr);
+    }
+    if !cols[0].iter().chain(cols[3].iter()).any(|v| v.is_finite()) {
+        return None;
+    }
+    let mut flat = Vec::with_capacity((n - 1) * 6);
+    for s in 0..n - 1 {
+        for c in &cols {
+            flat.push(c[s]);
+        }
+    }
+    Some(numpy::ndarray::Array2::from_shape_vec((n - 1, 6), flat).unwrap().into_pyarray(py))
+}
+
 #[pymodule]
 fn earthfast(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(island_ring_rays, m)?)?;
@@ -2878,6 +3007,8 @@ fn earthfast(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(over_tunnel, m)?)?;
     m.add_function(wrap_pyfunction!(veg_rows_json, m)?)?;
     m.add_function(wrap_pyfunction!(follow_tris, m)?)?;
-    m.add("VERSION", 39)?;
+    m.add_function(wrap_pyfunction!(sharp_probes, m)?)?;
+    m.add_function(wrap_pyfunction!(sharp_cuts, m)?)?;
+    m.add("VERSION", 40)?;
     Ok(())
 }
