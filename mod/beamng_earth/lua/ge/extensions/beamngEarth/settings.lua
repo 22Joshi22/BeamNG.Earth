@@ -554,9 +554,36 @@ end
 -- player's own driving controls are held off instead (the triggers would rev and brake the car), the car's inputs let
 -- go first (a pedal held when the map opened would stay down), with the stock map's blocked groups.
 M.MAP_INPUT_EVENT = 'BeamNGEarthMapInput'
-M.MAP_BLOCKED = { 'vehicle', 'gameCam', 'vehicleTeleporting', 'funStuff', 'freeCam', 'physicsControls',
+M.MAP_BLOCKED = { 'gameCam', 'vehicleTeleporting', 'funStuff', 'freeCam', 'physicsControls',
   'vehicleSwitching', 'walkingMode', 'vehicleMenues', 'aiControls', 'photoMode', 'couplers', 'missionPopup',
   'resetPhysics', 'miniMap' }
+-- ... and every driving action by name: the action filter's groups have none ('vehicle' named no group, so the sticks
+-- and triggers still drove the car behind the map, the user 2026-10-21): the actions of these categories
+-- (core/input/actions/vehicle.json, the vehicles' own input_actions), else this list
+M.MAP_BLOCKED_CATS = { vehicle = true, vehicle_specific = true }
+M.MAP_BLOCKED_DRIVING = { 'accelerate', 'brake', 'accelerate_brake', 'steering', 'steer_left', 'steer_right', 'clutch',
+  'parkingbrake', 'parkingbrake_temporary', 'parkingbrake_toggle', 'shiftUp', 'shiftDown', 'gearR', 'gearN', 'gear1',
+  'gear2', 'gear3', 'gear4', 'gear5', 'gear6', 'gear7', 'gear8', 'horn', 'activateStarterMotor', 'toggleShifterMode' }
+
+-- The actions the map holds off: the stock map's groups and the driving actions (M.MAP_BLOCKED_CATS).
+function M.mapBlockedActions(filter, actions)
+  local out = filter.createActionTemplate(M.MAP_BLOCKED)
+  local seen = {}
+  for _, a in ipairs(out) do seen[a] = true end
+  local all = actions and actions.getActiveActions and actions.getActiveActions()
+  local n = 0
+  for name, a in pairs(type(all) == 'table' and all or {}) do
+    if type(a) == 'table' and M.MAP_BLOCKED_CATS[a.cat] and not seen[name] then
+      out[#out + 1], seen[name], n = name, true, n + 1
+    end
+  end
+  if n == 0 then
+    for _, name in ipairs(M.MAP_BLOCKED_DRIVING) do
+      if not seen[name] then out[#out + 1], seen[name] = name, true end
+    end
+  end
+  return out
+end
 local mapCtl = nil      -- the stock map's functions while ours has its controls
 
 local function mapInput(kind, a, b)
@@ -585,7 +612,7 @@ function M.mapControls(on)
     end
     if filter and filter.createActionTemplate then
       pcall(function()
-        filter.setGroup('beamngEarthMapBlocked', filter.createActionTemplate(M.MAP_BLOCKED))
+        filter.setGroup('beamngEarthMapBlocked', M.mapBlockedActions(filter, rawget(_G, 'core_input_actions')))
         filter.addAction(0, 'beamngEarthMapBlocked', true)
       end)
     end

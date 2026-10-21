@@ -384,4 +384,20 @@ do
   T.check(st.HIDDEN.updateDismissed, 'updateDismissed: not on the settings page')
 end
 
+-- the map holds off the car's controls (the user, 2026-10-21: the controller drove the car behind the map): the stock
+-- groups and every driving action by name
+do
+  local filter = { createActionTemplate = function(groups) return { 'camera_1', 'funBoom' } end }
+  local actions = { getActiveActions = function() return {
+    accelerate = { cat = 'vehicle' }, steering = { cat = 'vehicle' }, pickup__toggleBed = { cat = 'vehicle_specific' },
+    bigMapZoom = { cat = 'gameplay' }, funBoom = { cat = 'vehicle' } } end }
+  local got = {}
+  for _, a in ipairs(settings.mapBlockedActions(filter, actions)) do got[a] = (got[a] or 0) + 1 end
+  T.check(got.accelerate == 1 and got.steering == 1 and got.pickup__toggleBed == 1, 'map: driving actions blocked')
+  T.check(got.camera_1 == 1 and got.funBoom == 1 and not got.bigMapZoom, 'map: the stock groups, once each; its own kept')
+  got = {}
+  for _, a in ipairs(settings.mapBlockedActions(filter, nil)) do got[a] = true end
+  T.check(got.accelerate and got.steering and got.brake, 'map: the fallback list without the action list')
+end
+
 T.done('test_settings')
