@@ -32,6 +32,7 @@ class PavingTest(unittest.TestCase):
         self.assertIsNone(plazas.paving("compacted", 48.86, 2.32), "the Tuileries' sand: the terrain's photo")
         self.assertEqual(plazas.paving(None, 48.86, 2.32)[0], plazas.STONE[0], "not mapped, in Europe: stone")
         self.assertEqual(plazas.paving(None, 39.28, -76.59)[0], plazas.BRICK, "... in the US: brick")
+        self.assertEqual(plazas.paving("paving_stones", 39.28, -76.59)[0], plazas.BRICK, "Fells Point's squares")
 
     def test_holes_left_out(self):
         outer = ring([(10, 10), (60, 10), (60, 40), (10, 40), (10, 10)])

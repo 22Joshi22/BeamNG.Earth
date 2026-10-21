@@ -17,7 +17,7 @@ MIN_AREA_M2 = 60.0      # smaller polygons are left to the terrain
 # The paving by the mapped surface (GitHub #70: every square was red brick, Paris's Place de la Concorde and Louvre
 # courtyards among them, 56,000 and 71,000 m2 of it): (material, m per texture repeat) as the road mesh draws those
 # surfaces (roads.LOOK); unpaved ones (the Tuileries' compacted sand and gravel) are left to the terrain's photo. No
-# surface mapped: red brick in the US (Fells Point's squares, the user's report #45), stone setts elsewhere.
+# surface mapped or paving stones: red brick in the US (Fells Point's squares, the user's report #45), stone elsewhere.
 ASPHALT = ("road_asphalt_2lane", 11.0)
 STONE = ("italy_cobblestone", 2.5)
 PAVING = {"asphalt": ASPHALT, "concrete": ASPHALT, "concrete:plates": ASPHALT, "concrete_plates": ASPHALT,
@@ -90,10 +90,11 @@ def paving(surface_value, lat, lon):
     """(material, m per repeat) of a square with this mapped surface at (lat, lon), None for an unpaved one."""
     if surface_value in UNPAVED:
         return None
-    if surface_value in PAVING:
-        return PAVING[surface_value]
     import buildings
-    return (BRICK, BRICK_REPEAT_M) if buildings.region_style(lat, lon).name.startswith("us_") else STONE
+    us = buildings.region_style(lat, lon).name.startswith("us_")
+    if us and surface_value in (None, "paving_stones"):     # (Fells Point's squares, mapped paving_stones: red brick)
+        return BRICK, BRICK_REPEAT_M
+    return PAVING.get(surface_value, STONE)
 
 
 def mesh(frame, box, rings, elev, origin):
