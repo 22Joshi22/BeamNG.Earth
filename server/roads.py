@@ -3441,6 +3441,7 @@ class Tracker:
         # while it is within reach; a failed one is asked again after TILE_RETRY_S, not at the next pose
         self.empty = set()
         self.retry = {}         # tile -> monotonic time it may be built again
+        self.fails = {}         # tile -> builds failed in a row (TILE_FAILS_WARN)
 
     def close(self):
         if self.pool is not None:
@@ -3457,7 +3458,7 @@ class Tracker:
             for f in self.futs.values():
                 f.cancel()
             self.aid, self.sent, self.building, self.futs = aid, set(), set(), {}
-            self.empty, self.retry = set(), {}
+            self.empty, self.retry, self.fails = set(), {}, {}
         if self.pool is None:
             from concurrent.futures import ThreadPoolExecutor
             self.pool = ThreadPoolExecutor(BUILD_PER_POSE, thread_name_prefix="roads-tile")
@@ -3500,13 +3501,17 @@ class Tracker:
         except Exception as e:      # network trouble: the next pose asks again
             # (a bug failed every tile on a Steam Deck with nothing in the log, 2026-10-20: each kind once, in full)
             kind = f"{type(e).__name__}: {e}"[:200]
+            fails = self.fails[key] = self.fails.get(key, 0) + 1
             if kind not in _FAILS_SEEN and not isinstance(e, (OSError, TimeoutError)):
                 _FAILS_SEEN.add(kind)
                 log.warning("roads tile %s failed: %s", key, kind, exc_info=e)
+            elif fails == TILE_FAILS_WARN:      # network trouble that does not pass (GitHub #91: no roads, no log)
+                log.warning("roads tile %s of anchor %d: %d builds failed in a row, the last: %s", key, aid, fails, kind)
             else:
                 log.debug("roads tile %s: %s: %s", key, type(e).__name__, e)
             self.retry[key] = time.monotonic() + TILE_RETRY_S
             return
+        self.fails.pop(key, None)
         if res is None:                     # no roads there: not built again while it stays within reach
             self.empty.add(key)
             return
@@ -3522,6 +3527,7 @@ class Tracker:
 
 
 TILE_RETRY_S = 3.0              # s before a road tile whose build failed is built again (Tracker._built)
+TILE_FAILS_WARN = 5             # a tile's builds failed in a row before an expected kind of failure is logged as a warning
 _FAILS_SEEN = set()             # the kinds of road tile failures logged in full (Tracker._built)
 BLD_PARTS_MAX = 4               # building meshes per road tile ("bld", "bld2".."bld4": the mod's list)
 

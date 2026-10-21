@@ -602,6 +602,28 @@ class TrackerTest(unittest.TestCase):
         self.assertEqual(built.count((0, 0)), 2)
         self.assertIn((1, "0_0"), {(m["anchorId"], m["key"]) for m in conn.sent if m["type"] == "roads_tile"})
 
+    def test_a_tile_failing_again_and_again_is_logged(self):
+        # (GitHub #91) network errors are expected and retried quietly, but a tile that never comes left no trace
+        conn = FakeConn()
+        tr = roads.Tracker()
+
+        def build(aid, tx, ty):
+            if (tx, ty) == (0, 0):
+                raise OSError("Access is denied")
+            return None
+
+        async def go():
+            loop = asyncio.get_running_loop()
+            for _ in range(10):
+                tr.on_pose(conn, 1, 0.0, 0.0, loop, build)
+                await asyncio.sleep(0.01)
+        with self.assertLogs("earthd.roads", "WARNING") as cm:
+            for _ in range(roads.TILE_FAILS_WARN):
+                tr.retry.clear()
+                asyncio.run(go())
+        self.assertEqual(len(cm.output), 1)
+        self.assertIn("Access is denied", cm.output[0])
+
     def test_far_buildings_skip_the_road_tiles(self):
         import vegetation
         import buildings
