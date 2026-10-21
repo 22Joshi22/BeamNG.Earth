@@ -932,9 +932,16 @@ def _deck_stacks(lines, levels, widths, step=STACK_STEP_M):
             d = np.hypot(*(q[:, None, :] - near).transpose(2, 0, 1))
             m = np.argmin(d, axis=1)
             dd = d[np.arange(len(q)), m]
+            # (two parts joined at an end: a ramp leaving the mainline overlaps it from the fork on. A requirement there
+            # falls back to the shared end at DECK_GRADE and lifted the upper part's end alone: a ramp of a higher
+            # level started 2.2 m over the fork, a ledge across the lanes, I-83 in Baltimore 2026-10-21. None within
+            # the distance it takes to fall away.)
+            shared = [ei for ei in (0, -1) for ej in (0, -1) if np.hypot(*(pts[i][ei] - pts[j][ej])) < 0.5]
             for a in np.flatnonzero(dd < reach):
                 k = m[a]
                 sl = arcs[j][k] + t[a, k] * (arcs[j][k + 1] - arcs[j][k])
+                if any((s[a] if ei == 0 else arcs[i][-1] - s[a]) * DECK_GRADE < DECK_ROAD_CLEAR for ei in shared):
+                    continue
                 out.append((i, float(s[a]), j, float(sl)))
     return out
 
