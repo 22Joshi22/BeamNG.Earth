@@ -91,5 +91,38 @@ class SetupVenv(unittest.TestCase):
         self.assertFalse(os.path.exists(self.venv))
 
 
+class ModUpdateTimes(unittest.TestCase):
+    """The game repacks a terrain texture (seconds, on its main thread) when the file is newer than its cache entry:
+    an update keeps an unchanged file's time and gives a changed one the current time."""
+
+    def test_unchanged_files_keep_their_time(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            src, user = os.path.join(tmp, "src"), os.path.join(tmp, "user")
+            dest = os.path.join(user, "mods", "unpacked", install.MOD_NAME)
+            os.makedirs(src)
+            os.makedirs(dest)
+            for root, files in ((src, {"tex.png": b"same", "code.lua": b"new"}),
+                                (dest, {"tex.png": b"same", "code.lua": b"old"})):
+                for name, data in files.items():
+                    with open(os.path.join(root, name), "wb") as f:
+                        f.write(data)
+            with open(os.path.join(src, "added.png"), "wb") as f:
+                f.write(b"added")
+            old = 1_600_000_000
+            for name in ("tex.png", "code.lua"):
+                os.utime(os.path.join(dest, name), (old, old))
+            for name in ("tex.png", "code.lua", "added.png"):
+                os.utime(os.path.join(src, name), (old + 50, old + 50))
+            with mock.patch.object(install, "MOD_SRC", src), contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(install.install_mod(user, True, dry_run=False, quiet=True), "updated")
+            mtime = lambda name: os.stat(os.path.join(dest, name)).st_mtime     # noqa: E731
+            self.assertEqual(mtime("tex.png"), old, "unchanged: the time of the copy it replaced")
+            now = __import__("time").time()
+            self.assertGreater(mtime("code.lua"), now - 60, "changed: now (newer than any cache of the old content)")
+            self.assertGreater(mtime("added.png"), now - 60, "new: now")
+            with open(os.path.join(dest, "code.lua"), "rb") as f:
+                self.assertEqual(f.read(), b"new")
+
+
 if __name__ == "__main__":
     unittest.main()

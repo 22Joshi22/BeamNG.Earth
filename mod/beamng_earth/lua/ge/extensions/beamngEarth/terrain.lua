@@ -97,6 +97,7 @@ M.square = 2.0   -- the block's square size (m per sample), from the last load
 -- tools/make_level_assets.py, because runtime TerrainMaterials made every updateMaterial cost ~1 s,
 -- in-game 2026-10-12)
 M.runtimeMade = {}
+M.seenMats = {}         -- material names some block of this session listed (M.swap)
 local function toSamples(metres) return math.max(1, math.floor(metres / M.square + 0.5)) end
 
 local function applyLook(m, name)
@@ -301,12 +302,18 @@ function M.swap(terPath, squareSize, maxHeight, x, y, z, layers, base, baseSize)
     log('W', 'beamngEarth', 'terrain .ter swap failed: ' .. tostring(err))
     return false
   end
+  -- the materials this block lists that no block of this session listed before (a first use costs the engine
+  -- its textures' load: hitch diagnosis, core's commit log)
+  local fresh = {}
+  for _, nm in ipairs(slots) do
+    if not M.seenMats[nm] then fresh[#fresh + 1] = nm; M.seenMats[nm] = true end
+  end
   M.slots = slots
   M.swaps = (M.swaps or 0) + 1
   applyRender(tb)
   if base ~= nil then M.setBase(base or nil, baseSize) end
-  -- ms of the last swap: the .ter load (postApply) and the whole call (with the base photo)
-  M.lastSwap = { apply = tApply, total = sw() }
+  -- ms of the last swap: the .ter load (postApply) and the whole call (with the base photo); its materials
+  M.lastSwap = { apply = tApply, total = sw(), mats = #slots, fresh = #fresh > 0 and fresh or nil }
   return true
 end
 

@@ -218,6 +218,7 @@ def install_mod(user_dir, assume_yes, dry_run, quiet=False):
         if dry_run:
             say(f"(dry run) would replace {dest}")
             return None
+        old_times = _unchanged_times(dest, MOD_SRC)
         shutil.rmtree(dest)
         status = "updated"
     elif dry_run:
@@ -227,8 +228,45 @@ def install_mod(user_dir, assume_yes, dry_run, quiet=False):
         status = "installed"
     os.makedirs(os.path.dirname(dest), exist_ok=True)
     shutil.copytree(MOD_SRC, dest, ignore=shutil.ignore_patterns("__pycache__", "*.pyc", ".DS_Store"))
+    if status == "updated":
+        _stamp_times(dest, old_times)
     note(f"Mod: installed to {dest}")
     return status
+
+
+# The game packs a terrain material's textures into its own cache (temp/art/terrainMaterialCache) and packs them again,
+# 1.5-3 s each on its main thread, whenever a source file is newer than its cache entry ("cache outdated" in its log).
+# An update copied every file with the build's times (a fresh checkout's: new), so the first session after each one
+# repacked every ground material as it first appeared: freezes of ~2.7 s driving into new ground (the user,
+# 2026-10-21: "freezes" in Pécs and Brisbane on 1.5.4, 13 repacks in the game's log). An unchanged file keeps the
+# time of the copy it replaces; a changed one gets now, newer than any cache entry made from its old content.
+def _unchanged_times(dest, src):
+    """{relative path: (atime, mtime)} of the files in dest whose content is the same in src."""
+    import filecmp
+    out = {}
+    for dirpath, _, filenames in os.walk(dest):
+        for name in filenames:
+            full = os.path.join(dirpath, name)
+            rel = os.path.relpath(full, dest)
+            other = os.path.join(src, rel)
+            try:
+                if os.path.isfile(other) and filecmp.cmp(full, other, shallow=False):
+                    st = os.stat(full)
+                    out[rel] = (st.st_atime, st.st_mtime)
+            except OSError:
+                pass
+    return out
+
+
+def _stamp_times(dest, old_times):
+    """The installed files' times: an unchanged file's (old_times) as before, the others now."""
+    for dirpath, _, filenames in os.walk(dest):
+        for name in filenames:
+            full = os.path.join(dirpath, name)
+            try:
+                os.utime(full, old_times.get(os.path.relpath(full, dest)))
+            except OSError:
+                pass
 
 
 # --- the server's Python environment ------------------------------------------------------------
