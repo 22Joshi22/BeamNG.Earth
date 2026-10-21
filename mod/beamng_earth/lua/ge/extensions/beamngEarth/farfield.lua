@@ -1436,10 +1436,17 @@ end
 function M.session() return session end
 
 function M.stats()
-  local n, covered, hiddenLoaded = 0, 0, 0
+  local n, covered, hiddenLoaded, over, overLevel = 0, 0, 0, 0, nil
+  local b, e = blockShown() and block or nil, 0.01
   for _, inst in pairs(live) do
     n = n + 1
     if inst.cover ~= 'none' then covered = covered + 1 end
+    -- shown at its own height across the block's ground (GitHub #46: coarse ground drawn over the near terrain)
+    if b and inst.cover == 'none' and not inst.hidden and inst.x0 < b.x1 - e and b.x0 + e < inst.x1
+        and inst.y0 < b.y1 - e and b.y0 + e < inst.y1 then
+      over = over + 1
+      overLevel = math.max(overLevel or inst.level, inst.level)
+    end
   end
   for _, inst in pairs(pending) do if inst.loaded then hiddenLoaded = hiddenLoaded + 1 end end
   local waiting = 0
@@ -1452,7 +1459,7 @@ function M.stats()
     textured = counters.textured, oldCovered = counters.oldCovered, nearVisual = nearVisual, rawView = rawView,
     waitingGroups = waiting, exactLevel = exactLevel, underLevel = under.level, underOld = under.old,
     exactMiss = counters.exactMiss, exactFrames = counters.exactFrames, retex = counters.retex,
-    retexStale = counters.retexStale, retexFailed = counters.retexFailed }
+    retexStale = counters.retexStale, retexFailed = counters.retexFailed, overBlock = over, overBlockLevel = overLevel }
 end
 
 ------------------------------------------------------------------------------------------
