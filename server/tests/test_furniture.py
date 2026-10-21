@@ -16,6 +16,17 @@ def road(fid, cls, urban, x0=-300.0, x1=600.0, y=50.0, width=8.0):
     return (fid, roads.Spec(width, "paved", urban, cls, False), pts, 0.0)
 
 
+
+class SignalSpotTest(unittest.TestCase):
+    def test_off_a_deck(self):
+        """A ramp's deck coming down beside the approach (Fallsway, Baltimore): the signal moves off it."""
+        u, right = np.array([0.0, 1.0]), np.array([1.0, 0.0])
+        road = (4.0, np.array([[0.0, -50.0], [0.0, 50.0]]))
+        free = furniture.signal_spot(np.zeros(2), u, right, 4.0, 4.0, [road])
+        deck = (3.0, np.array([[free[0], -50.0], [free[0], 60.0]]))      # a deck right where it stood
+        q = furniture.signal_spot(np.zeros(2), u, right, 4.0, 4.0, [road, deck])
+        self.assertTrue(q is None or abs(q[0] - free[0]) >= 3.0 + furniture.SIGN_CLEAR_M - 1e-9, (free, q))
+
 class LampTest(unittest.TestCase):
     def walks(self, r, side):
         fid, spec, pts, _ = r
