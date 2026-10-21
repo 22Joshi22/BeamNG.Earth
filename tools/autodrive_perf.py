@@ -39,6 +39,15 @@ CRASH_DAMAGE = 1500.0   # the damage rising this much between two polls: a crash
 OFF_ROUTE_M = 25.0
 ARRIVED_M = 60.0
 
+ROAD_LIMIT_LUA = r"""
+local v = getPlayerVehicle(0)
+if not v or not map or not map.findClosestRoad then return '0' end
+local a, b = map.findClosestRoad(v:getPosition())
+local n = a and map.getMap().nodes[a]
+local l = n and n.links and n.links[b]
+return tostring(l and l.speedLimit or 0)
+"""
+
 LUA_POLL = r'''
 if not beamngEarth_perfmon then extensions.load('beamngEarth_perfmon') end
 local pm = beamngEarth_perfmon
@@ -51,6 +60,24 @@ local s = loadstring('return ' .. beamngEarth_core.status())() or {}
 local pl = s.player or {}
 local ob = map and map.objects and map.objects[v:getId()]
 local rs = require('beamngEarth/roads').status() or {}
+-- how far ahead along the car's heading the road tiles are ready (roads.ahead): the first tile not arrived, the first
+-- without its road mesh, the share of arrived tiles with buildings (the world keeping up at speed; --ai-mph)
+local lead = nil
+do
+  local sp = math.sqrt(vel.x ^ 2 + vel.y ^ 2)
+  if sp > 5 then
+    local ok, list = pcall(require('beamngEarth/roads').ahead, pos.x, pos.y, vel.x / sp, vel.y / sp, 2000)
+    if ok and list then
+      local arr, road, nb, na = nil, nil, 0, 0
+      for _, e in ipairs(list) do
+        if not arr and not e.arrived then arr = e.d end
+        if not road and not (e.arrived and e.road) then road = e.d end
+        if e.arrived then na = na + 1; if e.bld then nb = nb + 1 end end
+      end
+      lead = { arrived = arr or 2000, road = road or 2000, bld = nb, tiles = na }
+    end
+  end
+end
 return jsonEncode({ roadsQ = rs.walksQueued, roadMeshes = rs.roadMeshes, t = os.clock(), x = pos.x, y = pos.y, z = pos.z, v = math.sqrt(vel.x ^ 2 + vel.y ^ 2), lat = pl.lat,
   lon = pl.lon, damage = ob and ob.damage or 0,
   perf = { frames = p.frames, avgMs = p.avgMs, p50 = p.p50, p95 = p.p95, p99 = p.p99, maxMs = p.maxMs,
@@ -59,7 +86,7 @@ return jsonEncode({ roadsQ = rs.walksQueued, roadMeshes = rs.roadMeshes, t = os.
   backlog = (beamngEarth_core._state() or {}).serverBacklog,
   gps = { remaining = g.remaining, off = g.off, arrows = g.arrows, autodrive = g.autodrive, planning = g.planning },
   pending = s.pending, anchor = s.anchorId, guard = s.guard, banner = s.banner, terrainLatency = s.terrainLatency,
-  hitches = beamngEarth_core.hitches and beamngEarth_core.hitches() or {} })
+  lead = lead, hitches = beamngEarth_core.hitches and beamngEarth_core.hitches() or {} })
 '''
 
 
@@ -368,6 +395,14 @@ def main():
     ap.add_argument("--rec", action="store_true", help="record the game's own frames (tools/gamerec.py: no screen "
                     "capture, no permission dialog; ~15 ms a frame, so the frame times are not the game's then)")
     ap.add_argument("--rec-fps", type=float, default=15.0)
+    ap.add_argument("--ai-mph", type=float, default=0.0,
+                    help="the car drives at this speed instead of the legal one (gps.speedOverride): the world keeping "
+                    "up at speed; the summary's lead says how far ahead the road meshes were ready")
+    ap.add_argument("--fast-after", type=float, default=0.0,
+                    help="with --ai-mph: drive at the legal speed this many seconds first (out of town onto the "
+                    "motorway), then at --ai-mph (the autodrive restarted with it) once the road under the car has a "
+                    "limit of --fast-kmh or more (the AI crashed at 105 mph in town, deck_fast5 2026-10-20)")
+    ap.add_argument("--fast-kmh", type=float, default=80.0)
     ap.add_argument("--snap-kmh", type=float, default=0.0,
                     help="start on a road this fast at least (the nearest such graph node): a motorway test")
     a = ap.parse_args()
@@ -399,6 +434,16 @@ def main():
             time.sleep(2)
         print(r, flush=True)
         time.sleep(3)
+    fast = repr(a.ai_mph * 0.44704) if a.ai_mph else "nil"
+    lua("require('beamngEarth/gps').speedOverride = %s return 1" % (fast if not a.fast_after else "nil"))
+    fast_at = time.time() + a.fast_after if a.ai_mph and a.fast_after else None
+
+    def road_limit():
+        """The speed limit (m/s) of the graph road nearest the car, 0 when none or on an error."""
+        try:
+            return float(lua(ROAD_LIMIT_LUA).strip() or 0)
+        except (Exception, SystemExit, ValueError):
+            return 0.0
     lua("beamngEarth_settings.uiMapGps(%r, %r, 'autodrive_perf') return 'ok'" % a.to)
     lua("return tostring(beamngEarth_settings.uiGpsAutodrive(true).autodrive)")
     obs = obs_start() if a.obs else None
@@ -415,6 +460,11 @@ def main():
         with open(os.path.join(a.out, "samples.jsonl"), "w") as f:
             while time.time() < end:
                 t0 = time.time()
+                if fast_at is not None and t0 >= fast_at and road_limit() >= a.fast_kmh / 3.6:  # (--fast-after)
+                    fast_at = None
+                    lua("require('beamngEarth/gps').speedOverride = %s beamngEarth_settings.uiGpsAutodrive(false) "
+                        "beamngEarth_settings.uiGpsAutodrive(true) return 1" % fast)
+                    print("now at %.0f mph" % a.ai_mph, flush=True)
                 try:
                     r = lua_json(LUA_POLL)
                 except (Exception, SystemExit) as e:    # a busy frame, a tool error: the next poll
@@ -439,10 +489,18 @@ def main():
         video = obs_stop(obs, os.path.join(a.out, "drive.mp4")) if obs is not None else None
         if grec is not None:
             video = grec.stop(os.path.join(a.out, "drive.mp4"))
-        lua("beamngEarth_settings.uiGpsAutodrive(false) beamngEarth_settings.uiMapGps(nil) return 'ok'")
+        lua("beamngEarth_settings.uiGpsAutodrive(false) beamngEarth_settings.uiMapGps(nil) "
+            "require('beamngEarth/gps').speedOverride = nil return 'ok'")
     evf.close()
     summary = summarize(rows[1:]) if len(rows) > 2 else {"polls": len(rows)}   # the first poll covers the setup
     summary["events"] = checks.events
+    leads = [r["lead"] for r in rows[1:] if isinstance(r.get("lead"), dict)]
+    if leads:
+        rl = sorted(x["road"] for x in leads)
+        summary["lead"] = {"polls": len(leads), "road_median_m": rl[len(rl) // 2], "road_p10_m": rl[len(rl) // 10],
+                           "road_under_200m_s": sum(1 for x in rl if x < 200),
+                           "road_missing_under_car_s": sum(1 for x in rl if x == 0),
+                           "arrived_median_m": sorted(x["arrived"] for x in leads)[len(leads) // 2]}
     if video:
         summary["video"] = video
         summary["video_small"] = share_copy(video)
