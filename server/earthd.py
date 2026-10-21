@@ -1123,6 +1123,7 @@ class Server:
                 anchor.grader = gradingmod.Grader(anchor.frame, self.mapdata,
                                                   lambda la, lo: self.dem.sample(la, lo, gradingmod.PROFILE_ZOOM),
                                                   self.road_widths)
+                anchor.grader.wet = self.sea.depth if self.sea is not None else None    # (no dams: underwater tunnels)
             return anchor.grader
 
     def warm_roads(self, anchor, x, y, vx, vy):

@@ -243,6 +243,9 @@ class Grader:
         self.key_locks = {}     # cell key -> Lock: one thread plans a cell, the others wait for it
         self.covers = {}        # cell key -> [(xy (k, 2), half width)]: the tunnels whose ground over them stays
         self.opens = {}         # cell key -> [(xy (k, 2), Spec)]: the tunnels' open sections (roads in the open)
+        self.wet = None         # wet(lat, lon) -> water depth (m): tunnels under water are left out, as
+                                # roads.TunnelProfiles leaves them (their "open" sections graded a dam across the river:
+                                # the Maastunnel's bed raised from -6 m to -0.4 m, storm-ace's GitHub #85)
 
     def _cell_plans(self, key):
         with self.lock:
@@ -530,6 +533,9 @@ class Grader:
                 if len(xy) < 2 or s[-1] <= 0:
                     continue
                 la, lo, _ = self.frame.enu_to_geodetic(xy[:, 0], xy[:, 1], 0.0)
+                if self.wet is not None and \
+                        (np.asarray(self.wet(la, lo)) > 0.5).mean() > roadsmod.TUNNEL_WET_SHARE:
+                    continue
                 g = np.asarray(self.elev(la, lo), np.float64)
                 if road_plans:
                     g = g.copy()
