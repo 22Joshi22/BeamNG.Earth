@@ -231,9 +231,11 @@
     </div>
 
     <!-- bottom: cursor position, scale, attribution -->
-    <div class="map-bottom">
+    <div class="map-bottom" :class="{ 'beside-panel': panelOpen }">
       <span class="cursor-pos">{{ cursorText }}</span>
-      <span class="attribution">{{ attributionText }}</span>
+      <!-- two lines, the whole text on hover or a click (it grew to five lines over the Places panel, 2026-10-20) -->
+      <span class="attribution" :class="{ full: creditsFull }" :title="attributionText"
+            @click.stop="creditsFull = !creditsFull" @mousedown.stop>{{ attributionText }}</span>
     </div>
   </div>
 </template>
@@ -374,6 +376,7 @@ const notice = computed(() => {
   return ""
 })
 
+const creditsFull = ref(false)          // the credits' whole text (else two lines)
 const attributionText = computed(() => {
   if (!state.value.mapPort) return ""
   const sat = baseLayer.value === "sat"
@@ -1153,7 +1156,8 @@ const fmtLatLon = mm.fmtLatLon
 
 .places-panel {
   position: absolute; right: 10px; top: 56px; z-index: 6; display: flex; flex-direction: column; align-items: flex-end;
-  max-height: calc(100% - 100px);
+  /* ends above the game's info bar (controller hints: 6.5vh, as .map-bottom) */
+  max-height: calc(100% - 56px - 6.5vh - 24px);
 }
 .panel-toggle { margin-bottom: 6px; }
 .panel-body {
@@ -1221,14 +1225,21 @@ const fmtLatLon = mm.fmtLatLon
 /* above the game's own footer bars (player / version bottom left, button hints bottom right: ~5 % of the height,
    scaling with it), which covered the cursor readout and the credits (the user, 2026-10-14) */
 .map-bottom {
-  position: absolute; left: 10px; right: 10px; bottom: calc(6.5vh + 4px); z-index: 10; display: flex;
+  position: absolute; left: 10px; right: 10px; bottom: calc(6.5vh + 10px); z-index: 10; display: flex;
   justify-content: space-between; align-items: flex-end; gap: 16px; pointer-events: none; font-size: 11px;
 }
 .cursor-pos, .attribution {
   padding: 3px 8px; background: rgba(0, 0, 0, 0.65); border-radius: 4px;
 }
 .cursor-pos { white-space: nowrap; }
-.attribution { text-align: right; opacity: 0.9; max-width: 60%; }
+.attribution {
+  text-align: right; opacity: 0.9; max-width: 60%; pointer-events: auto; cursor: pointer;
+  display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden;
+}
+.attribution.full, .attribution:hover { -webkit-line-clamp: unset; display: block; }
+/* the Places panel open (340 px + its padding and margin): the credits keep left of it */
+.map-bottom.beside-panel { right: 376px; }
+.map-bottom.beside-panel .attribution { max-width: 100%; }
 .map-view { bottom: 0; }
 .earth-map.embedded .map-bottom { bottom: 6px; }
 </style>
