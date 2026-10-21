@@ -185,6 +185,29 @@ class SeaCarveTest(unittest.TestCase):
         self.assertEqual(float(lv[0]), seacarve.SEA_E)
         self.assertGreater(float(d[0]), 1.0)
 
+    def test_a_lakes_harbour_is_not_the_sea(self):
+        """GitHub #45: Chicago's harbours on Lake Michigan (176 m), tagged water=harbour, were carved as the sea at 0 m:
+        holes 180 m deep. Near sea level (Port Jackson's DEM reads 2-6 m) it is still the sea."""
+        class Tagged(FakeMapData):
+            def cell(self, key, layers=None, kind="demand"):
+                harbour = [(-77.5, 38.5), (-75.5, 38.5), (-75.5, SEA_LAT), (-77.5, SEA_LAT), (-77.5, 38.5)]
+                w = LakeWater([("water", harbour)], ["h"])
+                w.attrs["tags"] = np.array(['{"natural":"water","water":"harbour"}'], object)
+                return Cell(w)
+
+        class Dem:
+            def __init__(self, z):
+                self.z = z
+
+            def sample(self, lat, lon, zoom, progress=None):
+                return np.full(np.shape(lat), self.z)
+        p = (np.array([south(100)]), np.array([LON0]))
+        high = seacarve.SeaCarver(Tagged(), None, dem=Dem(176.0))
+        self.assertFalse(bool(high.sea_at(Dem(176.0), *p, 512.0)[0]))
+        self.assertAlmostEqual(float(high.lake_at(*p)[0]), 176.0, delta=seacarve.SHORE_DROP_M + 0.05)   # a lake at its level
+        low = seacarve.SeaCarver(Tagged(), None, dem=Dem(4.0))
+        self.assertTrue(bool(low.sea_at(Dem(4.0), *p, 512.0)[0]))
+
     def test_without_waiting(self):
         """Cells not at hand: the DEM band now, the cell built in the background for the next ask."""
         import time

@@ -33,7 +33,7 @@ import staging
 
 log = logging.getLogger("earthd.seacarve")
 
-VERSION = 18
+VERSION = 19
 SEA_E = 0.0                 # m: the sea surface (the DEMs' heights are above mean sea level)
 DEPTH_SLOPE = 0.15          # floor depth per metre from the shoreline (1 : 6.7)
 DEPTH_CAP = 6.0             # m: the floor's depth away from the shore without bathymetry (Chesapeake mean
@@ -55,6 +55,7 @@ SEA_WATER_TAGS = ('"water":"harbour"', '"water":"bay"', '"water":"lagoon"', '"wa
                   '"water":"fjord"', '"water":"cove"', '"tidal":"yes"')   # OSM water areas at sea level: the sea
                   # (Sydney Harbour, natural=water + water=harbour, not coastline: a lake 2-6 m up on the DEM, the
                   # Harbour Bridge's deck 35 m over "ground"; 2026-10-18)
+TAG_SEA_MAX_M = 15.0        # m: a water area tagged as the sea's (SEA_WATER_TAGS) is the sea only this near sea level
 SEA_LO, SEA_HI = -0.5, 0.3  # m: DEM heights in this band are the sea where no polygons are at hand (far
                             # tiles, the large water tiles): the DEMs' sea surfaces are flat at ~0
 SINK_M = 6.0                # m: such ground sunk below the surface (no flicker through the water tiles), as
@@ -361,6 +362,13 @@ class SeaCarver:
                 if f is None:
                     continue
                 for i in self._sea_rows(f):
+                    if self.dem is not None and str(f.attrs["subtype"][i]) not in SEA_SUBTYPES:
+                        m = np.zeros((n, n), bool)
+                        self._rasterise(f, i, m, ox, oy)
+                        if not self._near_sea_level(m, ox, oy):
+                            continue    # a lake's harbour or bay (the lake rows take it)
+                        sea |= m
+                        continue
                     self._rasterise(f, i, sea, ox, oy)
                 if self.dem is not None:
                     for i in self._river_rows(f):
@@ -685,6 +693,25 @@ class SeaCarver:
         if tags is not None:
             ok |= np.array([any(t in str(v).replace(" ", "") for t in SEA_WATER_TAGS) for v in tags], bool)
         return np.flatnonzero(ok & (f.kind == 3))
+
+    def _near_sea_level(self, m, ox, oy):
+        """Is the DEM inside the pixels m (a water area tagged as the sea's: SEA_WATER_TAGS) near sea level (median at
+        most TAG_SEA_MAX_M)? Lake Michigan's harbours, tagged harbour at 176 m, were carved as the sea down to 0 m:
+        holes 180 m deep along Chicago's lakeshore (GitHub #45); Sydney Harbour's DEM reads 2-6 m. Yes without a DEM."""
+        jj, ii = np.nonzero(m)
+        if len(jj) == 0:
+            return True
+        if len(jj) > LEVEL_SAMPLES:
+            sel = np.linspace(0, len(jj) - 1, LEVEL_SAMPLES).astype(np.int64)
+            jj, ii = jj[sel], ii[sel]
+        lat, lon = _lonlat(ox + ii + 0.5, oy + jj + 0.5)
+        try:
+            e = np.asarray(self.dem.sample(lat, lon, LAKE_DEM_ZOOM), np.float64)
+        except Exception as ex:         # no DEM there yet: as tagged
+            log.debug("tagged sea level: %s", ex)
+            return True
+        e = e[np.isfinite(e)]
+        return not len(e) or float(np.median(e)) <= TAG_SEA_MAX_M
 
     @staticmethod
     def _lake_rows(f):
