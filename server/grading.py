@@ -55,7 +55,7 @@ WALL_CUT_M = 2.0            # a road cut deeper than this into the ground: a ret
 WALL_T_M = 0.8              # (roadmesh.retaining_walls) and the ground at its natural height right behind it, over
                             # this; on a 1:2 slope Central Park's sunken transverse was a grassy ditch between its
                             # stone walls (the user, 2026-10-17)
-WALL_FLAT_M = 2.0           # ... after one terrain grid step at the road's level behind the wall: rising at the wall
+WALL_FLAT_M = 3.0           # ... after one terrain grid diagonal at the road's level behind the wall: rising at the wall
                             # itself, the 2 m grid's triangles stood as dark wedges in front of its face; the wall's
                             # top (roadmesh.WALL_THICK_M) covers the strip
 TUNNEL_TAG = ":tun"          # in the fid of the tunnels' own plans (open sections, mouths): apply(roads_only) skips them
@@ -248,10 +248,10 @@ def _add_cuts(frame, plans, elev):
     """Sets Plan.cut on the plans (None entries skipped): per segment and side a cutting's wall (SHARP_*), from the raw
     ground elev(lat, lon) sampled outward from the carriageway's edge: the ground rising SHARP_MIN_M or more at
     SHARP_GRADE or steeper on average. The data spreads a vertical wall evenly round where it stands: its wall is put
-    where the climb is half done (never on the carriageway), its top where it is done (the Rust kernels
-    earthfast.sharp_probes / sharp_cuts; the ground lookup between them)."""
+    where the climb is half done (never on the carriageway; a fall: never inside the core, its sidewalk on the level),
+    its top where it is done (the Rust kernels earthfast.sharp_probes / sharp_cuts; the ground lookup between them)."""
     import fast
-    fast.require(40, "sharp cuttings")
+    fast.require(41, "sharp cuttings")
     f64 = np.float64
     jobs = []
     for p in plans:
@@ -268,8 +268,8 @@ def _add_cuts(frame, plans, elev):
     k = 0
     for p, q, o in jobs:
         cut = fast._ef.sharp_cuts(np.ascontiguousarray(g[k:k + len(q)]), np.ascontiguousarray(p.z, f64), o,
-                                  float(p.road_half), float(SHARP_MIN_M), float(SHARP_GRADE), float(SHARP_STEP_M),
-                                  int(SHARP_RUN_N))
+                                  float(p.road_half), float(p.half), float(SHARP_MIN_M), float(SHARP_GRADE),
+                                  float(SHARP_STEP_M), int(SHARP_RUN_N))
         k += len(q)
         if cut is not None:
             p.cut = cut
@@ -283,6 +283,8 @@ def _plan(xy, z, spec, abut=(False, False)):
     keep = np.r_[np.arange(0, len(xy) - 1, every), len(xy) - 1]
     # the carriageway as a city street would have it (never from the land cover), or the measured one
     width = max(spec.width, roadsmod.carriageway(spec.cls, spec.kind, True, None, spec.oneway)) if built else spec.width
+    if spec.median:             # a divided road's carriageway: never over the other one
+        width = max(spec.width, roadsmod.dual_cap(spec.median, width))
     return Plan(xy[keep], zs[keep], width / 2 + shoulder(spec), abut, road_half=width / 2)
 
 
@@ -816,8 +818,8 @@ def grade_points(px, py, base, plans, lift=0.0):
         return out
     x0, y0, x1, y1 = px.min(), py.min(), px.max(), py.max()
     # every segment of the plans near the points: ends, end heights, reach (core half width + T_MAX)
-    A, B, ZA, ZB, H, AB, CUT = [], [], [], [], [], [], []
-    for p in plans:
+    A, B, ZA, ZB, H, RH, RID, AB, CUT = [], [], [], [], [], [], [], [], []
+    for k, p in enumerate(plans):
         if p.bbox[2] < x0 or p.bbox[0] > x1 or p.bbox[3] < y0 or p.bbox[1] > y1 or len(p.xy) < 2:
             continue
         A.append(p.xy[:-1])
@@ -825,6 +827,8 @@ def grade_points(px, py, base, plans, lift=0.0):
         ZA.append(p.z[:-1])
         ZB.append(p.z[1:])
         H.append(np.full(len(p.xy) - 1, p.half))
+        RH.append(np.full(len(p.xy) - 1, getattr(p, "road_half", p.half)))
+        RID.append(np.full(len(p.xy) - 1, k, np.int64))
         ab = np.zeros(len(p.xy) - 1, bool)
         abut = getattr(p, "abut", (False, False))
         if abut[0] or abut[1]:
@@ -838,14 +842,15 @@ def grade_points(px, py, base, plans, lift=0.0):
         CUT.append(cut if cut is not None else np.full((len(p.xy) - 1, 6), np.nan))
     if not A:
         return out
-    A, B, ZA, ZB, H, AB, CUT = (np.concatenate(v) for v in (A, B, ZA, ZB, H, AB, CUT))
+    A, B, ZA, ZB, H, RH, RID, AB, CUT = (np.concatenate(v) for v in (A, B, ZA, ZB, H, RH, RID, AB, CUT))
     import fast
-    fast.require(39, "grade_points")         # (the Rust loop: native/earthfast)
+    fast.require(41, "grade_points")         # (the Rust loop: native/earthfast)
     f64 = np.float64
     return fast._ef.grade_points(np.ascontiguousarray(px, f64), np.ascontiguousarray(py, f64),
                                  np.ascontiguousarray(base, f64), np.ascontiguousarray(A[:, :2], f64),
                                  np.ascontiguousarray(B[:, :2], f64), np.ascontiguousarray(ZA, f64),
                                  np.ascontiguousarray(ZB, f64), np.ascontiguousarray(H, f64),
+                                 np.ascontiguousarray(RH, f64), np.ascontiguousarray(RID, np.int64),
                                  np.ascontiguousarray(AB, np.uint8), np.ascontiguousarray(CUT, f64), float(lift),
                                  float(SLOPE_RUN), float(T_MIN), float(T_MAX), float(BLEND_R), float(BUCKET),
                                  float(WALL_CUT_M), float(WALL_T_M), float(WALL_FLAT_M), float(WALL_AHEAD_M),

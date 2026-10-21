@@ -671,7 +671,7 @@ def _tunnel_section(hw, th=TUNNEL_H, low=False):
                     np.float64)
 
 
-WALL_THICK_M = 2.4         # a retaining wall's top: over the grading's flat strip behind it (grading.WALL_FLAT_M)
+WALL_THICK_M = 3.1         # a retaining wall's top: over the grading's flat strip behind it (grading.WALL_FLAT_M)
 
 
 def _retaining_walls(walls, origin, P, T, UV, M, nv):
@@ -684,13 +684,14 @@ def _retaining_walls(walls, origin, P, T, UV, M, nv):
         if k < 2:
             continue
         s = np.concatenate(([0.0], np.cumsum(np.hypot(*np.diff(b, axis=0).T))))
-        back = b - tw * WALL_THICK_M
+        thick = np.asarray(w.get("thick", np.full(k, WALL_THICK_M)), np.float64)    # (roads.retaining_walls)
+        back = b - tw * thick[:, None]
         face_lo = np.c_[b, foot] - origin
         face_hi = np.c_[b, top] - origin
         back_hi = np.c_[back, top] - origin
         cop_hi = np.c_[b - tw * WALL_COPING_M, top] - origin
         for lo_, hi_, vlo, vhi, mat in ((face_lo, face_hi, foot, top, 2), (face_hi, cop_hi, None, WALL_COPING_M, 2),
-                                        (cop_hi, back_hi, None, WALL_THICK_M - WALL_COPING_M, 4)):
+                                        (cop_hi, back_hi, None, float(np.mean(thick)) - WALL_COPING_M, 4)):
             P.append(np.concatenate([lo_, hi_]))
             if vlo is not None:
                 UV.append(np.column_stack((np.concatenate((s, s)) / STONE_UV_M, np.concatenate((vlo, vhi)) / STONE_UV_M)))

@@ -817,20 +817,25 @@ fn measure_row32(line: PyReadonlyArray2<f64>, keys: PyReadonlyArray1<i64>, first
 }
 
 /// grading.grade_points: base heights at the points (px, py) graded under the plans' segments a-b (heights za-zb,
-/// core half width h): the weights, the inverse-distance blend and the max weight as the numpy code, the (segment,
-/// point) pairs in its order (segments, bucket rows, points sorted by bucket).
+/// core half width h, carriageway half width rh, road rid): the weights, the inverse-distance blend and the max weight
+/// as the numpy code, the (segment, point) pairs in its order (segments, bucket rows, points sorted by bucket). On a
+/// road's carriageway another road (past its own rh: its verge and blend) more than wall_cut above or below it does not
+/// count: a street's sidewalk over a cutting dragged the road in it up its wall (Munich's McGraw-Graben). Behind a
+/// cutting's wall (an up cut side, wall_flat deep: under the retaining wall's top) no other road at another level counts
+/// at all: the terrain's 2 m lattice drew the step as teeth in front of the wall where a street above came near it.
 #[pyfunction]
 #[allow(clippy::too_many_arguments)]
 fn grade_points<'py>(py: Python<'py>, px: PyReadonlyArray1<'py, f64>, pyy: PyReadonlyArray1<'py, f64>,
                      base: PyReadonlyArray1<'py, f64>, a: PyReadonlyArray2<'py, f64>, b: PyReadonlyArray2<'py, f64>,
                      za: PyReadonlyArray1<'py, f64>, zb: PyReadonlyArray1<'py, f64>, h: PyReadonlyArray1<'py, f64>,
-                     abut: PyReadonlyArray1<'py, u8>, cut: PyReadonlyArray2<'py, f64>, lift: f64, slope_run: f64,
+                     rh: PyReadonlyArray1<'py, f64>, rid: PyReadonlyArray1<'py, i64>, abut: PyReadonlyArray1<'py, u8>, cut: PyReadonlyArray2<'py, f64>, lift: f64, slope_run: f64,
                      t_min: f64, t_max: f64, blend_r: f64,
                      bucket: f64, wall_cut: f64, wall_t: f64, wall_flat: f64, wall_ahead: f64,
                      sep: bool, sep_from: f64, sep_full: f64, core_fade: f64, side_fade: f64, sharp_step: f64)
                      -> Bound<'py, PyArray1<f64>> {
     let (px, pyy, base) = (px.as_array(), pyy.as_array(), base.as_array());
     let (a, b, za, zb, h) = (a.as_array(), b.as_array(), za.as_array(), zb.as_array(), h.as_array());
+    let (rh, rid) = (rh.as_array(), rid.as_array());
     let abut = abut.as_array();
     let cut = cut.as_array();               // (segments, 6): a cutting's wall, top and top offset, left then right
     let sharp = cut.iter().any(|v| v.is_finite());
@@ -868,6 +873,14 @@ fn grade_points<'py>(py: Python<'py>, px: PyReadonlyArray1<'py, f64>, pyy: PyRea
     let mut cz = vec![0.0f64; n];
     let mut raised = vec![f64::NEG_INFINITY; n];    // (sharp) the cuttings' tops over the points beside them
     let mut beff: Vec<f64> = base.iter().copied().collect();
+    // the carriageway each point is deepest in (d - rh, most negative) and its height there
+    let mut cdeep = vec![0.0f64; n];
+    let mut carz = vec![f64::NAN; n];
+    let mut carid = vec![-1i64; n];
+    // the cutting band each point is deepest in (d - its far edge) and its road and height
+    let mut bdeep = vec![0.0f64; n];
+    let mut bz = vec![f64::NAN; n];
+    let mut bid = vec![-1i64; n];
     let smooth = |v: f64| { let v = v.clamp(0.0, 1.0); v * v * (3.0 - 2.0 * v) };
     for pass in 0..2 {
         if pass == 1 && sharp {
@@ -876,9 +889,6 @@ fn grade_points<'py>(py: Python<'py>, px: PyReadonlyArray1<'py, f64>, pyy: PyRea
             }
         }
         for s in 0..h.len() {
-            if pass == 0 && abut[s] == 0 && !sep && !has_cut[s] {
-                continue;
-            }
             // (pass 0 within the blend's reach too: the Python loop pairs the points with a segment once, at h + t_max)
             let reach = if pass == 0 { (h[s] + if sep { core_fade } else { 0.0 }).max(cut_reach[s]).min(h[s] + t_max) }
                         else { h[s] + t_max };
@@ -907,6 +917,11 @@ fn grade_points<'py>(py: Python<'py>, px: PyReadonlyArray1<'py, f64>, pyy: PyRea
                     let co = if left { 0 } else { 3 };
                     let (cwall, ctop, creach) = (cut[[s, co]], cut[[s, co + 1]], cut[[s, co + 2]]);
                     if pass == 0 {
+                        if d - rh[s] < cdeep[idx] || (d <= rh[s] && carz[idx].is_nan()) {
+                            cdeep[idx] = d - rh[s];
+                            carz[idx] = target;
+                            carid[idx] = rid[s];
+                        }
                         if abut[s] != 0 && d <= h[s] && target > top[idx] {
                             top[idx] = target;
                         }
@@ -915,6 +930,12 @@ fn grade_points<'py>(py: Python<'py>, px: PyReadonlyArray1<'py, f64>, pyy: PyRea
                             let al0 = (qx * abx + qy * aby) / lab0;
                             let ahead0 = (-al0).max(al0 - lab0).max(0.0);
                             let side0 = (qx * aby - qy * abx).abs() / lab0;
+                            let bend = h[s].min(cwall) + wall_flat;     // the band behind its wall
+                            if side0 > rh[s] && ahead0 < side0 && d - bend < bdeep[idx] {
+                                bdeep[idx] = d - bend;
+                                bz[idx] = target;
+                                bid[idx] = rid[s];
+                            }
                             if side0 > cwall && side0 <= creach + 0.5 && ahead0 < sharp_step * 2.0 && ctop > raised[idx] {
                                 raised[idx] = ctop;
                             }
@@ -949,7 +970,13 @@ fn grade_points<'py>(py: Python<'py>, px: PyReadonlyArray1<'py, f64>, pyy: PyRea
                     // a wall: flat on one terrain step behind it (no slope in front of its face), then up
                     let u = ((d - hs - if wall { wall_flat } else { 0.0 }) / tt).clamp(0.0, 1.0);
                     let w = 1.0 - u * u * (3.0 - 2.0 * u);
-                    if w > 0.0 && !drop && !(d > hs && ahead < side && target < top[idx] - wall_cut) {
+                    // (another road's carriageway here, at another level: this road gives way past its own carriageway)
+                    let yields = if bid[idx] >= 0 {
+                        bid[idx] != rid[s] && (target - bz[idx]).abs() > wall_cut
+                    } else {
+                        d > rh[s] && carid[idx] >= 0 && carid[idx] != rid[s] && (target - carz[idx]).abs() > wall_cut
+                    };
+                    if w > 0.0 && !drop && !yields && !(d > hs && ahead < side && target < top[idx] - wall_cut) {
                         let r = d / blend_r;
                         let mut wb = w / (1.0 + r * r);
                         if sep {
@@ -2871,10 +2898,12 @@ fn sharp_probes<'py>(py: Python<'py>, xy: PyReadonlyArray2<'py, f64>, road_half:
 /// where none (a drop: its wall only), as Plan.cut (n - 1, 6); None when there is no cutting at all. A climb counts
 /// where the ground rises min_m or more at grade or steeper on average (from a quarter to 90 % of it), over runs of
 /// run_n vertices at least; its wall is where the climb is half done (never nearer than road_half + 0.2), its top
-/// where it is 90 % done. The same reading of a fall: the road's core ends there, nothing raised.
+/// where it is 90 % done. The same reading of a fall: the road's core ends there, nothing raised, and never before its
+/// full half width (its sidewalk on the level: it hung down the drop, Munich's McGraw-Graben).
 #[pyfunction]
 fn sharp_cuts<'py>(py: Python<'py>, g: PyReadonlyArray1<'py, f64>, z: PyReadonlyArray1<'py, f64>,
-                   o: PyReadonlyArray1<'py, f64>, road_half: f64, min_m: f64, grade: f64, step: f64, run_n: usize)
+                   o: PyReadonlyArray1<'py, f64>, road_half: f64, half: f64, min_m: f64, grade: f64, step: f64,
+                   run_n: usize)
                    -> Option<Bound<'py, PyArray2<f64>>> {
     let (g, z, o) = (g.as_array(), z.as_array(), o.as_array());
     let n = z.len();
@@ -2883,14 +2912,14 @@ fn sharp_cuts<'py>(py: Python<'py>, g: PyReadonlyArray1<'py, f64>, z: PyReadonly
         return None;
     }
     let first = |r: &[f64], v: f64| r.iter().position(|&x| x >= v).unwrap_or(0);    // numpy.argmax of r >= v
-    // (ok, wall offset, top rise, top offset) of a climb r (m,)
-    let wall_of = |r: &[f64]| -> (bool, f64, f64, f64) {
+    // (ok, wall offset, top rise, top offset) of a climb r (m,); its wall no nearer than near
+    let wall_of = |r: &[f64], near: f64| -> (bool, f64, f64, f64) {
         let top = r.iter().fold(f64::NEG_INFINITY, |a, &b| if a.is_nan() || b.is_nan() { f64::NAN } else { a.max(b) });
         let ti = first(r, 0.9 * top);
         let half_i = first(r, top / 2.0);
         let foot_i = first(r, 0.25 * top);
         let steep = (top * 0.75) / (o[ti] - o[foot_i]).max(step);
-        (top >= min_m && steep >= grade, o[half_i].max(road_half + 0.2), top, o[ti])
+        (top >= min_m && steep >= grade, o[half_i].max(near), top, o[ti])
     };
     let nan = f64::NAN;
     let mut cols: Vec<Vec<f64>> = Vec::with_capacity(6);
@@ -2904,8 +2933,8 @@ fn sharp_cuts<'py>(py: Python<'py>, g: PyReadonlyArray1<'py, f64>, z: PyReadonly
                 rise[k] = g[base + k] - z[i];
                 fall[k] = -rise[k];
             }
-            let (ok_up, wall_up, top, reach_o) = wall_of(&rise);
-            let (ok_dn, wall_dn, _, _) = wall_of(&fall);
+            let (ok_up, wall_up, top, reach_o) = wall_of(&rise, road_half + 0.2);
+            let (ok_dn, wall_dn, _, _) = wall_of(&fall, half);
             ok[i] = ok_up || ok_dn;
             wall[i] = if ok_up { wall_up } else { wall_dn };
             if ok_up {
@@ -3009,6 +3038,6 @@ fn earthfast(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(follow_tris, m)?)?;
     m.add_function(wrap_pyfunction!(sharp_probes, m)?)?;
     m.add_function(wrap_pyfunction!(sharp_cuts, m)?)?;
-    m.add("VERSION", 40)?;
+    m.add("VERSION", 41)?;
     Ok(())
 }

@@ -116,6 +116,8 @@ LANE_M = 3.3            # m per lane when counting the lanes a carriageway holds
 LANE_LINE = {"m": "line_dashed_long", "tl": 12.0, "p": 6, "w": 0.12}     # West Coast USA's 3 m dash, 9 m gap
 CUT_MARGIN = 0.5                # m: a sidewalk / line stops this far outside a crossing road's carriageway
 MIN_PIECE_M = 3.0               # shorter sidewalk / line pieces are dropped
+WALK_STEP_M = 1.0               # m the ground under a sidewalk may lie off the road's level: further, a cutting's wall or
+                                # a drop is there and the sidewalk stops (it was draped up a wall, Munich's McGraw-Graben)
 NEAR_M = 40.0                   # roads this far outside the tile still cut its sidewalks / lines
 # Carriageway = driving width + parking lanes on city streets or paved edge strips on rural roads
 # (docs/research/2026-10-11-official-road-study.md §2: rural paved surface = AI width + 2-2.5 m;
@@ -599,12 +601,26 @@ URBAN_MEDIAN_GAP_M = 24.0   # its carriageways out to it (Boston Street, Mapilla
 URBAN_DUAL_MAX_W = 12.0     # each way either side of a ~1.5 m curb; we drew 6.5 m carriageways and a 4.5 m strip)
 
 
+DUAL_MIN_MEDIAN_M = 0.6    # m between a divided road's carriageways at the least (a concrete barrier): the class's width
+                            # overlapped them (Munich's McGraw-Graben: two 11 m carriageways 9.6 m apart, wider than its
+                            # trench, their edges up its walls)
+DUAL_MIN_W = 3.5            # ... but a carriageway keeps one lane
+
+
+def dual_cap(gap, w):
+    """w capped so carriageways gap m apart (centre to centre) do not overlap (DUAL_MIN_MEDIAN_M between them)."""
+    return float(min(w, max(gap - DUAL_MIN_MEDIAN_M, DUAL_MIN_W)))
+
+
 def _dual_width(sp, w, gap, feats, i):
     """A divided road carriageway's width: a mapped width stands; in a city with its centre lines within
-    URBAN_MEDIAN_GAP_M, out to an URBAN_MEDIAN_M median (at most URBAN_DUAL_MAX_W); else w."""
-    if _rule_value(feats.rules.get("width"), i) is not None or not sp.urban or gap > URBAN_MEDIAN_GAP_M:
+    URBAN_MEDIAN_GAP_M, out to an URBAN_MEDIAN_M median (at most URBAN_DUAL_MAX_W); never overlapping the other
+    (dual_cap)."""
+    if _rule_value(feats.rules.get("width"), i) is not None:
         return w
-    return float(np.clip(gap - URBAN_MEDIAN_M, w, URBAN_DUAL_MAX_W))
+    if sp.urban and gap <= URBAN_MEDIAN_GAP_M:
+        w = float(np.clip(gap - URBAN_MEDIAN_M, w, URBAN_DUAL_MAX_W))
+    return dual_cap(gap, w)
 
 
 def _centre_gap(a, b):
@@ -1343,6 +1359,17 @@ def _blocker_segments(blockers):
            np.array(hws, np.float64), len(blockers))
     _BLOCKERS = ((blockers, arr),) + _BLOCKERS[:3]
     return arr[:3]
+
+
+def _on_level(frame, elev, run):
+    """The pieces of a sidewalk run (k, 3) whose ground (elev(lat, lon), the graded ground) lies within WALK_STEP_M of
+    the run's own level (MIN_PIECE_M long at least)."""
+    if len(run) < 2:
+        return [run]
+    la, lo, _ = frame.enu_to_geodetic(run[:, 0], run[:, 1], np.zeros(len(run)))
+    g = np.asarray(frame.geodetic_to_enu(la, lo, np.asarray(elev(la, lo), np.float64))[2], np.float64)
+    off = ~(np.abs(g - run[:, 2]) <= WALK_STEP_M)
+    return [run] if not off.any() else _runs_outside(run, off)
 
 
 def _runs_outside(d, inside):
@@ -2642,8 +2669,12 @@ WALL_STEP = 2.0         # m between a retaining wall's points
 WALL_PROBE_M = 1.0      # m beyond the cut's foot (grading.WALL_T_M) where the natural ground's height is read
 WALL_TOP_M = 0.15       # m the wall stands over the ground behind it
 WALL_FOOT_M = 0.3       # m it reaches under the road
+WALL_FULL_M = 0.3       # the graded ground this near the natural ground behind a wall: its top ends there ...
+WALL_THICK_MIN_M = 1.0  # ... at least this deep and at most WALL_THICK_MAX_M
+WALL_THICK_MAX_M = 8.0
+WALL_DIAG_M = 2.9       # the terrain lattice's diagonal (heightmap.SQUARE 2 m)
+WALL_EVEN_N = 2         # a wall's top as deep as its deepest within this many WALL_STEPs either side
 WALL_STEP_UP_M = 0.5     # m the graded ground climbs over the road where a wall's face goes (short of the core's edge)
-WALL_GRID_M = 2.0        # the terrain's lattice (heightmap.SQUARE)
 
 
 WALL_KEEP_M = 1.2       # m: a wall goes on while the cut stays this deep (it starts at grading.WALL_CUT_M) ...
@@ -2717,6 +2748,7 @@ def retaining_walls(frame, roads, elev, exact, decks=()):
     Bruce Highway, 2026-10-21). Central Park's 86th Street Transverse between its stone walls (the user's photos,
     2026-10-17). Pure given elev."""
     import grading
+    import roadmesh
     x0, y0, x1, y1 = exact
     pts_all, info = [], []
     for fid, spec, pts, _ in roads:
@@ -2735,7 +2767,8 @@ def retaining_walls(frame, roads, elev, exact, decks=()):
         nl = np.stack([-d[:, 1], d[:, 0]], axis=1)
         width = max(spec.width, carriageway(spec.cls, spec.kind, True, None, spec.oneway))
         core = width / 2 + grading.shoulder(spec)
-        steps = np.arange(width / 2 + 0.5, core + 0.01, 1.0)       # (the grading's sharp cuttings end the core sooner)
+        # (the grading's sharp cuttings end the core sooner; its flat strip behind a wall reaches past the core)
+        steps = np.arange(width / 2 + 0.5, core + grading.WALL_FLAT_M + 1.51, 1.0)
         for side in (1.0, -1.0):
             probe = xy + nl * side * (core + grading.WALL_FLAT_M + grading.WALL_T_M + WALL_PROBE_M)
             pts_all.append(probe)
@@ -2752,14 +2785,21 @@ def retaining_walls(frame, roads, elev, exact, decks=()):
         gg = g[k:k + len(xy)]
         k += len(xy)
         face = np.full(len(xy), core + 0.1)
+        thick = np.full(len(xy), roadmesh.WALL_THICK_M)
         if len(steps):              # the wall where the graded ground starts to climb (a sharp cutting: before the core's edge)
             gs = g[k:k + len(xy) * len(steps)].reshape(len(steps), len(xy)).T
             k += len(xy) * len(steps)
             up = gs - z[:, None] > WALL_STEP_UP_M
             first = np.argmax(up, axis=1)
-            # (a grid square in front of the climb: the terrain's 2 m lattice draws a step at an angle to it as teeth
-            # reaching that far out, which the wall's face then hides)
-            face = np.where(up.any(axis=1), np.maximum(steps[first] - 1.0 - WALL_GRID_M, rh + 0.1), face)
+            # (the grading's flat strip in front of the climb: the terrain's 2 m lattice draws a step at an angle to it
+            # as teeth reaching up to a grid diagonal out, under the wall's top; its face in front of them)
+            face = np.where(up.any(axis=1), np.maximum(steps[first] - 1.0 - grading.WALL_FLAT_M, rh + 0.1), face)
+            # its top back to where the graded ground is up again (no trough behind it: a street above drove into one)
+            full = gs >= (gg - WALL_FULL_M)[:, None]
+            back = np.argmax(full, axis=1)
+            # (and a grid diagonal more: the terrain's lattice reaches the top that much later between its points)
+            thick = np.where(full.any(axis=1), np.clip(steps[back] - face + WALL_DIAG_M, WALL_THICK_MIN_M,
+                                                       WALL_THICK_MAX_M), thick)
         cut = _wall_runs(gg - z) & inside & ~_under_decks(xy + out_n * core, z, decks)
         i = 0
         while i < len(cut):
@@ -2771,8 +2811,12 @@ def retaining_walls(frame, roads, elev, exact, decks=()):
                 j += 1
             if j > i:
                 sl = slice(i, j + 1)
+                # (its top's depth evened out along it: the 1 m probe steps drew a jagged back edge)
+                th = thick[sl]
+                th = np.maximum.reduce([np.r_[th[:1].repeat(m), th[:len(th) - m]] for m in range(WALL_EVEN_N + 1)]
+                                       + [np.r_[th[m:], th[-1:].repeat(m)] for m in range(1, WALL_EVEN_N + 1)])
                 out.append({"base": xy[sl] + out_n[sl] * face[sl][:, None], "top": gg[sl] + WALL_TOP_M,
-                            "foot": z[sl] - WALL_FOOT_M, "toward": -out_n[sl]})
+                            "foot": z[sl] - WALL_FOOT_M, "toward": -out_n[sl], "thick": th})
             i = j + 1
     return out
 
@@ -3170,8 +3214,8 @@ def build_tile(frame, tx, ty, cells, elev, urban_fn=None, walks=None, bridges=No
                 # whole runs near the tile first (joined across tile borders below), clipped to the tile after
                 for piece in clip_polyline(line, *near):
                     for cpiece, (j0, j1) in junctions.apply_cuts(piece, jcuts.get((fid, side), [])):
-                        for run in cut_outside(cpiece, wb, 0.5):
-                            run = densify(simplify(run))
+                        for run in [r for r0 in cut_outside(cpiece, wb, 0.5)
+                                    for r in _on_level(frame, elev, densify(simplify(r0)))]:
                             if len(run) < 2:
                                 continue
                             at_j0 = j0 and np.hypot(*(run[0, :2] - cpiece[0, :2])) < 0.6

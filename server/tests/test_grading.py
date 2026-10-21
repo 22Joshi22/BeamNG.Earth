@@ -120,9 +120,10 @@ class AbutmentTest(unittest.TestCase):
         base = np.array([369.9, 370.6])
         out = grading.grade_points(px, py, base, [approach, lower])
         self.assertTrue(np.allclose(out, 372.9, atol=0.25), out)     # (the segments along it still blend a little)
-        plain = grading.Plan(xy, np.full(21, 372.9), 6.9)     # (not onto a bridge, nor SEP_ON: blended as before)
+        plain = grading.Plan(xy, np.full(21, 372.9), 6.9)     # (not onto a bridge, nor SEP_ON: ...)
         with unittest.mock.patch.object(grading, "SEP_ON", False):
-            self.assertLess(grading.grade_points(px, py, base, [plain, lower])[0], 372.0)
+            # ... the lower road's verge still gives way to the approach's carriageway, 8 m over it (grade_points' rh)
+            self.assertGreater(grading.grade_points(px, py, base, [plain, lower])[0], 372.5)
 
 
 class SeparationTest(unittest.TestCase):
@@ -140,8 +141,28 @@ class SeparationTest(unittest.TestCase):
         out = grading.grade_points(self.px, self.py, self.base, [self.street, self.bank])
         self.assertLess(np.ptp(out), 0.3, out)
         with unittest.mock.patch.object(grading, "SEP_ON", False):
+            # (the bank pulled its edge up before SEP; the carriageway rule keeps it flat too: the bank's verge
+            # gives way to the street's carriageway, 7.5 m under it)
             old = grading.grade_points(self.px, self.py, self.base, [self.street, self.bank])
-        self.assertGreater(np.ptp(old), 1.0, "(the bank pulled its edge up before)")
+        self.assertLess(np.ptp(old), 0.3, old)
+
+
+class CarriagewayFirstTest(unittest.TestCase):
+    """A road in a cutting (carriageway 4 m each side) and a street 7 m above it, centres 10 m apart, its sidewalk verge
+    3 m past its own carriageway (5.3 m): the verge reaches over the cutting's carriageway and gives way to it."""
+
+    def test_verge_gives_way(self):
+        xs = np.arange(-100.0, 100.1, 4.0)
+        low = grading.Plan(np.stack([xs, np.zeros(len(xs))], axis=1), np.full(len(xs), 535.0), 7.0, road_half=4.0)
+        high = grading.Plan(np.stack([xs, np.full(len(xs), 10.0)], axis=1), np.full(len(xs), 542.0), 8.3,
+                            road_half=5.3)
+        py = np.arange(-4.0, 4.01, 0.5)                              # across the low carriageway
+        px = np.zeros(len(py))
+        base = np.where(py > 1.0, 538.0, 535.0)
+        out = grading.grade_points(px, py, base, [low, high])
+        np.testing.assert_allclose(out, 535.0 + grading.ROAD_LIFT * 0, atol=0.3)
+        up = grading.grade_points(np.zeros(5), np.arange(5.0, 7.1, 0.5), np.full(5, 542.0), [low, high])
+        np.testing.assert_allclose(up, 542.0, atol=0.3)              # the street's own carriageway stays up
 
 
 class SharpCutTest(unittest.TestCase):
