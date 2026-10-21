@@ -675,9 +675,20 @@ function padAutodrive() {
   else if (padMode.value) setGps(view.value.lat, view.value.lon, "", () => setAutodrive(true))
 }
 
-// the stock pad buttons as the menus get them (core/input/actions/menu.json: guihooks 'UINavigation' name, value;
-// X is action_2, Y context), read here as they come (a press: 1)
-const PAD_BUTTONS = { action_2: padTeleport, context: padAutodrive }
+// X and Y: as the menus get them (core/input/actions/menu.json: guihooks 'UINavigation' name, value; X is action_2,
+// Y context), or from the vehicle triggers they are also bound to (settings.lua mapControls: pad_x / pad_y), which
+// take the press first on stock pads. A press is 1; one press may come both ways: once within PAD_BUTTON_MS
+const PAD_BUTTONS = { action_2: padTeleport, context: padAutodrive, pad_x: padTeleport, pad_y: padAutodrive }
+const PAD_BUTTON_MS = 300
+const padPressedAt = new Map()
+function padButton(name, value) {
+  const fn = PAD_BUTTONS[name]
+  if (embedded || !fn || Number(value) !== 1) return
+  const now = Date.now()
+  if (now - (padPressedAt.get(fn) || 0) < PAD_BUTTON_MS) return
+  padPressedAt.set(fn, now)
+  fn()
+}
 
 const mapEvents = useEvents()
 mapEvents.on("BeamNGEarthMapInput", d => {
@@ -690,12 +701,10 @@ mapEvents.on("BeamNGEarthMapInput", d => {
     case "zoom_axis": pad.zaxis = -a * 2; padStart(); break
     case "move_key": if (d.b >= 1 && d.b <= 4) pad.keys[d.b - 1] = a; if (a) padStart(); break
     case "select": padSelect(); break
+    case "pad_x": case "pad_y": padButton(d.kind, a); break
   }
 })
-mapEvents.on("UINavigation", (name, value) => {
-  if (embedded || !PAD_BUTTONS[name] || Number(value) !== 1) return
-  PAD_BUTTONS[name]()
-})
+mapEvents.on("UINavigation", (name, value) => padButton(name, value))
 // the mouse takes over again: no crosshair
 watch(cursor, () => { if (padMode.value && !padActive()) padMode.value = false })
 
@@ -1062,6 +1071,12 @@ const fmtLatLon = mm.fmtLatLon
   background: rgba(0, 0, 0, 0.6); color: #fff; border-radius: 4px; font-size: 0.9em; pointer-events: none;
   white-space: nowrap; z-index: 5;
 }
+/* the element a controller has selected (the menu's focus: the game marks it .focus-visible), plain to see (the user,
+   2026-10-21: "it can be hard to see what is selected using the menu buttons") */
+.earth-map .focus-visible, .earth-map :focus-visible {
+  outline: 3px solid #ffb54a !important; outline-offset: 2px; box-shadow: 0 0 0 6px rgba(0, 0, 0, 0.55), 0 0 14px 4px rgba(255, 181, 74, 0.7) !important;
+}
+.earth-map .map-btn.focus-visible { background: rgba(224, 118, 28, 0.9); border-color: #ffb54a; }
 /* under the GPS box (left: 10px, top: 56px, one row of buttons), which it partly covered (the user, 2026-10-21) */
 .pad-hint.below-gps { top: 100px; }
 .earth-map {

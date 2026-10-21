@@ -400,4 +400,22 @@ do
   T.check(got.accelerate and got.steering and got.brake, 'map: the fallback list without the action list')
 end
 
+-- X and Y on the map: the vehicle triggers they are bound to go to the map while it is open, as before after
+do
+  local sent, orig = {}, {}
+  local vt = { onActionEvent = function(id, v) orig[#orig + 1] = id end }
+  local saved = { core_vehicleTriggers = rawget(_G, 'core_vehicleTriggers'), freeroam_bigMapMode = rawget(_G, 'freeroam_bigMapMode'),
+    guihooks = rawget(_G, 'guihooks'), pushActionMap = rawget(_G, 'pushActionMap'), popActionMap = rawget(_G, 'popActionMap') }
+  core_vehicleTriggers, freeroam_bigMapMode = vt, {}
+  guihooks = { trigger = function(name, d) if name == settings.MAP_INPUT_EVENT then sent[#sent + 1] = d.kind end end }
+  pushActionMap, popActionMap = function() end, function() end
+  settings.mapControls(true)
+  vt.onActionEvent(1, 1) vt.onActionEvent(2, 1) vt.onActionEvent(0, 1)
+  T.check(sent[1] == 'pad_x' and sent[2] == 'pad_y' and #orig == 1 and orig[1] == 0, 'map open: X / Y to the map, others as before')
+  settings.mapControls(false)
+  vt.onActionEvent(1, 1)
+  T.check(#sent == 2 and orig[2] == 1, 'map closed: the triggers as before')
+  for k, v in pairs(saved) do rawset(_G, k, v) end
+end
+
 T.done('test_settings')

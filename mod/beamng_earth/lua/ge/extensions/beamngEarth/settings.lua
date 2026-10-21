@@ -617,11 +617,24 @@ function M.mapControls(on)
         filter.addAction(0, 'beamngEarthMapBlocked', true)
       end)
     end
+    -- X and Y: the stock pads bind them to the vehicle triggers too (triggerAction1 / 2, gameplay.json), whose action map
+    -- takes the press before the menus' (cui_action_2 / cui_context never came on a Steam Deck, 2026-10-21): while
+    -- the map is open those two go to the map as X and Y, any other trigger as before
+    local vt = rawget(_G, 'core_vehicleTriggers') or (rawget(_G, 'extensions') and extensions.core_vehicleTriggers)
+    if vt and vt.onActionEvent then
+      mapCtl.vt, mapCtl.vtOrig = vt, vt.onActionEvent
+      vt.onActionEvent = function(id, value, ...)
+        if id == 1 then mapInput('pad_x', value) return end
+        if id == 2 then mapInput('pad_y', value) return end
+        return mapCtl and mapCtl.vtOrig and mapCtl.vtOrig(id, value, ...)
+      end
+    end
     pcall(pushActionMap, 'BigMap')
     local am = scenetree.findObject('BigMapActionMap')
     if am then am.trapHandledEvents = false end      -- (as the stock map: nothing else gets stuck behind it)
   elseif not on and mapCtl then
-    for f, fn in pairs(mapCtl) do if f ~= 'bm' then mapCtl.bm[f] = fn end end
+    if mapCtl.vt then mapCtl.vt.onActionEvent = mapCtl.vtOrig end
+    for f, fn in pairs(mapCtl) do if f ~= 'bm' and f ~= 'vt' and f ~= 'vtOrig' then mapCtl.bm[f] = fn end end
     mapCtl = nil
     pcall(popActionMap, 'BigMap')
     if filter and filter.addAction then pcall(filter.addAction, 0, 'beamngEarthMapBlocked', false) end
