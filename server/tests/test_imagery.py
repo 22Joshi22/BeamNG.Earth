@@ -826,18 +826,10 @@ class DdsTest(unittest.TestCase):
             self.assertTrue(caps & imagery.DDSCAPS_MIPMAP and caps & imagery.DDSCAPS_COMPLEX)
             with Image.open(path) as im:                                    # a standard reader accepts it
                 self.assertEqual(im.size, (n, n))
-            # level k is the BC1 encoding of mip_arrays' level k (linear light, sharpened): the Rust encoder's, or
-            # Pillow's without the module ...
+            # level k is the BC1 encoding of mip_arrays' level k (linear light, sharpened) ...
             off = imagery.DDS_HEADER
-            ef = imagery._ef if imagery._ef is not None and hasattr(imagery._ef, "bc1_encode") else None
             for k, (sz, lv) in enumerate(zip(sizes, imagery.mip_arrays(rgb))):
-                if ef is not None:
-                    want = ef.bc1_encode(np.ascontiguousarray(lv))
-                else:
-                    b = io.BytesIO()
-                    Image.fromarray(lv, "RGB").save(b, "DDS", pixel_format="DXT1")
-                    want = b.getvalue()[imagery.DDS_HEADER:]
-                self.assertEqual(data[off:off + sz], want, k)
+                self.assertEqual(data[off:off + sz], imagery.fast._ef.bc1_encode(np.ascontiguousarray(lv)), k)
                 off += sz
             # ... and decodes to the image (row 0 first, as the source image)
             got = bc1_decode(data[imagery.DDS_HEADER:imagery.DDS_HEADER + sizes[0]], n, n)

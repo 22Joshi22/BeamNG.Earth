@@ -255,16 +255,10 @@ def _confluences(rivers):
                 continue
             a, b = big["centre"][:-1], big["centre"][1:]
             hw = (big["width"][:-1] + big["width"][1:]) / 4.0
-            if fast._ef is not None and hasattr(fast._ef, "points_near_segments") and len(rv["centre"]):
+            if len(rv["centre"]):
+                fast.require(1, "points_near_segments")
                 f64 = lambda x: np.ascontiguousarray(x, np.float64)     # noqa: E731
                 rv["into"] |= fast._ef.points_near_segments(f64(rv["centre"]), f64(a), f64(b), f64(hw))
-                continue
-            p = rv["centre"][:, None, :]
-            ab = (b - a)[None, :, :]
-            L2 = np.maximum((ab ** 2).sum(-1), 1e-9)
-            t = np.clip(((p - a[None]) * ab).sum(-1) / L2, 0.0, 1.0)
-            d = np.hypot(*(p - (a[None] + t[..., None] * ab)).transpose(2, 0, 1))
-            rv["into"] |= (d < hw[None, :]).any(axis=1)
 
 
 def _nodes(frame, ids, kind, pts, water_at, dem_at, outline_at, level_at=None, road_clear=None):

@@ -7,59 +7,39 @@ import math
 
 import numpy as np
 
-try:
-    import earthfast as _ef     # Rust kernels (server/fast.py): the point-list conversion below
-except ImportError:
-    _ef = None
+import fast     # the conversions are Rust kernels (earthfast): ~2x numpy, without the interpreter lock
 
 A = 6378137.0                    # semi-major axis
 F = 1 / 298.257223563            # flattening
 B = A * (1 - F)                  # semi-minor axis
 E2 = F * (2 - F)                 # first eccentricity squared
 EP2 = E2 / (1 - E2)              # second eccentricity squared
-# EnuFrame.enu_to_geodetic: the Rust kernel for any number of points. It once stopped at 1024 (numpy was ahead on
-# large grids); now ahead at every size, 2x on a Steam Deck (262k points: 51 vs 102 ms, 2026-10-20), where the rivers'
-# width probes spent 22 s of a drive in numpy's version holding the interpreter
-ENU_RUST_MAX = 1 << 62
+
+
+_ZERO = np.zeros(3)
+_EYE = np.eye(3)
+
+
+def _rust3(kernel, a, b, c, origin, rot):
+    """kernel (earthfast's geodetic_to_enu / enu_to_geodetic) on broadcast scalars or arrays, shapes kept."""
+    fast.require(0, "geodesy")
+    f64 = np.float64
+    A_, B_, C_ = np.broadcast_arrays(np.asarray(a, f64), np.asarray(b, f64), np.asarray(c, f64))
+    shape = A_.shape
+    got = getattr(fast._ef, kernel)(np.ascontiguousarray(A_.ravel()), np.ascontiguousarray(B_.ravel()),
+                                    np.ascontiguousarray(C_.ravel()), origin, rot)
+    if shape == ():
+        return tuple(f64(v[0]) for v in got)
+    return tuple(v.reshape(shape) for v in got)
 
 
 def geodetic_to_ecef(lat, lon, h=0.0):
-    lat, lon = np.radians(lat), np.radians(lon)
-    sl, cl = np.sin(lat), np.cos(lat)
-    n = A / np.sqrt(1 - E2 * sl * sl)
-    r = (n + h) * cl
-    return r * np.cos(lon), r * np.sin(lon), (n * (1 - E2) + h) * sl
+    return _rust3("geodetic_to_enu", lat, lon, h, _ZERO, _EYE)
 
 
 def ecef_to_geodetic(x, y, z):
-    """Heikkinen's closed form (exact, no iteration). Returns (lat, lon, h)."""
-    x, y, z = (np.asarray(v, dtype=np.float64) for v in (x, y, z))
-    p2 = x * x + y * y
-    p = np.sqrt(p2)
-    z2 = z * z
-    with np.errstate(divide="ignore", invalid="ignore"):
-        f_ = 54 * B * B * z2
-        g = p2 + (1 - E2) * z2 - E2 * (A * A - B * B)
-        c = E2 * E2 * f_ * p2 / (g * g * g)
-        s = np.cbrt(1 + c + np.sqrt(c * c + 2 * c))
-        k = s + 1 + 1 / s
-        pp = f_ / (3 * k * k * g * g)
-        q = np.sqrt(1 + 2 * E2 * E2 * pp)
-        r0 = -pp * E2 * p / (1 + q) + np.sqrt(np.maximum(
-            0.5 * A * A * (1 + 1 / q) - pp * (1 - E2) * z2 / (q * (1 + q)) - 0.5 * pp * p2, 0.0))
-        t = (p - E2 * r0) ** 2
-        u = np.sqrt(t + z2)
-        v = np.sqrt(t + (1 - E2) * z2)
-        z0 = B * B * z / (A * v)
-        h = u * (1 - B * B / (A * v))
-        lat = np.degrees(np.arctan2(z + EP2 * z0, p))
-    # On the polar axis the closed form degenerates; the answer is trivial there.
-    pole = p < 1e-6
-    if np.any(pole):
-        lat = np.where(pole, np.copysign(90.0, z), lat)
-        h = np.where(pole, np.abs(z) - B, h)
-    lon = np.degrees(np.arctan2(y, x))
-    return lat, lon, h
+    """Heikkinen's closed form (exact, no iteration; the polar axis handled). Returns (lat, lon, h)."""
+    return _rust3("enu_to_geodetic", x, y, z, _ZERO, _EYE)
 
 
 class EnuFrame:
@@ -67,7 +47,7 @@ class EnuFrame:
 
     def __init__(self, lat0, lon0, h0=0.0):
         self.lat0, self.lon0, self.h0 = float(lat0), float(lon0), float(h0)
-        self.origin = np.array(geodetic_to_ecef(lat0, lon0, h0))
+        self.origin = np.array(geodetic_to_ecef(lat0, lon0, h0), np.float64)
         la, lo = np.radians(lat0), np.radians(lon0)
         sla, cla, slo, clo = np.sin(la), np.cos(la), np.sin(lo), np.cos(lo)
         # Rows are the E, N, U unit vectors expressed in ECEF.
@@ -92,27 +72,10 @@ class EnuFrame:
                 r[2, 0] * dx + r[2, 1] * dy + r[2, 2] * dz)
 
     def enu_to_geodetic(self, e, n, u=0.0):
-        if _ef is not None and hasattr(_ef, "enu_to_geodetic") and (type(e) is np.ndarray or type(n) is np.ndarray):
-            # the Rust kernel (the same closed form; ground-ahead and the far tiles call this with many small grids)
-            f64 = np.float64
-            E, N, U = np.broadcast_arrays(np.asarray(e, f64), np.asarray(n, f64), np.asarray(u, f64))
-            if 0 < E.size < ENU_RUST_MAX:
-                shape = E.shape
-                la, lo, h = _ef.enu_to_geodetic(np.ascontiguousarray(E.ravel()), np.ascontiguousarray(N.ravel()),
-                                                np.ascontiguousarray(U.ravel()), self.origin, self.rot)
-                return la.reshape(shape), lo.reshape(shape), h.reshape(shape)
-        return ecef_to_geodetic(*self.enu_to_ecef(e, n, u))
+        return _rust3("enu_to_geodetic", e, n, u, self.origin, self.rot)
 
     def geodetic_to_enu(self, lat, lon, h=0.0):
-        if _ef is not None and type(lat) is np.ndarray and lat.ndim == 1 and np.shape(lon) == lat.shape:
-            # the Rust kernel for point lists (a road tile made ~60k small calls, ~35 us each in numpy)
-            f64 = np.float64
-            hh = np.asarray(h, f64)
-            hh = np.full(lat.shape, float(hh)) if hh.ndim == 0 else hh
-            if hh.shape == lat.shape:
-                return _ef.geodetic_to_enu(lat.astype(f64, copy=False), np.asarray(lon, f64), hh, self.origin,
-                                           self.rot)
-        return self.ecef_to_enu(*geodetic_to_ecef(lat, lon, h))
+        return _rust3("geodetic_to_enu", lat, lon, h, self.origin, self.rot)
 
     def surface_enu(self, e, n, elev_fn):
         """Spec steps 1-5: drop the plane point (e, n, 0) onto the DEM surface.

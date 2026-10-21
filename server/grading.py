@@ -124,30 +124,18 @@ ABUT_MAX_M = 8.0            # m filled at most
 
 def smooth_profile(z, step, sigma):
     """Gaussian smoothing of a profile sampled every `step` m (reflected at the ends). Pure."""
-    z = np.asarray(z, np.float64)
     import fast
-    if fast.AVAILABLE:          # the Rust loop (~7000 roads a 9-tile set; equal to ~1e-12 m)
-        return fast._ef.smooth_profile(np.ascontiguousarray(z), float(step), float(sigma))
-    if len(z) < 3 or sigma <= 0:
-        return z.copy()
-    r = int(math.ceil(3 * sigma / step))
-    k = np.exp(-0.5 * (np.arange(-r, r + 1) * step / sigma) ** 2)
-    k /= k.sum()
-    pad = np.pad(z, r, mode="reflect") if len(z) > r else np.pad(z, r, mode="edge")
-    return np.convolve(pad, k, mode="valid")
+    fast.require(0, "smooth_profile")       # the Rust loop (~7000 roads a 9-tile set)
+    return fast._ef.smooth_profile(np.ascontiguousarray(z, np.float64), float(step), float(sigma))
 
 
 def resample(xy, step):
     """Points every `step` m along a polyline (xy (k, 2)), the last point kept, and their arc lengths."""
     import fast
-    if fast.AVAILABLE and len(xy):
-        return fast._ef.resample(np.ascontiguousarray(np.asarray(xy, np.float64)[:, :2]), float(step))
-    seg = np.hypot(*np.diff(xy, axis=0).T)
-    s = np.r_[0.0, np.cumsum(seg)]
-    if s[-1] <= 0:
+    if not len(xy):
         return xy[:1].copy(), np.zeros(1)
-    t = np.r_[np.arange(0.0, s[-1], step), s[-1]]
-    return np.stack([np.interp(t, s, xy[:, 0]), np.interp(t, s, xy[:, 1])], axis=1), t
+    fast.require(0, "resample")
+    return fast._ef.resample(np.ascontiguousarray(np.asarray(xy, np.float64)[:, :2]), float(step))
 
 
 class Plan:
@@ -849,37 +837,14 @@ class Grader:
             zones = [z for v in self.covers.values() for z in v]
         if not zones or not len(e):
             return None
-        x0, y0, x1, y1 = e.min(), n.min(), e.max(), n.max()
         import fast
-        if fast.AVAILABLE and hasattr(fast._ef, "over_tunnel"):     # (Rust: the same sums, without the GIL)
-            mask = np.zeros(len(e), bool)
-            ee, nn = np.ascontiguousarray(e, np.float64), np.ascontiguousarray(n, np.float64)
-            for xy, hw in zones:
-                fast._ef.over_tunnel(mask, ee, nn, np.ascontiguousarray(xy[:, :2], np.float64), float(hw),
-                                     float(TUNNEL_KEEP_IN_M))
-            return mask if mask.any() else None
-        mask = None
+        fast.require(0, "over_tunnel")      # (Rust: per segment near the points, without the GIL)
+        mask = np.zeros(len(e), bool)
+        ee, nn = np.ascontiguousarray(e, np.float64), np.ascontiguousarray(n, np.float64)
         for xy, hw in zones:
-            if xy[:, 0].max() + hw < x0 or xy[:, 0].min() - hw > x1 or xy[:, 1].max() + hw < y0 or xy[:, 1].min() - hw > y1:
-                continue
-            a, b = xy[:-1], xy[1:]
-            ab = b - a
-            L2 = np.maximum((ab * ab).sum(1), 1e-12)
-            sj = np.r_[0.0, np.cumsum(np.sqrt(L2))]
-            # only the segments near the points (the Gotthard road tunnel's 4,200 segments each took a pass over a
-            # block's points: 140 s of grading per block, 2026-10-18)
-            near = ((np.minimum(a[:, 0], b[:, 0]) - hw <= x1) & (np.maximum(a[:, 0], b[:, 0]) + hw >= x0)
-                    & (np.minimum(a[:, 1], b[:, 1]) - hw <= y1) & (np.maximum(a[:, 1], b[:, 1]) + hw >= y0))
-            for j in np.flatnonzero(near):
-                t = ((e - a[j, 0]) * ab[j, 0] + (n - a[j, 1]) * ab[j, 1]) / L2[j]
-                # over it, from TUNNEL_KEEP_IN_M inside its portals: its mouths graded to the road (a road's last row
-                # at a portal took the hill's height, the road mesh a wedge up into the opening, 2026-10-17)
-                s_ = sj[j] + t * np.sqrt(L2[j])
-                inside = (t > 0.0) & (t < 1.0) & (s_ > TUNNEL_KEEP_IN_M) & (s_ < sj[-1] - TUNNEL_KEEP_IN_M)
-                d = np.abs((e - a[j, 0]) * ab[j, 1] - (n - a[j, 1]) * ab[j, 0]) / np.sqrt(L2[j])
-                m = inside & (d <= hw)
-                mask = m if mask is None else (mask | m)
-        return mask
+            fast._ef.over_tunnel(mask, ee, nn, np.ascontiguousarray(xy[:, :2], np.float64), float(hw),
+                                 float(TUNNEL_KEEP_IN_M))
+        return mask if mask.any() else None
 
 
 def grade_points(px, py, base, plans, lift=0.0):

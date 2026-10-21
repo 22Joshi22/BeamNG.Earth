@@ -3883,6 +3883,12 @@ def main():
     logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO,
                         format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     raise_open_files()
+    import fast
+    try:
+        fast.require(fast.MIN_VERSION, "the world server")     # at start, not in the middle of a drive
+    except fast.NativeMissing as ex:
+        log.error("%s", ex)
+        raise SystemExit(str(ex))
     import sampler
     sampler.maybe_start()           # BNGE_SAMPLE=<path>: a sampling profile of this process's threads (debugging)
     import budget

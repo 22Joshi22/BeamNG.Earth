@@ -40,14 +40,11 @@ from dataclasses import dataclass
 
 import numpy as np
 
-try:
-    import earthfast as _ef     # Rust kernels (server/fast.py): mip_arrays
-except ImportError:
-    _ef = None
 from PIL import Image, ImageFilter
 
 import cache as cachemod
 import dem as demmod
+import fast     # Rust kernels (earthfast): the warp, mips and BC1 blocks
 import netfetch
 import season
 import staging
@@ -994,17 +991,10 @@ class Imagery:
             if not any_data:
                 continue
             qx, qy = fx - ox, fy - oy
-            if _ef is not None and hasattr(_ef, "mesh_warp"):
-                # Pillow's MESH / BILINEAR warp of the RGBA mosaic, byte for byte, in Rust (no GIL, no per-cell calls)
-                res = _ef.mesh_warp(mos, np.ascontiguousarray(qx, np.float64), np.ascontiguousarray(qy, np.float64),
-                                    cells, cw, px)
-            else:
-                mesh = [((c * cw, r * cw, (c + 1) * cw, (r + 1) * cw),
-                         (qx[r, c], qy[r, c], qx[r + 1, c], qy[r + 1, c],
-                          qx[r + 1, c + 1], qy[r + 1, c + 1], qx[r, c + 1], qy[r, c + 1]))
-                        for r in range(cells) for c in range(cells)]
-                res = np.asarray(Image.fromarray(mos, "RGBA").transform((px, px), Image.MESH, mesh,
-                                                                        resample=Image.BILINEAR))
+            # Pillow's MESH / BILINEAR warp of the RGBA mosaic, byte for byte, in Rust (no GIL, no per-cell calls)
+            fast.require(0, "mesh_warp")
+            res = fast._ef.mesh_warp(mos, np.ascontiguousarray(qx, np.float64), np.ascontiguousarray(qy, np.float64),
+                                     cells, cw, px)
             alpha = res[..., 3]
             hit = alpha == 255 if relit is None else alpha >= 254
             if not used and hit.all():      # the usual case: one source covers the texture
@@ -1089,32 +1079,12 @@ MIP_SHARPEN = 0.35
 _TO_LIN = ((np.arange(256) / 255.0) ** 2.2).astype(np.float32)
 
 
-def _to_srgb(lin):
-    return np.clip(np.rint(np.clip(lin, 0.0, 1.0) ** (1 / 2.2) * 255.0), 0, 255).astype(np.uint8)
-
-
 def mip_arrays(rgb):
     """[level 0, 1, ...] (uint8 [h, w, 3] arrays) down to 1 x 1 of a power-of-two image: linear-light 2 x 2
     averages, each level from the previous unsharpened one, then sharpened by MIP_SHARPEN."""
     rgb = np.asarray(rgb, np.uint8)
-    if _ef is not None and rgb.ndim == 3 and rgb.shape[2] == 3:     # the Rust loop (the same float32 maths)
-        return [rgb] + list(_ef.mip_levels(np.ascontiguousarray(rgb), _TO_LIN, float(MIP_SHARPEN)))
-    out = [rgb]
-    lin = _TO_LIN[rgb]
-    while max(lin.shape[:2]) > 1:
-        h, w = lin.shape[:2]
-        if h > 1:
-            lin = 0.5 * (lin[0::2] + lin[1::2])
-        if w > 1:
-            lin = 0.5 * (lin[:, 0::2] + lin[:, 1::2])
-        lev = lin
-        if min(lev.shape[:2]) >= 4 and MIP_SHARPEN > 0:
-            p = np.pad(lev, ((1, 1), (1, 1), (0, 0)), mode="edge")
-            blur = (p[:-2, :-2] + p[:-2, 1:-1] + p[:-2, 2:] + p[1:-1, :-2] + p[1:-1, 1:-1] + p[1:-1, 2:]
-                    + p[2:, :-2] + p[2:, 1:-1] + p[2:, 2:]) / 9.0
-            lev = lev + MIP_SHARPEN * (lev - blur)
-        out.append(_to_srgb(lev))
-    return out
+    fast.require(0, "mip_levels")       # the Rust loop (float32 maths)
+    return [rgb] + list(fast._ef.mip_levels(np.ascontiguousarray(rgb), _TO_LIN, float(MIP_SHARPEN)))
 
 
 def mip_chain(img):
@@ -1125,21 +1095,15 @@ def mip_chain(img):
 def encode_dds(rgb):
     """DDS bytes of an RGB image (uint8 [h, w, 3], power-of-two sides): DXT1 (BC1, no alpha)
     with the full mip chain."""
-    img = Image.fromarray(np.ascontiguousarray(rgb), "RGB")
-    w, h = img.size
+    rgb = np.asarray(rgb, np.uint8)
+    h, w = rgb.shape[:2]
     blobs = []
-    if _ef is not None and hasattr(_ef, "bc1_encode"):
-        # the Rust BC1 encoder: endpoints on each block's principal axis, refined, nearest-colour indices (2026-10-16:
-        # RMSE 3.39 -> 2.86 on 60 imagery tiles against Pillow's min / max 565 endpoints), without the GIL
-        for lv in mip_arrays(np.asarray(rgb, np.uint8)):
-            data = _ef.bc1_encode(np.ascontiguousarray(lv))
-            assert len(data) == dxt1_size(lv.shape[1], lv.shape[0]), (lv.shape, len(data))
-            blobs.append(data)
-    for lv in ([] if blobs else mip_chain(img)):
-        b = io.BytesIO()
-        lv.save(b, "DDS", pixel_format="DXT1")      # one level, Pillow's BC1 encoder
-        data = b.getvalue()[DDS_HEADER:]
-        assert len(data) == dxt1_size(*lv.size), (lv.size, len(data))
+    # the Rust BC1 encoder: endpoints on each block's principal axis, refined, nearest-colour indices (2026-10-16:
+    # RMSE 3.39 -> 2.86 on 60 imagery tiles against Pillow's min / max 565 endpoints), without the GIL
+    fast.require(0, "bc1_encode")
+    for lv in mip_arrays(rgb):
+        data = fast._ef.bc1_encode(np.ascontiguousarray(lv))
+        assert len(data) == dxt1_size(lv.shape[1], lv.shape[0]), (lv.shape, len(data))
         blobs.append(data)
     flags = DDSD_CAPS | DDSD_HEIGHT | DDSD_WIDTH | DDSD_PIXELFORMAT | DDSD_MIPMAPCOUNT | DDSD_LINEARSIZE
     head = (DDS_MAGIC

@@ -533,33 +533,9 @@ def _dual_side(a, b):
     """For polylines a, b (k, 2) in metres: the share of a's points (every ~10 m) with b beside it (DUAL_GAP_M,
     parallel within DUAL_ANGLE_DEG) and the mean side b is on (+1 left / -1 right of a's direction)."""
     import fast
-    if fast.AVAILABLE:          # the Rust kernel (the same, ~25k calls a Las Vegas road tile set)
-        return fast._ef.dual_side(np.ascontiguousarray(a, np.float64), np.ascontiguousarray(b, np.float64),
-                                  DUAL_GAP_M[0], DUAL_GAP_M[1], math.cos(math.radians(DUAL_ANGLE_DEG)))
-    seg = np.diff(a, axis=0)
-    L = np.hypot(seg[:, 0], seg[:, 1])
-    if len(b) < 2 or L.sum() < 1.0:
-        return 0.0, 0.0
-    s = np.concatenate([[0.0], np.cumsum(L)])
-    t = np.linspace(0.0, s[-1], max(2, int(s[-1] // 10) + 1))
-    q = np.stack([np.interp(t, s, a[:, 0]), np.interp(t, s, a[:, 1])], 1)
-    k = np.clip(np.searchsorted(s, t, side="right") - 1, 0, len(seg) - 1)
-    ta = seg[k] / np.maximum(L[k], 1e-9)[:, None]
-    bs = np.diff(b, axis=0)
-    bL2 = np.maximum((bs * bs).sum(1), 1e-12)
-    f = np.clip(((q[:, None, :] - b[None, :-1, :]) * bs[None]).sum(2) / bL2[None], 0.0, 1.0)
-    near = b[None, :-1, :] + bs[None] * f[..., None]
-    d = np.hypot(*(near - q[:, None, :]).transpose(2, 0, 1))
-    j = np.argmin(d, 1)
-    dist = d[np.arange(len(q)), j]
-    tb = bs[j] / np.sqrt(bL2[j])[:, None]
-    par = np.abs((ta * tb).sum(1)) >= math.cos(math.radians(DUAL_ANGLE_DEG))
-    ok = (dist >= DUAL_GAP_M[0]) & (dist <= DUAL_GAP_M[1]) & par
-    if not ok.any():
-        return 0.0, 0.0
-    v = near[np.arange(len(q)), j] - q
-    side = np.sign(ta[:, 0] * v[:, 1] - ta[:, 1] * v[:, 0])
-    return float(ok.mean()), float(side[ok].mean())
+    fast.require(0, "dual_side")       # the Rust kernel (~25k calls a Las Vegas road tile set)
+    return fast._ef.dual_side(np.ascontiguousarray(a, np.float64), np.ascontiguousarray(b, np.float64),
+                              DUAL_GAP_M[0], DUAL_GAP_M[1], math.cos(math.radians(DUAL_ANGLE_DEG)))
 
 
 def dual_carriageways(feats, specs, left_hand=False):
@@ -635,13 +611,8 @@ def _centre_gap(a, b):
     """The median distance (m) from polyline a's points to polyline b (both (k, 2) in metres) where b is beside it
     (within DUAL_GAP_M): a divided road's centre lines apart."""
     import fast
-    if fast.AVAILABLE and hasattr(fast._ef, "polyline_dist"):
-        d = np.asarray(fast._ef.polyline_dist(np.ascontiguousarray(b, np.float64), np.ascontiguousarray(a, np.float64)))
-    else:
-        bs, b0 = np.diff(b, axis=0), b[:-1]
-        L2 = np.maximum((bs * bs).sum(1), 1e-12)
-        t = np.clip(((a[:, None, :] - b0[None]) * bs[None]).sum(2) / L2[None], 0, 1)
-        d = np.hypot(*(a[:, None, :] - (b0[None] + t[..., None] * bs[None])).transpose(2, 0, 1)).min(1)
+    fast.require(0, "polyline_dist")
+    d = np.asarray(fast._ef.polyline_dist(np.ascontiguousarray(b, np.float64), np.ascontiguousarray(a, np.float64)))
     beside = d[d <= DUAL_GAP_M[1]]       # where it runs beside the other (a longer piece's far end inflated it 2x)
     return float(np.median(beside)) if len(beside) else float(np.median(d))
 
@@ -1343,21 +1314,9 @@ def cut_outside(pts, blockers, spacing=2.0):
         return [pts]
     d = densify(np.asarray(pts, np.float64), spacing)
     import fast
-    if fast.AVAILABLE:          # the Rust test (the same distances; 712 calls a tile set, ~1 s of numpy)
-        segs, starts, hws = _blocker_segments(blockers)
-        inside = np.asarray(fast._ef.inside_blockers(np.ascontiguousarray(d[:, :2]), segs, starts, hws))
-        return _runs_outside(d, inside)
-    inside = np.zeros(len(d), bool)
-    for line, hw in blockers:
-        if len(line) < 2:
-            continue
-        lo, hi = line.min(axis=0) - hw, line.max(axis=0) + hw
-        near = (d[:, 0] >= lo[0]) & (d[:, 0] <= hi[0]) & (d[:, 1] >= lo[1]) & (d[:, 1] <= hi[1]) & ~inside
-        if not near.any():
-            continue
-        idx = np.nonzero(near)[0]
-        dist = _seg_dist(d[idx, :2], line[:-1], line[1:]).min(axis=1)
-        inside[idx[dist < hw]] = True
+    fast.require(0, "inside_blockers")      # the Rust test (712 calls a tile set, ~1 s of numpy)
+    segs, starts, hws = _blocker_segments(blockers)
+    inside = np.asarray(fast._ef.inside_blockers(np.ascontiguousarray(d[:, :2]), segs, starts, hws))
     return _runs_outside(d, inside)
 
 
@@ -1619,14 +1578,8 @@ def _left_normal(two):
 
 def _seg_dist_min(line, p):
     import fast
-    if fast.AVAILABLE and isinstance(line, np.ndarray) and line.dtype == np.float64 and line.ndim == 2:
-        return fast._ef.seg_dist_min(line, float(p[0]), float(p[1]))
-    a, b = line[:-1], line[1:]
-    d = b - a
-    L2 = np.maximum((d * d).sum(1), 1e-12)
-    t = np.clip(((p - a) * d).sum(1) / L2, 0.0, 1.0)
-    q = a + d * t[:, None]
-    return float(np.min(np.hypot(*(q - p).T)))
+    fast.require(0, "seg_dist_min")
+    return fast._ef.seg_dist_min(np.asarray(line, np.float64), float(p[0]), float(p[1]))
 
 
 def clip_polyline(pts, x0, y0, x1, y1):
@@ -1707,16 +1660,11 @@ def simplify(pts, tol=SIMPLIFY_M, ztol=None):
 def densify(pts, spacing=MAX_SPACING):
     """Nodes added so no two are more than `spacing` m apart (xy). Pure."""
     import fast
-    if (fast.AVAILABLE and isinstance(pts, np.ndarray) and pts.dtype == np.float64 and pts.ndim == 2
-            and pts.shape[1] >= 2 and len(pts)):
-        return fast._ef.densify(pts, float(spacing))     # the Rust loop (the same nodes)
-    out = [pts[0]]
-    for a, b in zip(pts[:-1], pts[1:]):
-        n = int(math.ceil(math.hypot(b[0] - a[0], b[1] - a[1]) / spacing))
-        for k in range(1, n):
-            out.append(a + (b - a) * (k / n))
-        out.append(b)
-    return np.array(out)
+    pts = np.asarray(pts, np.float64)
+    if not len(pts):
+        return pts
+    fast.require(0, "densify")
+    return fast._ef.densify(pts, float(spacing))     # the Rust loop
 
 
 def split(pts, n=MAX_NODES):
@@ -1857,37 +1805,12 @@ def _crossings(lines, ground_lines):
 def _deck_crossings(lines):
     """(i, j, arc on i, arc on j) where deck parts i < j cross (not at their end points). Pure."""
     import fast
-    if fast.AVAILABLE and lines:
-        pts = [np.asarray(ln, np.float64)[:, :2] for ln in lines]
-        starts = np.r_[0, np.cumsum([len(p) for p in pts])].astype(np.int64)
-        return fast._ef.deck_crossings(np.ascontiguousarray(np.vstack(pts)), starts)
-    return _deck_crossings_py(lines)
-
-
-def _deck_crossings_py(lines):
-    out = []
-    boxes = [(ln.min(axis=0), ln.max(axis=0)) for ln in lines]
-    arcs = [np.r_[0.0, np.cumsum(np.hypot(*np.diff(ln, axis=0).T))] for ln in lines]
-    for i in range(len(lines)):
-        for j in range(i + 1, len(lines)):
-            (alo, ahi), (blo, bhi) = boxes[i], boxes[j]
-            if ahi[0] < blo[0] or bhi[0] < alo[0] or ahi[1] < blo[1] or bhi[1] < alo[1]:
-                continue
-            A, B = lines[i], lines[j]
-            for q in range(len(B) - 1):
-                a, d = B[q], B[q + 1] - B[q]
-                P, r = A[:-1], A[1:] - A[:-1]
-                den = r[:, 0] * d[1] - r[:, 1] * d[0]
-                ok = np.abs(den) > 1e-12
-                ap = a - P
-                t = np.where(ok, (ap[:, 0] * d[1] - ap[:, 1] * d[0]) / np.where(ok, den, 1), -1)
-                u = np.where(ok, (ap[:, 0] * r[:, 1] - ap[:, 1] * r[:, 0]) / np.where(ok, den, 1), -1)
-                for k in np.nonzero(ok & (t > 1e-6) & (t < 1 - 1e-6) & (u > 1e-6) & (u < 1 - 1e-6))[0]:
-                    si = arcs[i][k] + t[k] * (arcs[i][k + 1] - arcs[i][k])
-                    sj = arcs[j][q] + u[k] * (arcs[j][q + 1] - arcs[j][q])
-                    if min(si, arcs[i][-1] - si, sj, arcs[j][-1] - sj) > 1.0:
-                        out.append((i, j, si, sj))
-    return out
+    if not lines:
+        return []
+    fast.require(0, "deck_crossings")
+    pts = [np.asarray(ln, np.float64)[:, :2] for ln in lines]
+    starts = np.r_[0, np.cumsum([len(p) for p in pts])].astype(np.int64)
+    return fast._ef.deck_crossings(np.ascontiguousarray(np.vstack(pts)), starts)
 
 
 PIER_SPAN_M = 32.0      # m between a bridge's piers (a span), longer under a high deck: + PIER_SPAN_PER_M per m of height
@@ -1943,9 +1866,8 @@ def pier_sites(xy, z, width, ground_fn, road_lines=(), wet_fn=None):
             nrm = np.array([-t[1], t[0]])
             foot = np.array([p + nrm * pw / 2, p - nrm * pw / 2, p])
             if len(A):
-                hit = fast._ef.points_near_segments(foot, A, B, np.full(len(A), PIER_ROAD_M)) \
-                    if fast.AVAILABLE and hasattr(fast._ef, "points_near_segments") else \
-                    (_seg_dist(foot, A, B).min(axis=1) < PIER_ROAD_M)
+                fast.require(0, "points_near_segments")
+                hit = fast._ef.points_near_segments(foot, A, B, np.full(len(A), PIER_ROAD_M))
                 if np.asarray(hit).any():
                     continue
             zt = float(np.interp(sc, s, z)) - under
@@ -2262,7 +2184,7 @@ def tunnel_sections(s, g, open_cover=None, full_cover=None, min_m=SECTION_MIN_M)
     sample: 0 open road, 1 a low arch, 2 a full tunnel (a run with TUNNEL_OPEN_COVER over the floor, full where it
     reaches TUNNEL_COVER; runs and gaps shorter than min_m merged away). One long 'tunnel' in the map can be a sunken
     road with arches and a rock tunnel along it (Central Park's 79th Street Transverse, 683 m: one tube, 2026-10-17).
-    The Rust kernel (fast), else the same in numpy. Pure."""
+    The Rust kernel (fast). Pure."""
     s = np.ascontiguousarray(s, np.float64)
     g = np.ascontiguousarray(g, np.float64)
     oc = TUNNEL_OPEN_COVER if open_cover is None else open_cover
@@ -2270,10 +2192,9 @@ def tunnel_sections(s, g, open_cover=None, full_cover=None, min_m=SECTION_MIN_M)
     step = float(np.median(np.diff(s))) if len(s) > 1 else 1.0
     min_n = max(1, int(math.ceil(min_m / max(step, 1e-6))))
     import fast
-    if fast.AVAILABLE and getattr(fast._ef, "VERSION", 0) >= 28:
-        f, k = fast._ef.tunnel_sections(s, g, float(oc), float(fc), int(min_n))
-        return _shallow_full_low(s, g, np.asarray(f), np.asarray(k))
-    return _shallow_full_low(s, g, *_tunnel_sections_py(s, g, oc, fc, min_n))
+    fast.require(28, "tunnel_sections")
+    f, k = fast._ef.tunnel_sections(s, g, float(oc), float(fc), int(min_n))
+    return _shallow_full_low(s, g, np.asarray(f), np.asarray(k))
 
 
 def _shallow_full_low(s, g, floor, kinds):
@@ -2291,46 +2212,6 @@ def _shallow_full_low(s, g, floor, kinds):
         if s[j] - s[i] < FULL_MIN_M and float(np.max(g[i:j + 1] - floor[i:j + 1])) < FULL_DEEP_M:
             kinds[i:j + 1] = 1
         i = j + 1
-    return floor, kinds
-
-
-def _tunnel_sections_py(s, g, oc, fc, min_n):
-    n = len(s)
-    floor = np.zeros(n)
-    kinds = np.zeros(n, np.int64)
-    if n == 0:
-        return floor, kinds
-    hull = []
-    for i in range(n):
-        while len(hull) >= 2:
-            a, b = hull[-2], hull[-1]
-            if (s[b] - s[a]) * (g[i] - g[a]) - (g[b] - g[a]) * (s[i] - s[a]) <= 0:
-                hull.pop()
-            else:
-                break
-        hull.append(i)
-    floor = np.interp(s, s[hull], g[hull])
-    covered = g - floor >= oc
-    runs, i = [], 0
-    while i < n:
-        if not covered[i]:
-            i += 1
-            continue
-        j = i
-        while j + 1 < n and covered[j + 1]:
-            j += 1
-        if j + 1 - i >= min_n:
-            runs.append([i, j, 2 if (g[i:j + 1] - floor[i:j + 1] >= fc).any() else 1])
-        i = j + 1
-    merged = []
-    for r in runs:
-        if merged and r[0] - merged[-1][1] - 1 < min_n:
-            merged[-1][1] = r[1]
-            merged[-1][2] = max(merged[-1][2], r[2])
-        else:
-            merged.append(r)
-    for a, b, kind in merged:
-        kinds[a:b + 1] = kind
     return floor, kinds
 
 
@@ -2603,32 +2484,6 @@ LOW_HOLE_STEP = 2.5         # ... the cut a terrain grid step further (the squar
 TUNNEL_HOLE_MARGIN = 0.5    # m around the tube a portal's terrain hole reaches (above, below and sideways)
 
 
-def _mouth_cut(u, x0, y0, square, xy, hw, m0, m1, end_m):
-    """The samples of the block (heights u) beside xy within hw and within end_m of an end flagged m0 / m1, whatever the
-    ground's height (tunnel_hole_mask's low arch cut, numpy: the Rust kernel's sums). Pure."""
-    n = u.shape[0]
-    mask = np.zeros(u.shape, bool)
-    sj = np.r_[0.0, np.cumsum(np.hypot(*np.diff(xy, axis=0).T))]
-    for j in range(len(xy) - 1):
-        a, b = xy[j], xy[j + 1]
-        lo, hi = np.minimum(a, b) - hw, np.maximum(a, b) + hw
-        ix0, iy0 = max(0, int(np.floor((lo[0] - x0) / square))), max(0, int(np.floor((lo[1] - y0) / square)))
-        ix1, iy1 = min(n - 1, int(np.ceil((hi[0] - x0) / square))), min(n - 1, int(np.ceil((hi[1] - y0) / square)))
-        if ix0 > ix1 or iy0 > iy1:
-            continue
-        X, Y = np.meshgrid(x0 + np.arange(ix0, ix1 + 1) * square, y0 + np.arange(iy0, iy1 + 1) * square)
-        ab = b - a
-        L2 = max(float(ab @ ab), 1e-12)
-        t = ((X - a[0]) * ab[0] + (Y - a[1]) * ab[1]) / L2
-        inside = (t >= 0.0) & (t <= 1.0)
-        t = np.clip(t, 0.0, 1.0)
-        d = np.hypot(X - (a[0] + t * ab[0]), Y - (a[1] + t * ab[1]))
-        s_ = sj[j] + t * (sj[j + 1] - sj[j])
-        ends = ((s_ <= end_m) & m0) | ((s_ >= sj[-1] - end_m) & m1)
-        mask[iy0:iy1 + 1, ix0:ix1 + 1] |= inside & (d <= hw) & ends
-    return mask
-
-
 def tunnel_hole_mask(parts, u, cx, cy, square, heights=None, mouths=None):
     """Where the terrain block (heights u [iy, ix]: sample (ix, iy) at (cx - half + ix * square, cy - half +
     iy * square), half = n * square / 2) must be a hole for the tunnels `parts` ([(fid, spec, xy, z, lon)]: a
@@ -2648,9 +2503,8 @@ def tunnel_hole_mask(parts, u, cx, cy, square, heights=None, mouths=None):
     n_own = len(parts)
     parts += [(parts[i][0], parts[i][1]._replace(width=w), mid[:, :2], mid[:, 2], parts[i][4])
               for i, j, mid, w in twin_tunnels([p for p in parts if np.isfinite(np.asarray(p[3])).all()]) if len(mid) >= 2]
-    rust = fast.AVAILABLE and hasattr(fast._ef, "tunnel_holes")
-    if rust:
-        u = np.ascontiguousarray(u, np.float64)
+    fast.require(0, "tunnel_holes")
+    u = np.ascontiguousarray(u, np.float64)
     for k_, (_fid, spec, xy, z, _lon) in enumerate(parts):
         xy = np.asarray(xy, np.float64)
         z = np.asarray(z, np.float64)
@@ -2662,50 +2516,15 @@ def tunnel_hole_mask(parts, u, cx, cy, square, heights=None, mouths=None):
         if k_ >= n_own and not low:     # a twin tube's mouths, whatever the height (the low arches' cut, no side reach)
             m0, m1 = (mouths or {}).get(_fid, (True, True))
             mouth_mask = np.zeros(u.shape, bool)
-            if rust:
-                fast._ef.tunnel_holes(mouth_mask, u, float(x0), float(y0), float(square), np.ascontiguousarray(xy),
-                                      np.ascontiguousarray(z), float(hw), float(th), True, bool(m0), bool(m1),
-                                      float(TUNNEL_HOLE_MARGIN), float(LOW_HOLE_M + LOW_HOLE_STEP), 0.0)
-            else:
-                mouth_mask = _mouth_cut(u, x0, y0, square, xy, hw, m0, m1, LOW_HOLE_M + LOW_HOLE_STEP)
+            fast._ef.tunnel_holes(mouth_mask, u, float(x0), float(y0), float(square), np.ascontiguousarray(xy),
+                                  np.ascontiguousarray(z), float(hw), float(th), True, bool(m0), bool(m1),
+                                  float(TUNNEL_HOLE_MARGIN), float(LOW_HOLE_M + LOW_HOLE_STEP), 0.0)
             mask |= mouth_mask
-        if rust:                # the Rust kernel (the same sums, per part)
-            m0, m1 = (mouths or {}).get(_fid, (True, True))
-            fast._ef.tunnel_holes(mask, u, float(x0), float(y0), float(square), np.ascontiguousarray(xy),
-                                  np.ascontiguousarray(z), float(hw), float(th), bool(low), bool(m0), bool(m1),
-                                  float(TUNNEL_HOLE_MARGIN), float(LOW_HOLE_M + LOW_HOLE_STEP), float(ARCH_SIDE_M + 1.0))
-            continue
-        sj = np.r_[0.0, np.cumsum(np.hypot(*np.diff(xy, axis=0).T))]
-        for j in range(len(xy) - 1):
-            a, b = xy[j], xy[j + 1]
-            lo = np.minimum(a, b) - hw
-            hi = np.maximum(a, b) + hw
-            ix0, iy0 = max(0, int(np.floor((lo[0] - x0) / square))), max(0, int(np.floor((lo[1] - y0) / square)))
-            ix1, iy1 = min(n - 1, int(np.ceil((hi[0] - x0) / square))), min(n - 1, int(np.ceil((hi[1] - y0) / square)))
-            if ix0 > ix1 or iy0 > iy1:
-                continue
-            gx = x0 + np.arange(ix0, ix1 + 1) * square
-            gy = y0 + np.arange(iy0, iy1 + 1) * square
-            X, Y = np.meshgrid(gx, gy)
-            ab = b - a
-            L2 = max(float(ab @ ab), 1e-12)
-            t = ((X - a[0]) * ab[0] + (Y - a[1]) * ab[1]) / L2
-            inside = (t >= 0.0) & (t <= 1.0)    # beside the segment: not past a portal (the approach road stays)
-            t = np.clip(t, 0.0, 1.0)
-            d = np.hypot(X - (a[0] + t * ab[0]), Y - (a[1] + t * ab[1]))
-            floor = z[j] + t * (z[j + 1] - z[j])
-            g = u[iy0:iy1 + 1, ix0:ix1 + 1]
-            hit = inside & (d <= hw) & (g > floor - TUNNEL_HOLE_MARGIN) & \
-                (g < floor + th + TUNNEL_HOLE_MARGIN)
-            if low:     # a low arch: its mouths (arch_raise left them flat at the floor), one grid step past them whatever
-                # the height (the squares up to the raised soil over the vault), and nothing more (its thin soil cover
-                # lay within the band all along: cut, the tube was seen into from above); wider than arch_raise's soil
-                # (a raised square beside its wall stood in the tube near the mouth, 2026-10-17)
-                s_ = sj[j] + t * (sj[j + 1] - sj[j])
-                m0, m1 = (mouths or {}).get(_fid, (True, True))     # (not where it meets a full tunnel in the hill)
-                ends = ((s_ <= LOW_HOLE_M + LOW_HOLE_STEP) & m0) | ((s_ >= sj[-1] - LOW_HOLE_M - LOW_HOLE_STEP) & m1)
-                hit = inside & (d <= hw + ARCH_SIDE_M + 1.0) & ends     # (inside the portal face: LOW_PORTAL_SIDE)
-            mask[iy0:iy1 + 1, ix0:ix1 + 1] |= hit
+        # the Rust kernel: the samples over the part between its floor and vault (a low arch: its mouths only)
+        m0, m1 = (mouths or {}).get(_fid, (True, True))
+        fast._ef.tunnel_holes(mask, u, float(x0), float(y0), float(square), np.ascontiguousarray(xy),
+                              np.ascontiguousarray(z), float(hw), float(th), bool(low), bool(m0), bool(m1),
+                              float(TUNNEL_HOLE_MARGIN), float(LOW_HOLE_M + LOW_HOLE_STEP), float(ARCH_SIDE_M + 1.0))
     return mask
 
 
@@ -2722,10 +2541,9 @@ def arch_raise(parts, heights, px, py, z, mouths=None):
     import fast
     import roadmesh
     z = np.array(z, np.float64, copy=True)
-    rust = fast.AVAILABLE and hasattr(fast._ef, "arch_raise_part")
-    if rust:
-        px = np.ascontiguousarray(px, np.float64)
-        py = np.ascontiguousarray(py, np.float64)
+    fast.require(0, "arch_raise_part")
+    px = np.ascontiguousarray(px, np.float64)
+    py = np.ascontiguousarray(py, np.float64)
     for fid, spec, xy, zf, _lon in parts:
         th = (heights or {}).get(fid)
         if th is None or th >= roadmesh.TUNNEL_H - 0.05:
@@ -2735,40 +2553,16 @@ def arch_raise(parts, heights, px, py, z, mouths=None):
         if len(xy) < 2 or not np.isfinite(zf).all():
             continue
         hw = spec.width / 2 + roadmesh.TUNNEL_SHOULDER + ARCH_SIDE_M
-        if rust:                # the Rust kernel (the same sums, per part) on the points in its box (numpy's test)
-            m0, m1 = (mouths or {}).get(fid, (True, True))
-            lo, hi = xy.min(0) - hw, xy.max(0) + hw
-            k = np.flatnonzero((px >= lo[0]) & (px <= hi[0]) & (py >= lo[1]) & (py <= hi[1]))
-            if len(k):
-                zk = np.ascontiguousarray(z[k])
-                fast._ef.arch_raise_part(zk, np.ascontiguousarray(px[k]), np.ascontiguousarray(py[k]),
-                                         np.ascontiguousarray(xy), np.ascontiguousarray(zf), float(hw), float(th),
-                                         float(ARCH_SOIL_MIN), float(LOW_HOLE_M), bool(m0), bool(m1))
-                z[k] = zk
-            continue
-        sj = np.r_[0.0, np.cumsum(np.hypot(*np.diff(xy, axis=0).T))]
-        lo = xy.min(0) - hw
-        hi = xy.max(0) + hw
-        near = (px >= lo[0]) & (px <= hi[0]) & (py >= lo[1]) & (py <= hi[1])
-        if not near.any():
-            continue
-        k = np.flatnonzero(near)
-        for j in range(len(xy) - 1):
-            a, b = xy[j], xy[j + 1]
-            ab = b - a
-            L2 = max(float(ab @ ab), 1e-12)
-            t = ((px[k] - a[0]) * ab[0] + (py[k] - a[1]) * ab[1]) / L2
-            d = np.abs((px[k] - a[0]) * ab[1] - (py[k] - a[1]) * ab[0]) / math.sqrt(L2)
-            s_ = sj[j] + np.clip(t, 0, 1) * (sj[j + 1] - sj[j])
-            inside = (t >= 0) & (t <= 1) & (d <= hw)
-            floor = zf[j] + np.clip(t, 0, 1) * (zf[j + 1] - zf[j])
-            m0, m1 = (mouths or {}).get(fid, (True, True))
-            mouth = inside & (((s_ <= LOW_HOLE_M) & m0) | ((s_ >= sj[-1] - LOW_HOLE_M) & m1))
-            on = inside & ~mouth
-            if on.any():            # over the vault: soil at least ARCH_SOIL_MIN over it
-                z[k[on]] = np.maximum(z[k[on]], floor[on] + th + ARCH_SOIL_MIN)
-            if mouth.any():         # its mouths: flat at its floor (cut away, tunnel_hole_mask; no slope into the
-                z[k[mouth]] = np.minimum(z[k[mouth]], floor[mouth] - 0.02)    # opening from the soil)
+        # the Rust kernel (per part) on the points in its box
+        m0, m1 = (mouths or {}).get(fid, (True, True))
+        lo, hi = xy.min(0) - hw, xy.max(0) + hw
+        k = np.flatnonzero((px >= lo[0]) & (px <= hi[0]) & (py >= lo[1]) & (py <= hi[1]))
+        if len(k):
+            zk = np.ascontiguousarray(z[k])
+            fast._ef.arch_raise_part(zk, np.ascontiguousarray(px[k]), np.ascontiguousarray(py[k]),
+                                     np.ascontiguousarray(xy), np.ascontiguousarray(zf), float(hw), float(th),
+                                     float(ARCH_SOIL_MIN), float(LOW_HOLE_M), bool(m0), bool(m1))
+            z[k] = zk
     return z
 
 

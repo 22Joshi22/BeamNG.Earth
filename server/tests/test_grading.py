@@ -278,29 +278,21 @@ class GraderTest(unittest.TestCase):
         self.assertEqual(len(two), 2)
 
 
-class OverTunnelsParity(unittest.TestCase):
-    """Grader._over_tunnels: Rust (earthfast.over_tunnel) and numpy, point for point."""
+class OverTunnels(unittest.TestCase):
+    """Grader._over_tunnels (earthfast.over_tunnel): over the tube within its half width, from TUNNEL_KEEP_IN_M inside
+    its portals."""
 
-    def test_same_mask(self):
+    def test_mask(self):
         import threading
         import types
-        import fast
-        if not (fast.AVAILABLE and hasattr(fast._ef, "over_tunnel")):
-            self.skipTest("no earthfast.over_tunnel")
-        rng = np.random.default_rng(3)
-        xy = np.cumsum(rng.normal(0, 5, (400, 2)), 0)
-        g = types.SimpleNamespace(lock=threading.Lock(), covers={"a": [(xy, 6.0)], "b": [(xy[::-1] + 3, 4.0)]})
-        e = rng.uniform(xy[:, 0].min() - 20, xy[:, 0].max() + 20, 30000)
-        n = rng.uniform(xy[:, 1].min() - 20, xy[:, 1].max() + 20, 30000)
-        r = grading.Grader._over_tunnels(g, e, n)
-        ef = fast._ef
-        fast._ef = None
-        try:
-            p = grading.Grader._over_tunnels(g, e, n)
-        finally:
-            fast._ef = ef
-        self.assertTrue(r is not None and r.any())
-        np.testing.assert_array_equal(r, p)
+        xy = np.array([[0.0, 0.0], [100.0, 0.0], [200.0, 0.0]])
+        g = types.SimpleNamespace(lock=threading.Lock(), covers={"a": [(xy, 6.0)]})
+        k = grading.TUNNEL_KEEP_IN_M
+        e = np.array([50.0, 150.0, 50.0, k / 2, 200.0 - k / 2, k + 1.0, -5.0])
+        n = np.array([2.0, -5.5, 7.0, 0.0, 0.0, 0.0, 0.0])
+        got = grading.Grader._over_tunnels(g, e, n)
+        np.testing.assert_array_equal(got, [True, True, False, False, False, True, False])
+        self.assertIsNone(grading.Grader._over_tunnels(g, np.array([50.0]), np.array([30.0])))
 
 
 if __name__ == "__main__":

@@ -70,22 +70,9 @@ def _yaw(dx, dy):
 
 def _clear(p, others, own):
     import fast
-    if isinstance(others, fast.Others):         # the Rust check (Python below without the module)
-        r = others.clear(p, own, CLEAR_OTHER_M)
-        if r is not None:
-            return r
-        others = others.others
-    for fid, half, line in others:
-        if fid == own:
-            continue
-        a, b = line[:-1, :2], line[1:, :2]
-        d = b - a
-        L2 = np.maximum((d * d).sum(1), 1e-12)
-        t = np.clip(((p[:2] - a) * d).sum(1) / L2, 0, 1)
-        q = a + t[:, None] * d
-        if np.hypot(*(q - p[:2]).T).min() < half + CLEAR_OTHER_M:
-            return False
-    return True
+    if not isinstance(others, fast.Others):
+        others = fast.Others(others)
+    return bool(others.clear(p, own, CLEAR_OTHER_M))
 
 
 WIRE_ARMS = (-0.8, 0.0, 0.8)    # m along the cross-arm (the pole's local x) of the three wires

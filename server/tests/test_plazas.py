@@ -72,22 +72,6 @@ class PlazaMeshTest(unittest.TestCase):
             return _area(m[0][m[1]])
         self.assertAlmostEqual(area(a) + area(b), 40 * 20, delta=1.0)
 
-    def test_rust_and_python_split_alike(self):
-        import fast
-        if not hasattr(fast._ef, "subdivide_tris"):
-            self.skipTest("no kernel")
-        P0 = np.array([[0.0, 0.0], [17.0, 1.0], [5.0, 13.0]])
-        T0 = np.array([[0, 1, 2]], np.int64)
-        P1, T1 = fast._ef.subdivide_tris(P0, T0, 2.0)
-        ef, avail = fast._ef, fast.AVAILABLE
-        try:
-            fast.AVAILABLE = False
-            P2, T2 = plazas._subdivide(P0, T0, 2.0)
-        finally:
-            fast._ef, fast.AVAILABLE = ef, avail
-        self.assertTrue(np.allclose(np.asarray(P1), P2))
-        self.assertTrue(np.array_equal(np.asarray(T1), T2))
-
 
 if __name__ == "__main__":
     unittest.main()

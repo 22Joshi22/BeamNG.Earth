@@ -102,21 +102,6 @@ class FollowTest(unittest.TestCase):
             return 10.0 + 0.8 * np.sin(e / 3.1) * np.cos(n / 2.3) + 0.05 * e
         return elev
 
-    def test_kernel_and_python_agree(self):
-        import fast
-        if not (fast.AVAILABLE and hasattr(fast._ef, "follow_tris")):
-            self.skipTest("no kernel")
-        rng = np.random.default_rng(5)
-        P = rng.uniform(-9, 9, (60, 2))
-        T = np.array([rng.choice(60, 3, replace=False) for _ in range(40)], np.int64)
-        UV = rng.uniform(0, 1, (60, 2))
-        gx, gy = np.meshgrid(np.arange(-7, 8) * 2.0, np.arange(-7, 8) * 2.0)
-        grid = np.round((np.sin(gx / 3) * np.cos(gy / 2) + 0.03 * gx) * 32) / 32
-        a = fast._ef.follow_tris(P, UV, T, 2.0, grid, -7, -7, 0.005)
-        b = roadmesh._follow_py(P, UV, T, 2.0, grid, -7, -7, 0.005)
-        for x, y in zip(a, b):
-            self.assertTrue(np.allclose(np.asarray(x), y, equal_nan=True))
-
     def test_with_filled_polygons(self):
         """A tile with corner asphalt (a filled polygon) follows the ground too: the polygon's points once took the
         name of the height quantum and every such road tile failed (a Steam Deck in Baltimore, 2026-10-20)."""

@@ -29,28 +29,10 @@ UNPAVED = {"compacted", "gravel", "fine_gravel", "unpaved", "dirt", "ground", "s
 
 def _subdivide(pts, tris, step):
     import fast
-    if fast.AVAILABLE and hasattr(fast._ef, "subdivide_tris"):
-        P, T = fast._ef.subdivide_tris(np.ascontiguousarray(pts, np.float64), np.ascontiguousarray(tris, np.int64),
-                                       float(step))
-        return np.asarray(P), np.asarray(T)
-    P = [tuple(p) for p in np.asarray(pts, np.float64)]
-    mids, out, stack = {}, [], [tuple(t) for t in np.asarray(tris)[::-1]]
-    while stack:
-        t = stack.pop()
-        e = [np.hypot(P[t[i]][0] - P[t[(i + 1) % 3]][0], P[t[i]][1] - P[t[(i + 1) % 3]][1]) for i in range(3)]
-        k = int(np.argmax(e))
-        if e[k] <= step:
-            out.append(t)
-            continue
-        a, b, c = t[k], t[(k + 1) % 3], t[(k + 2) % 3]
-        key = (min(a, b), max(a, b))
-        if key not in mids:
-            P.append(((P[a][0] + P[b][0]) / 2, (P[a][1] + P[b][1]) / 2))
-            mids[key] = len(P) - 1
-        stack.append((mids[key], b, c))
-        stack.append((a, mids[key], c))
-    return np.array(P), np.array(out, np.int64)
-
+    fast.require(1, "subdivide_tris")
+    P, T = fast._ef.subdivide_tris(np.ascontiguousarray(pts, np.float64), np.ascontiguousarray(tris, np.int64),
+                                   float(step))
+    return np.asarray(P), np.asarray(T)
 
 def _inside_many(ring, pts):
     """Which points pts (k, 2) lie inside the ring (m, 2) (even-odd), all at once (blocks of points). Pure."""

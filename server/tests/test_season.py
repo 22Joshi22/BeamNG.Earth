@@ -27,11 +27,23 @@ class AmountsTest(unittest.TestCase):
         self.assertEqual(season.season_amounts(datetime.date(2026, 7, 1), 39.2)["winter"], 0.0)
 
 
-class ColourTest(unittest.TestCase):
-    def test_hsv_roundtrip(self):
-        c = np.random.default_rng(1).integers(0, 256, (500, 3)).astype(np.uint8)
-        self.assertEqual(int(np.abs(season._rgb(*season._hsv(c)).astype(int) - c).max()), 0)
+def _hsv(rgb):
+    """(hue deg, saturation, value) of uint8 rgb (..., 3): the tests' measure of the grade."""
+    a = rgb.astype(np.float32) / 255.0
+    r, g, b = a[..., 0], a[..., 1], a[..., 2]
+    mx, mn = a.max(-1), a.min(-1)
+    d = mx - mn
+    h = np.zeros_like(mx)
+    m = d > 1e-6
+    rr, gg, bb = (mx == r) & m, (mx == g) & m & (mx != r), (mx == b) & m & (mx != r) & (mx != g)
+    h[rr] = (60.0 * ((g - b)[rr] / d[rr])) % 360.0
+    h[gg] = 60.0 * ((b - r)[gg] / d[gg]) + 120.0
+    h[bb] = 60.0 * ((r - g)[bb] / d[bb]) + 240.0
+    s = np.where(mx > 0, d / np.maximum(mx, 1e-6), 0.0)
+    return h, s, mx
 
+
+class ColourTest(unittest.TestCase):
     def test_leaf_on_greens_vegetation_only(self):
         rgb = np.zeros((64, 64, 3), np.uint8)
         rgb[:, :32] = (120, 105, 80)            # dormant grass (left), a grey roof (right)
@@ -50,15 +62,15 @@ class ColourTest(unittest.TestCase):
         rgb = np.concatenate([canopy, lawn], 1).astype(np.uint8)
         ys, xs = np.mgrid[0:64, 0:128].astype(np.float32) * 1.0
         out = season.grade(rgb, xs, -ys, {"fall": 1.0})
-        h0, _, _ = season._hsv(rgb)
-        h1, _, _ = season._hsv(out)
+        h0, _, _ = _hsv(rgb)
+        h1, _, _ = _hsv(out)
         turned = (h0 - h1)[:, :64]
         self.assertGreater(float(np.mean(turned > 20)), 0.2, "a good share of the canopy turned yellow / red")
         self.assertLess(float(np.max((h0 - h1)[:, 70:])), 25, "the lawn only yellowed a little")
         self.assertTrue(np.array_equal(season.grade(rgb, xs, -ys, {"fall": 0.0}), rgb), "summer: unchanged")
         win = season.grade(rgb, xs, -ys, season.amounts_for("winter", 39.2))
-        _, s0, _ = season._hsv(rgb)
-        _, s1, _ = season._hsv(win)
+        _, s0, _ = _hsv(rgb)
+        _, s1, _ = _hsv(win)
         self.assertLess(float(s1[:, :64].mean()), 0.7 * float(s0[:, :64].mean()), "winter: the canopy greys")
         # world-anchored: the same place graded alone gives the same texels
         part = season.grade(rgb[:, :64], xs[:, :64], -ys[:, :64], {"fall": 1.0})

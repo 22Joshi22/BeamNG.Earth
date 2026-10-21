@@ -210,37 +210,22 @@ def horizon_tan(hpad, res, pad, n, az, max_dist=PAD_M, dmax=None, growth=1.04):
     (pad, pad) of the padded grid hpad. Steps grow geometrically from one cell; the march stops
     at max_dist, at the pad, or at dmax (beyond it nothing can rise above the sun). A fixed
     direction makes every step one shift of the whole grid: four slices, no gather."""
-    h0 = hpad[pad:pad + n, pad:pad + n].astype(np.float32)
     best = np.full((n, n), -1e9, np.float32)
     s, c = math.sin(math.radians(az)), math.cos(math.radians(az))
     stop = min(max_dist, (pad - 1.5) * res, max_dist if dmax is None else dmax)
     d = res
-    if (fast._ef is not None and hasattr(fast._ef, "horizon_steps") and isinstance(hpad, np.ndarray)
-            and hpad.dtype == np.float32):
-        # Rust (earthfast.horizon_steps): the same steps, no full-grid temporaries; paced between batches
-        hp = np.ascontiguousarray(hpad)
-        steps = []
-        while d <= stop:
-            dy, dx = -c * d / res, s * d / res
-            iy, ix = math.floor(dy), math.floor(dx)
-            steps.append((iy, ix, dy - iy, dx - ix, d))
-            d = max(d + res, d * growth)
-        for i in range(0, len(steps), HORIZON_BATCH):
-            pacer.pace()
-            fast._ef.horizon_steps(hp, best, pad, np.asarray(steps[i:i + HORIZON_BATCH], np.float64))
-        return best
+    # Rust (earthfast.horizon_steps): no full-grid temporaries; paced between batches
+    fast.require(1, "horizon_tan")
+    hp = np.ascontiguousarray(hpad, np.float32)
+    steps = []
     while d <= stop:
-        pacer.pace()
         dy, dx = -c * d / res, s * d / res
         iy, ix = math.floor(dy), math.floor(dx)
-        fy, fx = dy - iy, dx - ix
-        r0, c0 = pad + iy, pad + ix
-        a = hpad[r0:r0 + n + 1, c0:c0 + n + 1]
-        top = a[:-1, :-1] * (1 - fx) + a[:-1, 1:] * fx
-        bot = a[1:, :-1] * (1 - fx) + a[1:, 1:] * fx
-        hs = top * (1 - fy) + bot * fy
-        np.maximum(best, (hs - h0) / d, out=best)
+        steps.append((iy, ix, dy - iy, dx - ix, d))
         d = max(d + res, d * growth)
+    for i in range(0, len(steps), HORIZON_BATCH):
+        pacer.pace()
+        fast._ef.horizon_steps(hp, best, pad, np.asarray(steps[i:i + HORIZON_BATCH], np.float64))
     return best
 
 

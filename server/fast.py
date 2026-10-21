@@ -1,17 +1,33 @@
-"""The world server's Rust kernels (native/earthfast, built by tools/build_native.py) with their Python fallbacks.
+"""The world server's Rust kernels (native/earthfast, built by tools/build_native.py).
 
 The road tiles' hot loops were Python over tiny numpy arrays (a 2026-10-15 profile: the islands' curb ray march alone
-was ~20 % of a road tile, 0.9 s of ~4 s); the compiled module does them in one call. Without it (no binary for this
-platform) every caller keeps its Python code: fast.AVAILABLE says which.
+was ~20 % of a road tile, 0.9 s of ~4 s); the compiled module does them in one call. The server needs it: the Python
+twins of the kernels are gone (the user, 2026-10-21: "we dont need 2 versions of the same thing"); require() says
+what is missing when it cannot be loaded.
 """
 import numpy as np
 
 try:
     import earthfast as _ef
-except ImportError:         # no binary for this platform / Python: the Python code
+except ImportError:         # no binary for this platform / Python: require() says so
     _ef = None
 
 AVAILABLE = _ef is not None
+MIN_VERSION = 34            # the newest kernel signature the server calls (earthd checks it at start)
+
+
+class NativeMissing(RuntimeError):
+    """The server's Rust module (native/earthfast) is missing or older than a kernel needs."""
+
+
+def require(version, what):
+    """Raise NativeMissing unless the module is loaded at VERSION >= version (what: the kernel, for the message). The
+    kernels that have no Python twin any more (the user, 2026-10-21: "we dont need 2 versions of the same thing")."""
+    have = getattr(_ef, "VERSION", 0) if _ef is not None else None
+    if have is None or have < version:
+        raise NativeMissing(f"{what} needs the server's native module (earthfast) version {version} or newer, "
+                            f"{'none was loaded' if have is None else f'version {have} was'}: rebuild it with "
+                            "python3 tools/build_native.py, or use a release build")
 
 
 class NativeMissing(RuntimeError):
@@ -43,9 +59,8 @@ def segments(lines_hw):
 
 
 def island_ring_rays(poly, lines_hw, c, rays, step, rmax):
-    """(rays, 2) or None without the module."""
-    if _ef is None:
-        return None
+    """(rays, 2): the island's curb ring by rays from c, stopped by the polygon and the roads."""
+    require(1, "island_ring_rays")
     segs, hw = segments(lines_hw)
     return _ef.island_ring_rays(np.ascontiguousarray(poly[:, :2], np.float64), segs, hw, float(c[0]), float(c[1]),
                                 int(rays), float(step), float(rmax))
@@ -56,8 +71,7 @@ class Others:
 
     def __init__(self, others):
         self.others = others
-        if _ef is None:
-            return
+        require(1, "Others")
         ids = {}
         segs, half, owner = [], [], []
         for fid, h, line in others:
@@ -74,8 +88,6 @@ class Others:
         self.owner = np.ascontiguousarray(np.concatenate(owner)) if owner else np.zeros(0, np.int64)
 
     def clear(self, p, own, margin):
-        """None without the module (the caller's Python check then)."""
-        if _ef is None:
-            return None
+        """Is p (2+,) farther than each road's half width + margin from every road but own?"""
         return _ef.clear_of(self.segs, self.half, self.owner, float(p[0]), float(p[1]), self.ids.get(own, -1),
                             float(margin))

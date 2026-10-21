@@ -974,12 +974,7 @@ def _cornice(m, spec, ring, z_eave, mat_idx):
 def _inside(ring, p):
     """Point p inside the ring (even-odd)."""
     x, y = p
-    if fast._ef is not None and ring.dtype == np.float64 and ring.ndim == 2:
-        return fast._ef.point_inside(ring, float(x), float(y))
-    xs, ys = ring[:, 0], ring[:, 1]
-    xj, yj = np.roll(xs, 1), np.roll(ys, 1)
-    cross = ((ys > y) != (yj > y)) & (x < (xj - xs) * (y - ys) / np.where(yj - ys == 0, 1e-12, yj - ys) + xs)
-    return bool(np.count_nonzero(cross) % 2)
+    return fast._ef.point_inside(np.asarray(ring, np.float64), float(x), float(y))     # (Rust; even-odd)
 
 
 def _box(m, c, u, hx, hy, z0, z1, mat):
@@ -1667,31 +1662,13 @@ def _shared_walls(rings, tol=0.6):
     cents = np.array([r.mean(0) for r in rings])
     rads = np.array([np.hypot(*(r - r.mean(0)).T).max() for r in rings])
     order = np.argsort(cents[:, 0])
-    if fast._ef is not None and hasattr(fast._ef, "shared_walls"):     # the Rust loop: the same counts
-        offs = np.zeros(n + 1, np.int64)
-        offs[1:] = np.cumsum([len(r) for r in rings])
-        coords = np.ascontiguousarray(np.concatenate(rings)[:, :2], np.float64)
-        return np.asarray(fast._ef.shared_walls(coords, offs, np.ascontiguousarray(cents, np.float64),
-                                                np.ascontiguousarray(rads, np.float64), order.astype(np.int64),
-                                                float(tol)), np.int64)
-    xs = cents[order, 0]
-    for oi, i in enumerate(order):
-        lo = np.searchsorted(xs, cents[i, 0] - rads[i] - 30.0)
-        hi = np.searchsorted(xs, cents[i, 0] + rads[i] + 30.0)
-        for j in order[lo:hi]:
-            if j == i or np.hypot(*(cents[j] - cents[i])) > rads[i] + rads[j] + tol:
-                continue
-            ri, rj = rings[i], rings[j]
-            a, b = ri, np.roll(ri, -1, 0)
-            d = b - a
-            L2 = np.maximum((d * d).sum(1), 1e-9)
-            t = np.clip(((rj[:, None, :] - a[None]) * d[None]).sum(2) / L2[None], 0, 1)
-            q = a[None] + t[..., None] * d[None]
-            dist = np.hypot(*(rj[:, None, :] - q).transpose(2, 0, 1))
-            if (dist < tol).sum() >= 2:
-                cnt[i] += 1
-    return cnt
-
+    fast.require(1, "shared_walls")
+    offs = np.zeros(n + 1, np.int64)
+    offs[1:] = np.cumsum([len(r) for r in rings])
+    coords = np.ascontiguousarray(np.concatenate(rings)[:, :2], np.float64)
+    return np.asarray(fast._ef.shared_walls(coords, offs, np.ascontiguousarray(cents, np.float64),
+                                            np.ascontiguousarray(rads, np.float64), order.astype(np.int64),
+                                            float(tol)), np.int64)
 
 def _part_heights(a, i):
     """A building part's (own height, its bottom) from its attributes, or None without a height."""
@@ -2638,7 +2615,7 @@ def doors(items, lines, x0, y0, drives=None):
                                "n": [[round(float(pp[0]), 3), round(float(pp[1]), 3), 0.0] for pp in pts]})
         if spec.roof != "flat" and not narrow and _hash01(spec.seed, "fence") < FENCE_SHARE:
             rows.extend(_front_fence(spec, a, d, Le, f, A[kseg], D[kseg], L2[kseg], SHALF[kseg], gmin,
-                                     drives is not None and spec.wall and Le >= 7.0))
+                                     drives is not None and spec.wall and Le >= 7.0, (A, B, SHALF)))
         p = a + d * (Le * f) + out * DOOR_OUT_M
         gd = door_ground(spec, edge, Le * f, gmax) if spec.stoop else gmax     # a stoop's door: over its own ground
         base = gd + (STOOP_H if spec.stoop else 0.0) + (PORCH_DECK_M if spec.porch else 0.0)   # (the deck / stoop)
@@ -2704,11 +2681,14 @@ FENCE_SEG_M = 5.4
 FENCE_SHARE = 0.3           # detached houses with a fence along the front of their yard (hashed)
 FENCE_BACK_M = 3.2          # m from the road's edge (the back of the sidewalk)
 FENCE_MIN_YARD_M = 2.5      # the front yard at least this deep between the fence and the house
+FENCE_CLEAR_M = 2.0         # m every piece keeps from any road's edge (a house on a bend or a corner: its fence ran
+                            # along one road out across another, GitHub #105 Falcon Drive, Coquitlam)
 
 
-def _front_fence(spec, a, d, Le, f, A, D, L2, half, z, driveway):
+def _front_fence(spec, a, d, Le, f, A, D, L2, half, z, driveway, roads=None):
     """Prop rows of a fence along the front of a house's yard, parallel to the road at the back of the sidewalk,
-    a little wider than the house, with gaps for the path to the door and the driveway."""
+    a little wider than the house, with gaps for the path to the door and the driveway. roads: (starts (n, 2), ends
+    (n, 2), half widths (n,)) of the roads near: no piece within FENCE_CLEAR_M of their edges."""
     mid = a + d * (Le / 2)
     t = float(np.clip(((mid - A) * D).sum() / L2, 0, 1))
     q = A + t * D
@@ -2730,6 +2710,13 @@ def _front_fence(spec, a, d, Le, f, A, D, L2, half, z, driveway):
         if any(abs(sk - g) < FENCE_SEG_M / 2 + 0.6 for g in gaps):
             continue
         p = centre + dr * sk
+        if roads is not None and len(roads[0]):
+            ends = np.array([p - dr * (FENCE_SEG_M / 2), p, p + dr * (FENCE_SEG_M / 2)])
+            fast.require(0, "points_near_segments")
+            if np.asarray(fast._ef.points_near_segments(ends, np.ascontiguousarray(roads[0], np.float64),
+                                                        np.ascontiguousarray(roads[1], np.float64),
+                                                        np.asarray(roads[2], np.float64) + FENCE_CLEAR_M)).any():
+                continue
         rows.append([G_FENCE, round(float(p[0]), 2), round(float(p[1]), 2), round(float(z), 2), yaw, 1.0, 1.3,
                      round(_hash01(spec.seed, "fr", k), 3)])
     return rows

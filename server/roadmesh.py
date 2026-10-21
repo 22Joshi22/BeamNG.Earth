@@ -184,140 +184,18 @@ def _height_grid(frame, elev, xy, q=None, cell=GRID_M):
     return np.ascontiguousarray(u), i0, j0
 
 
-def _terrain_at(grid, i0, j0, cell, x, y):
-    """earthfast's terrain_at in Python: the drawn ground at (x, y) (NaN outside the grid)."""
-    gx, gy = x / cell, y / cell
-    i, j = math.floor(gx), math.floor(gy)
-    ny, nx = grid.shape
-    if i - i0 == nx - 1 and gx == i:
-        i -= 1
-    if j - j0 == ny - 1 and gy == j:
-        j -= 1
-    li, lj = i - i0, j - j0
-    if li < 0 or lj < 0 or li + 1 >= nx or lj + 1 >= ny:
-        return float("nan")
-    fx, fy = gx - i, gy - j
-    a, b, c, d = grid[lj, li], grid[lj, li + 1], grid[lj + 1, li], grid[lj + 1, li + 1]
-    return float(a + fy * (c - a) + fx * (d - c)) if fy > fx else float(a + fx * (b - a) + fy * (d - b))
-
-
-_FAMS = ((1.0, 0.0), (0.0, 1.0), (-1.0, 1.0))      # the ground's edges: x = k cell, y = k cell, y - x = k cell
-
-
-def _follow_py(P, UV, T, cell, grid, i0, j0, tol):
-    """earthfast.follow_tris in Python (the same tests, cuts and order)."""
-    ter = lambda x, y: _terrain_at(grid, i0, j0, cell, x, y)      # noqa: E731
-    outP, outUV, outT, src = [], [], [], []
-
-    def lerp(a, b, f):
-        return tuple(a[c] + (b[c] - a[c]) * f for c in range(4))
-    for ti, t in enumerate(T):
-        tri = [(P[i, 0], P[i, 1], UV[i, 0], UV[i, 1]) for i in t]
-        z = [ter(q[0], q[1]) for q in tri]
-        (x0, y0), (x1, y1), (x2, y2) = [(q[0], q[1]) for q in tri]
-        det = (x1 - x0) * (y2 - y0) - (x2 - x0) * (y1 - y0)
-        split = not all(math.isfinite(v) for v in z) or abs(det) < 1e-12
-        if not split:
-            def plane(x, y):
-                s_ = ((x - x0) * (y2 - y0) - (x2 - x0) * (y - y0)) / det
-                t_ = ((x1 - x0) * (y - y0) - (x - x0) * (y1 - y0)) / det
-                return z[0] + s_ * (z[1] - z[0]) + t_ * (z[2] - z[0]), s_, t_
-
-            def dev(x, y):
-                tz = ter(x, y)
-                return abs(tz - plane(x, y)[0]) if math.isfinite(tz) else math.inf
-            for gi in range(math.ceil(min(x0, x1, x2) / cell), math.floor(max(x0, x1, x2) / cell) + 1):
-                for gj in range(math.ceil(min(y0, y1, y2) / cell), math.floor(max(y0, y1, y2) / cell) + 1):
-                    x, y = gi * cell, gj * cell
-                    _, s_, t_ = plane(x, y)
-                    if s_ >= -1e-9 and t_ >= -1e-9 and s_ + t_ <= 1 + 1e-9 and dev(x, y) > tol:
-                        split = True
-                        break
-                if split:
-                    break
-            for e in range(3):
-                if split:
-                    break
-                a, b = tri[e], tri[(e + 1) % 3]
-                for nx, ny in _FAMS:
-                    da, db = nx * a[0] + ny * a[1], nx * b[0] + ny * b[1]
-                    lo, hi = min(da, db), max(da, db)
-                    for k in range(math.floor(lo / cell) + 1, math.ceil(hi / cell)):
-                        line = k * cell
-                        if line <= lo or line >= hi:
-                            continue
-                        qq = lerp(a, b, (line - da) / (db - da))
-                        if dev(qq[0], qq[1]) > tol:
-                            split = True
-                            break
-                    if split:
-                        break
-        if not split:
-            base = len(outP)
-            outP.extend((q[0], q[1], z[k]) for k, q in enumerate(tri))
-            outUV.extend((q[2], q[3]) for q in tri)
-            outT.append((base, base + 1, base + 2))
-            src.append(ti)
-            continue
-        polys = [tri]
-        for nx, ny in _FAMS:
-            nxt = []
-            for poly in polys:
-                d = [nx * q[0] + ny * q[1] for q in poly]
-                lo, hi = min(d), max(d)
-                rest = poly
-                for k in range(math.floor(lo / cell) + 1, math.ceil(hi / cell)):
-                    line = k * cell
-                    if line <= lo + 1e-9 or line >= hi - 1e-9:
-                        continue
-                    below, above = [], []
-                    for j in range(len(rest)):
-                        a, b = rest[j], rest[(j + 1) % len(rest)]
-                        da, db = nx * a[0] + ny * a[1] - line, nx * b[0] + ny * b[1] - line
-                        if da <= 0:
-                            below.append(a)
-                        if da >= 0:
-                            above.append(a)
-                        if (da < 0 < db) or (da > 0 > db):
-                            x = lerp(a, b, da / (da - db))
-                            below.append(x)
-                            above.append(x)
-                    if len(below) >= 3:
-                        nxt.append(below)
-                    rest = above
-                    if len(rest) < 3:
-                        break
-                if len(rest) >= 3:
-                    nxt.append(rest)
-            polys = nxt
-        for poly in polys:
-            area = sum(poly[j][0] * poly[(j + 1) % len(poly)][1] - poly[(j + 1) % len(poly)][0] * poly[j][1]
-                       for j in range(len(poly))) / 2
-            if abs(area) < 1e-8:
-                continue
-            base = len(outP)
-            outP.extend((q[0], q[1], ter(q[0], q[1])) for q in poly)
-            outUV.extend((q[2], q[3]) for q in poly)
-            for a in range(1, len(poly) - 1):
-                outT.append((base, base + a, base + a + 1))
-                src.append(ti)
-    return (np.array(outP, np.float64).reshape(-1, 3), np.array(outUV, np.float64).reshape(-1, 2),
-            np.array(outT, np.int64).reshape(-1, 3), np.array(src, np.int64))
-
-
 def follow_ground(P, UV, T, grid, i0, j0, tol=None, cell=GRID_M):
     """(points (m, 3), uvs, triangles, source triangle) of the triangles T over P (n, 2) on the drawn ground (grid:
-    _height_grid): earthfast.follow_tris, else _follow_py."""
+    _height_grid): earthfast.follow_tris."""
     import fast
     tol = FOLLOW_TOL if tol is None else tol
     P = np.ascontiguousarray(np.asarray(P, np.float64)[:, :2])
     UV = np.ascontiguousarray(UV, np.float64)
     T = np.ascontiguousarray(T, np.int64)
-    if fast.AVAILABLE and hasattr(fast._ef, "follow_tris"):
-        a, b, c, d = fast._ef.follow_tris(P, UV, T, float(cell), np.ascontiguousarray(grid, np.float64), int(i0), int(j0),
-                                          float(tol))
-        return np.asarray(a), np.asarray(b), np.asarray(c), np.asarray(d)
-    return _follow_py(P, UV, T, cell, grid, i0, j0, tol)
+    fast.require(1, "follow_tris")
+    a, b, c, d = fast._ef.follow_tris(P, UV, T, float(cell), np.ascontiguousarray(grid, np.float64), int(i0), int(j0),
+                                      float(tol))
+    return np.asarray(a), np.asarray(b), np.asarray(c), np.asarray(d)
 
 
 def _shared(P, UV, T):
@@ -681,18 +559,9 @@ def _parapet_cover(rb, context=()):
         OS.append(np.full(len(z) - 1, oid))
     P_, O_ = np.concatenate(pts), np.concatenate(own).astype(np.int64)
     A_, B_, H_, S_ = np.concatenate(A), np.concatenate(B), np.concatenate(HW), np.concatenate(OS).astype(np.int64)
-    if fast.AVAILABLE and hasattr(fast._ef, "deck_edges_covered"):
-        cov = np.asarray(fast._ef.deck_edges_covered(np.ascontiguousarray(P_), O_, np.ascontiguousarray(A_),
-                                                      np.ascontiguousarray(B_), H_, S_, PARAPET_COVER_DZ))
-    else:
-        cov = np.zeros(len(P_), bool)
-        ab = B_[:, :2] - A_[:, :2]
-        L2 = np.maximum((ab * ab).sum(1), 1e-9)
-        for i, p in enumerate(P_):
-            t = np.clip(((p[:2] - A_[:, :2]) * ab).sum(1) / L2, 0.0, 1.0)
-            d = np.hypot(*(p[:2] - (A_[:, :2] + t[:, None] * ab)).T)
-            zz = A_[:, 2] + t * (B_[:, 2] - A_[:, 2])
-            cov[i] = bool(((S_ != O_[i]) & (d < H_) & (np.abs(p[2] - zz) < PARAPET_COVER_DZ)).any())
+    fast.require(1, "deck_edges_covered")
+    cov = np.asarray(fast._ef.deck_edges_covered(np.ascontiguousarray(P_), O_, np.ascontiguousarray(A_),
+                                                  np.ascontiguousarray(B_), H_, S_, PARAPET_COVER_DZ))
     k0 = 0
     for (left, right, v, m, layer, z), c in rb:
         k = len(z)
