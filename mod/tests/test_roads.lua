@@ -283,7 +283,7 @@ roads.update(gov, 2)
 -- it last; standing, by distance (the user, 2026-10-19: at 100+ mph the road texture went first)
 do
   files['/t/e.json'] = '{ chunks = { } }'
-  for _, k in ipairs({ '2_0', '0_1', '0_2', '-2_0' }) do roads.onTile({ anchorId = 2, key = k, path = '/t/e.json', n = 0 }, 2) end
+  for _, k in ipairs({ '2_0', '0_1', '0_2', '-2_0', '0_0' }) do roads.onTile({ anchorId = 2, key = k, path = '/t/e.json', n = 0 }, 2) end
   car.pos = vec3(128, 128, 0.5)
   function car:getVelocity() return vec3(45, 0, 0) end
   roads.update(gov, 2)              -- (the motion read: updateCollideRange)
@@ -291,11 +291,26 @@ do
   T.check(q[roads.nextWalk(q)].key == '2:2_0', 'fast: the tile ahead on the path first')
   table.remove(q, 3)
   T.check(q[roads.nextWalk(q)].key == '2:0_2', 'then beside, behind last')
+  q = { { key = '2:2_0', what = 'walkcol' }, { key = '2:2_0', what = 'bldcol' }, { key = '2:2_0', what = 'deck' } }
+  T.check(q[roads.nextWalk(q)].what == 'deck', 'fast: what the car drives on first')
+  q = { { key = '2:2_0', what = 'walkcol' }, { key = '2:0_0', what = 'walkcol' } }
+  car.pos = vec3(230, 128, 0.5)       -- (past tile 0_0's centre by 102 m, still in it: not yet behind)
+  roads.update(gov, 2)
+  T.check(q[roads.nextWalk(q)].key == '2:0_0', 'the tile the car is in first')
+  car.pos = vec3(300, 128, 0.5)       -- (its centre 172 m behind: left behind)
+  roads.update(gov, 2)
+  T.check(q[roads.nextWalk(q)].key == '2:2_0', 'a tile left behind goes after the one ahead')
+  car.pos = vec3(300, 128, 0.5)       -- (tile 2_0's centre 340 m ahead: within 6 s at 45 m/s)
+  roads.update(gov, 2)
+  q = { { key = '2:2_0', what = 'walkcol' }, { key = '2:0_2', what = 'deck' }, { key = '2:2_0', what = 'deck' },
+        { key = '2:-2_0', what = 'deck' } }
+  T.check(roads.urgentWalk(q) == 3, 'urgent: the deck ahead within reach (not beside first, not behind)')
+  T.check(roads.urgentWalk({ { key = '2:2_0', what = 'walkcol' } }) == nil, 'urgent: decks and tunnels only')
   function car:getVelocity() return vec3(0, 0, 0) end
   roads.update(gov, 2)
   q = { { key = '2:2_0' }, { key = '2:0_1' } }
   T.check(q[roads.nextWalk(q)].key == '2:0_1', 'standing: the nearer tile first')
-  for _, k in ipairs({ '2_0', '0_1', '0_2', '-2_0' }) do roads.onDrop({ anchorId = 2, key = k }) end
+  for _, k in ipairs({ '2_0', '0_1', '0_2', '-2_0', '0_0' }) do roads.onDrop({ anchorId = 2, key = k }) end
   roads.update(gov, 2)
   car.getVelocity = nil
 end
