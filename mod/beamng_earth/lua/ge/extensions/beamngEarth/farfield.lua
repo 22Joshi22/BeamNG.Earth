@@ -400,11 +400,21 @@ end
 
 -- Cover state of a footprint against the committed block: 'none', 'edge' or 'interior'. In mesh
 -- mode the block is invisible, so nothing is covered.
+M.PARTIAL_SINK_K = 1.2     -- a 'partial' tile sinks this many times its error (the crossover bound's factor) ...
+M.PARTIAL_SINK_M = 0.3     -- ... plus this (m)
+local function visibleCover(c) return c == 'none' or c == 'partial' end
 local function coverOf(inst)
   local b = block
   if not b or not blockShown() then return 'none' end
   local e = 0.01
-  if inst.x0 < b.x0 - e or inst.y0 < b.y0 - e or inst.x1 > b.x1 + e or inst.y1 > b.y1 + e then return 'none' end
+  if inst.x0 < b.x0 - e or inst.y0 < b.y0 - e or inst.x1 > b.x1 + e or inst.y1 > b.y1 + e then
+    -- across the block's edge: 'partial' (sunk under the terrain by its error, still seen outside the block). A hard
+    -- commit (follow.HARD_COMMIT_DIST: the ground under the car first) does not wait for the far field to split
+    -- these, and on a Steam Deck at 80 mph one straddled the block most of the time, its coarse hills standing
+    -- through the near terrain round the car (GitHub #46)
+    if inst.x0 < b.x1 - e and b.x0 + e < inst.x1 and inst.y0 < b.y1 - e and b.y0 + e < inst.y1 then return 'partial' end
+    return 'none'
+  end
   local d = min(inst.x0 - b.x0, inst.y0 - b.y0, b.x1 - inst.x1, b.y1 - inst.y1)
   return d < M.EDGE_BAND and 'edge' or 'interior'
 end
@@ -412,6 +422,7 @@ end
 -- Target z offset and hidden flag for a cover state.
 local function coverTarget(inst, cover)
   if cover == 'none' then return 0, false end
+  if cover == 'partial' then return -(M.PARTIAL_SINK_K * (inst.err or 0) + M.PARTIAL_SINK_M), false end
   if inst.sink then return -inst.sink, cover == 'interior' end
   return -M.HIDE_DEPTH, true -- no sink from the server: hide rather than risk poking through
 end
@@ -546,7 +557,7 @@ end
 local function applyCover(inst, animate)
   local c = coverOf(inst)
   if c == inst.cover then return false end
-  local fromOff, wasVisible = coverOffNow(inst), (inst.cover == 'none' and not inst.hidden)
+  local fromOff, wasVisible = coverOffNow(inst), (visibleCover(inst.cover) and not inst.hidden)
   inst.cover = c
   inst.coverOff, inst.coverHide = coverTarget(inst, c)
   if animate and wasVisible and c ~= 'none' then
@@ -673,13 +684,13 @@ local function startGroup(g, cam)
   -- adds take their cover state at once; covered (or hidden) removes go at once (nothing to see)
   local visAdds, visRems, errN, errO = {}, {}, 0, 0
   for _, a in ipairs(adds) do
-    if coverOf(a) == 'none' and not a.failed then
+    if visibleCover(coverOf(a)) and not a.failed then
       visAdds[#visAdds + 1] = a
       errN = max(errN, a.err)
     end
   end
   for _, r in ipairs(rems) do
-    if r.cover == 'none' and not r.hidden and r.grp == nil then
+    if visibleCover(r.cover) and not r.hidden and r.grp == nil then
       visRems[#visRems + 1] = r
       errO = max(errO, r.err)
     end
@@ -1436,11 +1447,12 @@ end
 function M.session() return session end
 
 function M.stats()
-  local n, covered, hiddenLoaded, over, overLevel = 0, 0, 0, 0, nil
+  local n, covered, hiddenLoaded, over, overLevel, partial = 0, 0, 0, 0, nil, 0
   local b, e = blockShown() and block or nil, 0.01
   for _, inst in pairs(live) do
     n = n + 1
-    if inst.cover ~= 'none' then covered = covered + 1 end
+    if not visibleCover(inst.cover) then covered = covered + 1 end
+    if inst.cover == 'partial' then partial = partial + 1 end
     -- shown at its own height across the block's ground (GitHub #46: coarse ground drawn over the near terrain)
     if b and inst.cover == 'none' and not inst.hidden and inst.x0 < b.x1 - e and b.x0 + e < inst.x1
         and inst.y0 < b.y1 - e and b.y0 + e < inst.y1 then
@@ -1459,7 +1471,7 @@ function M.stats()
     textured = counters.textured, oldCovered = counters.oldCovered, nearVisual = nearVisual, rawView = rawView,
     waitingGroups = waiting, exactLevel = exactLevel, underLevel = under.level, underOld = under.old,
     exactMiss = counters.exactMiss, exactFrames = counters.exactFrames, retex = counters.retex,
-    retexStale = counters.retexStale, retexFailed = counters.retexFailed, overBlock = over, overBlockLevel = overLevel }
+    retexStale = counters.retexStale, retexFailed = counters.retexFailed, overBlock = over, overBlockLevel = overLevel, partial = partial }
 end
 
 ------------------------------------------------------------------------------------------

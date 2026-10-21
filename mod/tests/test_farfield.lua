@@ -292,6 +292,19 @@ T.check(not farfield.uncoverReady(0, 2560, 0, 2560), 'gate closed: an L1 tile li
 farfield.onRemove({ type = 'far_remove', anchorId = 1, key = key(1, 1, 6) })
 step(free, camNorth)
 
+-- a coarse tile across the block's edge (a hard commit did not wait for its split, GitHub #46): sunk under the terrain by
+-- its error, still shown (it is the ground outside the block)
+farfield.onTile(tile(1, 3, 0, 0, { z = 50, err = 2 }))   -- L3 [0, 2048]^2: a quarter of it over the block
+step(free, camNorth)
+farfield.onSwap(swap(1, 304, { key(3, 0, 0) }))
+for _ = 1, 30 do step(free, camNorth) end
+local part = obj(key(3, 0, 0))
+T.check(visible(part) and math.abs(part.pos.z - (50 - (farfield.PARTIAL_SINK_K * 2 + farfield.PARTIAL_SINK_M))) < 1e-6,
+  'straddling coarse tile: shown, sunk by its error')
+T.check(farfield.stats().partial == 1 and farfield.stats().overBlock == 0, 'counted as partial, none at its own height')
+farfield.onRemove({ type = 'far_remove', anchorId = 1, key = key(3, 0, 0) })
+step(free, camNorth)
+
 -- the commit frame, in a governor heavy slot: no import, covered/uncovered tiles switch atomically
 local g2 = governor.new({ clock = clock })
 for _ = 1, 100 do g2:beginFrame(false, 11.5) end
