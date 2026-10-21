@@ -96,6 +96,39 @@ class GradePointsTest(unittest.TestCase):
         self.assertTrue(np.isfinite(out1[j]).all())
 
 
+class AbutmentTest(unittest.TestCase):
+    """GitHub #38 (the D1 near Presov): a motorway onto a bridge over a road in a cutting 8 m under it."""
+
+    def test_fill_keeps_the_grade_down_the_embankment(self):
+        d = np.arange(0.0, 100.0, grading.PROFILE_STEP)
+        road = 372.8 + 0.01 * d                 # the road on its embankment, rising 1 % away from the bridge
+        z = np.where(d < 10.0, 365.0 + (road - 365.0) * d / 10.0, road)     # its map line ends down the slope
+        filled = grading.fill_abutment(z, False)
+        self.assertTrue(np.allclose(filled, road, atol=0.05), "the grade kept to the end")
+        back = grading.fill_abutment(z[::-1], True)
+        self.assertTrue(np.allclose(back, filled[::-1]), "the same from the other end")
+        steady = 380.0 - 0.06 * d               # a road falling 6 % onto a bridge all the way: left alone
+        self.assertIs(grading.fill_abutment(steady, False), steady)
+
+    def test_the_abutment_is_its_roads(self):
+        # the approach (abut at its first vertex) ends 9.7 m from the centreline of a road cut 8 m under it
+        xy = np.stack([np.arange(0.0, 80.1, 4.0), np.zeros(21)], axis=1)
+        approach = grading.Plan(xy, np.full(21, 372.9), 6.9, abut=(True, False))
+        ys = np.arange(-200.0, 200.1, 4.0)
+        lower = grading.Plan(np.stack([np.full(len(ys), -9.7), ys], axis=1), np.full(len(ys), 364.6), 8.6)
+        px, py = np.array([0.0, 2.0]), np.array([0.0, 0.0])
+        base = np.array([369.9, 370.6])
+        out = grading.grade_points(px, py, base, [approach, lower])
+        self.assertTrue(np.allclose(out, 372.9, atol=0.25), out)     # (the segments along it still blend a little)
+        plain = grading.Plan(xy, np.full(21, 372.9), 6.9)     # (not onto a bridge: blended as before)
+        self.assertLess(grading.grade_points(px, py, base, [plain, lower])[0], 372.0)
+        import fast
+        if fast.AVAILABLE and getattr(fast._ef, "VERSION", 0) >= 35:
+            with unittest.mock.patch.object(fast, "AVAILABLE", False):
+                py_out = grading.grade_points(px, py, base, [approach, lower])
+            self.assertTrue(np.allclose(out, py_out, atol=1e-9), "Rust and Python agree")
+
+
 class ShoulderTest(unittest.TestCase):
     def test_sidewalk_classes_keep_the_sidewalk_flat(self):
         res = roads.Spec(6.0, "paved", True, "residential")

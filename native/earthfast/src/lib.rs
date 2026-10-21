@@ -824,11 +824,12 @@ fn measure_row32(line: PyReadonlyArray2<f64>, keys: PyReadonlyArray1<i64>, first
 fn grade_points<'py>(py: Python<'py>, px: PyReadonlyArray1<'py, f64>, pyy: PyReadonlyArray1<'py, f64>,
                      base: PyReadonlyArray1<'py, f64>, a: PyReadonlyArray2<'py, f64>, b: PyReadonlyArray2<'py, f64>,
                      za: PyReadonlyArray1<'py, f64>, zb: PyReadonlyArray1<'py, f64>, h: PyReadonlyArray1<'py, f64>,
-                     lift: f64, slope_run: f64, t_min: f64, t_max: f64, blend_r: f64, bucket: f64,
-                     wall_cut: f64, wall_t: f64, wall_flat: f64, wall_ahead: f64)
+                     abut: PyReadonlyArray1<'py, u8>, lift: f64, slope_run: f64, t_min: f64, t_max: f64, blend_r: f64,
+                     bucket: f64, wall_cut: f64, wall_t: f64, wall_flat: f64, wall_ahead: f64)
                      -> Bound<'py, PyArray1<f64>> {
     let (px, pyy, base) = (px.as_array(), pyy.as_array(), base.as_array());
     let (a, b, za, zb, h) = (a.as_array(), b.as_array(), za.as_array(), zb.as_array(), h.as_array());
+    let abut = abut.as_array();
     let n = px.len();
     let mut out: Vec<f64> = base.iter().copied().collect();
     if n == 0 {
@@ -849,51 +850,65 @@ fn grade_points<'py>(py: Python<'py>, px: PyReadonlyArray1<'py, f64>, pyy: PyRea
     let mut num = vec![0.0f64; n];
     let mut den = vec![0.0f64; n];
     let mut wmax = vec![0.0f64; n];
-    for s in 0..h.len() {
-        let reach = h[s] + t_max;
-        let (ax, ay, bx, by) = (a[[s, 0]], a[[s, 1]], b[[s, 0]], b[[s, 1]]);
-        let (lo_x, hi_x) = (ax.min(bx) - reach, ax.max(bx) + reach);
-        let (lo_y, hi_y) = (ay.min(by) - reach, ay.max(by) + reach);
-        if hi_x < x0 || lo_x > x1 || hi_y < y0 || lo_y > y1 {
-            continue;
-        }
-        let cx0 = 0i64.max(((lo_x - x0) / bucket).floor() as i64);
-        let cx1 = (nbx - 1).min(((hi_x - x0) / bucket).floor() as i64);
-        let cy0 = 0i64.max(((lo_y - y0) / bucket).floor() as i64);
-        let cy1 = ((hi_y - y0) / bucket).floor() as i64;
-        let (abx, aby) = (bx - ax, by - ay);
-        let l2 = abx * abx + aby * aby;
-        for row in cy0..=cy1 {
-            let i0 = sk.partition_point(|&k| k < row * nbx + cx0);
-            let i1 = sk.partition_point(|&k| k <= row * nbx + cx1);
-            for j in i0..i1.max(i0) {
-                let idx = order[j];
-                let (qx, qy) = (px[idx] - ax, pyy[idx] - ay);
-                let t = if l2 > 1e-12 { ((qx * abx + qy * aby) / l2).clamp(0.0, 1.0) } else { 0.0 };
-                let d = (qx - t * abx).hypot(qy - t * aby);
-                let target = za[s] + (zb[s] - za[s]) * t;
-                // a cut deeper than wall_cut: a retaining wall at the core's edge, the ground right behind it
-                // (for a point more beside the segment than ahead of it: ahead, the road's own next segments blend
-                // in along it, and cutting those off made a kink on every crest)
-                let side = if l2 > 1e-12 { (qx * aby - qy * abx).abs() / l2.sqrt() } else { d };
-                let ahead = if l2 > 1e-12 {
-                    let along = (qx * abx + qy * aby) / l2.sqrt();
-                    (-along).max(along - l2.sqrt()).max(0.0)
-                } else { 0.0 };
-                // (and not far past a road's end: beside a tunnel the approach's last segment flattened a strip
-                // 10 m along it, a pit beside the arch, 2026-10-17)
-                let wall = base[idx] - target > wall_cut && ahead < side && ahead < wall_ahead;
-                let tt = if wall { wall_t } else { (slope_run * (target - base[idx]).abs()).clamp(t_min, t_max) };
-                // a wall: flat on one terrain step behind it (no slope in front of its face), then up
-                let u = ((d - h[s] - if wall { wall_flat } else { 0.0 }) / tt).clamp(0.0, 1.0);
-                let w = 1.0 - u * u * (3.0 - 2.0 * u);
-                if w > 0.0 {
-                    let r = d / blend_r;
-                    let wb = w / (1.0 + r * r);
-                    num[idx] += wb * target;
-                    den[idx] += wb;
-                    if w > wmax[idx] {
-                        wmax[idx] = w;
+    // two passes: the highest core of a road's last stretch before a bridge (abut) over each point, then the blend
+    // without the roads more than wall_cut under it beside them, outside their own cores (grading.grade_points, #38)
+    let mut top = vec![f64::NEG_INFINITY; n];
+    for pass in 0..2 {
+        for s in 0..h.len() {
+            if pass == 0 && abut[s] == 0 {
+                continue;
+            }
+            let reach = if pass == 0 { h[s] } else { h[s] + t_max };
+            let (ax, ay, bx, by) = (a[[s, 0]], a[[s, 1]], b[[s, 0]], b[[s, 1]]);
+            let (lo_x, hi_x) = (ax.min(bx) - reach, ax.max(bx) + reach);
+            let (lo_y, hi_y) = (ay.min(by) - reach, ay.max(by) + reach);
+            if hi_x < x0 || lo_x > x1 || hi_y < y0 || lo_y > y1 {
+                continue;
+            }
+            let cx0 = 0i64.max(((lo_x - x0) / bucket).floor() as i64);
+            let cx1 = (nbx - 1).min(((hi_x - x0) / bucket).floor() as i64);
+            let cy0 = 0i64.max(((lo_y - y0) / bucket).floor() as i64);
+            let cy1 = ((hi_y - y0) / bucket).floor() as i64;
+            let (abx, aby) = (bx - ax, by - ay);
+            let l2 = abx * abx + aby * aby;
+            for row in cy0..=cy1 {
+                let i0 = sk.partition_point(|&k| k < row * nbx + cx0);
+                let i1 = sk.partition_point(|&k| k <= row * nbx + cx1);
+                for j in i0..i1.max(i0) {
+                    let idx = order[j];
+                    let (qx, qy) = (px[idx] - ax, pyy[idx] - ay);
+                    let t = if l2 > 1e-12 { ((qx * abx + qy * aby) / l2).clamp(0.0, 1.0) } else { 0.0 };
+                    let d = (qx - t * abx).hypot(qy - t * aby);
+                    let target = za[s] + (zb[s] - za[s]) * t;
+                    if pass == 0 {
+                        if d <= h[s] && target > top[idx] {
+                            top[idx] = target;
+                        }
+                        continue;
+                    }
+                    // a cut deeper than wall_cut: a retaining wall at the core's edge, the ground right behind it
+                    // (for a point more beside the segment than ahead of it: ahead, the road's own next segments blend
+                    // in along it, and cutting those off made a kink on every crest)
+                    let side = if l2 > 1e-12 { (qx * aby - qy * abx).abs() / l2.sqrt() } else { d };
+                    let ahead = if l2 > 1e-12 {
+                        let along = (qx * abx + qy * aby) / l2.sqrt();
+                        (-along).max(along - l2.sqrt()).max(0.0)
+                    } else { 0.0 };
+                    // (and not far past a road's end: beside a tunnel the approach's last segment flattened a strip
+                    // 10 m along it, a pit beside the arch, 2026-10-17)
+                    let wall = base[idx] - target > wall_cut && ahead < side && ahead < wall_ahead;
+                    let tt = if wall { wall_t } else { (slope_run * (target - base[idx]).abs()).clamp(t_min, t_max) };
+                    // a wall: flat on one terrain step behind it (no slope in front of its face), then up
+                    let u = ((d - h[s] - if wall { wall_flat } else { 0.0 }) / tt).clamp(0.0, 1.0);
+                    let w = 1.0 - u * u * (3.0 - 2.0 * u);
+                    if w > 0.0 && !(d > h[s] && ahead < side && target < top[idx] - wall_cut) {
+                        let r = d / blend_r;
+                        let wb = w / (1.0 + r * r);
+                        num[idx] += wb * target;
+                        den[idx] += wb;
+                        if w > wmax[idx] {
+                            wmax[idx] = w;
+                        }
                     }
                 }
             }
@@ -2808,6 +2823,6 @@ fn earthfast(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(over_tunnel, m)?)?;
     m.add_function(wrap_pyfunction!(veg_rows_json, m)?)?;
     m.add_function(wrap_pyfunction!(follow_tris, m)?)?;
-    m.add("VERSION", 34)?;
+    m.add("VERSION", 35)?;
     Ok(())
 }
