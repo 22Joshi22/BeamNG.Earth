@@ -635,6 +635,7 @@ TUNNEL_SOIL = "bne_tunnel_soil"     # grass on the ground over the masonry: a re
 SOIL_UV_M = 1.0            # m per repeat of the grass (the terrain's detail texture: bngEarthGroundGrass, size 1)
 WALL_COPING_M = 0.5        # m of a retaining wall's top in stone (its coping), the rest of it soil
 STONE_UV_M = 3.0           # m per repeat of the stone on a low arch
+CONCRETE_UV_M = 4.0        # m per repeat of the concrete (as a tunnel's)
 LOW_PORTAL_UP = 1.4        # m a low arch's portal face reaches over the vault (to the ground over it) ...
 LOW_PORTAL_SIDE = 3.0      # ... and beside the opening
 LOW_RISE = 0.4             # a low arch's vault rises this share of its height from its walls (a segmental arch)
@@ -685,18 +686,19 @@ def _retaining_walls(walls, origin, P, T, UV, M, nv):
             continue
         s = np.concatenate(([0.0], np.cumsum(np.hypot(*np.diff(b, axis=0).T))))
         thick = np.asarray(w.get("thick", np.full(k, WALL_THICK_M)), np.float64)    # (roads.retaining_walls)
+        face_m, face_uv = (0, CONCRETE_UV_M) if w.get("concrete") else (2, STONE_UV_M)  # (a major road's: concrete)
         back = b - tw * thick[:, None]
         face_lo = np.c_[b, foot] - origin
         face_hi = np.c_[b, top] - origin
         back_hi = np.c_[back, top] - origin
         cop_hi = np.c_[b - tw * WALL_COPING_M, top] - origin
-        for lo_, hi_, vlo, vhi, mat in ((face_lo, face_hi, foot, top, 2), (face_hi, cop_hi, None, WALL_COPING_M, 2),
+        for lo_, hi_, vlo, vhi, mat in ((face_lo, face_hi, foot, top, face_m), (face_hi, cop_hi, None, WALL_COPING_M, face_m),
                                         (cop_hi, back_hi, None, float(np.mean(thick)) - WALL_COPING_M, 4)):
             P.append(np.concatenate([lo_, hi_]))
             if vlo is not None:
-                UV.append(np.column_stack((np.concatenate((s, s)) / STONE_UV_M, np.concatenate((vlo, vhi)) / STONE_UV_M)))
+                UV.append(np.column_stack((np.concatenate((s, s)) / face_uv, np.concatenate((vlo, vhi)) / face_uv)))
             else:
-                sc = SOIL_UV_M if mat == 4 else STONE_UV_M
+                sc = SOIL_UV_M if mat == 4 else face_uv
                 UV.append(np.column_stack((np.concatenate((s, s)) / sc, np.concatenate((np.zeros(k), np.full(k, vhi))) / sc)))
             i = np.arange(k - 1)
             A, A1, B, B1 = nv + i, nv + i + 1, nv + k + i, nv + k + i + 1
@@ -719,7 +721,7 @@ def _retaining_walls(walls, origin, P, T, UV, M, nv):
             UV.append(np.array([[0, 0], [0, 1], [0.25, 1], [0.25, 0]], np.float64))
             T.append(np.array([[nv, nv + 1, nv + 2], [nv, nv + 2, nv + 3], [nv, nv + 2, nv + 1], [nv, nv + 3, nv + 2]],
                               np.int64))
-            M.append(2)
+            M.append(face_m)
             nv += 4
     return nv
 

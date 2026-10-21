@@ -2673,6 +2673,9 @@ WALL_FULL_M = 0.3       # the graded ground this near the natural ground behind 
 WALL_THICK_MIN_M = 1.0  # ... at least this deep and at most WALL_THICK_MAX_M
 WALL_THICK_MAX_M = 8.0
 WALL_DIAG_M = 2.9       # the terrain lattice's diagonal (heightmap.SQUARE 2 m)
+# a major road's cutting is walled in concrete (Munich's McGraw-Graben, Mapillary 2026-10-21), a smaller road's in stone
+# (Central Park's transverses)
+CONCRETE_WALL_CLASSES = {"motorway", "motorway_link", "trunk", "trunk_link", "primary", "primary_link"}
 WALL_EVEN_N = 2         # a wall's top as deep as its deepest within this many WALL_STEPs either side
 WALL_STEP_UP_M = 0.5     # m the graded ground climbs over the road where a wall's face goes (short of the core's edge)
 
@@ -2774,14 +2777,14 @@ def retaining_walls(frame, roads, elev, exact, decks=()):
             pts_all.append(probe)
             for o in steps:
                 pts_all.append(xy + nl * side * o)
-            info.append((xy, z, nl * side, core, inside, width / 2, steps))
+            info.append((xy, z, nl * side, core, inside, width / 2, steps, spec.cls in CONCRETE_WALL_CLASSES))
     if not pts_all:
         return []
     P = np.concatenate(pts_all)
     la, lo, _ = frame.enu_to_geodetic(P[:, 0], P[:, 1], np.zeros(len(P)))
     g = np.asarray(frame.geodetic_to_enu(la, lo, np.asarray(elev(la, lo), np.float64))[2], np.float64)
     out, k = [], 0
-    for xy, z, out_n, core, inside, rh, steps in info:
+    for xy, z, out_n, core, inside, rh, steps, concrete in info:
         gg = g[k:k + len(xy)]
         k += len(xy)
         face = np.full(len(xy), core + 0.1)
@@ -2816,7 +2819,7 @@ def retaining_walls(frame, roads, elev, exact, decks=()):
                 th = np.maximum.reduce([np.r_[th[:1].repeat(m), th[:len(th) - m]] for m in range(WALL_EVEN_N + 1)]
                                        + [np.r_[th[m:], th[-1:].repeat(m)] for m in range(1, WALL_EVEN_N + 1)])
                 out.append({"base": xy[sl] + out_n[sl] * face[sl][:, None], "top": gg[sl] + WALL_TOP_M,
-                            "foot": z[sl] - WALL_FOOT_M, "toward": -out_n[sl], "thick": th})
+                            "foot": z[sl] - WALL_FOOT_M, "toward": -out_n[sl], "thick": th, "concrete": concrete})
             i = j + 1
     return out
 
