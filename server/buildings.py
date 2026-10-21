@@ -2615,7 +2615,7 @@ def doors(items, lines, x0, y0, drives=None):
                                "n": [[round(float(pp[0]), 3), round(float(pp[1]), 3), 0.0] for pp in pts]})
         if spec.roof != "flat" and not narrow and _hash01(spec.seed, "fence") < FENCE_SHARE:
             rows.extend(_front_fence(spec, a, d, Le, f, A[kseg], D[kseg], L2[kseg], SHALF[kseg], gmin,
-                                     drives is not None and spec.wall and Le >= 7.0))
+                                     drives is not None and spec.wall and Le >= 7.0, (A, B, SHALF)))
         p = a + d * (Le * f) + out * DOOR_OUT_M
         gd = door_ground(spec, edge, Le * f, gmax) if spec.stoop else gmax     # a stoop's door: over its own ground
         base = gd + (STOOP_H if spec.stoop else 0.0) + (PORCH_DECK_M if spec.porch else 0.0)   # (the deck / stoop)
@@ -2681,11 +2681,14 @@ FENCE_SEG_M = 5.4
 FENCE_SHARE = 0.3           # detached houses with a fence along the front of their yard (hashed)
 FENCE_BACK_M = 3.2          # m from the road's edge (the back of the sidewalk)
 FENCE_MIN_YARD_M = 2.5      # the front yard at least this deep between the fence and the house
+FENCE_CLEAR_M = 2.0         # m every piece keeps from any road's edge (a house on a bend or a corner: its fence ran
+                            # along one road out across another, GitHub #105 Falcon Drive, Coquitlam)
 
 
-def _front_fence(spec, a, d, Le, f, A, D, L2, half, z, driveway):
+def _front_fence(spec, a, d, Le, f, A, D, L2, half, z, driveway, roads=None):
     """Prop rows of a fence along the front of a house's yard, parallel to the road at the back of the sidewalk,
-    a little wider than the house, with gaps for the path to the door and the driveway."""
+    a little wider than the house, with gaps for the path to the door and the driveway. roads: (starts (n, 2), ends
+    (n, 2), half widths (n,)) of the roads near: no piece within FENCE_CLEAR_M of their edges."""
     mid = a + d * (Le / 2)
     t = float(np.clip(((mid - A) * D).sum() / L2, 0, 1))
     q = A + t * D
@@ -2707,6 +2710,13 @@ def _front_fence(spec, a, d, Le, f, A, D, L2, half, z, driveway):
         if any(abs(sk - g) < FENCE_SEG_M / 2 + 0.6 for g in gaps):
             continue
         p = centre + dr * sk
+        if roads is not None and len(roads[0]):
+            ends = np.array([p - dr * (FENCE_SEG_M / 2), p, p + dr * (FENCE_SEG_M / 2)])
+            fast.require(0, "points_near_segments")
+            if np.asarray(fast._ef.points_near_segments(ends, np.ascontiguousarray(roads[0], np.float64),
+                                                        np.ascontiguousarray(roads[1], np.float64),
+                                                        np.asarray(roads[2], np.float64) + FENCE_CLEAR_M)).any():
+                continue
         rows.append([G_FENCE, round(float(p[0]), 2), round(float(p[1]), 2), round(float(z), 2), yaw, 1.0, 1.3,
                      round(_hash01(spec.seed, "fr", k), 3)])
     return rows

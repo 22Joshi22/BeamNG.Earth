@@ -463,6 +463,20 @@ class DoorTest(unittest.TestCase):
                                           np.array([-100.0, 0.0]), np.array([300.0, 0.0]), 300.0 ** 2, 4.0, 1.5,
                                           False), [], "no fence without a front yard")
 
+    def test_front_fence_keeps_off_other_roads(self):
+        """A corner house: its fence along the front road stops short of the side street (GitHub #105)."""
+        a, d = np.array([0.0, 20.0]), np.array([1.0, 0.0])
+        args = (type("S", (), {"seed": 0.3})(), a, d, 12.0, 0.5, np.array([-100.0, 0.0]), np.array([300.0, 0.0]),
+                300.0 ** 2, 4.0, 1.5, False)
+        front = (np.array([[-100.0, 0.0]]), np.array([[300.0, 0.0]]), np.array([4.0]))
+        side = (np.array([[-100.0, 0.0], [-4.0, -50.0]]), np.array([[300.0, 0.0], [-4.0, 50.0]]), np.array([4.0, 4.0]))
+        alone = bld._front_fence(*args, front)
+        self.assertEqual(alone, bld._front_fence(*args), "its own road: as before")
+        cut = bld._front_fence(*args, side)
+        self.assertLess(len(cut), len(alone))
+        for row in cut:
+            self.assertGreater(row[1] - bld.FENCE_SEG_M / 2, -4.0 + 4.0 + bld.FENCE_CLEAR_M - 1e-9)
+
     def test_company_sign_on_a_warehouse_front(self):
         seen = 0
         for k in range(30):
