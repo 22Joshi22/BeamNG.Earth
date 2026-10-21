@@ -111,6 +111,7 @@ LANE_CLASSES = {"primary", "secondary", "tertiary", "trunk", "motorway"}
 # Ramps and slip roads (Overture subclass "link", any class): one lane and its shoulders, whatever the class
 # (Columbia's US-29 ramps were drawn 13 m wide, a whole motorway, 2026-10-14 photos): m paved by lanes a way.
 LINK_M = {1: 6.0, 2: 9.0}
+LINK_LANE_M = 3.7       # a one-lane ramp's lane between its shoulders
 URBAN_ARTERIAL = {"trunk": 13.2}     # primaries in towns are often 2 lanes (Lancaster County's PA-340)
 LANE_M = 3.3            # m per lane when counting the lanes a carriageway holds
 LANE_LINE = {"m": "line_dashed_long", "tl": 12.0, "p": 6, "w": 0.12}     # West Coast USA's 3 m dash, 9 m gap
@@ -478,7 +479,13 @@ def edge_margin(spec):
     a rural motorway's shoulder (carriageway), 0 in towns."""
     if spec.urban or spec.kind not in BUILT or spec.cls == "service":
         return 0.0
-    return SHOULDER_M if rural_motorway(spec) else EDGE_STRIP_M
+    return motorway_shoulder(spec) if rural_motorway(spec) else EDGE_STRIP_M
+
+
+def motorway_shoulder(spec):
+    """A rural motorway carriageway's shoulder: SHOULDER_M, or on a ramp (one lane, LINK_M) what one LINK_LANE_M lane
+    leaves (GitHub #107: a 6 m ramp's edge lines stood 1.6 m apart, inside the motorway's 2.2 m shoulders)."""
+    return float(np.clip((spec.width - LINK_LANE_M) / 2, EDGE_LINE["inset"], SHOULDER_M))
 
 
 def _dir_kmh(feats, i, ncon, lengths=None):
@@ -1479,7 +1486,7 @@ def extras(spec, pts, lon, left_hand=False):
                     out.append((LANE_LINE, LANE_LINE["w"], offset_polyline(pts, side * k * lw)))
     if kind == "paved" and (not urban or not has_sidewalks(spec)) and cls in EDGE_LINE_CLASSES:   # no curb: edge lines
         for side in (1, -1):
-            inset = SHOULDER_M if rural_motorway(spec) else EDGE_LINE["inset"]
+            inset = motorway_shoulder(spec) if rural_motorway(spec) else EDGE_LINE["inset"]
             out.append((EDGE_LINE, EDGE_LINE["w"], offset_polyline(pts, side * (w / 2 - inset))))
     return out
 
