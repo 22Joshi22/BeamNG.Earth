@@ -2669,7 +2669,8 @@ WALL_STEP = 2.0         # m between a retaining wall's points
 WALL_PROBE_M = 1.0      # m beyond the cut's foot (grading.WALL_T_M) where the natural ground's height is read
 WALL_TOP_M = 0.15       # m the wall stands over the ground behind it
 WALL_FOOT_M = 0.3       # m it reaches under the road
-WALL_FULL_M = 0.3       # the graded ground this near the natural ground behind a wall: its top ends there ...
+WALL_FULL = 0.9         # the graded ground this share of the way up to the natural ground behind a wall: its top ends
+                        # there ...
 WALL_THICK_MIN_M = 1.0  # ... at least this deep and at most WALL_THICK_MAX_M
 WALL_THICK_MAX_M = 8.0
 WALL_DIAG_M = 2.9       # the terrain lattice's diagonal (heightmap.SQUARE 2 m)
@@ -2741,6 +2742,42 @@ def _under_decks(xy, z, decks):
     return out
 
 
+def _off_wall_tops(chunks, walls):
+    """chunks with the ground roads' surfaces and lines cut away over the retaining walls' tops (a path on the bank
+    above a cutting lay on the lattice's low strip under the top, in patches through it, Munich's McGraw-Graben).
+    Decks, tunnels and filled polygons are left as they are."""
+    if not walls:
+        return chunks
+    blockers = []
+    for w in walls:
+        th = np.asarray(w["thick"], np.float64)
+        mid = np.asarray(w["base"], np.float64) - np.asarray(w["toward"], np.float64) * (th[:, None] / 2)
+        blockers.append((mid, max(float(th.max()) / 2 - WALL_TOP_EDGE_M, 0.1)))
+    lo = np.min([b[0].min(0) - b[1] for b in blockers], axis=0)
+    hi = np.max([b[0].max(0) + b[1] for b in blockers], axis=0)
+    out = []
+    for c in chunks:
+        n = c.get("n")
+        if c.get("deck") or c.get("tunnel") or c.get("poly") is not None or not n or len(n) < 2:
+            out.append(c)
+            continue
+        pts = np.asarray(n, np.float64)
+        if (pts[:, 0].max() < lo[0] or pts[:, 0].min() > hi[0] or pts[:, 1].max() < lo[1]
+                or pts[:, 1].min() > hi[1]):
+            out.append(c)
+            continue
+        pieces = cut_outside(pts, blockers, 1.0)
+        if len(pieces) == 1 and len(pieces[0]) >= len(pts) and np.allclose(pieces[0][[0, -1]], pts[[0, -1]]):
+            out.append(c)
+            continue
+        for piece in pieces:
+            out.append(dict(c, n=[[round(float(v), 3) for v in q] for q in simplify(piece)]))
+    return out
+
+
+WALL_TOP_EDGE_M = 0.3   # a road surface goes this far onto a wall's top at most (_off_wall_tops)
+
+
 def retaining_walls(frame, roads, elev, exact, decks=()):
     """Stone retaining walls along the ground roads cut deeper than grading.WALL_CUT_M into the ground (the grading
     leaves the ground at its natural height right behind them): [dict(base (k, 2) the wall's face line, top (k,),
@@ -2789,6 +2826,7 @@ def retaining_walls(frame, roads, elev, exact, decks=()):
         k += len(xy)
         face = np.full(len(xy), core + 0.1)
         thick = np.full(len(xy), roadmesh.WALL_THICK_M)
+        top_g = gg
         if len(steps):              # the wall where the graded ground starts to climb (a sharp cutting: before the core's edge)
             gs = g[k:k + len(xy) * len(steps)].reshape(len(steps), len(xy)).T
             k += len(xy) * len(steps)
@@ -2798,11 +2836,15 @@ def retaining_walls(frame, roads, elev, exact, decks=()):
             # as teeth reaching up to a grid diagonal out, under the wall's top; its face in front of them)
             face = np.where(up.any(axis=1), np.maximum(steps[first] - 1.0 - grading.WALL_FLAT_M, rh + 0.1), face)
             # its top back to where the graded ground is up again (no trough behind it: a street above drove into one)
-            full = gs >= (gg - WALL_FULL_M)[:, None]
+            full = gs >= (z + WALL_FULL * (gg - z))[:, None]
             back = np.argmax(full, axis=1)
             # (and a grid diagonal more: the terrain's lattice reaches the top that much later between its points)
             thick = np.where(full.any(axis=1), np.clip(steps[back] - face + WALL_DIAG_M, WALL_THICK_MIN_M,
                                                        WALL_THICK_MAX_M), thick)
+            # (its top over the highest graded ground under it, not the one probe's: the bank poked through it in
+            # patches where that probe sat in a dip)
+            under = steps[None, :] >= face[:, None]
+            top_g = np.maximum(gg, np.where(under, gs, -np.inf).max(axis=1))
         cut = _wall_runs(gg - z) & inside & ~_under_decks(xy + out_n * core, z, decks)
         i = 0
         while i < len(cut):
@@ -2818,7 +2860,7 @@ def retaining_walls(frame, roads, elev, exact, decks=()):
                 th = thick[sl]
                 th = np.maximum.reduce([np.r_[th[:1].repeat(m), th[:len(th) - m]] for m in range(WALL_EVEN_N + 1)]
                                        + [np.r_[th[m:], th[-1:].repeat(m)] for m in range(1, WALL_EVEN_N + 1)])
-                out.append({"base": xy[sl] + out_n[sl] * face[sl][:, None], "top": gg[sl] + WALL_TOP_M,
+                out.append({"base": xy[sl] + out_n[sl] * face[sl][:, None], "top": top_g[sl] + WALL_TOP_M,
                             "foot": z[sl] - WALL_FOOT_M, "toward": -out_n[sl], "thick": th, "concrete": concrete})
             i = j + 1
     return out
@@ -3155,7 +3197,9 @@ def build_tile(frame, tx, ty, cells, elev, urban_fn=None, walks=None, bridges=No
                 decks_near.append({"n": n, "w": float(c["w"]) + 2 * roadmesh.TUNNEL_SHOULDER})
     exact = (x0, y0, x1, y1)
     if walls is not None:                       # retaining walls where a road is cut into the ground (roadmesh.tunnel)
-        walls.extend(retaining_walls(frame, roads, elev, exact, decks=decks_near))
+        tile_walls = retaining_walls(frame, roads, elev, exact, decks=decks_near)
+        walls.extend(tile_walls)
+        chunks = _off_wall_tops(chunks, tile_walls)
     corners, jcuts, crosswalks, jramps, jlines, jinternal = ({}, {}, [], {}, {}, set()) if walks is None else \
         junctions.find(roads, has_sidewalks, None, PARKING_M,
                        lambda sp: sp.urban and sp.cls in PARKING_CLASSES and sp.kind in BUILT and not sp.oneway
