@@ -2129,6 +2129,10 @@ def tile_buildings(frame, x0, y0, x1, y1, layers, elev, water=None, part_layers=
                 continue
             at = {k: (a[k][i] if k in a else None) for k in
                   ("class", "height", "num_floors", "min_height", "roof_shape", "roof_height", "name", "facade_material")}
+            hh_ = at.get("height")
+            if hh_ is not None and np.isfinite(hh_) and 0 < hh_ < FLAT_FOOTPRINT_M and not parts_of.get(str(key)):
+                continue                # a mapped area, not a building (the Golden Gate toll plaza's 0.01 m footprint
+                                        # drew a slab with a rim round the booths, 2026-10-21)
             bparts = parts_of.get(str(key)) if key is not None else None
             if bparts and any(h is not None for _, h in bparts):
                 # drawn as its parts, with the building's class and one look for all of them; a part
@@ -2140,6 +2144,8 @@ def tile_buildings(frame, x0, y0, x1, y1, layers, elev, water=None, part_layers=
                 top = max([fill] + [h[0] + h[1] for _, h in bparts if h is not None])
                 for pring, hh in bparts:
                     ph, pmh = hh if hh is not None else (fill, 0.0)
+                    if ph + pmh < FLAT_FOOTPRINT_M:
+                        continue        # (a part taking a flat area's height: FLAT_FOOTPRINT_M)
                     r = clean_ring(pring - np.array([x0, y0]))
                     if r is None or _area2(r) / 2 < 4.0:
                         continue
@@ -2257,6 +2263,7 @@ def tile_buildings(frame, x0, y0, x1, y1, layers, elev, water=None, part_layers=
 # standing on them; drawn as buildings they were bare boxes on slabs. An island with a booth on it, along a road, is
 # West Coast USA's toll booth instead (trees.lua group "tollbooth": the island, its booth and kerbs in one shape, 22 m
 # long along its local y), placed along the island (toll_booth_rows); the island and its booth parts are not built.
+FLAT_FOOTPRINT_M = 0.1     # m: a footprint mapped lower than this is an area (a plaza), not drawn
 G_TOLLBOOTH = "tollbooth"
 TOLLBOOTH_H = 4.96          # m: the stock shape's height (s_toll_booth_center)
 TOLL_ISLAND_MAX_H = 1.0     # m: an island is a "building" no taller than this ...

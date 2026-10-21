@@ -742,3 +742,16 @@ class CurvatureTest(unittest.TestCase):
         (spec, gmin, gmax), = items
         r = np.hypot(x0 + 20, y0 + 17)
         self.assertAlmostEqual(gmin, 100.0 - r * r / (2 * 6371000.0), delta=0.2)
+
+    def test_a_flat_area_is_not_a_building(self):
+        # the Golden Gate toll plaza's 0.01 m footprint drew a slab with a rim round the booths (2026-10-21)
+        import geodesy
+        f = geodesy.EnuFrame(37.807, -122.476)
+
+        def ll(x, y, w, d):
+            e = np.array([x, x + w, x + w, x, x]); n = np.array([y, y, y + d, y + d, y])
+            la, lo, _ = f.enu_to_geodetic(e, n, 0.0)
+            return np.stack([lo, la], 1)
+        b = Feats(["P", "K"], [ll(10, 10, 30, 30), ll(100, 100, 10, 10)], **{"class": ["", ""], "height": [0.01, 0.2]})
+        items = bld.tile_buildings(f, 0.0, 0.0, 256.0, 256.0, [b], lambda la, lo: np.full(np.shape(la), 5.0))
+        self.assertEqual([round(bld._area2(s.ring) / 2) for s, _, _ in items], [100], "the plaza left out, the 0.2 m one kept")
