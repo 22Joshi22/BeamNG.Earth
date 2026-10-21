@@ -548,7 +548,8 @@ end
 
 -- A controller on the map (the user, 2026-10-20: "make sure our map is controller compatible; see how the default map
 -- handles controllers"): as the stock big map does (freeroam/bigMapMode.lua), its own action map "BigMap" is on while
--- the map is open, with the player's bindings for it (stock pads: left stick pans, the triggers zoom, A selects). Its
+-- the map is open, with the player's bindings for it (stock pads: the right stick pans, the triggers zoom, A selects;
+-- X and Y come to EarthMap.vue as the menus' own 'UINavigation' events). Its
 -- actions call freeroam_bigMapMode's functions by name; while our map is open those go to EarthMap.vue
 -- (guihooks 'BeamNGEarthMapInput'). The stock map pauses the game; ours does not (the GPS autodrive drives on), so the
 -- player's own driving controls are held off instead (the triggers would rev and brake the car), the car's inputs let

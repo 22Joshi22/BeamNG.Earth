@@ -32,7 +32,9 @@
       </template>
       <!-- a controller: the point A picks (the centre; padTick) -->
       <div v-if="padMode" class="pad-cross" />
-      <div v-if="padMode" class="pad-hint">Left stick: move &middot; LT / RT: zoom &middot; A: set GPS here &middot; B: back</div>
+      <div v-if="padMode" class="pad-hint" :class="{ 'below-gps': !!state.gps }">Right stick: move &middot; LT / RT: zoom
+        &middot; A: {{ state.gps ? "clear GPS" : "set GPS here" }} &middot; X: teleport &middot; Y: {{ state.gps &&
+        state.gps.autodrive ? "stop autodrive" : "autodrive" }} &middot; B: back</div>
       <svg class="map-grid" :width="w" :height="h">
         <g v-if="layersOn" :transform="lineTransform">
           <polyline v-for="(p, i) in stateLines" :key="'s' + i" class="layer-state" :points="p" />
@@ -243,7 +245,6 @@
 <script setup>
 import { ref, computed, watch, onMounted, onUnmounted, nextTick } from "vue"
 import { useEvents } from "@/services/events"
-import { getUINavServiceInstance } from "@/services/uiNav"
 import * as mm from "./mapmath.js"
 import layerData from "./maplayers.js"
 
@@ -596,10 +597,11 @@ function centreOnMe() {
 }
 
 // ---- controller (settings.lua mapControls: the stock big map's actions and bindings while this map is open) ---------
-// As the stock map (freeroam/bigMapMode.lua): the left stick moves the view (squared: fine near the centre), the
-// triggers zoom, A picks; here A sets the GPS route to the centre crosshair, as a click does. The stick's own menu
-// focus events are filtered while the map is open (they moved the focus between the panels' buttons as it panned);
-// the d-pad still walks the buttons, and A on a focused button is the button's.
+// The stock map's layout (the user, 2026-10-21: "copy the stock map controlls so players can use their muscle memory"):
+// its pan (bigMapMove*: the right stick on a pad) moves the view (squared: fine near the centre), the triggers zoom,
+// the left stick and d-pad walk the buttons as in any menu; A on the map sets the GPS route to the centre crosshair
+// and again clears it (as the stock map's set / clear route), X teleports (the stock map's quick travel), Y starts or
+// stops the autodrive, B goes back. A on a focused button is the button's.
 const padMode = ref(false)
 const PAD_PAN_PX_S = 900          // px a second at a full stick
 const PAD_ZOOM_S = 2.5            // zoom levels a second at a full trigger
@@ -645,13 +647,37 @@ function padStart() {
   if (!padFrame && padActive()) padFrame = nextFrame(padTick) || 1
 }
 
+function buttonFocused() {
+  return !!(rootEl.value && rootEl.value.querySelector(".focus-visible"))
+}
+
 function padSelect() {
   // A on a focused button is the button's (the menu's own 'ok')
-  if (rootEl.value && rootEl.value.querySelector(".focus-visible")) return
+  if (buttonFocused()) return
   if (!padMode.value) { padMode.value = true; return }      // the first A shows the crosshair
+  if (state.value.gps) { clearGps(); return }                // again: clears it (the stock map's set / clear route)
   const v = view.value
   setGps(v.lat, v.lon, "")
 }
+
+// X: teleport to the GPS destination, else to the crosshair (the stock map's quick travel)
+function padTeleport() {
+  if (state.value.cannotGo || busy.value) return
+  const g = state.value.gps
+  if (g) teleportNow(g.lat, g.lon, g.name)
+  else if (padMode.value) teleportNow(view.value.lat, view.value.lon, "")
+}
+
+// Y: the autodrive on or off; with no destination, to the crosshair
+function padAutodrive() {
+  const g = state.value.gps
+  if (g) setAutodrive(!g.autodrive)
+  else if (padMode.value) setGps(view.value.lat, view.value.lon, "", () => setAutodrive(true))
+}
+
+// the stock pad buttons as the menus get them (core/input/actions/menu.json: guihooks 'UINavigation' name, value;
+// X is action_2, Y context), read here as they come (a press: 1)
+const PAD_BUTTONS = { action_2: padTeleport, context: padAutodrive }
 
 const mapEvents = useEvents()
 mapEvents.on("BeamNGEarthMapInput", d => {
@@ -666,18 +692,13 @@ mapEvents.on("BeamNGEarthMapInput", d => {
     case "select": padSelect(); break
   }
 })
+mapEvents.on("UINavigation", (name, value) => {
+  if (embedded || !PAD_BUTTONS[name] || Number(value) !== 1) return
+  PAD_BUTTONS[name]()
+})
 // the mouse takes over again: no crosshair
 watch(cursor, () => { if (padMode.value && !padActive()) padMode.value = false })
 
-const STICK_FOCUS = ["focus_lr", "focus_ud"]
-function stickFocus(off) {
-  try {
-    const nav = getUINavServiceInstance()
-    if (!nav) return
-    if (off) nav.setFilteredEvents(STICK_FOCUS)
-    else nav.clearFilteredEvents()
-  } catch (e) { /* an older game's UI: the stick also moves the focus */ }
-}
 
 // ---- Places panel (settings.lua uiPlace* -> places.lua; every call answers with both lists) ---------
 // the places panel; closed, the saved places' pins leave the map too (the user, 2026-10-14). Remembered.
@@ -795,12 +816,13 @@ function ctxGps() {
   closeCtx()
   setGps(c.lat, c.lon, "")
 }
-function setGps(lat, lon, name) {
+function setGps(lat, lon, name, then) {
   engineLua(`beamngEarth_settings and beamngEarth_settings.uiMapGps(${luaNum(lat)}, ${luaNum(lon)}, ${luaStr(name || "")}) or nil`, r => {
     if (r && r.ok) {
       state.value = { ...state.value, gps: { lat, lon, name, planning: true } }
       routePts.value = []
       routeVersion = 0
+      if (then) then()
     }
   })
 }
@@ -1006,7 +1028,6 @@ onMounted(() => {
   }
   viewEl.value.addEventListener("mousemove", onHover)
   engineLua("if beamngEarth_settings and beamngEarth_settings.mapOpened then beamngEarth_settings.mapOpened(true) end")
-  stickFocus(true)
   poll()
   pollTimer = setInterval(poll, 1000)
   nextTick(() => rootEl.value && rootEl.value.focus())
@@ -1017,7 +1038,6 @@ onUnmounted(() => {
   if (resizeObs) resizeObs.disconnect()
   window.removeEventListener("mousemove", onMove)
   window.removeEventListener("mouseup", onUp)
-  stickFocus(false)
   if (padFrame && window.cancelAnimationFrame) window.cancelAnimationFrame(padFrame)
   padFrame = 0
   engineLua("if beamngEarth_settings and beamngEarth_settings.mapOpened then beamngEarth_settings.mapOpened(false) end")
@@ -1042,6 +1062,8 @@ const fmtLatLon = mm.fmtLatLon
   background: rgba(0, 0, 0, 0.6); color: #fff; border-radius: 4px; font-size: 0.9em; pointer-events: none;
   white-space: nowrap; z-index: 5;
 }
+/* under the GPS box (left: 10px, top: 56px, one row of buttons), which it partly covered (the user, 2026-10-21) */
+.pad-hint.below-gps { top: 100px; }
 .earth-map {
   position: absolute;
   inset: 0;
