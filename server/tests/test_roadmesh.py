@@ -256,6 +256,20 @@ class DeckRulesTest(unittest.TestCase):
         self.assertTrue((zs[1][mid] - zs[0][mid] >= roads.DECK_ROAD_CLEAR - 0.6).all(),
                         float((zs[1][mid] - zs[0][mid]).min()))
 
+    def test_ramp_of_a_higher_level_starts_at_the_fork(self):
+        # I-83, Baltimore (2026-10-21): a ramp (level 2) leaving the mainline (level 1) overlaps it from the fork on; it
+        # was lifted to clear it there and started 2.2 m over the fork, a ledge across the lanes
+        import roads
+        flat = lambda q: np.full(len(q), 2.0)      # noqa: E731
+        main_in = np.c_[np.zeros(51), np.arange(-200.0, 0.1, 4.0)]
+        main_on = np.c_[np.zeros(51), np.arange(0.0, 200.1, 4.0)]
+        t = np.arange(0.0, 200.1, 4.0)
+        ramp = np.c_[0.0004 * t ** 2, t]            # diverging slowly: 4 m apart after 100 m
+        zs = roads.deck_profile([main_in, main_on, ramp], flat, [(0, 100.0, 2.0)], levels=[1.0, 1.0, 2.0],
+                                widths=[11.0, 11.0, 6.0])
+        self.assertLess(abs(zs[2][0] - zs[0][-1]), 0.3, (zs[0][-1], zs[1][0], zs[2][0]))
+        self.assertLess(abs(zs[1][0] - zs[0][-1]), 0.3)
+
     def test_no_step_onto_a_steep_abutment(self):
         # Lombard Street, Baltimore (2026-10-20): the map's bridge line ends down its east embankment, whose top stands
         # over the deck's climb cap from that end; the deck met it in a 0.86 m step in 4 m and cars stopped dead there
