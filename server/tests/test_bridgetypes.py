@@ -107,6 +107,16 @@ class StructureTest(unittest.TestCase):
         finally:
             bt._wd = None
 
+    def test_members_keep_clear_of_the_lanes(self):
+        """GitHub #65: a stay reaching across the other carriageway down to car height is dropped; one over the
+        deck's edge or high over it stays."""
+        P = [(np.c_[np.arange(0.0, 101.0, 4.0), np.zeros(26)], np.full(26, 30.0), 12.0)]
+        low = (np.array([50.0, 20.0, 80.0]), np.array([50.0, -2.0, 32.0]), 0.25, 0.25)     # into the lanes at 2 m
+        high = (np.array([10.0, 20.0, 80.0]), np.array([10.0, -20.0, 80.0]), 0.25, 0.25)
+        edge = (np.array([90.0, 20.0, 80.0]), np.array([90.0, 6.0, 30.0]), 0.25, 0.25)    # anchored at the edge
+        kept = bt._clear_of_decks([low, high, edge], P)
+        self.assertEqual([b[0][0] for b in kept], [10.0, 90.0])
+
     def test_each_tagged_outline_its_own_site(self):
         bt._db = db_with((90000.0, 0.0, 1, 0.0))
         a = Outline((-1900, -10, -1500, 10), {"bridge:structure": "suspension", "colour": "orange"})

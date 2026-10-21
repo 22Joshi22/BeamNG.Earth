@@ -907,5 +907,45 @@ def _structure_members(parts, info, ground_fn, wet_fn, road_lines):
     if ms is None:
         return [], []
     if info["type"] in ARCH_TYPES:
-        return arch_members(P, arcs, tans, ms, info, ground_fn), []
-    return suspension_members(P, arcs, tans, ms, info, ground_fn, stayed=info["type"] == NBI_STAYED), []
+        return _clear_of_decks(arch_members(P, arcs, tans, ms, info, ground_fn), P), []
+    return _clear_of_decks(suspension_members(P, arcs, tans, ms, info, ground_fn, stayed=info["type"] == NBI_STAYED),
+                           P), []
+
+
+HEADROOM_M = 5.0        # _clear_of_decks: a member this little over a carriageway is in the traffic's way
+HEADROOM_STEP_M = 2.0
+
+
+def _clear_of_decks(beams, P):
+    """The members [(p, q, w, h, ...)] that keep HEADROOM_M over every deck of P (xy, z, width) they pass over: a stay
+    whose fan reached over the other carriageway where the two part on a curve came down to car height across its
+    lanes (an autodrive hit one at 49 mph on the Port Mann Bridge's south approach, GitHub #65). Members beside the
+    decks or under them stay. Pure."""
+    if not beams or not P:
+        return beams
+    segs = [(xy[:-1], xy[1:], z[:-1], z[1:], w / 2.0) for xy, z, w in P if len(xy) >= 2]
+    A = np.concatenate([a for a, _, _, _, _ in segs])
+    B = np.concatenate([b for _, b, _, _, _ in segs])
+    ZA = np.concatenate([za for _, _, za, _, _ in segs])
+    ZB = np.concatenate([zb for _, _, _, zb, _ in segs])
+    HW = np.concatenate([np.full(len(a), h) for a, _, _, _, h in segs])
+    AB = B - A
+    L2 = np.maximum((AB * AB).sum(1), 1e-12)
+    out = []
+    for b in beams:
+        p, q = np.asarray(b[0], np.float64), np.asarray(b[1], np.float64)
+        n = max(int(np.hypot(*(q[:2] - p[:2])) / HEADROOM_STEP_M), 1) + 1
+        pts = p[None] + (q - p)[None] * np.linspace(0.0, 1.0, n)[:, None]
+        lo_b, hi_b = pts[:, :2].min(0) - 30.0, pts[:, :2].max(0) + 30.0
+        near = ~((np.maximum(A, B) < lo_b).any(1) | (np.minimum(A, B) > hi_b).any(1))
+        if not near.any():
+            out.append(b)
+            continue
+        a, ab, l2 = A[near], AB[near], L2[near]
+        t = np.clip(((pts[:, None, :2] - a[None]) * ab[None]).sum(2) / l2[None], 0.0, 1.0)
+        d = np.hypot(*(pts[:, None, :2] - (a[None] + t[..., None] * ab[None])).transpose(2, 0, 1))
+        dz = pts[:, 2:3] - (ZA[near][None] + (ZB[near] - ZA[near])[None] * t)
+        over = (d < HW[near][None] - 0.3) & (dz > -0.5) & (dz < HEADROOM_M)
+        if not over.any():
+            out.append(b)
+    return out
