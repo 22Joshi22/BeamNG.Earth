@@ -26,6 +26,13 @@ class ChecksTest(unittest.TestCase):
         self.assertEqual(ev[0]["mph_before"], round(10 * 2.23694, 1))
         self.assertEqual(shots, ["crash"])
 
+    def test_a_missed_damage_reading_is_no_crash(self):
+        # (a run at Presov 2026-10-21: one poll read 0, the next the same damage again: two false crashes)
+        ev, _ = self.run_polls([poll(0), poll(1, damage=4243), poll(2, damage=0), poll(3, damage=4243)])
+        self.assertEqual([e["kind"] for e in ev], ["crash"])
+        ev, _ = self.run_polls([poll(0, damage=4243), poll(1, damage=0), poll(2, damage=0), poll(3, damage=4000)])
+        self.assertEqual([e["kind"] for e in ev], ["crash"], "a reset car's next crash")
+
     def test_a_scrape_is_not_a_crash(self):
         ev, _ = self.run_polls([poll(0), poll(1, damage=300), poll(2, damage=700)])
         self.assertEqual(ev, [])

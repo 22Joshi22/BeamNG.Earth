@@ -247,6 +247,8 @@ class Checks:
     def __init__(self, on_event):
         self.on_event = on_event
         self.prev = None
+        self.damage = 0.0       # the damage last read (a lone 0 among damaged readings is a missed one: GitHub #38 runs)
+        self.zeros = 0
         self.still_since = None
         self.off = False
         self.events = []
@@ -256,8 +258,12 @@ class Checks:
         rem = g.get("remaining")
         ahead = rem is None or rem > ARRIVED_M
         ev = None
-        if self.prev is not None and (r.get("damage") or 0) - (self.prev.get("damage") or 0) > CRASH_DAMAGE:
-            ev = {"kind": "crash", "damage": round(r["damage"]), "mph_before": round(self.prev["v"] * 2.23694, 1)}
+        dmg = r.get("damage") or 0
+        self.zeros = self.zeros + 1 if dmg == 0 else 0
+        if self.prev is not None and dmg - self.damage > CRASH_DAMAGE:
+            ev = {"kind": "crash", "damage": round(dmg), "mph_before": round(self.prev["v"] * 2.23694, 1)}
+        if dmg > 0 or self.zeros >= 2:      # (two zeros in a row: the car was reset)
+            self.damage = dmg
         if r["v"] < STALL_MS and ahead and not g.get("planning"):
             self.still_since = self.still_since if self.still_since is not None else r["t"]
             if ev is None and r["t"] - self.still_since >= STOP_S:
