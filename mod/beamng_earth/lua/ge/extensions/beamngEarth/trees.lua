@@ -484,7 +484,9 @@ end
 -- ms whatever the count (2026-10-15, 100 mph forest drive: tick 3.5 -> 1.65 ms a frame on average, 50 -> 54 fps)
 M.EVERY_N = 3
 local frameN = 0
-function M.update(anchorId, player)
+-- view: the camera's {x, y} when it is away from the car (core: VIEW_AWAY_M), else nil: what is shown follows what the
+-- player looks at, the colliding items stay round the car (the user, 2026-10-20: "the LODs still all follow the car").
+function M.update(anchorId, player, view)
   if not next(tiles) then return end
   if not setup() then return end
   frameN = frameN + 1
@@ -514,13 +516,17 @@ function M.update(anchorId, player)
     end
   end
   if not player then return end
-  -- nearest tiles first
+  -- nearest tiles first (to the camera when it is away: view); [3] the distance to the car (the colliding items)
   local order = {}
+  local function boxDist(p, t)
+    local dx = math.max(math.abs(p.x - t.cx) - 128, 0)
+    local dy = math.max(math.abs(p.y - t.cy) - 128, 0)
+    return math.sqrt(dx * dx + dy * dy)
+  end
   for key, t in pairs(tiles) do
     if t.anchor ~= anchorId or t.drop then goto continue end     -- still being emptied
-    local dx = math.max(math.abs(player.x - t.cx) - 128, 0)
-    local dy = math.max(math.abs(player.y - t.cy) - 128, 0)
-    order[#order + 1] = { key, math.sqrt(dx * dx + dy * dy) }
+    local dCar = boxDist(player, t)
+    order[#order + 1] = { key, view and math.min(boxDist(view, t), dCar) or dCar, dCar }
     ::continue::
   end
   table.sort(order, function(a, b) return a[2] < b[2] end)
@@ -538,7 +544,7 @@ function M.update(anchorId, player)
     local function data() fd = fd or forest(t):getData(); return fd end
     local want = tileThreshold(o[2], t)
     local band = groupBand(t, o[2])
-    local near = o[2] <= M.SOLID_M or (t.near and o[2] <= M.SOLID_M + M.SOLID_HYST_M) or false
+    local near = o[3] <= M.SOLID_M or (t.near and o[3] <= M.SOLID_M + M.SOLID_HYST_M) or false
     if want ~= t.shown or band ~= t.band or near ~= t.near or t.pending then
       t.pending = false
       if rowsScanned > M.ROWS_PER_FRAME then finish(); return end
@@ -587,7 +593,7 @@ function M.clear()
     for i, it in pairs(t.made) do if fd then removeItem(fd, it, t.madeShape[i]) end end
     releaseForest(t)
   end
-  tiles = {}
+  tiles, frameN = {}, 0
 end
 
 -- Level end: the level deletes its objects itself.

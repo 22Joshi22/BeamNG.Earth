@@ -39,6 +39,7 @@ class Conn:
 
     def __init__(self, aid, focus=(0.0, 0.0)):
         self.active, self.focus = aid, focus
+        self.view_focus = focus         # (Connection.view_focus: the car's when the camera is near it)
         self.shown, self.sent, self.msgs = {}, {}, []
         self.desired, self.inflight, self.retired, self.held = {}, {}, {}, set()    # Server.in_use reads these
         self.slot_holds = {}            # Server.slot_held

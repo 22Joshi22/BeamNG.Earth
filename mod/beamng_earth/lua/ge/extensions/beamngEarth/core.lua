@@ -854,6 +854,18 @@ local function cameraState()
     h = screenHeight() }
 end
 
+-- The camera's {x, y} when it is more than VIEW_AWAY_M from the car (a free camera, a far chase camera): what is drawn
+-- follows it (trees here; the server's far field, tree and far building tiles from the pose's cam), what the car drives
+-- on stays round the car. nil otherwise.
+M.VIEW_AWAY_M = 50
+function M.viewAway()
+  local c, p = st.cam, st.player
+  if not c or not p or not c.x or not p.x then return nil end
+  local dx, dy = c.x - p.x, c.y - p.y
+  if dx * dx + dy * dy <= M.VIEW_AWAY_M * M.VIEW_AWAY_M then return nil end
+  return { x = c.x, y = c.y }
+end
+
 local function updatePlayer(dt)
   st.player = nil
   st.cam = cameraState()
@@ -1444,12 +1456,12 @@ local function onUpdate(dtReal, dtSim)
     -- the roads before the far tiles: they share the governor's budget and the first to ask gets it; after a
     -- teleport the far field's hundreds of tiles took it frame after frame and the road meshes under the car
     -- came after it had passed (Brasov, Sinaia 2026-10-15: the car drove bare ground)
-    roads.update(gov, st.anchorId, st.player)
+    roads.update(gov, st.anchorId, st.player, M.viewAway())
     t = mark('roads', t)
     farfield.update(gov, (gov.w1 or dtReal * 1000) / 1000, st.cam, st.player)
     t = mark('far', t)
     sea.update(st.anchorId, st.player)
-    trees.update(st.anchorId, st.player)
+    trees.update(st.anchorId, st.player, M.viewAway())
     t = mark('sea+trees', t)
     local pb = nil
     if st.block then

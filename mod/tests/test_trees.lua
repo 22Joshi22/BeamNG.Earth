@@ -71,6 +71,12 @@ do
   trees.update(1, { x = 50, y = 256 + trees.SOLID_M + trees.SOLID_HYST_M + 20 })
   T.check(trees.made == m and trees.removed == r, 'a settled tile of non-solid items: nothing re-made')
 end
+-- the camera away from the car (core.viewAway): what is shown follows the camera, what collides the car (the user,
+-- 2026-10-20: "All collision ... should be following the car while visual stuff should follow the camera")
+trees.update(1, { x = 50, y = 1900 }, { x = 50, y = 50 })
+T.check(count() == 100 and solidCount() == 0, 'the camera at the tile, the car far: every item shown, none collides')
+trees.update(1, { x = 50, y = 50 }, { x = 50, y = 1900 })
+T.check(count() == 100 and solidCount() == 100, 'the car at the tile, the camera far: every item, all collide')
 trees.update(1, { x = 50, y = 50 })
 
 trees.onDrop({ anchorId = 1, key = '0_0' })

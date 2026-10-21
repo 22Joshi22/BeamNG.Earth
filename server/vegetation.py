@@ -793,7 +793,9 @@ class Tracker:
         if self.pool is not None:
             self.pool.shutdown(wait=False, cancel_futures=True)
 
-    def on_pose(self, conn, aid, x, y, loop, build):
+    def on_pose(self, conn, aid, x, y, loop, build, view=None):
+        """As roads.Tracker.on_pose: the tiles within send_m of the car (x, y) and of the camera when it is away
+        (view), the car's first; dropped beyond drop_m of both."""
         import roads as roadsmod
         if aid != self.aid:
             for f in self.futs.values():
@@ -802,10 +804,14 @@ class Tracker:
         if self.pool is None:
             from concurrent.futures import ThreadPoolExecutor
             self.pool = ThreadPoolExecutor(self.per_pose, thread_name_prefix=f"{self.kind}-tile")
-        skip = set(roadsmod.tiles_near(x, y, self.skip_m)) if self.skip_m else ()
-        want = [k for k in roadsmod.tiles_near(x, y, self.send_m)
-                if k not in self.sent and k not in self.building and k not in skip]
-        want.sort(key=roadsmod.view_key(conn, aid, x, y))
+        spots = [(x, y)] + ([tuple(view)] if view else [])
+        skip = {k for p in spots for k in roadsmod.tiles_near(*p, self.skip_m)} if self.skip_m else ()
+        car = set(roadsmod.tiles_near(x, y, self.send_m))
+        seen = set(roadsmod.tiles_near(*view, self.send_m)) - car if view else set()
+        want = [k for k in car | seen if k not in self.sent and k not in self.building and k not in skip]
+        car_key = roadsmod.view_key(conn, aid, x, y)
+        cam_key = roadsmod.view_key(conn, aid, *view) if seen else None
+        want.sort(key=lambda k: (1, cam_key(k)) if k in seen else (0, car_key(k)))
         # at most per_pose in flight: each waits in a thread of the loop's shared executor, and a teleport's
         # hundreds (one per pose, uncapped) held every thread while the road tiles under the car waited for one
         # (Sinaia 2026-10-15: bare ground for minutes)
@@ -813,7 +819,7 @@ class Tracker:
             self.building.add((tx, ty))
             fut = self.futs[(tx, ty)] = loop.run_in_executor(self.pool, build, aid, tx, ty)
             fut.add_done_callback(lambda f, k=(tx, ty), a=aid: self._built(conn, a, k, f))
-        for k in [k for k in self.sent if roadsmod.tile_distance(k[0], k[1], x, y) > self.drop_m]:
+        for k in [k for k in self.sent if all(roadsmod.tile_distance(k[0], k[1], *p) > self.drop_m for p in spots)]:
             self.sent.discard(k)
             conn.send({"type": f"{self.kind}_drop", "anchorId": aid, "key": f"{k[0]}_{k[1]}"})
 

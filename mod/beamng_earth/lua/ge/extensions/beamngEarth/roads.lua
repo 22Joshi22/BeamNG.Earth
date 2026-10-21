@@ -627,7 +627,10 @@ local function releaseGhosts(player)
 end
 
 -- Once per frame (core onUpdate): deletions, then creations, within the governor's budget.
-function M.update(gov, currentAnchor, player)
+local viewAt = nil  -- core.viewAway(): the camera's { x, y } when it is away from the car, else nil (M.nextWalk)
+
+function M.update(gov, currentAnchor, player, view)
+  viewAt = view
   if prewarmWant then prewarmNow()
   elseif prewarmId and not scenetree.findObjectById(prewarmId) then   -- (the level loaded again: gone with it)
     prewarmId, prewarmWant = nil, prewarmPath
@@ -792,7 +795,8 @@ end
 
 -- Which walkQ entry to make next (index): the road meshes and colliders before the render-only meshes (drawn
 -- buildings, wires), each by the distance to its tile's centre (behind a fast car counting three times): the tiles
--- the car reaches first (the user, 2026-10-19: high speeds, the road texture struggling to keep up).
+-- the car reaches first (the user, 2026-10-19: high speeds, the road texture struggling to keep up). A render-only
+-- mesh by its distance to the camera instead when that is nearer (viewAt: what is drawn follows the camera).
 function M.nextWalk(q)
   if #q <= 1 then return 1 end
   local p, dir = playerNow()
@@ -805,6 +809,10 @@ function M.nextWalk(q)
       local dx, dy = t.cx - p.x, t.cy - p.y
       k = math.sqrt(dx * dx + dy * dy)
       if dir and dx * dir.x + dy * dir.y < -M.TILE_M then k = k * 3 end
+      if viewAt and (e.renderOnly or e.what == 'wire') then
+        local vx, vy = t.cx - viewAt.x, t.cy - viewAt.y
+        k = math.min(k, math.sqrt(vx * vx + vy * vy))
+      end
     end
     if e.renderOnly or e.what == 'wire' then k = k + 1e6 end
     if k < bestKey then best, bestKey = i, k end
@@ -963,6 +971,8 @@ function M.ahead(x, y, hx, hy, dist)
       local e = { d = d, key = sq, arrived = t and math.floor(tnow - (t.at or tnow)) or false }
       if t then
         e.road = t.road ~= nil or (t.queued or 0) <= 0
+        e.bld = t.bld ~= nil                    -- (a tile without buildings never has one)
+        e.walk = t.walk ~= nil
         local want, made, solid = 0, 0, 0
         for what in pairs(t.colWant or {}) do
           want = want + 1

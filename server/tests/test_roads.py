@@ -660,6 +660,30 @@ class TrackerTest(unittest.TestCase):
         asyncio.run(go())
         self.assertEqual(set(built), set(roads.tiles_near(128.0, 128.0, roads.SEND_M)), "only the square around the car")
 
+    def test_an_away_camera_gets_its_tiles_after_the_cars_and_keeps_them(self):
+        # the user, 2026-10-20: what is drawn follows the camera, what collides the car
+        import vegetation
+        for make, kind in ((roads.Tracker, "roads"), (vegetation.Tracker, "veg")):
+            conn, built = FakeConn(), []
+            tr = make()
+            cam = (5000.0, 0.0)
+
+            async def go(view, n=60):
+                loop = asyncio.get_running_loop()
+                for _ in range(n):
+                    tr.on_pose(conn, 1, 0.0, 0.0, loop, lambda aid, tx, ty: (built.append((tx, ty)), (f"/p/{tx}_{ty}", 1))[1],
+                               view=view)
+                    await asyncio.sleep(0.01)
+            send = roads.SEND_M if kind == "roads" else vegetation.SEND_M
+            car, seen = set(roads.tiles_near(0, 0, send)), set(roads.tiles_near(*cam, send))
+            asyncio.run(go(cam))
+            self.assertEqual(set(built), car | seen, kind)
+            self.assertEqual(set(built[:len(car)]), car, f"{kind}: the car's tiles first")
+            self.assertFalse([m for m in conn.sent if m["type"].endswith("_drop")], f"{kind}: none dropped")
+            asyncio.run(go(None, 2))            # the camera back at the car: the camera's tiles go
+            drops = {tuple(map(int, m["key"].split("_"))) for m in conn.sent if m["type"].endswith("_drop")}
+            self.assertEqual(drops, seen, kind)
+
     def test_drops_far_and_resends_on_anchor_change(self):
         conn, tr, built = self.run_poses([(1, 0.0, 0.0), (1, 3000.0, 0.0), (2, 3000.0, 0.0)])
         drops = [m for m in conn.sent if m["type"] == "roads_drop"]

@@ -178,6 +178,7 @@ BLOCK_DRAWN = ("terrain", "detail")
 TUNNEL_FLOOR_UNDER_M = 2.0     # a tunnel floor this far under the ground at a teleport's origin: the car goes on the floor
 SEA_CHECK_S = 15.0          # sea (--sea on): the water tiles planned again when the player enters another
                             # 512 m square, or after this long (cells built meanwhile; seatiles.py)
+VIEW_AWAY_M = 50.0              # m: a camera this far from the car centres what is drawn (Conn.camera_away)
 GROUND_RESEND_M, GROUND_RESEND_S = 1.0, 1.5   # ground_ahead: sent on a change, else this often (the mod's
                                                # follow.GROUND_STALE_S is 3 s)
 DETAIL_RING_M = 128.0           # detail mode: L-1 tiles this far beyond the block (forced())
@@ -2069,7 +2070,7 @@ class Server:
                     self.retex_stats["dropped"] += 1
                 continue
             t = farfield.tile_of(ck[1])
-            d = min(t.distance(*c.focus) for c in viewers)
+            d = min(t.distance(*c.view_focus) for c in viewers)
             if best is None or (d, ck) < (bd, best):
                 best, bd = ck, d
         return best
@@ -2228,6 +2229,7 @@ class Connection:
         self.terrain_wait = 0           # prepare_terrain requests being built (roads.Tracker: the ground first)
         self.predicted_block = None     # the terrain the prefetch expects next
         self.focus = (0.0, 0.0)         # player x, y in the active frame
+        self.view_at = None             # the camera's x, y there when it is VIEW_AWAY_M or more from the car, else None
         self.vel = (0.0, 0.0)
         self.cam = None                 # pose.cam (protocol 3), kept for diagnostics
         self.desired = {}               # key -> Tile (active anchor)
@@ -2871,8 +2873,9 @@ class Connection:
                 self.s.load_boost(False, "moving" if moving else "timeout")
         if isinstance(msg.get("cam"), dict):
             self.cam, self.cam_aid = msg["cam"], aid
+        self.view_at = self.camera_away(msg.get("cam")) if aid == self.active else None
         if self.s.horizon:
-            self.update_eye(self.s.anchors[aid].frame, x, y, msg)
+            self.update_eye(self.s.anchors[aid].frame, *(self.view_at or (x, y)), msg)
         self.gravity.on_pose(self, self.s.anchors[aid].frame, x, y, _num(msg, "z", 0.0))
         self.ground_ahead(aid, x, y, vx, vy)
         if self.s.sea is not None:
@@ -2910,19 +2913,41 @@ class Connection:
             self.base_refresh(aid)
         if self.s.mapdata is not None and aid == self.active:
             self.roads.on_pose(self, aid, *self.focus, asyncio.get_running_loop(), self.s.build_roads_tile,
-                               vel=self.vel, ground_busy=self.terrain_wait > 0)
+                               vel=self.vel, ground_busy=self.terrain_wait > 0, view=self.view_at)
         if self.s.veg is not None and aid == self.active:
             anchor = self.s.anchors.get(aid)
             if anchor is not None:                            # a teleport's cells built at once, ahead
                 la, lo, _ = anchor.frame.enu_to_geodetic(*self.focus, 0.0)
                 self.s.veg.warm_around(float(la), float(lo))
-            self.veg.on_pose(self, aid, *self.focus, asyncio.get_running_loop(), self.s.build_veg_tile)
+            self.veg.on_pose(self, aid, *self.focus, asyncio.get_running_loop(), self.s.build_veg_tile,
+                             view=self.view_at)
         if self.s.buildings and aid == self.active:
-            self.bldfar.on_pose(self, aid, *self.focus, asyncio.get_running_loop(), self.s.build_far_bld_tile)
+            self.bldfar.on_pose(self, aid, *self.focus, asyncio.get_running_loop(), self.s.build_far_bld_tile,
+                                view=self.view_at)
         if self.s.traffic and aid == self.active:
             self.nav.on_pose(self, aid, *self.focus, asyncio.get_running_loop(), self.s.build_navgraph)
         self.refresh_status()
         self.credits.poke(self)             # the player moved: the near / far credits may change
+
+    def camera_away(self, cam):
+        """The camera's (x, y) from a pose's cam when it is more than VIEW_AWAY_M from the car (a free camera, a far
+        chase camera), else None. What is drawn follows it: the far field, and the road, tree and far building tiles
+        round it as well as round the car; what collides stays round the car (the terrain block, the road and
+        building colliders in the tiles round the car, the nav graph). The user, 2026-10-20: "All collision ...
+        should be following the car while visual stuff should follow the camera"."""
+        if not isinstance(cam, dict):
+            return None
+        cx, cy = cam.get("x"), cam.get("y")
+        if not all(isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v) for v in (cx, cy)):
+            return None
+        if math.hypot(cx - self.focus[0], cy - self.focus[1]) <= VIEW_AWAY_M:
+            return None
+        return float(cx), float(cy)
+
+    @property
+    def view_focus(self):
+        """Where the far field is centred: the camera when it is away from the car (camera_away), else the car."""
+        return self.view_at or self.focus
 
     def base_refresh(self, aid):
         """Detail mode: the block in use and the one handed out last, if their base photo was rendered before
@@ -3096,7 +3121,7 @@ class Connection:
         if grid is None:
             radius = farfield.HORIZON_MIN
         else:
-            radius, zr = grid.radius(*self.focus, eye)
+            radius, zr = grid.radius(*self.view_focus, eye)
             cull = farfield.Horizon(eye, grid)
             if zr != self.zmax_region or abs(radius - self.radius) > RADIUS_REPORT_REL * self.radius:
                 log.info("horizon: eye %.0f m, highest visible terrain %.0f m, radius %.0f km",
@@ -3153,7 +3178,7 @@ class Connection:
         self.retired = {ck: t for ck, t in self.retired.items() if now - t < self.s.retired_keep}
         self.node_changed = {n: t for n, t in self.node_changed.items() if now - t < farfield.HOLD_S}
         radius, extra = (self.horizon_select() if self.s.horizon else (self.s.radius, {}))
-        new, refined = farfield.select(*self.focus, self.forced(), self.refined, self.s.kfun,
+        new, refined = farfield.select(*self.view_focus, self.forced(), self.refined, self.s.kfun,
                                        self.s.hysteresis, radius, hold=set(self.node_changed),
                                        min_level=self.s.min_level, radii=self.s.near_radii, layout=self.s.layout,
                                        forced_level=self.s.forced_level, view=self.view(), **extra)
@@ -3210,7 +3235,7 @@ class Connection:
         # gating need them), then groups that are partly sent, then the rest; nearest first.
         gate = [b.bbox for b in (self.block, self.pending_block) if b is not None and self.s.near_visual in BLOCK_DRAWN]
         started = {k for adds, _ in self.groups if any(a in self.sent for a in adds) for k in adds}
-        fx, fy = self.focus
+        fx, fy = self.view_focus
         todo = [self.desired[k] for k in needed if k not in self.sent]
 
         cone = (farfield.view_cone(self.cam)

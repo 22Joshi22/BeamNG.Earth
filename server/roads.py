@@ -3268,11 +3268,13 @@ class Tracker:
         if self.pool is not None:
             self.pool.shutdown(wait=False, cancel_futures=True)
 
-    def on_pose(self, conn, aid, x, y, loop, build, vel=(0.0, 0.0), ground_busy=False):
+    def on_pose(self, conn, aid, x, y, loop, build, vel=(0.0, 0.0), ground_busy=False, view=None):
         """Called with the player's position (and velocity, m/s) in the active anchor's frame. build(aid, tx, ty) runs
         in a worker and returns the tile's (path, n) or None; its result is announced with conn.send. ground_busy: a
         terrain block the mod asked for is being built: no tile beyond SEND_M starts meanwhile (the ground first; at
-        180 mph the block ahead waited 7.5 s among them, 2026-10-19)."""
+        180 mph the block ahead waited 7.5 s among them, 2026-10-19). view: the camera's (x, y) when it is away from
+        the car (earthd camera_away): the tiles round it are wanted too, after the car's (which carry what it drives
+        on and hits)."""
         if aid != self.aid:
             for f in self.futs.values():
                 f.cancel()
@@ -3283,22 +3285,28 @@ class Tracker:
             self.pool = ThreadPoolExecutor(BUILD_PER_POSE, thread_name_prefix="roads-tile")
         vx, vy = (float(vel[0]), float(vel[1])) if vel else (0.0, 0.0)
         fast = math.hypot(vx, vy) >= FAST_MS
-        wanted = wanted_tiles(x, y, vx, vy)
+        car = wanted_tiles(x, y, vx, vy)
+        seen = set(tiles_near(*view, SEND_M)) - car if view else set()
+        wanted = car | seen
         start = set(tiles_near(x, y, SEND_M)) if ground_busy else wanted
         now = time.monotonic()
         want = [k for k in start if k not in self.sent and k not in self.building and k not in self.empty
                 and self.retry.get(k, 0.0) <= now]
-        want.sort(key=path_key(x, y, vx, vy) if fast else view_key(conn, aid, x, y))
+        car_key = path_key(x, y, vx, vy) if fast else view_key(conn, aid, x, y)
+        cam_key = view_key(conn, aid, *view) if seen else None
+        want.sort(key=lambda k: (1, cam_key(k)) if k in seen else (0, car_key(k)))
         for tx, ty in want[:max(0, BUILD_PER_POSE - len(self.building))]:   # in flight at most (vegetation.Tracker)
             self.building.add((tx, ty))
             fut = self.futs[(tx, ty)] = loop.run_in_executor(self.pool, build, aid, tx, ty)
             fut.add_done_callback(lambda f, k=(tx, ty), a=aid: self._built(conn, a, k, f))
-        drop = [k for k in self.sent if k not in wanted and tile_distance(k[0], k[1], x, y) > DROP_M]
+        def far(k):
+            return tile_distance(k[0], k[1], x, y) > DROP_M and (not view or tile_distance(k[0], k[1], *view) > DROP_M)
+        drop = [k for k in self.sent if k not in wanted and far(k)]
         for k in drop:
             self.sent.discard(k)
             conn.send({"type": "roads_drop", "anchorId": aid, "key": f"{k[0]}_{k[1]}"})
         if self.empty:
-            self.empty = {k for k in self.empty if k in wanted or tile_distance(k[0], k[1], x, y) <= DROP_M}
+            self.empty = {k for k in self.empty if k in wanted or not far(k)}
         if self.retry:
             self.retry = {k: t for k, t in self.retry.items() if t > now}
 
