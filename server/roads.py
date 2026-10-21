@@ -2826,11 +2826,31 @@ CLIFF_OVER_M = 0.3      # ... and over the ground behind
 CLIFF_SPACING = 0.55    # pieces along the face a share of their width apart (overlapping)
 CLIFF_REACH_M = 8.0     # m behind the face a piece may reach at most (less where another road is)
 CLIFF_EDGE_M = 0.5      # m off the carriageway's edge the pieces' fronts stand
+CLIFF_ROAD_GAP_M = 0.3  # m a piece's footprint keeps from any carriageway
 
 
-def cliff_rows(walls):
+def cliff_rows(walls, roads=()):
     """trees.lua rows [group, x, y, z, yaw, scale, height, rank] of rock-face pieces along the rural walls' faces
-    (retaining_walls' "rock" walls). Deterministic (hashed by position)."""
+    (retaining_walls' "rock" walls). roads: build_tile's roads: no piece's footprint on a carriageway (shrunk until
+    clear, else left out). Deterministic (hashed by position)."""
+    import fast
+    lines = [(np.asarray(pts, np.float64)[:, :2], spec.width / 2 + CLIFF_ROAD_GAP_M) for _, spec, pts, _ in roads
+             if len(pts) >= 2]
+    A = np.concatenate([ln[:-1] for ln, _ in lines]) if lines else np.zeros((0, 2))
+    B = np.concatenate([ln[1:] for ln, _ in lines]) if lines else np.zeros((0, 2))
+    H = np.concatenate([np.full(len(ln) - 1, h) for ln, h in lines]) if lines else np.zeros(0)
+
+    def on_road(px, py, yaw, sc, width, front, depth):
+        """Does the piece's footprint (its corners and edge midpoints) touch a carriageway?"""
+        if not len(A):
+            return False
+        c, s_ = math.cos(math.radians(yaw)), math.sin(math.radians(yaw))
+        ux, uy = np.array([c, s_]), np.array([-s_, c])          # its local x (along) and y (back from the road)
+        pts = [np.array([px, py]) + ux * a * width * sc / 2 + uy * b * sc
+               for a in (-1.0, -0.5, 0.0, 0.5, 1.0) for b in (-front * 0.6, depth - front)]
+        fast.require(0, "points_near_segments")
+        return bool(np.asarray(fast._ef.points_near_segments(np.ascontiguousarray(np.array(pts)), np.ascontiguousarray(A),
+                                                             np.ascontiguousarray(B), np.ascontiguousarray(H))).any())
     rows = []
     for w in walls:
         # (their fronts just off the carriageway, not at the wall's face: the ground climbing in front of the face
@@ -2854,12 +2874,19 @@ def cliff_rows(walls):
             if sc < 0.2:
                 at += 3.0
                 continue
-            hh = sc * sh
             t = tw[i]
             x, y = float(np.interp(at, s, b[:, 0])), float(np.interp(at, s, b[:, 1]))
-            px, py = x - t[0] * front * sc, y - t[1] * front * sc       # its front (-y, toward the road) on the face
             jit2 = _hash01(round(float(b[i, 0]), 1), round(float(b[i, 1]), 1), "z")
             yaw = math.degrees(math.atan2(t[0], -t[1])) + (jit - 0.5) * 30.0
+            while sc >= 0.2:            # (shrunk until its footprint is off every carriageway, this road's included)
+                px, py = x - t[0] * front * sc, y - t[1] * front * sc   # its front (-y, toward the road) on the face
+                if not on_road(px, py, yaw, sc, width, front, depth):
+                    break
+                sc *= 0.8
+            if sc < 0.2:
+                at += 3.0
+                continue
+            hh = sc * sh
             zb = float(np.interp(at, s, road_z)) - CLIFF_SINK_M - jit2 * 0.8 * sc
             rows.append(["cliff", round(px, 2), round(py, 2), round(zb + frac * hh, 2), round(yaw % 360.0, 1), 1.0,
                          round(hh, 2), round(jit, 3)])
@@ -3307,7 +3334,7 @@ def build_tile(frame, tx, ty, cells, elev, urban_fn=None, walks=None, bridges=No
                 w["rock"] = False
         walls.extend(w for w in tile_walls if not w["rock"])
         if props is not None:                   # a rural cut: rock-face pieces instead (cliff_rows)
-            props.extend(cliff_rows([w for w in tile_walls if w["rock"]]))
+            props.extend(cliff_rows([w for w in tile_walls if w["rock"]], roads))
         chunks = _off_wall_tops(chunks, [w for w in tile_walls if not w["rock"]])
     corners, jcuts, crosswalks, jramps, jlines, jinternal = ({}, {}, [], {}, {}, set()) if walks is None else \
         junctions.find(roads, has_sidewalks, None, PARKING_M,

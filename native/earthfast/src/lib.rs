@@ -971,8 +971,10 @@ fn grade_points<'py>(py: Python<'py>, px: PyReadonlyArray1<'py, f64>, pyy: PyRea
                     let u = ((d - hs - if wall { wall_flat } else { 0.0 }) / tt).clamp(0.0, 1.0);
                     let w = 1.0 - u * u * (3.0 - 2.0 * u);
                     // (another road's carriageway here, at another level: this road gives way past its own carriageway)
+                    // (a road's own carriageway never gives way: a hairpin's band over the leg above sank its lanes
+                    // under the terrain, the Stelvio Pass, the user's report 2026-10-21)
                     let yields = if bid[idx] >= 0 {
-                        bid[idx] != rid[s] && (target - bz[idx]).abs() > wall_cut
+                        d > rh[s] && bid[idx] != rid[s] && (target - bz[idx]).abs() > wall_cut
                     } else {
                         d > rh[s] && carid[idx] >= 0 && carid[idx] != rid[s] && (target - carz[idx]).abs() > wall_cut
                     };

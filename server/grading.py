@@ -141,7 +141,7 @@ def resample(xy, step):
 class Plan:
     """One road's grading: vertices (n, 2) in the frame's ENU metres, their target heights, core half width; abut: does
     it lead onto a bridge at its (first, last) vertex (grade_points)."""
-    __slots__ = ("xy", "z", "half", "bbox", "abut", "cut", "road_half")
+    __slots__ = ("xy", "z", "half", "bbox", "abut", "cut", "road_half", "rid")
 
     def __init__(self, xy, z, half, abut=(False, False), cut=None, road_half=None):
         self.xy, self.z, self.half, self.abut = xy, z, float(half), (bool(abut[0]), bool(abut[1]))
@@ -149,6 +149,7 @@ class Plan:
         # the top's offset, on the left, then the right (_add_cuts)
         self.cut = cut
         self.road_half = float(road_half) if road_half is not None else float(half)    # the carriageway's half width
+        self.rid = -1           # the road (map feature) it is part of: _plan_cell (each cell plans its own stretch of it)
         pad = half + T_MAX
         self.bbox = (xy[:, 0].min() - pad, xy[:, 1].min() - pad, xy[:, 0].max() + pad, xy[:, 1].max() + pad)
 
@@ -387,6 +388,8 @@ class Grader:
                     log.debug("grading: abutments of %s: %s: %s", key, type(e).__name__, e)
             for fid, part, p in zip(ids, parts, plan_roads(self.frame, parts, self.elev, abut)):
                 if p is not None:
+                    p.rid = road_id(fid)
+                if p is not None:
                     plans.append((fid, p))
                     pspecs.append(part[1])
             if APPROACH_ON and plans:
@@ -464,7 +467,9 @@ class Grader:
                 if a is not None:
                     add = a if add is None else np.maximum(add, a)
             if add is not None:
-                plans[i] = (fid, Plan(p.xy, p.z + add, p.half, p.abut, p.cut, p.road_half))
+                np_ = Plan(p.xy, p.z + add, p.half, p.abut, p.cut, p.road_half)
+                np_.rid = p.rid
+                plans[i] = (fid, np_)
 
     def _abut_ends(self, key, pe, ok=None):
         """Which of the points pe (n, 2) (road ends; ok: those to look at) near cell key are within APPROACH_TOUCH_M
@@ -723,7 +728,10 @@ class Grader:
         """The Plans touching the points' area (each road once); roads_only: not the tunnels' (TUNNEL_TAG)."""
         lat = np.asarray(lat, np.float64)
         lon = np.asarray(lon, np.float64)
-        pad = (T_MAX + 40.0) / 111320.0
+        # (every cell whose plans reach the points: each plans its roads CLIP_MARGIN_M past its edges, and a batch that
+        # left one out graded the same point up to 2 m apart from one that had it - the terrain block and the road
+        # mesh disagreed, patches of ground through a hairpin's asphalt on the Stelvio Pass, 2026-10-21)
+        pad = (T_MAX + CLIP_MARGIN_M + 40.0) / 111320.0
         padlon = pad / max(0.05, math.cos(math.radians(float(np.mean(lat)))))
         keys = mapcells.cells_for_bbox(float(lat.min()) - pad, float(lon.min()) - padlon,
                                        float(lat.max()) + pad, float(lon.max()) + padlon)
@@ -807,6 +815,13 @@ class Grader:
         return mask if mask.any() else None
 
 
+def road_id(fid):
+    """A stable integer id of a map feature (grade_points: a road never gives way to itself, though each map cell
+    plans its own stretch of it: the Stelvio Pass's hairpins sank under their own other stretches, 2026-10-21)."""
+    import zlib
+    return zlib.crc32(str(fid).encode()) & 0x7FFFFFFF
+
+
 def grade_points(px, py, base, plans, lift=0.0):
     """base at the points (px, py) graded under the plans (see the module doc), by the Rust loop (native/earthfast
     grade_points: a Python loop per segment was the server's largest CPU cost while driving, 2026-10-12). Pure."""
@@ -828,7 +843,8 @@ def grade_points(px, py, base, plans, lift=0.0):
         ZB.append(p.z[1:])
         H.append(np.full(len(p.xy) - 1, p.half))
         RH.append(np.full(len(p.xy) - 1, getattr(p, "road_half", p.half)))
-        RID.append(np.full(len(p.xy) - 1, k, np.int64))
+        rid = getattr(p, "rid", -1)
+        RID.append(np.full(len(p.xy) - 1, rid if rid is not None and rid >= 0 else 2 ** 40 + k, np.int64))
         ab = np.zeros(len(p.xy) - 1, bool)
         abut = getattr(p, "abut", (False, False))
         if abut[0] or abut[1]:
