@@ -672,7 +672,7 @@ def _tunnel_section(hw, th=TUNNEL_H, low=False):
                     np.float64)
 
 
-WALL_THICK_M = 3.1         # a retaining wall's top: over the grading's flat strip behind it (grading.WALL_FLAT_M)
+WALL_THICK_M = 2.4         # a retaining wall's top: over the grading's flat strip behind it (grading.WALL_FLAT_M)
 
 
 def _retaining_walls(walls, origin, P, T, UV, M, nv):
