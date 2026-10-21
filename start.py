@@ -85,8 +85,6 @@ def main():
             cmd += [flag, value]
         else:
             skipped.append(flag)
-    if install.IS_WIN and has_flag(help_text, "--nice"):
-        cmd += ["--nice", "0"]          # os.nice does not exist on Windows
     extra = args.extra[1:] if args.extra[:1] == ["--"] else args.extra
     cmd += extra
 
