@@ -725,6 +725,24 @@ if __name__ == "__main__":
     unittest.main()
 
 
+class RoadAcrossTest(unittest.TestCase):
+    def test_a_narrow_footprint_across_a_road_is_over_it(self):
+        # GitHub #48: the 69th Street station's 3 m wide shelters across the Dan Ryan (a road runs only their width
+        # inside them, under ROAD_THROUGH_M)
+        shelter = rect(-18, -1.5, 36, 3)
+        across = [np.array([(0.0, -50.0), (0.0, 50.0)])]
+        self.assertLess(bld.road_through(shelter, across), bld.ROAD_THROUGH_M)
+        self.assertTrue(bld.road_across(shelter, across))
+        self.assertFalse(bld.road_across(shelter, [np.array([(-50.0, 10.0), (50.0, 10.0)])]), "a road beside it")
+        self.assertFalse(bld.road_across(shelter, [np.array([(25.0, -50.0), (25.0, 50.0)])]), "a road past its end")
+        self.assertFalse(bld.road_across(rect(-18, -10, 36, 20), across), "a wide one: road_through decides")
+
+    def test_a_long_shelter_is_a_canopy_not_a_barn(self):
+        s = bld.plan(rect(0, 0, 11, 140), {"class": "shelter"}, 0, 41.77, -87.63)
+        self.assertEqual(s.floors, 1)
+        self.assertLess(s.height, 5.0)
+
+
 class CurvatureTest(unittest.TestCase):
     def test_ground_in_the_anchor_frame(self):
         # 8 km from the anchor's origin the ground (h = 100 m everywhere) lies d^2 / 2R = ~5 m lower in the frame, as the

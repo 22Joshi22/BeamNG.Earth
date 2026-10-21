@@ -173,7 +173,7 @@ STEEL_LEG_MAX = 3.0         # m: a frame's legs at most this thick (a quarter of
 STEEL_BAY_M = 14.0          # m between a frame's bracing levels
 STEEL_TOP_SHARE = 0.85      # cross beams over the decks only from this share of the height up
 SHED_CLASSES = {"shed", "garage", "garages", "carport", "roof", "hut", "cabin", "barn", "farm_auxiliary",
-                "greenhouse", "service", "storage_tank", "toilets", "kiosk", "parking"}
+                "greenhouse", "service", "storage_tank", "toilets", "kiosk", "parking", "shelter"}
 GLASS_FLOORS = (20, 40)     # towers from 20 floors: glass, but for OLD_TOWER_GLASS of the old ones below 40 ...
 OLD_TOWER_GLASS = 0.65      # ... (Midtown's pre-war skyscrapers are stone)
 MIDRISE_GLASS_OFFICE = 0.45 # offices / hotels of 7+ floors: this share glass (modern), the rest masonry
@@ -505,7 +505,7 @@ def plan(ring, attrs, neighbours=0, lat=None, lon=None, look=None, town=False, d
     if church:
         floor_h = 7.5
     # (a big shed is a barn; a row of garages, a carport or a canopy is not)
-    barn = cls in BARN_CLASSES or (shed and area >= 150 and cls not in ("garage", "garages", "carport", "roof"))
+    barn = cls in BARN_CLASSES or (shed and area >= 150 and cls not in ("garage", "garages", "carport", "roof", "shelter"))
     if barn:
         floor_h = 5.5 if area >= 150 else 3.5          # one tall storey; the gable above it
     if h is None and nf is None:
@@ -1685,6 +1685,9 @@ def _part_heights(a, i):
 ROAD_THROUGH_M = 15.0       # a footprint that public roads run through this far is a structure over them
 OVER_ROAD_CLEAR_M = 5.5     # ... lifted this high (an expressway's or a station's slab over the streets: Baltimore's
                             # 17,500 m2 one by I-83, the AI drove into its wall at 35 mph, 2026-10-14)
+ACROSS_W = 8.0              # m: a footprint at most this wide that a public road crosses (its long middle line) is a
+                            # walkway or canopy over it (GitHub #48: the 69th Street station's 3 m shelters stood across
+                            # the Dan Ryan as brick walls; a road crossing one runs only its width inside it)
 THROUGH_CLASSES = {"motorway", "trunk", "primary", "secondary", "tertiary", "residential", "unclassified",
                    "living_street"}
 
@@ -2058,6 +2061,31 @@ def road_through(ring, lines, step=2.0):
     return total
 
 
+def road_across(ring, lines, max_w=ACROSS_W):
+    """Does one of the polylines lines (k, 2) cross the narrow footprint ring (at most max_w wide) along its length,
+    over its long middle line?"""
+    c, u, hl, hw = oriented_box(ring)
+    if 2 * hw > max_w or hl <= hw:
+        return False
+    a, b = c - u * hl, c + u * hl
+    lo, hi = np.minimum(a, b), np.maximum(a, b)
+    bx = line_boxes(lines)
+    for li in np.flatnonzero((bx[:, 2] >= lo[0]) & (bx[:, 0] <= hi[0]) & (bx[:, 3] >= lo[1]) & (bx[:, 1] <= hi[1])):
+        ln = lines[li]
+        p, q = ln[:-1], ln[1:]
+        d = q - p
+        e = b - a
+        den = d[:, 0] * e[1] - d[:, 1] * e[0]
+        ok = np.abs(den) > 1e-9
+        den = np.where(ok, den, 1.0)
+        w = a - p
+        t = (w[:, 0] * e[1] - w[:, 1] * e[0]) / den         # along the road segment
+        s_ = (w[:, 0] * d[:, 1] - w[:, 1] * d[:, 0]) / den  # along the middle line
+        if np.any(ok & (t >= 0) & (t <= 1) & (s_ >= 0) & (s_ <= 1)):
+            return True
+    return False
+
+
 CENTRE_PREFILTER_M = 1.0       # m of slack for Features.outer_centres (cumulative sums: within ~1e-5 m of the exact mean)
 
 
@@ -2173,7 +2201,7 @@ def tile_buildings(frame, x0, y0, x1, y1, layers, elev, water=None, part_layers=
             rings.append(ring)
             mh = at.get("min_height")
             mh = float(mh) if mh is not None and np.isfinite(mh) and mh > 0 else 0.0
-            if mh <= 0.5 and roads_xy and road_through(ring, roads_xy) >= ROAD_THROUGH_M:
+            if mh <= 0.5 and roads_xy and (road_through(ring, roads_xy) >= ROAD_THROUGH_M or road_across(ring, roads_xy)):
                 mh = OVER_ROAD_CLEAR_M
                 h = at.get("height")
                 if h is None or not np.isfinite(h) or h < mh + 3.0:
