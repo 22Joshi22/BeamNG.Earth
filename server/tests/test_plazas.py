@@ -23,6 +23,27 @@ def ring(pts):
     return np.c_[lo, la]
 
 
+class PavingTest(unittest.TestCase):
+    """GitHub #70: Paris's squares and the Louvre's courtyards all red brick (and their holes paved over)."""
+
+    def test_by_the_mapped_surface(self):
+        self.assertEqual(plazas.paving("asphalt", 48.86, 2.32)[0], plazas.ASPHALT[0])
+        self.assertEqual(plazas.paving("sett", 48.86, 2.32)[0], plazas.STONE[0])
+        self.assertIsNone(plazas.paving("compacted", 48.86, 2.32), "the Tuileries' sand: the terrain's photo")
+        self.assertEqual(plazas.paving(None, 48.86, 2.32)[0], plazas.STONE[0], "not mapped, in Europe: stone")
+        self.assertEqual(plazas.paving(None, 39.28, -76.59)[0], plazas.BRICK, "... in the US: brick")
+
+    def test_holes_left_out(self):
+        outer = ring([(10, 10), (60, 10), (60, 40), (10, 40), (10, 10)])
+        hole = ring([(20, 20), (30, 20), (30, 30), (20, 30), (20, 20)])
+        flat = lambda la, lo: np.full(np.shape(la), 5.0)    # noqa: E731
+        m = plazas.mesh(FRAME, (0.0, 0.0, 256.0, 256.0), [(outer, [hole], "asphalt")], flat, (0.0, 0.0, 0.0))
+        P, T, UV, mats, M = m
+        self.assertEqual(mats, [plazas.ASPHALT[0]])
+        self.assertAlmostEqual(_area(P[T]), 50 * 30 - 10 * 10, delta=30.0)
+        self.assertIsNone(plazas.mesh(FRAME, (0.0, 0.0, 256.0, 256.0), [(outer, [], "gravel")], flat, (0.0, 0.0, 0.0)))
+
+
 class PlazaMeshTest(unittest.TestCase):
     def test_paved_and_draped(self):
         sq = ring([(10, 10), (60, 10), (60, 40), (10, 40), (10, 10)])

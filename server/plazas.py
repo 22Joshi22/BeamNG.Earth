@@ -14,6 +14,17 @@ LIFT_M = 0.04           # m over the graded ground (under the road mesh's asphal
 BRICK = "bne_sidewalk_brick"    # red brick pavers in herringbone (buildings.materials.json; sidewalks.BRICK)
 BRICK_REPEAT_M = 1.2    # m per repeat (sidewalks.BRICK_REPEAT_M)
 MIN_AREA_M2 = 60.0      # smaller polygons are left to the terrain
+# The paving by the mapped surface (GitHub #70: every square was red brick, Paris's Place de la Concorde and Louvre
+# courtyards among them, 56,000 and 71,000 m2 of it): (material, m per texture repeat) as the road mesh draws those
+# surfaces (roads.LOOK); unpaved ones (the Tuileries' compacted sand and gravel) are left to the terrain's photo. No
+# surface mapped: red brick in the US (Fells Point's squares, the user's report #45), stone setts elsewhere.
+ASPHALT = ("road_asphalt_2lane", 11.0)
+STONE = ("italy_cobblestone", 2.5)
+PAVING = {"asphalt": ASPHALT, "concrete": ASPHALT, "concrete:plates": ASPHALT, "concrete_plates": ASPHALT,
+          "paved": ASPHALT, "paving_stones": STONE, "sett": STONE, "cobblestone": STONE, "unhewn_cobblestone": STONE,
+          "pebblestone": STONE, "bricks": (BRICK, BRICK_REPEAT_M)}
+UNPAVED = {"compacted", "gravel", "fine_gravel", "unpaved", "dirt", "ground", "sand", "grass", "earth", "mud",
+           "woodchips", "grass_paver"}
 
 
 def _subdivide(pts, tris, step):
@@ -41,8 +52,22 @@ def _subdivide(pts, tris, step):
     return np.array(P), np.array(out, np.int64)
 
 
+def _inside_many(ring, pts):
+    """Which points pts (k, 2) lie inside the ring (m, 2) (even-odd), all at once (blocks of points). Pure."""
+    xs, ys = ring[:, 0], ring[:, 1]
+    xj, yj = np.roll(xs, 1), np.roll(ys, 1)
+    dy = np.where(yj - ys == 0, 1e-12, yj - ys)
+    out = np.zeros(len(pts), bool)
+    for a in range(0, len(pts), 4096):
+        x, y = pts[a:a + 4096, 0:1], pts[a:a + 4096, 1:2]
+        cross = ((ys > y) != (yj > y)) & (x < (xj - xs) * (y - ys) / dy + xs)
+        out[a:a + 4096] = (np.count_nonzero(cross, axis=1) % 2) == 1
+    return out
+
+
 def polygons(feats_list):
-    """The outer rings (lon/lat (k, 2)) of the squares and pedestrian areas among the land_use Features."""
+    """The squares and pedestrian areas among the land_use Features: [(outer ring lon/lat (k, 2), [holes' rings],
+    surface or None)]."""
     import surface
     out = []
     for f in feats_list:
@@ -51,11 +76,24 @@ def polygons(feats_list):
         m = surface._plazas(f)
         if m is None:
             continue
+        sf = f.attrs.get("surface")
         for i in np.flatnonzero(m):
+            v = str(sf[i]).strip().lower() if sf is not None and sf[i] is not None else ""
             for part in f.parts(i):
                 if len(part) and len(part[0]) >= 4:
-                    out.append(np.asarray(part[0], np.float64))
+                    out.append((np.asarray(part[0], np.float64), [np.asarray(h, np.float64) for h in part[1:]],
+                                v or None))
     return out
+
+
+def paving(surface_value, lat, lon):
+    """(material, m per repeat) of a square with this mapped surface at (lat, lon), None for an unpaved one."""
+    if surface_value in UNPAVED:
+        return None
+    if surface_value in PAVING:
+        return PAVING[surface_value]
+    import buildings
+    return (BRICK, BRICK_REPEAT_M) if buildings.region_style(lat, lon).name.startswith("us_") else STONE
 
 
 def mesh(frame, box, rings, elev, origin):
@@ -64,8 +102,12 @@ def mesh(frame, box, rings, elev, origin):
     (the graded ground the physics block has)."""
     import buildings
     x0, y0, x1, y1 = box
-    Ps, Ts, n0 = [], [], 0
-    for ring in rings:
+    Ps, Ts, Ms, n0 = [], [], [], 0
+    for item in rings:
+        ring, holes, sv = (item, [], "bricks") if isinstance(item, np.ndarray) else item
+        look = paving(sv, float(np.mean(ring[:, 1])), float(np.mean(ring[:, 0])))
+        if look is None:
+            continue
         e, n, _ = frame.geodetic_to_enu(ring[:, 1], ring[:, 0], 0.0)
         xy = np.stack([np.asarray(e), np.asarray(n)], 1)
         if np.hypot(*(xy[0] - xy[-1])) < 1e-6:
@@ -84,6 +126,15 @@ def mesh(frame, box, rings, elev, origin):
         P, T = _subdivide(xy, tris, STEP_M)
         c = P[T].mean(1)
         keep = (c[:, 0] >= x0) & (c[:, 0] < x1) & (c[:, 1] >= y0) & (c[:, 1] < y1)
+        for h in holes:                 # (a fountain, a lawn, a building in it: its triangles out, to STEP_M)
+            if keep.any() and len(h) >= 3:
+                he, hn, _ = frame.geodetic_to_enu(h[:, 1], h[:, 0], 0.0)
+                hxy = np.stack([np.asarray(he), np.asarray(hn)], 1)
+                if (hxy[:, 0].max() < c[keep, 0].min() or hxy[:, 0].min() > c[keep, 0].max()
+                        or hxy[:, 1].max() < c[keep, 1].min() or hxy[:, 1].min() > c[keep, 1].max()):
+                    continue
+                k = np.flatnonzero(keep)
+                keep[k[_inside_many(hxy, c[k])]] = False
         if not keep.any():
             continue
         T = T[keep]
@@ -92,6 +143,7 @@ def mesh(frame, box, rings, elev, origin):
         remap[used] = np.arange(len(used))
         Ps.append(P[used])
         Ts.append(remap[T] + n0)
+        Ms.append((look, len(used), len(T)))
         n0 += len(used)
     if not Ps:
         return None
@@ -101,8 +153,17 @@ def mesh(frame, box, rings, elev, origin):
     h = np.asarray(elev(la, lo), np.float64)
     _, _, z = frame.geodetic_to_enu(la, lo, h)
     V = np.c_[P, np.asarray(z) + LIFT_M] - np.asarray(origin, np.float64)
-    UV = P / BRICK_REPEAT_M
-    return V, T, UV, [BRICK], np.zeros(len(T), np.int64)
+    mats = []
+    UV = np.empty((len(P), 2))
+    idx = np.empty(len(T), np.int64)
+    v0 = t0 = 0
+    for (mat, rep_m), nv, nt in Ms:
+        if mat not in mats:
+            mats.append(mat)
+        UV[v0:v0 + nv] = P[v0:v0 + nv] / rep_m
+        idx[t0:t0 + nt] = mats.index(mat)
+        v0, t0 = v0 + nv, t0 + nt
+    return V, T, UV, mats, idx
 
 
 def merge(a, b):
