@@ -33,31 +33,39 @@ M.SEED = {
   { name = 'Kern River Canyon, CA-178', lat = 35.460552, lon = -118.771223 },
   { name = 'Monument Valley mesas', lat = 36.78624, lon = -110.139875 },
   { name = 'Arizona / Utah state line, US-163', lat = 36.99664, lon = -110.176367 },
-  { name = 'Kayenta PV Solar Plant, Arizona', lat = 36.7874, lon = -110.238406 },
   { name = 'El Capitan Meadow, Yosemite', lat = 37.72098, lon = -119.638981 },
   { name = 'Pikes Peak summit, Colorado', lat = 38.840612, lon = -105.044051 },
   { name = 'Mount Fuji, Subaru Line 5th station', lat = 35.395301, lon = 138.732839 },
   { name = 'Everest North Base Camp, Tibet', lat = 28.14141, lon = 86.851111 },
   { name = 'Stelvio Pass, Italy', lat = 46.528634, lon = 10.453422 },
   { name = 'Blue Mountains, Echo Point NSW', lat = -33.731908, lon = 150.312007 },
+  -- (the user, 2026-10-21: "remove that solar panel farm from the default places and add my current location")
+  { name = 'Entz Béla út, Pécs, Hungary', lat = 46.099176, lon = 18.218798 },
 }
 
 -- The earlier first-run list's places as they were (a player's list keeps them until they edit them): one still at
--- its old name and position moves to its new entry (the same index in M.SEED) when the file is read.
+-- its old name and position moves to its new entry (`to`: the name of its entry in M.SEED; false: left as it is,
+-- the place no longer in the first-run list) when the file is read.
 M.OLD_SEED = {
-  { name = 'Fells Point, Baltimore MD', lat = 39.2834, lon = -76.5934 },
-  { name = 'Mount Whitney summit', lat = 36.5785, lon = -118.2923 },
-  { name = 'Kern River ravine (Sierra Nevada)', lat = 36.506422, lon = -118.402437 },
-  { name = 'Monument Valley mesas', lat = 36.7818, lon = -110.1393 },
-  { name = 'Arizona / Utah state line, Monument Valley', lat = 36.998218, lon = -110.102293 },
-  { name = 'Kayenta PV Solar Plant, Arizona', lat = 36.7874, lon = -110.2382 },
-  { name = 'El Capitan Meadow, Yosemite', lat = 37.7225, lon = -119.6385 },
-  { name = 'Pikes Peak summit, Colorado', lat = 38.8405, lon = -105.0442 },
-  { name = 'Mount Fuji, Subaru Line 5th station', lat = 35.3953, lon = 138.7330 },
-  { name = 'Everest North Base Camp, Tibet', lat = 28.1414, lon = 86.8514 },
-  { name = 'Stelvio Pass, Italy', lat = 46.5286, lon = 10.4532 },
-  { name = 'Blue Mountains, Echo Point NSW', lat = -33.7320, lon = 150.3115 },
+  { name = 'Fells Point, Baltimore MD', lat = 39.2834, lon = -76.5934, to = 'Fells Point, Baltimore MD' },
+  { name = 'Mount Whitney summit', lat = 36.5785, lon = -118.2923, to = 'Mount Whitney, Whitney Portal Road' },
+  { name = 'Kern River ravine (Sierra Nevada)', lat = 36.506422, lon = -118.402437, to = 'Kern River Canyon, CA-178' },
+  { name = 'Monument Valley mesas', lat = 36.7818, lon = -110.1393, to = 'Monument Valley mesas' },
+  { name = 'Arizona / Utah state line, Monument Valley', lat = 36.998218, lon = -110.102293,
+    to = 'Arizona / Utah state line, US-163' },
+  { name = 'Kayenta PV Solar Plant, Arizona', lat = 36.7874, lon = -110.2382, to = false },
+  { name = 'El Capitan Meadow, Yosemite', lat = 37.7225, lon = -119.6385, to = 'El Capitan Meadow, Yosemite' },
+  { name = 'Pikes Peak summit, Colorado', lat = 38.8405, lon = -105.0442, to = 'Pikes Peak summit, Colorado' },
+  { name = 'Mount Fuji, Subaru Line 5th station', lat = 35.3953, lon = 138.7330,
+    to = 'Mount Fuji, Subaru Line 5th station' },
+  { name = 'Everest North Base Camp, Tibet', lat = 28.1414, lon = 86.8514, to = 'Everest North Base Camp, Tibet' },
+  { name = 'Stelvio Pass, Italy', lat = 46.5286, lon = 10.4532, to = 'Stelvio Pass, Italy' },
+  { name = 'Blue Mountains, Echo Point NSW', lat = -33.7320, lon = 150.3115, to = 'Blue Mountains, Echo Point NSW' },
 }
+
+local function seedNamed(name)
+  for _, s in ipairs(M.SEED) do if s.name == name then return s end end
+end
 
 local places, recent, nextId = {}, {}, 1
 local loaded = false
@@ -292,8 +300,8 @@ function M.load(path)
   -- an earlier first-run place still as it was: to its new spot (M.OLD_SEED)
   local moved = false
   for _, p in ipairs(places) do
-    for i, o in ipairs(M.OLD_SEED) do
-      local s = M.SEED[i]
+    for _, o in ipairs(M.OLD_SEED) do
+      local s = o.to and seedNamed(o.to)
       if s and p.name == o.name and math.abs(p.lat - o.lat) < 1e-6 and math.abs(p.lon - o.lon) < 1e-6 then
         p.name, p.lat, p.lon = s.name, s.lat, s.lon
         moved = true

@@ -45,14 +45,20 @@ local list = places.list() -- lazy load
 T.check(#list == #places.SEED and #list >= 12, 'first run: the seed list (' .. #list .. ')')
 T.check(list[1].name:match('Fells Point') and list[2].name:match('Whitney') and list[2].lat == 36.596718
   and list[2].lon == -118.169991, 'seed: Fells Point, then Mount Whitney on its road (not the summit)')
-T.check(#places.OLD_SEED == #places.SEED, 'every earlier seed place has its new spot')
+do
+  local seedNames, ok = {}, true
+  for _, s in ipairs(places.SEED) do seedNames[s.name] = true end
+  for _, o in ipairs(places.OLD_SEED) do if o.to ~= false and not seedNames[o.to] then ok = false end end
+  T.check(ok, 'every earlier seed place has its new spot (or none: left as it is)')
+end
 local names = {}
 for _, p in ipairs(list) do names[#names + 1] = p.name end
 names = table.concat(names, '|')
-for _, want in ipairs({ 'Kern River', 'Monument Valley mesas', 'Utah state line', 'Kayenta', 'El Capitan',
-  'Pikes Peak', 'Fuji', 'Everest', 'Blue Mountains' }) do
+for _, want in ipairs({ 'Kern River', 'Monument Valley mesas', 'Utah state line', 'El Capitan',
+  'Pikes Peak', 'Fuji', 'Everest', 'Blue Mountains', 'Pécs' }) do
   T.check(names:find(want, 1, true) ~= nil, 'seed has ' .. want)
 end
+T.check(not names:find('Kayenta', 1, true), 'seed: no solar plant (the user, 2026-10-21)')
 local ids = {}
 for _, p in ipairs(list) do ids[p.id] = (ids[p.id] or 0) + 1 end
 local unique = true
@@ -382,13 +388,19 @@ T.check(places.find(x2.id).name == 'X2' and #places.list() == 3 and places.list(
 files[F] = { version = 1, nextId = 4, places = {
   { id = 1, name = 'Mount Whitney summit', lat = 36.5785, lon = -118.2923 },
   { id = 2, name = 'My summit', lat = 36.5785, lon = -118.2923 },
-  { id = 3, name = 'Fells Point, Baltimore MD', lat = 39.2834, lon = -76.5934 } }, recent = {} }
+  { id = 3, name = 'Fells Point, Baltimore MD', lat = 39.2834, lon = -76.5934 },
+  { id = 4, name = 'Kayenta PV Solar Plant, Arizona', lat = 36.7874, lon = -110.2382 },
+  { id = 5, name = 'El Capitan Meadow, Yosemite', lat = 37.7225, lon = -119.6385 } }, recent = {} }
 places.load()
 local l2 = places.list()
 T.check(l2[1].name == 'Mount Whitney, Whitney Portal Road' and l2[1].lat == 36.596718 and l2[1].id == 1,
   'old seed: moved to its road, its id kept')
 T.check(l2[2].name == 'My summit' and l2[2].lat == 36.5785, 'renamed by the player: left as it is')
 T.check(l2[3].lat == 39.283309 and files[F].places[3].lat == 39.283309, 'Fells Point off its building, and saved')
+T.check(l2[4].name == 'Kayenta PV Solar Plant, Arizona' and l2[4].lat == 36.7874,
+  'a place no longer in the first-run list: the player keeps it as it was')
+T.check(l2[5].name == 'El Capitan Meadow, Yosemite' and l2[5].lat == 37.72098,
+  'the places after it: each to its own new spot (by name, not by position)')
 
 -- the level select's spawn points (levelinfo.lua): default, Random, then a place each
 local li = require('beamngEarth/levelinfo')
