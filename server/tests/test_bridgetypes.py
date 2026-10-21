@@ -92,6 +92,21 @@ class StructureTest(unittest.TestCase):
         finally:
             bt._wd = None
 
+    def test_wikidata_of_another_kind_does_not_replace_the_tag(self):
+        """GitHub #65: Wikidata's Port Mann Bridge kept the 1964 tied arch (366 m span) over the 2012 cable-stayed
+        bridge the map tags: the map's kind stands, without Wikidata's span."""
+        bt._db = db_with((90000.0, 0.0, 1, 0.0))
+        la, lo, _ = FRAME.enu_to_geodetic(np.array([0.0]), np.array([0.0]), np.zeros(1))
+        bt._wd = {"lat": np.asarray(la, np.float32), "lon": np.asarray(lo, np.float32),
+                  "type": np.array([bt.NBI_THROUGH_ARCH], np.uint8),
+                  "span": np.array([366.0], np.float32), "length": np.array([2093.0], np.float32)}
+        try:
+            o = Outline((-160, -10, 160, 10), {"bridge:structure": "cable-stayed"})
+            got = bt.chain_structures(FRAME, [deck()], None, [o])
+            self.assertEqual([(g["type"], g["span"]) for g in got], [(bt.NBI_STAYED, 0.0)])
+        finally:
+            bt._wd = None
+
     def test_each_tagged_outline_its_own_site(self):
         bt._db = db_with((90000.0, 0.0, 1, 0.0))
         a = Outline((-1900, -10, -1500, 10), {"bridge:structure": "suspension", "colour": "orange"})
