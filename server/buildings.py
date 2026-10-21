@@ -1974,6 +1974,8 @@ def _passages(rings, attrs, looks, mins, bridges_xy, decks=None, ground_at=None)
 
 ML_BRIDGE_M = 6.0          # m of a road bridge's line through a machine-learned footprint: the deck, not a building
 ML_ROAD_M = 4.0            # m from a public road's centre line to a machine-learned footprint's centre: a vehicle on it
+ML_MEDIAN_M = 9.0          # m: a machine-learned footprint between two parallel roads this close on either side lies in a
+                           # dual carriageway's median (GitHub #90: a house between Moscow's Bolshaya Tulskaya carriageways)
 
 
 def _line_dist(p, lines):
@@ -1988,13 +1990,44 @@ def _line_dist(p, lines):
     return best
 
 
+def _nearest_on(p, ln):
+    """(distance, unit direction of the segment) of polyline ln (k, 2) nearest point p (2,)."""
+    a, b = ln[:-1], ln[1:]
+    d = b - a
+    t = np.clip(((p - a) * d).sum(1) / np.maximum((d * d).sum(1), 1e-12), 0.0, 1.0)
+    q = a + t[:, None] * d
+    dist = np.hypot(*(q - p).T)
+    k = int(np.argmin(dist))
+    u = d[k] / max(float(np.hypot(*d[k])), 1e-9)
+    return float(dist[k]), q[k], u
+
+
+def _in_median(c, roads_xy):
+    """Does point c (2,) lie between two parallel roads each within ML_MEDIAN_M, on opposite sides of it?"""
+    near = []
+    for ln in roads_xy:
+        if len(ln) < 2 or ln[:, 0].min() > c[0] + ML_MEDIAN_M or ln[:, 0].max() < c[0] - ML_MEDIAN_M or \
+                ln[:, 1].min() > c[1] + ML_MEDIAN_M or ln[:, 1].max() < c[1] - ML_MEDIAN_M:
+            continue
+        dist, q, u = _nearest_on(c, ln)
+        if dist <= ML_MEDIAN_M:
+            near.append((q - c, u))
+    for i in range(len(near)):
+        for j in range(i + 1, len(near)):
+            (vi, ui), (vj, uj) = near[i], near[j]
+            if abs(float(ui @ uj)) > 0.9 and float(vi @ vj) < 0:        # parallel, one on each side
+                return True
+    return False
+
+
 def _ml_false(ring, bridges_xy, water_xy, roads_xy=None):
     """A machine-learned footprint (Microsoft's, Google's) that is a bridge deck, a boat or a vehicle: a road bridge
-    runs through it, its centre lies on mapped water (Tower Bridge's river: barges as brick buildings, 2026-10-18) or
-    on a public road (a lorry on a Norwegian trunk road stood as a white building over the lanes, GitHub #2)."""
+    runs through it, its centre lies on mapped water (Tower Bridge's river: barges as brick buildings, 2026-10-18), on
+    a public road (a lorry on a Norwegian trunk road stood as a white building over the lanes, GitHub #2) or in a dual
+    carriageway's median (_in_median, GitHub #90)."""
     if bridges_xy and road_through(ring, bridges_xy) >= ML_BRIDGE_M:
         return True
-    if roads_xy and _line_dist(ring.mean(0), roads_xy) <= ML_ROAD_M:
+    if roads_xy and (_line_dist(ring.mean(0), roads_xy) <= ML_ROAD_M or _in_median(ring.mean(0), roads_xy)):
         return True
     if water_xy:
         from polygon import Path

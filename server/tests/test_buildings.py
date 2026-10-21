@@ -625,6 +625,20 @@ class MachineLearnedFootprintTest(unittest.TestCase):
         self.assertFalse(bld._ml_false(lorry, None, None, None))
 
 
+    def test_in_a_median(self):
+        """GitHub #90: a 10 x 9 m footprint between the carriageways of Moscow's Bolshaya Tulskaya (7.6 m from each)
+        stood as a house in the road; a house between two streets of a block stays, as does one beside a single road."""
+        sq = lambda cx, cy: np.array([[cx - 5, cy - 4.5], [cx + 5, cy - 4.5], [cx + 5, cy + 4.5], [cx - 5, cy + 4.5]],
+                                     float)
+        dual = [np.array([[0.0, 7.6], [200.0, 7.6]]), np.array([[200.0, -7.6], [0.0, -7.6]])]
+        self.assertTrue(bld._ml_false(sq(100, 0), None, None, dual))
+        block = [np.array([[0.0, 30.0], [200.0, 30.0]]), np.array([[0.0, -30.0], [200.0, -30.0]])]
+        self.assertFalse(bld._ml_false(sq(100, 0), None, None, block))
+        self.assertFalse(bld._ml_false(sq(100, 0), None, None, dual[:1]))
+        crossing = [np.array([[0.0, 7.6], [200.0, 7.6]]), np.array([[100.0 - 7.6, -100.0], [100.0 - 7.6, -50.0]])]
+        self.assertFalse(bld._ml_false(sq(100, 0), None, None, crossing), "(a corner between two crossing streets)")
+
+
 class BridgeStructureTest(unittest.TestCase):
     """A bridge's tower (Overture bridge_structure: the Queensboro Bridge's, 33 x 4.6 x 110 m) is an open steel frame
     the decks run through, not a glass tower (2026-10-17)."""
