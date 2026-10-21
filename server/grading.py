@@ -231,6 +231,31 @@ def shoulder(spec):
     return SHOULDER_M
 
 
+def _twin_trimmed(secs):
+    """secs ([(fid, spec, xy, z, kind)]) with the covered sections of twin tunnels (roads.twin_tunnels: side by side,
+    one tube round both) cut to the stretch they share: one twin's portal a few metres deeper than the other's, the
+    other's ground kept as it is over it (TUNNEL_KEEP_M wide) left the deeper one's approach on the hill there, its road
+    mesh a wedge up into their shared mouth (Réunion's Route des Tamarins, GitHub #84). Pure."""
+    cov = [n for n, sec in enumerate(secs) if sec[4] and len(sec[2]) >= 2]
+    if len(cov) < 2:
+        return secs
+    parts = [(secs[n][0], secs[n][1], np.asarray(secs[n][2], np.float64), np.asarray(secs[n][3], np.float64), 0.0)
+             for n in cov]
+    out = list(secs)
+    for i, j, _mid, _w in roadsmod.twin_tunnels(parts):
+        for a, b in ((i, j), (j, i)):
+            xa, xb = parts[a][2], parts[b][2]
+            ub = xb[-1] - xb[0]
+            ub = ub / max(float(np.hypot(*ub)), 1e-9)
+            t = (xa - xb[0]) @ ub                   # along b, from its start
+            keep = (t >= 0.0) & (t <= float((xb[-1] - xb[0]) @ ub))
+            if keep.sum() >= 2 and not keep.all():
+                fid, spec, xy, z, kind = secs[cov[a]]
+                k = np.flatnonzero(keep)
+                out[cov[a]] = (fid, spec, np.asarray(xy)[k[0]:k[-1] + 1], np.asarray(z)[k[0]:k[-1] + 1], kind)
+    return out
+
+
 class Grader:
     """The road plans of one anchor frame, per map cell, made once (worker threads; it fetches the road
     cells it lacks)."""
@@ -297,7 +322,7 @@ class Grader:
             plans.extend((fid + TUNNEL_TAG, Plan(xy, z, spec.width / 2 + shoulder(spec)))
                          for fid, spec, xy, z, k in secs if k == 0)
             plans.extend(self._mouth_plans(secs))
-            covers = [(xy, spec.width / 2 + TUNNEL_KEEP_M) for _f, spec, xy, _z, k in secs if k]
+            covers = [(xy, spec.width / 2 + TUNNEL_KEEP_M) for _f, spec, xy, _z, k in _twin_trimmed(secs) if k]
             opens = [(xy, spec) for _f, spec, xy, _z, k in secs if k == 0]
         else:
             covers, opens = [], []
@@ -591,7 +616,8 @@ class Grader:
         """[(xy, half width)] of the tunnels' covered sections (not open roads): the grading leaves the ground over
         them as it is (apply): the approaches' grading reached up to T_MAX past a portal and cut a park bridge's soil
         down under its arch's vault, the terrain then cut away over it (2026-10-17)."""
-        return [(xy, spec.width / 2 + TUNNEL_KEEP_M) for _f, spec, xy, _z, kind in self._tunnel_sections(feats) if kind]
+        return [(xy, spec.width / 2 + TUNNEL_KEEP_M) for _f, spec, xy, _z, kind in _twin_trimmed(self._tunnel_sections(feats))
+                if kind]
 
     def _open_tunnels(self, feats):
         """(fid, Plan) of the tunnels' open sections (roads.TUNNEL_OPEN_COVER): the ground graded to the road's floor

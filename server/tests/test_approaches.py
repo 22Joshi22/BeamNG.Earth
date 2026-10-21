@@ -154,6 +154,23 @@ class OverpassIntegrationTest(unittest.TestCase):
         self.assertLess(np.abs(z - FLAT).max(), 0.05, "the motorway's approaches stay on the ground")
 
 
+class TwinKeepTest(unittest.TestCase):
+    def test_twins_kept_ground_only_where_both_run(self):
+        # GitHub #84: one twin's portal 3 m deeper than the other's; the other's kept ground reached over its approach
+        from roads import Spec
+        sp = Spec(11.0, "paved", False, "trunk", True, 0.0, 0, None, None, False)
+        xs = np.arange(0.0, 100.1, 1.0)            # (sections come resampled every few metres)
+        a = ("a", sp, np.c_[xs, np.zeros_like(xs)], np.full(len(xs), 5.0), 2)
+        b = ("b", sp, np.c_[103.0 - xs, np.full(len(xs), 9.5)], np.full(len(xs), 5.0), 2)
+        out = grading._twin_trimmed([a, b])
+        xa = np.asarray(out[0][2])
+        self.assertGreaterEqual(float(xa[:, 0].min()), 3.0 - 1e-6, "a's keep starts at b's (deeper) portal")
+        self.assertLessEqual(float(xa[:, 0].max()), 100.0 + 1e-6)
+        xb = np.asarray(out[1][2])
+        self.assertLessEqual(float(xb[:, 0].max()), 100.0 + 1e-6, "b's ends where a's does")
+        self.assertEqual(grading._twin_trimmed([a]), [a])
+
+
 class UnderwaterTunnelTest(unittest.TestCase):
     def test_no_plan_along_a_tunnel_under_water(self):
         # storm-ace's GitHub #85: the Maastunnel's sections were planned (at -0.4..-1.2 m over the river, whose DEM reads
