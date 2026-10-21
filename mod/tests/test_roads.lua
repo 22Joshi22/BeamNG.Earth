@@ -260,6 +260,26 @@ T.check(roads.collideRadius(0) == roads.COLLIDE_M[1] and roads.collideRadius(45)
   and roads.collideRadius(500) == roads.COLLIDE_M[2], 'the radius grows with speed, within its limits')
 roads.onDrop({ anchorId = 2, key = '9_0' })
 roads.update(gov, 2)
+-- a fast car: the road pieces along its path first (a tile 512 m ahead before one 512 m beside it), the ones behind
+-- it last; standing, by distance (the user, 2026-10-19: at 100+ mph the road texture went first)
+do
+  files['/t/e.json'] = '{ chunks = { } }'
+  for _, k in ipairs({ '2_0', '0_1', '0_2', '-2_0' }) do roads.onTile({ anchorId = 2, key = k, path = '/t/e.json', n = 0 }, 2) end
+  car.pos = vec3(128, 128, 0.5)
+  function car:getVelocity() return vec3(45, 0, 0) end
+  roads.update(gov, 2)              -- (the motion read: updateCollideRange)
+  local q = { { key = '2:0_2' }, { key = '2:-2_0' }, { key = '2:2_0' } }
+  T.check(q[roads.nextWalk(q)].key == '2:2_0', 'fast: the tile ahead on the path first')
+  table.remove(q, 3)
+  T.check(q[roads.nextWalk(q)].key == '2:0_2', 'then beside, behind last')
+  function car:getVelocity() return vec3(0, 0, 0) end
+  roads.update(gov, 2)
+  q = { { key = '2:2_0' }, { key = '2:0_1' } }
+  T.check(q[roads.nextWalk(q)].key == '2:0_1', 'standing: the nearer tile first')
+  for _, k in ipairs({ '2_0', '0_1', '0_2', '-2_0' }) do roads.onDrop({ anchorId = 2, key = k }) end
+  roads.update(gov, 2)
+  car.getVelocity = nil
+end
 getPlayerVehicle = nil
 
 -- a road mesh: the tile's DecalRoads are not made; one TSStatic without collision instead

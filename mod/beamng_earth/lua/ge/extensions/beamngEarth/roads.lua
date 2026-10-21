@@ -55,6 +55,8 @@ M.DELETE_NEAR_M = 200       -- a collider deleted this close to the player count
 -- FAST_MS the COLLIDE_LEAD_S reach is ahead of the car only (COLLIDE_M max), beside and behind it COLLIDE_M min;
 -- and a collider the car reaches within URGENT_S is made solid at once (URGENT_GAP_S between those rebuilds at most).
 M.FAST_MS = 25
+M.SIDE_PENALTY = 4          -- nextWalk at FAST_MS: m along the path a metre sideways counts as (server roads.py)
+M.LEAD_MAX_M = 2000         -- ... and what every tile behind the car comes after
 M.URGENT_S = 6
 M.URGENT_GAP_S = 1
 -- No be:reloadCollision for SWAP_QUIET_FRAMES frames and SWAP_QUIET_MS after a terrain .ter swap (M.terrainSwapped): the
@@ -808,7 +810,12 @@ function M.nextWalk(q)
     if t and t.cx then
       local dx, dy = t.cx - p.x, t.cy - p.y
       k = math.sqrt(dx * dx + dy * dy)
-      if dir and dx * dir.x + dy * dir.y < -M.TILE_M then k = k * 3 end
+      if dir then         -- fast: by the way along the path ahead, sideways counting SIDE_PENALTY times (the server's
+        local along = dx * dir.x + dy * dir.y               -- roads.path_key); behind the car after all of those
+        local side = math.abs(dx * dir.y - dy * dir.x)
+        if along < -M.TILE_M then k = k * 3 + M.LEAD_MAX_M
+        else k = math.max(0, along) + M.SIDE_PENALTY * math.max(0, side - M.TILE_M / 2) end
+      end
       if viewAt and (e.renderOnly or e.what == 'wire') then
         local vx, vy = t.cx - viewAt.x, t.cy - viewAt.y
         k = math.min(k, math.sqrt(vx * vx + vy * vy))
