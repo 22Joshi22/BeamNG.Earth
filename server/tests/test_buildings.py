@@ -725,6 +725,24 @@ if __name__ == "__main__":
     unittest.main()
 
 
+class ElevatorTest(unittest.TestCase):
+    def test_a_tall_slender_footprint_in_a_plains_town_is_a_grain_elevator(self):
+        # Strasburg, CO: two 25 m tall footprints by the railroad came out as 8-storey brick apartments
+        s = bld.plan(rect(0, 0, 11, 11), {"class": "", "height": 25.0}, 0, 39.73, -104.35, town=True)
+        self.assertEqual(s.cls, "elevator")
+        self.assertTrue(s.plain)
+        self.assertFalse(s.windows)
+        P = bld.build([(s, 0.0, 0.0)])[0]          # (a roof look without its tint failed the whole road tile)
+        self.assertAlmostEqual(float(np.max(P[:, 2])), 25.0, delta=0.5)
+        city = bld.plan(rect(0, 0, 11, 11), {"class": "", "height": 25.0}, 0, 39.73, -104.35)
+        self.assertNotEqual(city.cls, "elevator", "in a city: a tower")
+        motel = bld.plan(rect(0, 0, 50, 30), {"class": "", "height": 15.0}, 0, 39.73, -104.35, town=True)
+        self.assertNotEqual(motel.cls, "elevator", "a long low block")
+        floors = bld.plan(rect(0, 0, 11, 11), {"class": "", "height": 25.0, "num_floors": 8}, 0, 39.73, -104.35,
+                          town=True)
+        self.assertNotEqual(floors.cls, "elevator", "mapped with floors: a building of floors")
+
+
 class RoadAcrossTest(unittest.TestCase):
     def test_a_narrow_footprint_across_a_road_is_over_it(self):
         # GitHub #48: the 69th Street station's 3 m wide shelters across the Dan Ryan (a road runs only their width

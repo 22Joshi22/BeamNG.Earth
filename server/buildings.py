@@ -174,6 +174,12 @@ STEEL_BAY_M = 14.0          # m between a frame's bracing levels
 STEEL_TOP_SHARE = 0.85      # cross beams over the decks only from this share of the height up
 SHED_CLASSES = {"shed", "garage", "garages", "carport", "roof", "hut", "cabin", "barn", "farm_auxiliary",
                 "greenhouse", "service", "storage_tank", "toilets", "kiosk", "parking", "shelter"}
+# A grain elevator (the plains' small towns: Strasburg, CO by I-70 had two 8-storey brick apartment blocks with windows
+# in the farmland): a tall slender footprint of no class (or a silo's) in a US small town, plain concrete
+ELEVATOR_CLASSES = {"", "industrial", "silo", "grain_silo", "storage_tank", "farm_auxiliary", "agricultural"}
+ELEVATOR_MIN_H = 15.0       # m mapped (a height, no floors)
+ELEVATOR_MAX_M2 = 1500.0
+ELEVATOR_SLENDER = 0.7      # height / sqrt(area) at least (11 x 11 m, 25 m: 2.3; 28 x 31 m, 23 m: 0.78; a 15 m motel: 0.4)
 GLASS_FLOORS = (20, 40)     # towers from 20 floors: glass, but for OLD_TOWER_GLASS of the old ones below 40 ...
 OLD_TOWER_GLASS = 0.65      # ... (Midtown's pre-war skyscrapers are stone)
 MIDRISE_GLASS_OFFICE = 0.45 # offices / hotels of 7+ floors: this share glass (modern), the rest masonry
@@ -479,6 +485,12 @@ def plan(ring, attrs, neighbours=0, lat=None, lon=None, look=None, town=False, d
         nf = 1                                          # a nave: one tall storey under a steep gable
     h = None if h is None or not np.isfinite(h) or h <= 0 else float(h)
     nf = None if nf is None or not np.isfinite(nf) or nf <= 0 else int(round(nf))
+    if (town and style.name.startswith("us_") and cls in ELEVATOR_CLASSES and h is not None and h >= ELEVATOR_MIN_H
+            and nf is None and area <= ELEVATOR_MAX_M2 and h / math.sqrt(max(area, 1.0)) >= ELEVATOR_SLENDER
+            and not (church or terminal or garage)):
+        return Spec(ring=ring, floors=1, floor_h=h, height=h, roof="flat", roof_mat="bne_precast", facade="bne_precast",
+                    band=None, shop=False, plain=True, seed=seed, min_h=0.0, wall=None, windows=False, steeple=False,
+                    porch=False, cls="elevator", deck=False, pitch=None)
     if attrs.get("bridge_part"):    # a mapped part of a bridge's tower (support_rings): a plain box of painted steel
         return Spec(ring=ring, floors=1, floor_h=h or BRIDGE_PIER_M, height=h or BRIDGE_PIER_M, roof="flat",
                     roof_mat=f"{STEEL}|{attrs['bridge_part']}", facade=f"{STEEL}|{attrs['bridge_part']}", band=None,
