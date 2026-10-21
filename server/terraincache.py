@@ -96,5 +96,5 @@ def base_entry(user_dir, base_vfs, ao_vfs, rgb, ao_value):
     tmp = staging.tmp_for(path)
     with open(tmp, "wb") as f:
         f.write(bc7.dds(rgba))
-    os.replace(tmp, path)
+    staging.replace(tmp, path)
     return path

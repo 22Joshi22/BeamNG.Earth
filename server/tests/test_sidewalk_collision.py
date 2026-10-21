@@ -18,6 +18,18 @@ def run(n=200, bend=0.0):
     return curb, out
 
 
+class NarrowBandTest(unittest.TestCase):
+    def test_profile_never_folds(self):
+        # GitHub #55 "the median eats tires": a band narrower than RAMP_RUN folded back over itself (its ramp end past
+        # its outer edge), and the folded collision caught wheels
+        for w in (0.3, 0.6, 1.2, 1.8, 2.5, 4.0):
+            for hr in (sidewalks.CURB_H, 0.02):
+                x = sidewalks.profile(sidewalks.CURB_H, w, hr)[:, 0]
+                self.assertTrue((np.diff(x) > 0).all(), (w, hr, x.tolist()))
+        np.testing.assert_allclose(sidewalks.profile(sidewalks.CURB_H, 2.5)[5], [sidewalks.RAMP_RUN,
+                                   sidewalks.CURB_H + sidewalks.RAMP_RUN * sidewalks.CROSS_SLOPE], err_msg="wide: as before")
+
+
 class SimplifyTest(unittest.TestCase):
     def test_straight_line_to_its_ends(self):
         pts = np.stack([np.linspace(0, 10, 50), np.linspace(0, 5, 50), np.zeros(50)], 1)

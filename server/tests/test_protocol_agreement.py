@@ -117,6 +117,10 @@ MOD_TO_SERVER = {
     "where": {"id": F(int), "lat": F(NUM), "lon": F(NUM), "online": F(bool)},   # the status bar (geocode.py)
     # the update notice's button: the server opens the releases page (updates.open_page; additive)
     "open_page": {"url": F(str)},
+    # the level select's "Random location" (randomplace.py; additive)
+    "random_place": {"id": F(int)},
+    # the level select's place pictures (placepreview.py; additive): [{key, lat, lon}]
+    "place_previews": {"places": F((list, dict))},
 }
 CAM = {"x", "y", "z", "fx", "fy", "fz", "fovDeg", "h"}     # h: the screen height px (screen-space LOD)
 TERRAIN = {"cx": F(NUM), "cy": F(NUM), "heightmap": F(str), "size": F(int), "squareSize": F(NUM),
@@ -130,6 +134,8 @@ SERVER_TO_MOD = {
     "update": {"current": F(str), "latest": F(str), "url": F(str)},   # a newer version on GitHub (updates.py)
     "where_result": {"id": F(int), "street": F(str), "place": F(str, OPT), "region": F(str, OPT),
                      "country": F(str, OPT)},   # the status bar's location
+    "random_place_result": {"id": F(int), "lat": F(NUM, OPT), "lon": F(NUM, OPT), "name": F(str, OPT)},
+    "place_previews_ready": {"keys": F(list)},
     "map_tiles_ready": {"tiles": F(list)},  # [z, x, y, ok, layer] each: written to <user>/temp/beamngEarth/maptiles
     "hello": {"protocol": F(int), "format": F(int), "serverVersion": F(str), "sessionId": F(str),
               "farFormat": F(str), "material": F(str),
@@ -141,6 +147,7 @@ SERVER_TO_MOD = {
               "colormatch": F(str, OPT),        # --colormatch s2 only (likewise)
               "season": F(str, OPT),           # --season auto / fall (seasonlook.lua tints the leaves)
               "mapPort": F(int, OPT),           # the world map's tile endpoint on 127.0.0.1 (maptiles.py)
+              "prewarm": F(str, OPT),           # the shape listing our shapes' materials (prewarm.py; with map data)
               # the world map's credits for its view: [[credit, w, s, e, n] or [credit]] per imagery source, and
               # the rest (weather, elevation); with imagery on only
               "imageryCredits": F(list, OPT), "otherCredits": F(str, OPT)},
@@ -207,6 +214,8 @@ WEATHER_NESTED = {"cover": {"total", "low", "mid", "high"}, "wind": {"ms", "from
 # message types the plain session cannot produce (each has its own session test below)
 EXERCISED_ELSEWHERE = {"far_retex", "roads_tile", "roads_drop",   # roads: needs map data (roads tests)
                        "where_result",                               # the status bar: asked by the mod while driving
+                       "random_place_result", "place_previews_ready",  # the level select: map data / imagery
+                                                                     # (test_randomplace)
                        "block_base",                                 # a lazy imagery source (test_detail)
                        "sea",                                        # --sea on: needs map data (test_seacarve)
                        "veg_tile", "veg_drop",                       # --trees on: needs map data
@@ -257,8 +266,8 @@ def top_keys(table):
 
 
 def mod_sends():
-    """{type: (keys, nested)} of every net.send({...}) in core.lua."""
-    text = (LUA / "core.lua").read_text()
+    """{type: (keys, nested)} of every net.send({...}) in core.lua and places.lua (the level select's pictures)."""
+    text = (LUA / "core.lua").read_text() + "\n" + (LUA / "places.lua").read_text()
     out = {}
     for m in re.finditer(r"net\.send\(\{", text):
         t = lua_tables(text, m.end() - 1)

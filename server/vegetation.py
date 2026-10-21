@@ -30,11 +30,12 @@ import fast
 from polygon import Path
 
 import mapcells
+import pacer
 import staging
 
 log = logging.getLogger("earthd.vegetation")
 
-VERSION = 11
+VERSION = 13
 TREE_MIN_M = 3.0
 CROWN_SPACING = 0.5          # tops kept this many crown radii apart (0.8 looked sparse: the user, 2026-10-13)
 BUSH_MIN_M = 1.0
@@ -58,6 +59,14 @@ SCATTER_CELL_M = 6.0        # the hashed scatter's grid (one candidate per cell)
 SCATTER_P = {10: (0.30, 0.0), 20: (0.10, 0.04), 30: (0.01, 0.003), 60: (0.0, 0.08), 100: (0.02, 0.02)}
 UNDERSTORY = 10
 BUILT_NEAR_M = 60.0         # bare ground with built-up land this far around gets no scatter (squares, lots)
+# Rocks on bare ground lie on slopes, outcrops and fans, not on flat playas, salt pans and dry lake beds (the
+# Bonneville Salt Flats had a rock every ~75 m2, the user 2026-10-20; photos: a bare white crust for miles). A bare
+# cell's rock is kept with the share of the ground's slope between these (the DEM ROCK_SLOPE_D m either side, at
+# ROCK_SLOPE_ZOOM: coarse tiles, few downloads); without a DEM, as before.
+ROCK_SLOPE = (0.02, 0.10)
+BARREN_NEAR_M = 20.0        # m: a canopy top on bare ground or snow needs vegetated land this near (_build)
+ROCK_SLOPE_D = 40.0
+ROCK_SLOPE_ZOOM = 12
 # Forest edges along roads in humid country (Columbia's photos: a wall of shrubs, saplings and vines from the
 # ground up, where ours showed bare trunks over grass): a denser band of bigger bushes within EDGE_M of a road.
 EDGE_M = 7.0
@@ -188,6 +197,7 @@ def _conifer_share(lat, lon):
 class Vegetation:
     def __init__(self, md, cache_dir=None):
         self.md = md
+        self.dem = None                 # (set by the server: rocks on bare ground by slope, ROCK_SLOPE)
         self.dir = os.path.join(cache_dir, "vegetation", f"v{VERSION}") if cache_dir else None
         self._mem = OrderedDict()
         self._lock = threading.Lock()
@@ -236,6 +246,7 @@ class Vegetation:
 
     def _warm_loop(self):
         while True:
+            pacer.hold()                # (a teleport's first block first)
             with self._warm_cv:
                 while not self._warm:
                     self._warm_cv.wait()
@@ -269,7 +280,7 @@ class Vegetation:
             tmp = f"{p}.{os.getpid()}.{threading.get_ident()}.tmp"
             with open(tmp, "wb") as fh:
                 np.savez_compressed(fh, **{n: getattr(items, n) for n in fields})
-            os.replace(tmp, p)
+            staging.replace_cached(tmp, p)
         return items
 
     # --- the build ------------------------------------------------------------------------------
@@ -347,6 +358,22 @@ class Vegetation:
         # the landcover class at each top (rocks / bushes scatter below)
         lcls = lc.sample(tlon, tlat) if lc is not None else np.zeros(len(tlon), np.uint8)
         is_tree &= lcls != WC["water"]
+        # canopy heights on bare ground or permanent snow with no vegetated land around: the canopy map misreading
+        # bright ground (the Bonneville Salt Flats had ~19k "trees" up to 21 m tall on bare salt, 2026-10-20). By
+        # its definition bare land has under 10 % plant cover; an edge tree, or one by an oasis, has some within
+        # BARREN_NEAR_M and stays
+        barren = np.flatnonzero((lcls == WC["bare"]) | (lcls == WC["snow"])) if lc is not None else []
+        if len(barren):
+            k = max(0.05, float(np.cos(np.radians(tlat[barren[0]]))))
+            dm = BARREN_NEAR_M / k
+            near = np.zeros(len(barren), bool)
+            for ox, oy in ((dm, 0.0), (-dm, 0.0), (0.0, dm), (0.0, -dm)):
+                lo2, la2 = _to4326(mx[ii[barren]] + ox, my[jj[barren]] + oy)
+                near |= ~np.isin(lc.sample(lo2, la2), (WC["bare"], WC["snow"], WC["water"]))
+            keep = np.ones(len(jj), bool)
+            keep[barren[~near]] = False
+            jj, ii, th, tlon, tlat, lcls, is_tree = jj[keep], ii[keep], th[keep], tlon[keep], tlat[keep], lcls[keep], \
+                is_tree[keep]
         # hashed choices keyed on the global pixel (z17 Web-Mercator index: the CHM grid)
         gx = np.floor((mx[ii] + 20037508.342789244) / chm.dx).astype(np.int64)
         gy = np.floor((20037508.342789244 - my[jj]) / chm.dy).astype(np.int64)
@@ -416,6 +443,21 @@ class Vegetation:
                      _hash01(GI, GJ, 26).astype(np.float32), (_hash01(GI, GJ, 27) * 360.0).astype(np.float32),
                      (0.8 + 0.4 * _hash01(GI, GJ, 28)).astype(np.float32))
 
+    def _slope(self, px, py):
+        """The ground's slope (rise over run) at Web Mercator points (px, py), from the DEM ROCK_SLOPE_D m either side
+        in x and y; None when the DEM cannot say."""
+        k = np.cos(np.radians(_to4326(px[:1], py[:1])[1][0]))       # Web Mercator m per ground m (one cell)
+        d = ROCK_SLOPE_D / max(k, 0.05)
+        x = np.concatenate([px + d, px - d, px, px])
+        y = np.concatenate([py, py, py + d, py - d])
+        lon, lat = _to4326(x, y)
+        try:
+            z = np.asarray(self.dem.sample(lat, lon, ROCK_SLOPE_ZOOM), np.float64).reshape(4, len(px))
+        except Exception as e:          # (offline, no tile): rocks as without a DEM
+            log.debug("vegetation: no slope: %s", e)
+            return None
+        return np.hypot(z[0] - z[1], z[2] - z[3]) / (2 * ROCK_SLOPE_D)
+
     def _scatter(self, cd, lc, blocked, chm, hs):
         """Bushes and rocks on a hashed SCATTER_CELL_M grid over shrubland, grass and bare ground."""
         if lc is None:
@@ -456,6 +498,14 @@ class Vegetation:
                 near += lc.sample(lo2, la2) == WC["built"]
             free[bare[near >= 2]] = False
         rock = free & (u < pr)
+        bare_rock = np.flatnonzero(rock & (cls == WC["bare"]))
+        if len(bare_rock) and self.dem is not None:
+            slope = self._slope(px[bare_rock], py[bare_rock])
+            if slope is not None:
+                lo_s, hi_s = ROCK_SLOPE
+                keep = _hash01(GI[bare_rock], GJ[bare_rock], 19) < np.clip((slope - lo_s) / (hi_s - lo_s), 0.0, 1.0)
+                rock[bare_rock[~keep]] = False
+                free[bare_rock[~keep]] = False     # (nor a bush there: bare ground stays bare)
         bush = free & ~rock & (u < pr + pb)
         sel = rock | bush
         n = int(sel.sum())
@@ -617,6 +667,9 @@ def _mask_roads(f, mask, chm, push=None, clear=ROAD_CLEAR_M):
 
 # --- tiles for the mod --------------------------------------------------------------------------------
 TILE = 256.0                # m, as the road tiles (roads.tile_bbox)
+TILE_ROWS_MAX = 6000        # items a tile sends at most, the lowest ranks: the most the mod shows of one (trees.lua
+                            # TILE_CAP). Dense forest has 10-20k a tile: Bodø's 145 tiles held 1.66 M rows in the game's
+                            # Lua (394 MB of heap, 1.25 s garbage collection pauses on a Steam Deck; GitHub #66)
 SEND_M = 1280.0             # tiles this close to the player (Chebyshev) are sent ...
 DROP_M = 1536.0             # ... and dropped beyond this
 BUILD_PER_POSE = 8
@@ -655,6 +708,9 @@ def tile_items(frame, tx, ty, veg, cell_ready, elev, sea=None, as_json=False):
         it, e, n = it.take(dry), e[dry], n[dry]
     if len(it) == 0:
         return []
+    if len(it) > TILE_ROWS_MAX:         # dense forest: the lowest ranks only (the mod shows no more of a tile)
+        keep = np.sort(np.argpartition(it.rank, TILE_ROWS_MAX - 1)[:TILE_ROWS_MAX])
+        it, e, n = it.take(keep), e[keep], n[keep]
     zg = np.asarray(elev(it.lat, it.lon), np.float64)
     _, _, z = frame.geodetic_to_enu(it.lat, it.lon, zg)
     z = _sink_rocks(frame, it, e, n, np.asarray(z, np.float64), elev)
@@ -711,7 +767,7 @@ def write_tile(out_dir, vfs_dir, aid, tx, ty, rows):
             f.write(json.dumps({"groups": list(GROUPS), "items": []}, separators=(",", ":"))[:-3] + rows + "}")
         else:
             f.write(json.dumps({"groups": list(GROUPS), "items": rows}, separators=(",", ":")))  # the C encoder
-    os.replace(tmp, path)
+    staging.replace(tmp, path)
     return f"{vfs_dir}/{name}", rows.n if isinstance(rows, JsonRows) else len(rows)
 
 
@@ -737,7 +793,9 @@ class Tracker:
         if self.pool is not None:
             self.pool.shutdown(wait=False, cancel_futures=True)
 
-    def on_pose(self, conn, aid, x, y, loop, build):
+    def on_pose(self, conn, aid, x, y, loop, build, view=None):
+        """As roads.Tracker.on_pose: the tiles within send_m of the car (x, y) and of the camera when it is away
+        (view), the car's first; dropped beyond drop_m of both."""
         import roads as roadsmod
         if aid != self.aid:
             for f in self.futs.values():
@@ -746,10 +804,14 @@ class Tracker:
         if self.pool is None:
             from concurrent.futures import ThreadPoolExecutor
             self.pool = ThreadPoolExecutor(self.per_pose, thread_name_prefix=f"{self.kind}-tile")
-        skip = set(roadsmod.tiles_near(x, y, self.skip_m)) if self.skip_m else ()
-        want = [k for k in roadsmod.tiles_near(x, y, self.send_m)
-                if k not in self.sent and k not in self.building and k not in skip]
-        want.sort(key=roadsmod.view_key(conn, aid, x, y))
+        spots = [(x, y)] + ([tuple(view)] if view else [])
+        skip = {k for p in spots for k in roadsmod.tiles_near(*p, self.skip_m)} if self.skip_m else ()
+        car = set(roadsmod.tiles_near(x, y, self.send_m))
+        seen = set(roadsmod.tiles_near(*view, self.send_m)) - car if view else set()
+        want = [k for k in car | seen if k not in self.sent and k not in self.building and k not in skip]
+        car_key = roadsmod.view_key(conn, aid, x, y)
+        cam_key = roadsmod.view_key(conn, aid, *view) if seen else None
+        want.sort(key=lambda k: (1, cam_key(k)) if k in seen else (0, car_key(k)))
         # at most per_pose in flight: each waits in a thread of the loop's shared executor, and a teleport's
         # hundreds (one per pose, uncapped) held every thread while the road tiles under the car waited for one
         # (Sinaia 2026-10-15: bare ground for minutes)
@@ -757,7 +819,7 @@ class Tracker:
             self.building.add((tx, ty))
             fut = self.futs[(tx, ty)] = loop.run_in_executor(self.pool, build, aid, tx, ty)
             fut.add_done_callback(lambda f, k=(tx, ty), a=aid: self._built(conn, a, k, f))
-        for k in [k for k in self.sent if roadsmod.tile_distance(k[0], k[1], x, y) > self.drop_m]:
+        for k in [k for k in self.sent if all(roadsmod.tile_distance(k[0], k[1], *p) > self.drop_m for p in spots)]:
             self.sent.discard(k)
             conn.send({"type": f"{self.kind}_drop", "anchorId": aid, "key": f"{k[0]}_{k[1]}"})
 

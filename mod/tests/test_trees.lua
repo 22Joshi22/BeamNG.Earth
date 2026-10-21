@@ -71,6 +71,12 @@ do
   trees.update(1, { x = 50, y = 256 + trees.SOLID_M + trees.SOLID_HYST_M + 20 })
   T.check(trees.made == m and trees.removed == r, 'a settled tile of non-solid items: nothing re-made')
 end
+-- the camera away from the car (core.viewAway): what is shown follows the camera, what collides the car (the user,
+-- 2026-10-20: "All collision ... should be following the car while visual stuff should follow the camera")
+trees.update(1, { x = 50, y = 1900 }, { x = 50, y = 50 })
+T.check(count() == 100 and solidCount() == 0, 'the camera at the tile, the car far: every item shown, none collides')
+trees.update(1, { x = 50, y = 50 }, { x = 50, y = 1900 })
+T.check(count() == 100 and solidCount() == 100, 'the car at the tile, the camera far: every item, all collide')
 trees.update(1, { x = 50, y = 50 })
 
 trees.onDrop({ anchorId = 1, key = '0_0' })
@@ -190,4 +196,17 @@ trees.update(7, { x = 50, y = 50 })
 for _, o in pairs(S.objects) do if o.class == 'Forest' and o.pos and o.pos.y == 0 and o.rot then reused = true end end
 T.check(reused, 'a pooled Forest is reset to no transform when reused')
 trees.clear()
+-- a dense forest's tile is held to M.TILE_CAP items (Bodø, GitHub #66: 1.66 M items in the level): its cap-th rank
+local function ranked(n, top)
+  local rows = {}
+  for i = 1, n do rows[i] = { 0, 0, 0, 0, 0, 1, 10, (n - i) / n * top } end    -- (any order)
+  return { rows = rows }
+end
+T.check(trees.tileThreshold(0, ranked(500, 1)) == 1.0, 'a sparse tile near the player: all of it')
+T.check(math.abs(trees.tileThreshold(0, ranked(20000, 1)) - 6000 / 20000) < 1e-12, 'a dense one: its 6000 lowest ranks')
+T.check(math.abs(trees.tileThreshold(0, ranked(8000, 0.3)) - 6000 / 8000 * 0.3) < 1e-12,
+  'the server sent the lowest 30 % only: still its 6000 lowest')
+T.check(trees.tileThreshold(1000, ranked(800, 1)) == 0.35, 'under the cap: the ring as before')
+T.check(math.abs(trees.tileThreshold(2000, ranked(10000, 1)) - 400 / 10000) < 1e-12, 'far: 400')
+T.check(trees.tileThreshold(0, { rows = {} }) == 1.0, 'no rows')
 T.done('test_trees')

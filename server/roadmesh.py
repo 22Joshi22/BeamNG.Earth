@@ -38,7 +38,7 @@ def layer_of(chunk):
 def _resample(pts, step):
     """Points every `step` m along a polyline (k, 3), ends kept: (xy (m, 2), distance (m,), z (m,))."""
     seg = np.hypot(*np.diff(pts[:, :2], axis=0).T)
-    s = np.r_[0.0, np.cumsum(seg)]
+    s = np.concatenate(([0.0], np.cumsum(seg)))
     if s[-1] <= 1e-6:
         return pts[:1, :2], s[:1], pts[:1, 2]
     n = max(1, int(np.ceil(s[-1] / step)))
@@ -82,11 +82,265 @@ def ribbons(chunks):
     return out
 
 
-def build(frame, chunks, elev, origin, lift=0.0):
+def _clip_tris(P, T, UV, M, box):
+    """The triangles (positions P (n, 3), T (m, 3), UV (n, 2), material per triangle M) cut to the box (x0, y0, x1, y1):
+    those inside kept, those outside dropped, those across its edges clipped (Sutherland-Hodgman, position and uv
+    interpolated) and fanned again. Pure."""
+    x0, y0, x1, y1 = box
+    xy = P[T][:, :, :2]
+    inside = ((xy[..., 0] >= x0) & (xy[..., 0] <= x1) & (xy[..., 1] >= y0) & (xy[..., 1] <= y1)).all(1)
+    out_ = ((xy[..., 0] < x0).all(1) | (xy[..., 0] > x1).all(1) | (xy[..., 1] < y0).all(1) | (xy[..., 1] > y1).all(1))
+    cut = ~inside & ~out_
+    if not cut.any():
+        return P, T[inside], UV, M[inside]
+    planes = ((0, x0, 1.0), (0, x1, -1.0), (1, y0, 1.0), (1, y1, -1.0))     # keep sign * (coord - value) >= 0
+    newP, newUV, newT, newM = [], [], [], []
+    n = len(P)
+    for t, m in zip(T[cut], M[cut]):
+        poly = [(P[i], UV[i]) for i in t]
+        for ax, val, sg in planes:
+            if not poly:
+                break
+            res = []
+            for j in range(len(poly)):
+                (pa, ua), (pb, ub) = poly[j], poly[(j + 1) % len(poly)]
+                da, db = sg * (pa[ax] - val), sg * (pb[ax] - val)
+                if da >= 0:
+                    res.append((pa, ua))
+                if (da >= 0) != (db >= 0):
+                    f = da / (da - db)
+                    res.append((pa + (pb - pa) * f, ua + (ub - ua) * f))
+            poly = res
+        if len(poly) < 3:
+            continue
+        base = n + sum(len(q) for q in newP)
+        newP.append(np.array([q[0] for q in poly]))
+        newUV.append(np.array([q[1] for q in poly]))
+        k = len(poly)
+        newT.append(np.array([(base, base + a, base + a + 1) for a in range(1, k - 1)], np.int64))
+        newM.append(np.full(k - 2, m))
+    if not newP:
+        return P, T[inside], UV, M[inside]
+    return (np.concatenate([P] + newP), np.concatenate([T[inside]] + newT), np.concatenate([UV] + newUV),
+            np.concatenate([M[inside]] + newM))
+
+
+def _reach_past(c, box):
+    """Chunk c with each end outside the box (cut at roads.OVERLAP past the tile's edge) carried on straight by
+    1.5 x its width: a ribbon's square end on a road crossing the seam at a slant left a triangle of the road
+    uncovered on each side once both tiles were cut exactly at the edge (the E6 in Norway, 50 degrees). Pure."""
+    pts = np.asarray(c["n"] if c.get("n") is not None else (), np.float64)
+    if len(pts) < 2:
+        return c
+    x0, y0, x1, y1 = box
+    out_ = lambda p: p[0] < x0 or p[0] > x1 or p[1] < y0 or p[1] > y1     # noqa: E731
+    reach = 1.5 * float(c["w"])
+    ends = []
+    for at, nb in ((0, 1), (-1, -2)):
+        if not out_(pts[at]):
+            ends.append(None)
+            continue
+        t = pts[at, :2] - pts[nb, :2]
+        L = float(np.hypot(*t))
+        if L < 1e-6:
+            ends.append(None)
+            continue
+        q = pts[at].copy()
+        q[:2] += t / L * reach
+        ends.append(q)
+    if ends[0] is None and ends[1] is None:
+        return c
+    n = [pts]
+    if ends[0] is not None:
+        n.insert(0, ends[0][None])
+    if ends[1] is not None:
+        n.append(ends[1][None])
+    return {**c, "n": np.concatenate(n).tolist()}
+
+
+GRID_M = 2.0            # the terrain block's square (heightmap.SQUARE): its samples on multiples of it, each square cut
+                        # from its south-west corner to its north-east one (probed in-game 2026-10-20)
+
+
+FOLLOW_TOL = 0.02       # m a road triangle may depart from the drawn ground inside it before it is cut along the
+                        # ground's own triangles (follow): flat graded roads stay whole, bends and junctions are cut.
+                        # The ground's heights step by its quantum (1/32 m): at 5 mm nearly every triangle was cut (7-15x
+                        # the triangles); at 2 cm 1.7x in Baltimore, 5.7x on the E6 in Norway, 7.5x in San Francisco
+
+
+def _height_grid(frame, elev, xy, q=None, cell=GRID_M):
+    """(grid [j, i], i0, j0): the terrain block's samples (elev on the cell lattice, rounded to the height quantum q
+    as heightmap.write_png does) over the points xy (n, 2) and a sample around. One elev call."""
+    i0 = int(np.floor(xy[:, 0].min() / cell)) - 1
+    j0 = int(np.floor(xy[:, 1].min() / cell)) - 1
+    i1 = int(np.ceil(xy[:, 0].max() / cell)) + 1
+    j1 = int(np.ceil(xy[:, 1].max() / cell)) + 1
+    gx, gy = np.meshgrid(np.arange(i0, i1 + 1) * cell, np.arange(j0, j1 + 1) * cell)
+    la, lo, _ = frame.enu_to_geodetic(gx.ravel(), gy.ravel(), 0.0)
+    h = np.asarray(elev(la, lo), np.float64)
+    u = np.asarray(frame.geodetic_to_enu(la, lo, h)[2], np.float64).reshape(gx.shape)
+    if q:
+        u = np.rint(u / q) * q
+    return np.ascontiguousarray(u), i0, j0
+
+
+def _terrain_at(grid, i0, j0, cell, x, y):
+    """earthfast's terrain_at in Python: the drawn ground at (x, y) (NaN outside the grid)."""
+    gx, gy = x / cell, y / cell
+    i, j = math.floor(gx), math.floor(gy)
+    ny, nx = grid.shape
+    if i - i0 == nx - 1 and gx == i:
+        i -= 1
+    if j - j0 == ny - 1 and gy == j:
+        j -= 1
+    li, lj = i - i0, j - j0
+    if li < 0 or lj < 0 or li + 1 >= nx or lj + 1 >= ny:
+        return float("nan")
+    fx, fy = gx - i, gy - j
+    a, b, c, d = grid[lj, li], grid[lj, li + 1], grid[lj + 1, li], grid[lj + 1, li + 1]
+    return float(a + fy * (c - a) + fx * (d - c)) if fy > fx else float(a + fx * (b - a) + fy * (d - b))
+
+
+_FAMS = ((1.0, 0.0), (0.0, 1.0), (-1.0, 1.0))      # the ground's edges: x = k cell, y = k cell, y - x = k cell
+
+
+def _follow_py(P, UV, T, cell, grid, i0, j0, tol):
+    """earthfast.follow_tris in Python (the same tests, cuts and order)."""
+    ter = lambda x, y: _terrain_at(grid, i0, j0, cell, x, y)      # noqa: E731
+    outP, outUV, outT, src = [], [], [], []
+
+    def lerp(a, b, f):
+        return tuple(a[c] + (b[c] - a[c]) * f for c in range(4))
+    for ti, t in enumerate(T):
+        tri = [(P[i, 0], P[i, 1], UV[i, 0], UV[i, 1]) for i in t]
+        z = [ter(q[0], q[1]) for q in tri]
+        (x0, y0), (x1, y1), (x2, y2) = [(q[0], q[1]) for q in tri]
+        det = (x1 - x0) * (y2 - y0) - (x2 - x0) * (y1 - y0)
+        split = not all(math.isfinite(v) for v in z) or abs(det) < 1e-12
+        if not split:
+            def plane(x, y):
+                s_ = ((x - x0) * (y2 - y0) - (x2 - x0) * (y - y0)) / det
+                t_ = ((x1 - x0) * (y - y0) - (x - x0) * (y1 - y0)) / det
+                return z[0] + s_ * (z[1] - z[0]) + t_ * (z[2] - z[0]), s_, t_
+
+            def dev(x, y):
+                tz = ter(x, y)
+                return abs(tz - plane(x, y)[0]) if math.isfinite(tz) else math.inf
+            for gi in range(math.ceil(min(x0, x1, x2) / cell), math.floor(max(x0, x1, x2) / cell) + 1):
+                for gj in range(math.ceil(min(y0, y1, y2) / cell), math.floor(max(y0, y1, y2) / cell) + 1):
+                    x, y = gi * cell, gj * cell
+                    _, s_, t_ = plane(x, y)
+                    if s_ >= -1e-9 and t_ >= -1e-9 and s_ + t_ <= 1 + 1e-9 and dev(x, y) > tol:
+                        split = True
+                        break
+                if split:
+                    break
+            for e in range(3):
+                if split:
+                    break
+                a, b = tri[e], tri[(e + 1) % 3]
+                for nx, ny in _FAMS:
+                    da, db = nx * a[0] + ny * a[1], nx * b[0] + ny * b[1]
+                    lo, hi = min(da, db), max(da, db)
+                    for k in range(math.floor(lo / cell) + 1, math.ceil(hi / cell)):
+                        line = k * cell
+                        if line <= lo or line >= hi:
+                            continue
+                        qq = lerp(a, b, (line - da) / (db - da))
+                        if dev(qq[0], qq[1]) > tol:
+                            split = True
+                            break
+                    if split:
+                        break
+        if not split:
+            base = len(outP)
+            outP.extend((q[0], q[1], z[k]) for k, q in enumerate(tri))
+            outUV.extend((q[2], q[3]) for q in tri)
+            outT.append((base, base + 1, base + 2))
+            src.append(ti)
+            continue
+        polys = [tri]
+        for nx, ny in _FAMS:
+            nxt = []
+            for poly in polys:
+                d = [nx * q[0] + ny * q[1] for q in poly]
+                lo, hi = min(d), max(d)
+                rest = poly
+                for k in range(math.floor(lo / cell) + 1, math.ceil(hi / cell)):
+                    line = k * cell
+                    if line <= lo + 1e-9 or line >= hi - 1e-9:
+                        continue
+                    below, above = [], []
+                    for j in range(len(rest)):
+                        a, b = rest[j], rest[(j + 1) % len(rest)]
+                        da, db = nx * a[0] + ny * a[1] - line, nx * b[0] + ny * b[1] - line
+                        if da <= 0:
+                            below.append(a)
+                        if da >= 0:
+                            above.append(a)
+                        if (da < 0 < db) or (da > 0 > db):
+                            x = lerp(a, b, da / (da - db))
+                            below.append(x)
+                            above.append(x)
+                    if len(below) >= 3:
+                        nxt.append(below)
+                    rest = above
+                    if len(rest) < 3:
+                        break
+                if len(rest) >= 3:
+                    nxt.append(rest)
+            polys = nxt
+        for poly in polys:
+            area = sum(poly[j][0] * poly[(j + 1) % len(poly)][1] - poly[(j + 1) % len(poly)][0] * poly[j][1]
+                       for j in range(len(poly))) / 2
+            if abs(area) < 1e-8:
+                continue
+            base = len(outP)
+            outP.extend((q[0], q[1], ter(q[0], q[1])) for q in poly)
+            outUV.extend((q[2], q[3]) for q in poly)
+            for a in range(1, len(poly) - 1):
+                outT.append((base, base + a, base + a + 1))
+                src.append(ti)
+    return (np.array(outP, np.float64).reshape(-1, 3), np.array(outUV, np.float64).reshape(-1, 2),
+            np.array(outT, np.int64).reshape(-1, 3), np.array(src, np.int64))
+
+
+def follow_ground(P, UV, T, grid, i0, j0, tol=None, cell=GRID_M):
+    """(points (m, 3), uvs, triangles, source triangle) of the triangles T over P (n, 2) on the drawn ground (grid:
+    _height_grid): earthfast.follow_tris, else _follow_py."""
+    import fast
+    tol = FOLLOW_TOL if tol is None else tol
+    P = np.ascontiguousarray(np.asarray(P, np.float64)[:, :2])
+    UV = np.ascontiguousarray(UV, np.float64)
+    T = np.ascontiguousarray(T, np.int64)
+    if fast.AVAILABLE and hasattr(fast._ef, "follow_tris"):
+        a, b, c, d = fast._ef.follow_tris(P, UV, T, float(cell), np.ascontiguousarray(grid, np.float64), int(i0), int(j0),
+                                          float(tol))
+        return np.asarray(a), np.asarray(b), np.asarray(c), np.asarray(d)
+    return _follow_py(P, UV, T, cell, grid, i0, j0, tol)
+
+
+def _shared(P, UV, T):
+    """The mesh with its equal points (position and uv to 0.1 mm) made one."""
+    key = np.round(np.c_[P, UV] * 1e4).astype(np.int64)
+    _, first, inv = np.unique(key, axis=0, return_index=True, return_inverse=True)
+    return P[first], UV[first], inv.reshape(-1)[T]
+
+
+def build(frame, chunks, elev, origin, lift=0.0, clip=None, follow=False, q=None, drawn=None):
     """The road mesh of a tile (render only; on bridges it lies DECK_SKIN over deck()'s slab): (positions
     relative to origin, tris, uvs, materials, tri material index), or None. elev(lat, lon) -> m (graded,
     as the physics block). One elev call. lift: m more for the draped surfaces (detail mode: the physics
-    block is drawn, so the asphalt must sit over it, not in it; earthd DETAIL_ROAD_LIFT)."""
+    block is drawn, so the asphalt must sit over it, not in it; earthd DETAIL_ROAD_LIFT). clip: the tile's box
+    (x0, y0, x1, y1): the ribbons (built roads.OVERLAP past it, no gap at the seam) cut exactly at its edges; two
+    tiles' meshes overlapping there at one height flickered in a 4 m band along every tile seam (the user,
+    2026-10-20: z-fighting on the road texture). follow: the draped surfaces given the terrain block's own heights
+    and cut along its triangles where it bends under them (follow_ground; q its height quantum), so they lie `lift`
+    over the drawn ground (within FOLLOW_TOL; drawn(lat, lon): the block's heights where they are not elev's, its
+    ground raised over low arches): a ribbon straight across the road stood under the ground's bumps (up to 30 cm on hills), so it was drawn
+    5 cm over it and the tyres sank into it (the user, 2026-10-20)."""
+    if clip is not None:
+        chunks = [_reach_past(c, clip) for c in chunks]
     rb = ribbons(chunks)                        # deck surfaces too: their asphalt over deck()'s concrete
     polys = [c for c in chunks if c.get("poly")]
     if not rb and not polys:
@@ -100,6 +354,7 @@ def build(frame, chunks, elev, origin, lift=0.0):
         _, _, u = frame.geodetic_to_enu(la, lo, h)
     mats = []
     P, UV, T, M = [], [], [], []
+    TL = []                                     # per triangle: its layer's lift over the ground (None: on a deck)
     k0 = nverts = 0
     for left, right, v, m, layer, fz in rb:
         k = len(left)
@@ -107,12 +362,12 @@ def build(frame, chunks, elev, origin, lift=0.0):
             z = u[k0:k0 + 2 * k] + LIFT[layer] + lift
             k0 += 2 * k
         else:                                   # on a deck: over its opaque concrete top
-            z = np.r_[fz, fz] + LIFT[layer] + DECK_SKIN
+            z = np.concatenate((fz, fz)) + LIFT[layer] + DECK_SKIN
         if m not in mats:
             mats.append(m)
         mi = mats.index(m)
         P.append(np.c_[np.concatenate([left, right]), z])
-        UV.append(np.c_[np.r_[np.zeros(k), np.ones(k)], np.r_[v, v]])
+        UV.append(np.column_stack((np.concatenate((np.zeros(k), np.ones(k))), np.concatenate((v, v)))))
         i = np.arange(k - 1)
         A, A1, B, B1 = nverts + i, nverts + i + 1, nverts + k + i, nverts + k + i + 1
         # left edge to the left of the direction: (A, B, B1) is counter-clockwise seen from above
@@ -126,26 +381,56 @@ def build(frame, chunks, elev, origin, lift=0.0):
         keep = cz * np.sign(np.median(cz) or 1.0) > 1e-6
         T.append(tri[keep])
         M.append(np.full(int(keep.sum()), mi))
+        TL.append(np.full(int(keep.sum()), np.nan if fz is not None else LIFT[layer] + lift))
         nverts += 2 * k
     for c in polys:                             # filled polygons (corner asphalt): a fan from vertex 0
-        q = np.asarray(c["poly"], np.float64)
-        k = len(q)
+        pq = np.asarray(c["poly"], np.float64)
+        k = len(pq)
         z = u[k0:k0 + k] + LIFT[layer_of(c)] + lift
         k0 += k
         if c["m"] not in mats:
             mats.append(c["m"])
-        P.append(np.c_[q[:, :2], z])
-        UV.append(np.c_[q[:, 0] / 8.0, q[:, 1] / float(c.get("tl") or 10.0)])
+        P.append(np.c_[pq[:, :2], z])
+        UV.append(np.c_[pq[:, 0] / 8.0, pq[:, 1] / float(c.get("tl") or 10.0)])
         fan = np.array([(nverts, nverts + a, nverts + a + 1) for a in range(1, k - 1)])
-        pts = np.c_[q[:, :2], z]
+        pts = np.c_[pq[:, :2], z]
         nrm = np.cross(pts[fan[:, 1] - nverts] - pts[fan[:, 0] - nverts], pts[fan[:, 2] - nverts] - pts[fan[:, 0] - nverts])
         flip = nrm[:, 2] < 0
         fan[flip] = fan[flip][:, ::-1]
         T.append(fan)
         M.append(np.full(len(fan), mats.index(c["m"])))
+        TL.append(np.full(len(fan), LIFT[layer_of(c)] + lift))
         nverts += k
-    P = np.concatenate(P) - np.asarray(origin, np.float64)
-    return P, np.concatenate(T), np.concatenate(UV), mats, np.concatenate(M)
+    P, T, UV, M = np.concatenate(P), np.concatenate(T), np.concatenate(UV), np.concatenate(M)
+    TL = np.concatenate(TL)
+    tid = np.arange(len(T))
+    if clip is not None:
+        P, T, UV, tid = _clip_tris(P, T, UV, tid, clip)
+        if not len(T):
+            return None
+    M, TL = M[tid], TL[tid]
+    if follow:
+        dr = np.isfinite(TL)
+        if dr.any():
+            grid, i0, j0 = _height_grid(frame, drawn or elev, P[np.unique(T[dr])][:, :2], q)
+            fP, fUV, fT, src = follow_ground(P[:, :2], UV, T[dr], grid, i0, j0)
+            if len(fT):
+                lifts = TL[dr][src]
+                vl = np.zeros(len(fP))              # (a cut piece's points are its fan's: one lift each, set once)
+                for kk in range(3):
+                    vl[fT[:, kk]] = lifts
+                fP[:, 2] += vl
+                n0 = len(P)
+                P = np.concatenate([P, fP])
+                UV = np.concatenate([UV, fUV])
+                T = np.concatenate([T[~dr], fT + n0])
+                M = np.concatenate([M[~dr], M[dr][src]])
+            else:
+                T, M = T[~dr], M[~dr]
+            if not len(T):
+                return None
+        P, UV, T = _shared(P, UV, T)
+    return P - np.asarray(origin, np.float64), T, UV, mats, M
 
 
 DECK_DEPTH = 1.2        # m of deck slab under the surface
@@ -191,7 +476,7 @@ def deck(chunks, origin, piers=(), context=(), beams=()):
         nonlocal nv
         k = len(a)
         P.append(np.concatenate([a, b]))
-        UV.append(np.c_[np.r_[np.full(k, ua), np.full(k, ub)], np.r_[va, vb]])
+        UV.append(np.column_stack((np.concatenate((np.full(k, ua), np.full(k, ub))), np.concatenate((va, vb)))))
         i = np.arange(k - 1)
         A, A1, B, B1 = nv + i, nv + i + 1, nv + k + i, nv + k + i + 1
         tri = np.concatenate([np.stack([A, B, B1], 1), np.stack([A, B1, A1], 1)])
@@ -460,6 +745,7 @@ LOW_PORTAL_UP = 1.4        # m a low arch's portal face reaches over the vault (
 LOW_PORTAL_SIDE = 3.0      # ... and beside the opening
 LOW_RISE = 0.4             # a low arch's vault rises this share of its height from its walls (a segmental arch)
 ARCH_CAP_OVER = 0.75       # m a low arch's top lies over its vault (roads.ARCH_SOIL_MIN of soil there, + a little)
+LOW_CAP_MIN = 1.0          # m: a stone top shorter than this (a road just behind the face) is left out
 LOW_CAP_M = 7.0            # m a low arch's stone top runs back from its portal face over the mouth: the terrain there
                            # dips to the floor and is cut away (roads.arch_raise, LOW_HOLE_M + LOW_HOLE_STEP): from
                            # above a row of dark terrain teeth behind the face (79th Street Transverse, 2026-10-17)
@@ -503,7 +789,7 @@ def _retaining_walls(walls, origin, P, T, UV, M, nv):
         k = len(b)
         if k < 2:
             continue
-        s = np.r_[0.0, np.cumsum(np.hypot(*np.diff(b, axis=0).T))]
+        s = np.concatenate(([0.0], np.cumsum(np.hypot(*np.diff(b, axis=0).T))))
         back = b - tw * WALL_THICK_M
         face_lo = np.c_[b, foot] - origin
         face_hi = np.c_[b, top] - origin
@@ -513,10 +799,10 @@ def _retaining_walls(walls, origin, P, T, UV, M, nv):
                                         (cop_hi, back_hi, None, WALL_THICK_M - WALL_COPING_M, 4)):
             P.append(np.concatenate([lo_, hi_]))
             if vlo is not None:
-                UV.append(np.c_[np.r_[s, s] / STONE_UV_M, np.r_[vlo, vhi] / STONE_UV_M])
+                UV.append(np.column_stack((np.concatenate((s, s)) / STONE_UV_M, np.concatenate((vlo, vhi)) / STONE_UV_M)))
             else:
                 sc = SOIL_UV_M if mat == 4 else STONE_UV_M
-                UV.append(np.c_[np.r_[s, s] / sc, np.r_[np.zeros(k), np.full(k, vhi)] / sc])
+                UV.append(np.column_stack((np.concatenate((s, s)) / sc, np.concatenate((np.zeros(k), np.full(k, vhi))) / sc)))
             i = np.arange(k - 1)
             A, A1, B, B1 = nv + i, nv + i + 1, nv + k + i, nv + k + i + 1
             tri = np.concatenate([np.stack([A, B, B1], 1), np.stack([A, B1, A1], 1)])
@@ -590,10 +876,10 @@ def tunnel(chunks, origin, walls=()):
             if low:                                         # the stone at its scale: around the section, along
                 sj = float(np.hypot(*(sec[min(j + 1, m - 1)] - sec[j])))
                 s0 = float(np.sum(np.hypot(*np.diff(sec[:j + 1], axis=0).T))) if j else 0.0
-                along = np.r_[0.0, np.cumsum(np.hypot(*np.diff(mid, axis=0).T))]
-                UV.append(np.c_[np.r_[np.full(k, s0), np.full(k, s0 + sj)] / STONE_UV_M, np.r_[along, along] / STONE_UV_M])
+                along = np.concatenate(([0.0], np.cumsum(np.hypot(*np.diff(mid, axis=0).T))))
+                UV.append(np.column_stack((np.concatenate((np.full(k, s0), np.full(k, s0 + sj))) / STONE_UV_M, np.concatenate((along, along)) / STONE_UV_M)))
             else:
-                UV.append(np.c_[np.r_[np.full(k, j / 4.0), np.full(k, (j + 1) / 4.0)], np.r_[v, v]])
+                UV.append(np.column_stack((np.concatenate((np.full(k, j / 4.0), np.full(k, (j + 1) / 4.0))), np.concatenate((v, v)))))
             i = np.arange(k - 1)
             A, A1, B, B1 = nv + i, nv + i + 1, nv + k + i, nv + k + i + 1
             tri = np.concatenate([np.stack([A, B, B1], 1), np.stack([A, B1, A1], 1)])
@@ -611,7 +897,8 @@ def tunnel(chunks, origin, walls=()):
         if not low:
             nv = _tunnel_lamps(P, T, UV, M, nv, mid, u, z, hw, origin)
         pups = c.get("portal_up") or (None, None)
-        for end, at, pup in zip(c.get("portal") or (False, False), (0, k - 1), pups):
+        caps = c.get("cap_m") or (None, None)       # (a road over the mouth: its stone top shorter, TunnelProfiles.caps)
+        for end, at, pup, cap_m in zip(c.get("portal") or (False, False), (0, k - 1), pups, caps):
             if not end:
                 continue
             # the face: from the opening's outline out to a frame PORTAL_FRAME wider and higher, both sides
@@ -634,15 +921,16 @@ def tunnel(chunks, origin, walls=()):
             outer -= origin
             P.append(np.concatenate([inner, outer]))
             sc = STONE_UV_M if low else 4.0
-            UV.append(np.c_[np.r_[sec[:, 0], o[:, 0]] / sc, np.r_[sec[:, 1], o[:, 1]] / sc])
+            UV.append(np.column_stack((np.concatenate((sec[:, 0], o[:, 0])) / sc, np.concatenate((sec[:, 1], o[:, 1])) / sc)))
             i = np.arange(m - 1)
             A, A1, B, B1 = nv + i, nv + i + 1, nv + m + i, nv + m + i + 1
             tri = np.concatenate([np.stack([A, B, B1], 1), np.stack([A, B1, A1], 1)])
             T.append(np.concatenate([tri, tri[:, ::-1]]))   # seen from outside and from in the tube
             M.append(2 if low else 0)
             nv += 2 * m
-            if low:
-                nv = _arch_cap(P, T, UV, M, nv, mid, u, z, at, k, float(np.max(o[:, 0])), float(o[:, 1].max()), th, origin)
+            if low and (cap_m is None or cap_m >= LOW_CAP_MIN):
+                nv = _arch_cap(P, T, UV, M, nv, mid, u, z, at, k, float(np.max(o[:, 0])), float(o[:, 1].max()), th, origin,
+                               LOW_CAP_M if cap_m is None else min(LOW_CAP_M, float(cap_m)))
     allm = [TUNNEL_SIDE, TUNNEL_LIGHT, TUNNEL_STONE, TUNNEL_STONE_IN, TUNNEL_SOIL, TUNNEL_INNER]
     Tall = np.concatenate(T)
     Mall = np.concatenate([np.full(len(t), m, np.int64) for t, m in zip(T, M)]) if M else np.zeros(len(Tall), np.int64)
@@ -652,7 +940,7 @@ def tunnel(chunks, origin, walls=()):
     return (np.concatenate(P), Tall, np.concatenate(UV), [allm[i] for i in used], remap[Mall])
 
 
-def _arch_cap(P, T, UV, M, nv, mid, u, z, at, k, side, top, th, origin):
+def _arch_cap(P, T, UV, M, nv, mid, u, z, at, k, side, top, th, origin, depth=None):
     """A low arch's stone top over its mouth (LOW_CAP_M back from the portal face at row `at`, side either way of
     the centre, `top` over the floor): its top, its sides down to the floor's level (outside the tube's walls) and
     its back down to just over the vault (th), seen from both sides. Appended to P, T, UV, M; returns the new vertex count."""
@@ -660,7 +948,7 @@ def _arch_cap(P, T, UV, M, nv, mid, u, z, at, k, side, top, th, origin):
     t = mid[nb] - mid[at]
     t = t / max(float(np.hypot(*t)), 1e-9)              # into the tube
     a = mid[at]
-    b = a + t * LOW_CAP_M
+    b = a + t * (LOW_CAP_M if depth is None else depth)
     ua = u[at]
     z0 = float(z[at]) + top - (LOW_PORTAL_UP - ARCH_CAP_OVER)   # the soil's level (the face stands over it)
     corners = np.array([[*(a + ua * side), z0], [*(a - ua * side), z0], [*(b - ua * side), z0], [*(b + ua * side), z0]])
@@ -692,7 +980,7 @@ def _tunnel_lamps(P, T, UV, M, nv, mid, u, z, hw, origin):
     k = len(mid)
     if k < 2:
         return nv
-    s = np.r_[0.0, np.cumsum(np.hypot(*np.diff(mid, axis=0).T))]
+    s = np.concatenate(([0.0], np.cumsum(np.hypot(*np.diff(mid, axis=0).T))))
     h = TUNNEL_WALL_H - TUNNEL_LAMP_DROP
     for sc in np.arange(TUNNEL_LAMP_EVERY / 2, s[-1] - TUNNEL_LAMP_L / 2, TUNNEL_LAMP_EVERY):
         j = min(int(np.searchsorted(s, sc)), k - 1)

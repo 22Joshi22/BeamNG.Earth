@@ -28,6 +28,8 @@ import numpy as np
 from polygon import Path
 
 import mapcells
+import pacer
+import staging
 
 log = logging.getLogger("earthd.seacarve")
 
@@ -95,6 +97,44 @@ LEVEL_SAMPLES = 4000
 LEVEL_PAD_PX = 2            # the level raster spread this far onto the shore (lookups beside the water)
 MEM_CELLS = 24              # rasters kept per process
 EARTH_R = 6371000.0
+
+
+# A cell's raster also as one uncompressed file, memory-mapped (depth, level and outline side by side per pixel): a
+# lookup reads only the pages it touches, and the server's processes share them in the system's file cache. Read
+# from the compressed npz instead, every lookup of a cell out of a process's MEM_CELLS decoded ~10 MB again (the
+# far tiles near the player and the ground ahead take turns over more cells than that: ~30 s of a Baltimore
+# teleport on a Steam Deck, 2026-10-20).
+RAW_DTYPE = np.dtype([("depth", "<f4"), ("level", "<f4"), ("outline", "?")])
+
+
+def _raw_path(p):
+    return p[:-4] + ".raw.npy" if p else None
+
+
+def _write_raw(raw, r):
+    if not raw:
+        return
+    a = np.empty(r[0].shape, RAW_DTYPE)
+    a["depth"], a["level"], a["outline"] = r[0], r[1], r[2]
+    tmp = f"{raw}.{os.getpid()}.{threading.get_ident()}.tmp"
+    try:
+        os.makedirs(os.path.dirname(raw), exist_ok=True)
+        with open(tmp, "wb") as fh:
+            np.save(fh, a)
+        staging.replace_cached(tmp, raw)
+    except OSError as e:                # (the npz serves)
+        log.debug("sea: %s: %s", raw, e)
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+
+
+def _open_raw(raw):
+    a = np.asarray(np.load(raw, mmap_mode="r", allow_pickle=False))     # (a plain view: np.memmap's per-slice hooks)
+    if a.dtype != RAW_DTYPE or a.ndim != 2:
+        raise ValueError(f"not a raster: {a.dtype} {a.shape}")
+    return a["depth"], a["level"], a["outline"]
 
 
 def _merc(lat, lon, z=PX_ZOOM):
@@ -211,6 +251,7 @@ class SeaCarver:
         self._lock = threading.Lock()
         self._cell_locks = {}
         self._warm, self._warm_thread = [], None    # cells to build in the background (warm)
+        self.warm_asked = 0             # warm() calls with cells: a lookup met a cell not at hand (earthd's water plans)
         self._warm_cv = threading.Condition()
 
     # --- rasters --------------------------------------------------------------------------------
@@ -253,12 +294,20 @@ class SeaCarver:
 
     def _load(self, x, y):
         p = self._path(x, y)
+        raw = _raw_path(p)
+        if raw and os.path.exists(raw):
+            try:
+                return _open_raw(raw), True
+            except (OSError, ValueError) as e:      # (a damaged file: the npz, or a build, again)
+                log.debug("sea: %s: %s", raw, e)
         if p and os.path.exists(p):
             with np.load(p, allow_pickle=False) as f:
                 if not f["any"]:
                     return None, True
-                return (f["depth"].astype(np.float32) / 100.0, f["level"].astype(np.float32),
-                        f["outline"].astype(bool)), True
+                r = (f["depth"].astype(np.float32) / 100.0, f["level"].astype(np.float32),
+                     f["outline"].astype(bool))
+            _write_raw(raw, r)          # (a cell cached before the raw files: once)
+            return r, True
         r = self._build(x, y)
         complete = r is None or r[3]
         if r is not None:
@@ -272,7 +321,9 @@ class SeaCarver:
                 else:
                     np.savez_compressed(fh, any=True, depth=np.round(r[0] * 100.0).astype(np.int16), level=r[1],
                                         outline=r[2])
-            os.replace(tmp, p)
+            staging.replace_cached(tmp, p)
+            if r is not None:
+                _write_raw(raw, r)
         return r, complete
 
     def _build(self, x, y):
@@ -679,6 +730,7 @@ class SeaCarver:
 
     def _warm_loop(self):
         while True:
+            pacer.hold()                # (a teleport's first block first)
             with self._warm_cv:
                 while not self._warm:
                     self._warm_cv.wait()
@@ -691,6 +743,8 @@ class SeaCarver:
     def warm(self, keys):
         """Build these cells' rasters in the background (one thread, in order)."""
         with self._warm_cv:
+            if keys:
+                self.warm_asked += 1
             for k in keys:
                 if k not in self._warm:
                     self._warm.append(k)

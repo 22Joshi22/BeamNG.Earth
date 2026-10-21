@@ -156,6 +156,25 @@ class FormatTest(unittest.TestCase):
         a = cdae.mesh_arrays(d["meshes"][0])
         np.testing.assert_array_equal(a["tverts2"], a["tverts"])
 
+    def test_only_used_materials_listed(self):
+        # the engine makes a material instance for every material a shape lists when it loads it: a shape lists the
+        # ones its levels use, in the given order, each primitive pointing at its own (2026-10-20)
+        pos, uv, tri = dae.grid(2, 1.0)
+        tri = np.asarray(tri).reshape(-1, 3)
+        tm = np.array([0, 3] * (len(tri) // 2) + [0] * (len(tri) % 2))
+        lod = {"positions": pos, "tris": tri, "uvs": uv, "tri_materials": np.full(len(tri), 2)}
+        d = cdae.decode(cdae.encode(pos, tri, uvs=uv, material=["a", "b", "c", "d", "e"], tri_materials=tm,
+                                    lods=[(100.0, lod)]))
+        self.assertEqual([m["name"] for m in d["materials"]], ["a", "c", "d"])
+        prims = [struct.unpack_from("<3i", cdae.mesh_arrays(d["meshes"][0])["primitives"], k * 12)
+                 for k in range(2)]
+        self.assertEqual(sorted(p[2] & cdae.PRIM_MATERIAL_MASK for p in prims), [0, 2], "a and d")
+        lod_prims = cdae.mesh_arrays(d["meshes"][1])["primitives"]
+        self.assertEqual(struct.unpack_from("<3i", lod_prims, 0)[2] & cdae.PRIM_MATERIAL_MASK, 1, "c")
+        same = cdae.encode(pos, tri, uvs=uv, material=["a", "b"], tri_materials=np.array([0, 1] * (len(tri) // 2)
+                                                                                             + [0] * (len(tri) % 2)))
+        self.assertEqual([m["name"] for m in cdae.decode(same)["materials"]], ["a", "b"], "all used: as given")
+
     def test_collision_only_object_is_colmesh(self):
         # the engine collides only with collision-detail objects named "Col..." (in-game test, 2026-10-16)
         pos, uv, tri = dae.grid(2, 1.0)

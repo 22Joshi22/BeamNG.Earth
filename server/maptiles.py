@@ -43,6 +43,7 @@ import numpy as np
 from PIL import Image
 
 import imagery as imagerymod
+import staging
 
 log = logging.getLogger("earthd.maptiles")
 
@@ -427,7 +428,7 @@ class TileFiles:
             os.makedirs(os.path.dirname(path), exist_ok=True)
             with open(tmp, "wb") as f:
                 f.write(data)
-            os.replace(tmp, path)
+            staging.replace_cached(tmp, path)
         except OSError as e:
             log.debug("map tile %s: %s", key, e)
         ok = os.path.exists(path)

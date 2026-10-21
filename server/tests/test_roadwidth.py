@@ -60,5 +60,75 @@ class UseTest(unittest.TestCase):
         self.assertEqual(roads.road_specs(svc, None, widths)[0].walk, roads.SIDEWALK["w"], "service: not measured")
 
 
+
+class StoreTest(unittest.TestCase):
+    """The walls kept on disk (store_dir): read back by another process the same, the buildings not loaded."""
+
+    def houses(self):
+        import mapcells
+
+        class Feats:
+            pass
+        rings = []
+        for y_face, sign in ((9.0, 1), (-9.0, -1)):
+            for x in np.arange(-150.0, 150.0, 8.0):
+                rings.append([(x, y_face), (x + 7.5, y_face), (x + 7.5, y_face + sign * 10), (x, y_face + sign * 10),
+                              (x, y_face)])
+        ll, off = [], [0]
+        for r in rings:
+            la, lo, _ = FRAME.enu_to_geodetic(np.array([p[0] for p in r]), np.array([p[1] for p in r]), 0.0)
+            ll += list(zip(lo, la))
+            off.append(len(ll))
+        f = Feats()
+        f.lonlat, f.coord_off = np.array(ll), np.array(off)
+        la0, lo0, _ = FRAME.enu_to_geodetic(np.array([0.0]), np.array([0.0]), 0.0)
+        return f, mapcells.cell_of(float(la0[0]), float(lo0[0]))
+
+    def test_read_back_and_incomplete_not_kept(self):
+        import tempfile
+        feats, home = self.houses()
+        la, lo, _ = FRAME.enu_to_geodetic(np.array([-100.0, 100.0]), np.array([0.5, -0.5]), 0.0)
+        road = np.c_[np.ravel(lo), np.ravel(la)]
+        calls = []
+
+        class F:
+            def __len__(self):
+                return len(feats.coord_off) - 1
+        F.lonlat, F.coord_off = feats.lonlat, feats.coord_off
+
+        def cell_fn(key):
+            calls.append(key)
+            return F() if (key.x, key.y) == (home.x, home.y) else None
+        with tempfile.TemporaryDirectory() as d:
+            a = roadwidth.RoadWidths(cell_fn, d).get("r1", road)
+            self.assertIsNotNone(a)
+            n = len(calls)
+            b = roadwidth.RoadWidths(cell_fn, d).get("r1", road)
+            self.assertEqual(len(calls), n, "read from disk: no buildings loaded")
+            self.assertEqual(a, b)
+            # the walls and their bucket index read memory-mapped (float32, shared by the processes), the same rays
+            rw = roadwidth.RoadWidths(cell_fn, d)
+            _, walls = rw._walls(home)
+            self.assertFalse(walls.segs.flags.owndata or walls.segs.flags.writeable, "the file's mapping")
+            self.assertEqual(walls.segs.dtype, np.float32)
+            self.assertFalse(walls.seg_of.flags.owndata or walls.seg_of.flags.writeable)
+            fresh = roadwidth.Walls(np.asarray(walls.segs))
+            for name in ("keys", "first", "counts", "seg_of"):
+                np.testing.assert_array_equal(getattr(walls, name), getattr(fresh, name), name)
+            p = np.array([[0.0, 0.0], [10.0, -3.0]])
+            dd = np.array([[0.0, 1.0], [0.0, -1.0]])
+            np.testing.assert_array_equal(walls.rays(p, dd), fresh.rays(p, dd))
+            np.testing.assert_array_equal(fresh.rays(p, dd),
+                                          roadwidth.Walls(np.asarray(walls.segs, np.float64)).rays(p, dd))
+
+            def flaky(key):
+                if (key.x, key.y) != (home.x, home.y):
+                    raise OSError("offline")
+                return F()
+        with tempfile.TemporaryDirectory() as d:
+            roadwidth.RoadWidths(flaky, d).get("r1", road)
+            files = [f for _, _, fs in os.walk(d) for f in fs]
+            self.assertEqual(files, [], "a cell missing: not kept")
+
 if __name__ == "__main__":
     unittest.main()

@@ -3,6 +3,7 @@ roads, junctions blended, the plans made once per cell, and GradedDem as a drop-
 import os
 import sys
 import unittest
+import unittest.mock
 
 import numpy as np
 
@@ -159,6 +160,73 @@ class GraderTest(unittest.TestCase):
         self.assertAlmostEqual(float(z[1]), 0.0, delta=1e-9, msg="far from it: the DEM")
         self.assertEqual(gd.other, 42, "other attributes pass through")
 
+
+    def test_points_far_apart_plan_only_their_cells(self):
+        # two points 27 km apart (a straight salt-flats track's ends): the cells around each, not the ~240 of their
+        # bbox (one road tile planned them all: 53 s, 2026-10-20); the same heights, in an order of their own
+        f = features([[(-300, 20), (300, 20)]], ["residential"])
+        md = FakeMD(f)
+        g = grading.Grader(FRAME, md, lambda la, lo: np.full(np.shape(la), 10.0))
+        la, lo, _ = FRAME.enu_to_geodetic(np.array([0.0, 19000.0]), np.array([20.0, 19000.0]), 0.0)
+        bbox = mapcells.cells_for_bbox(float(la.min()), float(lo.min()), float(la.max()), float(lo.max()))
+        self.assertGreater(len(bbox), 100)
+        out = g.apply(la, lo, np.zeros(2))
+        self.assertLessEqual(md.calls, 8, "the cells around the two points")
+        self.assertAlmostEqual(float(out[0]), 10.0, delta=0.05)
+        near = mapcells.cells_near_points(la, lo, 1e-4, 1e-4)
+        self.assertTrue(set(near) <= set(bbox))
+        self.assertEqual(near, sorted(near, key=lambda k: (k.y, k.x)), "row-major")
+        self.assertEqual({mapcells.cell_of(float(a), float(b)) for a, b in zip(la, lo)} - set(near), set())
+
+    def test_plan_order_independent_of_the_cells(self):
+        f = features([[(-300, 20), (300, 20)], [(0, -300), (0, 300)]], ["residential", "secondary"])
+        g = grading.Grader(FRAME, FakeMD(f), lambda la, lo: np.full(np.shape(la), 10.0))
+        la, lo, _ = FRAME.enu_to_geodetic(np.array([0.0, 5.0]), np.array([20.0, 25.0]), 0.0)
+        a = g.plans(la, lo)
+        la2, lo2, _ = FRAME.enu_to_geodetic(np.array([0.0, 5.0, 3000.0]), np.array([20.0, 25.0, -3000.0]), 0.0)
+        b = g.plans(la2, lo2)
+        self.assertEqual([id(p) for p in a], [id(p) for p in b])
+
+    def test_long_parts_planned_near_the_cell_only(self):
+        # a 30 km straight track (one segment): its plan in a cell covers the cell and CLIP_MARGIN_M round it, not
+        # its whole length (each cell sampled the ground to both ends: thousands of DEM tiles, 2026-10-20), with the
+        # same heights in the cell; a short road is planned whole
+        la, lo, _ = FRAME.enu_to_geodetic(np.array([-15000.0, 15000.0]), np.array([20.0, 20.0]), 0.0)
+        f = features([[(-15000, 20), (15000, 20)], [(-300, 400), (300, 400)]], ["residential", "residential"])
+        md = FakeMD(f)
+        asked = []
+
+        def elev(la_, lo_):
+            asked.append(len(np.atleast_1d(la_)))
+            e, _, _ = FRAME.geodetic_to_enu(la_, lo_, 0.0)
+            return 10.0 + 0.001 * np.asarray(e)         # a gentle slope along the track
+        g = grading.Grader(FRAME, md, elev)
+        key = mapcells.cell_of(LAT, LON)
+        plans = g._cell_plans(key)
+        box = g._clip_box(key)
+        xs = np.concatenate([p.xy[:, 0] for _f, p in plans])
+        self.assertGreaterEqual(xs.min(), box[0] - 1e-6)
+        self.assertLessEqual(xs.max(), box[2] + 1e-6)
+        self.assertLess(sum(asked), 30000 / grading.PROFILE_STEP / 2, "not sampled along the whole track")
+        short = [p for fid, p in plans if np.ptp(p.xy[:, 0]) < 700]
+        self.assertEqual(len(short), 1, "the short road whole")
+        y = float(plans[0][1].xy[0, 1])                 # on the track
+        e = np.linspace(-600.0, 600.0, 13)
+        lat, lon, _ = FRAME.enu_to_geodetic(e, np.full(len(e), y), 0.0)
+        out = g.apply(lat, lon, np.zeros(len(e)))
+        whole = grading.Grader(FRAME, FakeMD(f), elev)
+        with unittest.mock.patch.object(grading, "LONG_PART_M", 1e9):
+            want = whole.apply(lat, lon, np.zeros(len(e)))
+        np.testing.assert_allclose(out, want, atol=1e-3)
+        self.assertGreater(float(out.min()), 9.0, "graded to the track")
+
+    def test_clip_polyline(self):
+        xy = np.array([[-50.0, 0], [50, 0], [50, 50], [150, 50], [150, -150], [-150, -150]])
+        runs = grading.clip_polyline(xy, (0, -10, 100, 100))
+        self.assertEqual([r.tolist() for r in runs], [[[0.0, 0.0], [50.0, 0.0], [50.0, 50.0], [100.0, 50.0]]])
+        self.assertEqual(grading.clip_polyline(np.array([[200.0, 0], [300, 0]]), (0, 0, 10, 10)), [])
+        two = grading.clip_polyline(np.array([[-5.0, 5], [15, 5], [15, 7], [-5, 7]]), (0, 0, 10, 10))
+        self.assertEqual(len(two), 2)
 
 
 class OverTunnelsParity(unittest.TestCase):

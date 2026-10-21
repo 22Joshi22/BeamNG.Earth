@@ -310,8 +310,12 @@ DS_PENDING = "ds"
 
 class Imagery:
     disk = cachemod.NONE    # the server's cache.Cache (last use per file, the size cap); set by earthd
+    # strict: a source that fails (offline: its tile not on disk) fails the render instead of the next source
+    # standing in, so a far-tile worker's texture (blockworker.far_tile, from the disk alone) is the one the server
+    # would render, or none (the server renders it)
+    strict = False
 
-    def __init__(self, cache_dir, chain=DEFAULT_CHAIN, fetch_workers=FETCH_WORKERS, mem_tiles=MEM_TILES,
+    def __init__(self, cache_dir, chain=DEFAULT_CHAIN, fetch_workers=FETCH_WORKERS, mem_tiles=None,
                  tone=1.0, deshadow=None, colormatch=None, fetcher=None, leaf_on=True, season_mode="off"):
         """deshadow: an optional deshadow.Deshadow (--deshadow lambert|full): _mosaic relights its
         source's tiles; None = the imagery as served (byte-identical textures).
@@ -325,7 +329,7 @@ class Imagery:
         self.fetcher = fetcher if fetcher is not None else netfetch.Fetcher()
         self.fetcher.register_chain("imagery", [s.url for s in self.chain])
         self.pool = ThreadPoolExecutor(min(fetch_workers, FETCH_WORKERS), thread_name_prefix="img-fetch")
-        self.mem_tiles = mem_tiles
+        self.mem_tiles = MEM_TILES if mem_tiles is None else mem_tiles
         self.leaf_on = leaf_on
         self.season_mode = season_mode
         self.lut = tone_lut(tone)
@@ -437,7 +441,7 @@ class Imagery:
         tmp = f"{path}.{threading.get_ident()}.tmp"
         with open(tmp, "wb") as f:
             f.write(data)
-        os.replace(tmp, path)
+        staging.replace_cached(tmp, path)
         self.disk.wrote(path, len(data))
         if os.path.exists(miss):                # an expired marker: the source has data there now
             os.remove(miss)
@@ -506,7 +510,7 @@ class Imagery:
                     tmp = f"{cpath}.{threading.get_ident()}.tmp"
                     with open(tmp, "wb") as f:
                         f.write(b)
-                    os.replace(tmp, cpath)
+                    staging.replace_cached(tmp, cpath)
                     self.disk.wrote(cpath, len(b))
                     if (cx, cy) == (x, y):
                         out = b
@@ -738,23 +742,39 @@ class Imagery:
 
     def _warm_loop(self):
         self._local.kind = "prefetch"
+        done, want = set(), None    # keys of this list found done: not looked at on disk again at every wake
         while True:
             with self._warm_cv:
                 key = None
                 while key is None:
-                    key = next((k for k in self._warm_want if not self._warm_done(k)), None)
+                    if self._warm_want is not want:     # a new list (the player moved on): looked at afresh
+                        done, want = set(), self._warm_want
+                    for k in self._warm_want:
+                        if k in done:
+                            continue
+                        if self._warm_done(k):
+                            done.add(k)
+                            continue
+                        key = k
+                        break
                     if key is None:
                         self._warm_cv.wait()
+            src, z, x, y = key
+            last = (1 << src.export) - 1
             try:
-                self._download(*key)
-                self._count(key[0].name + ":warm")
+                # the child _warm_done looks for: with only some children on disk (the cache cap evicted the
+                # others) the first one was a disk hit, the key never done, and this thread read it in a loop
+                # (170 s of the server process's CPU in a 4-minute drive, 2026-10-20)
+                self._download(src, z, x | last, y | last)
+                self._count(src.name + ":warm")
             except ImageryError as e:       # the host takes no prefetch now / failed: later
                 with self._warm_cv:
                     self._warm_cv.wait(5.0 if e.deferred else 30.0)
+                continue
             except Exception:
                 log.exception("imagery warm %s", key[1:])
-                with self._warm_cv:
-                    self._warm_want = [k for k in self._warm_want if k != key]
+            with self._warm_cv:             # fetched (or no use asking again): never the same key in a loop
+                done.add(key)
 
     def _warm_done(self, key):
         """Nothing (more) to fetch for key's parent: it was fetched (its last child, the one written last, is
@@ -961,6 +981,8 @@ class Imagery:
                 try:
                     m = self._mosaic(src, z, fx, fy, i == len(self.chain) - 1, pending, cm_keys)
                 except ImageryError as e:   # this source is unreachable: the next one may do
+                    if self.strict:
+                        raise
                     error, m = e, False
                     break
                 if m is not None or z <= src.min_zoom:
@@ -1135,7 +1157,7 @@ def write_dds(path, rgb):
     tmp = staging.tmp_for(path)
     with open(tmp, "wb") as f:
         f.write(data)
-    os.replace(tmp, path)
+    staging.replace(tmp, path)
     return len(data)
 
 

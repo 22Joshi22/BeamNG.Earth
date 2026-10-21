@@ -90,11 +90,19 @@ def profile(h=CURB_H, w=2.5, hr=None):
     RAMP_RUN)."""
     hr = h if hr is None else hr
     f = hr / h if h > 0 else 0.0
-    zr = h + RAMP_RUN * CROSS_SLOPE
-    zp = hr + (zr - hr) * PAD_W / (RAMP_RUN - CURB_W)       # on the ramp's slope, PAD_W past the curb top
+    # a band narrower than RAMP_RUN (a median's 0.3-0.6 m, an island's 1.2 m) ends its ramp inside it: past its outer
+    # edge the profile folded back over itself, and the folded collision caught wheels ("the median eats tires",
+    # GitHub #55; a truck held on an island band in Bodø, 2026-10-20)
+    rr = max(CURB_W + NARROW_EDGE_M, min(RAMP_RUN, w - NARROW_EDGE_M))
+    zr = h + rr * CROSS_SLOPE
+    xp = CURB_W + min(PAD_W, (rr - CURB_W) / 2)
+    zp = hr + (zr - hr) * (xp - CURB_W) / (rr - CURB_W)    # on the ramp's slope, PAD_W past the curb top
     top = h + w * CROSS_SLOPE
     return np.array([[0.0, -SINK], [BATTER * f, hr - NOSE * f], [NOSE_W * f, hr], [CURB_W, hr],
-                     [CURB_W + PAD_W, zp], [RAMP_RUN, zr], [w, top], [w + BACK_RUN * (top + SINK), -SINK]])
+                     [xp, zp], [rr, zr], [w, top], [w + BACK_RUN * (top + SINK), -SINK]])
+
+
+NARROW_EDGE_M = 0.05    # m a narrow band's ramp end stays inside its outer edge (profile)
 
 
 # strips: (from profile point, to point, material index, v at from, v at to); material 1 on the
@@ -216,8 +224,8 @@ class Builder:
                 mats[tactile] = 2
                 UV = UV.copy()
                 tu = s / TACTILE_REPEAT_M
-                UV[:k, 0] = np.where(np.r_[tactile, tactile[-1:]], tu, UV[:k, 0])
-                UV[k:, 0] = np.where(np.r_[tactile, tactile[-1:]], tu, UV[k:, 0])
+                UV[:k, 0] = np.where(np.concatenate((tactile, tactile[-1:])), tu, UV[:k, 0])
+                UV[k:, 0] = np.where(np.concatenate((tactile, tactile[-1:])), tu, UV[k:, 0])
             base = self._add(P, UV)
             i = np.arange(k - 1)
             A, A1, B1, B = base + i, base + i + 1, base + k + i + 1, base + k + i
@@ -241,7 +249,7 @@ class Builder:
             return
         if self.col is not None:
             self.col.add_run(curb, toward_out, w, h, caps, ramps)
-        s = np.r_[0.0, np.cumsum(np.hypot(*np.diff(curb[:, :2], axis=0).T))]
+        s = np.concatenate(([0.0], np.cumsum(np.hypot(*np.diff(curb[:, :2], axis=0).T))))
         if ramps:
             s2 = refine(s, ramps)
             curb = np.stack([np.interp(s2, s, curb[:, c]) for c in range(3)], axis=1)
@@ -284,7 +292,7 @@ class Builder:
         inward = np.asarray(inward, np.float64)
         if self.col is not None:
             self.col.add_corner(arc, inward, outer, h, ramps)
-        s = np.r_[0.0, np.cumsum(np.hypot(*np.diff(arc[:, :2], axis=0).T))]
+        s = np.concatenate(([0.0], np.cumsum(np.hypot(*np.diff(arc[:, :2], axis=0).T))))
         if ramps:
             s2 = refine(s, ramps)
             arc = np.stack([np.interp(s2, s, arc[:, c]) for c in range(3)], axis=1)

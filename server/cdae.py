@@ -494,6 +494,21 @@ def encode(positions, tris, normals=None, uvs=None, material="bngEarthDae", uvs2
         object_name = "Colmesh"
         lods = None
     materials = [material] if isinstance(material, str) else list(material)
+    if tri_materials is not None and len(materials) > 1:
+        # only the materials a level uses: the engine makes a material instance for every material a shape lists
+        # when it loads it (MatInstance::init / processMaterial were most of a new shape's load, ~0.4 ms each here;
+        # the buildings listed all 15 of theirs, a far tile used a few)
+        used = np.zeros(len(materials), bool)
+        used[np.unique(np.asarray(tri_materials, np.int64))] = True
+        for _size, d in (lods or []):
+            if d.get("tri_materials") is not None:
+                used[np.unique(np.asarray(d["tri_materials"], np.int64))] = True
+        if not used.all():
+            new = np.cumsum(used) - 1
+            materials = [m for m, u in zip(materials, used) if u]
+            tri_materials = new[np.asarray(tri_materials, np.int64)]
+            lods = [(size, dict(d, tri_materials=new[np.asarray(d["tri_materials"], np.int64)])
+                     if d.get("tri_materials") is not None else d) for size, d in (lods or [])] or None
     nmat = len(materials)
     P = np.asarray(positions, np.float64).reshape(-1, 3)
     T, TM = _sorted_tris(tris, tri_materials, nmat)
@@ -584,7 +599,7 @@ def write(path, positions, tris, **kw):
     tmp = staging.tmp_for(path)
     with open(tmp, "wb") as f:
         f.write(data)
-    os.replace(tmp, path)
+    staging.replace(tmp, path)
     return len(data)
 
 

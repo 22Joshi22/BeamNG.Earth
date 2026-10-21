@@ -411,7 +411,7 @@ class DoorTest(unittest.TestCase):
                     bld._signs(m, spec, spec.ring, 4.2, bld._Looks(spec.seed))
                     if m.n:                     # a few shops have none (hashed)
                         signed += 1
-                        ys = np.array(m.P)[:, 1]
+                        ys = m.arrays()[0][:, 1]
                         self.assertTrue((ys < 0.01).all() and (ys > -bld.SIGN_OUT - 0.01).all(),
                                         "boxes just out from the south wall")
         self.assertGreater(shops, 8)
@@ -441,7 +441,7 @@ class DoorTest(unittest.TestCase):
             with_porch += 1
             m = bld.Mesh()
             bld._porch(m, spec, 1.0, bld._Looks(spec.seed))
-            P = np.array(m.P)
+            P = m.arrays()[0]
             self.assertTrue(m.n > 0)
             self.assertAlmostEqual(P[:, 1].min(), -(bld.PORCH_DEPTH_M + 0.2), delta=0.01, msg="out in front of the south wall")
             self.assertGreaterEqual(P[:, 1].max(), -0.01)
@@ -613,6 +613,16 @@ class MachineLearnedFootprintTest(unittest.TestCase):
         self.assertFalse(bld._ml_false(sq(75, 75), bridge, river))
         self.assertFalse(bld._ml_false(sq(150, 20), bridge, river))
 
+    def test_vehicle_on_a_road(self):
+        """GitHub #2: a lorry on a Norwegian trunk road (Microsoft's footprint 4 x 17 m) stood as a white building
+        over the lanes; a house beside the road stays."""
+        road = [np.array([[0.0, 0.0], [200.0, 0.0]])]
+        lorry = np.array([[50, 0.5], [67, 0.5], [67, 4.5], [50, 4.5]], float)      # in the outer lane
+        house = np.array([[50, 9], [62, 9], [62, 19], [50, 19]], float)
+        self.assertTrue(bld._ml_false(lorry, None, None, road))
+        self.assertFalse(bld._ml_false(house, None, None, road))
+        self.assertFalse(bld._ml_false(lorry, None, None, None))
+
 
 class BridgeStructureTest(unittest.TestCase):
     """A bridge's tower (Overture bridge_structure: the Queensboro Bridge's, 33 x 4.6 x 110 m) is an open steel frame
@@ -662,6 +672,18 @@ class StoopTest(unittest.TestCase):
         front = (P[:, 1] < 0.0) & (P[:, 1] > -2.0)          # out from the wall y = 0 (edge 0 runs along +x)
         self.assertTrue(front.any())
         self.assertLessEqual(P[front, 2].min(), 10.0 - 0.3 + 1e-6)
+
+
+class PortalSkipTest(unittest.TestCase):
+    def test_a_service_tunnel_lifts_no_building(self):
+        # GitHub #60: a 15 m drive-through (a service road tunnel) under an Oklahoma City church floated it 10 m up
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        from test_roads import features, FRAME
+        f = features([[(-100, 0), (100, 0)], [(-100, 50), (100, 50)]], ["service", "secondary"],
+                     flags=[(0, "is_tunnel", 0.4, 0.6), (1, "is_tunnel", 0.4, 0.6)], ids=["dock", "street"])
+        lines = bld.tunnel_lines(FRAME, [f], -128.0, -128.0)
+        self.assertEqual(len(lines), 1, "the street's tunnel only")
+        self.assertAlmostEqual(float(lines[0][:, 1].mean()), 50.0 + 128.0, delta=0.5)
 
 
 if __name__ == "__main__":

@@ -17,12 +17,18 @@ Elsewhere (front yards, open land): None,
 and the class defaults stay. Pure; RoadWidths memoises per road for the life of the server, so the
 physics block, grading, the road meshes and the surface masks always agree.
 """
+import logging
+import os
 import threading
+from collections import OrderedDict
 
 import numpy as np
 
 import geodesy
 import mapcells
+import staging
+
+log = logging.getLogger("earthd.roadwidth")
 
 STEP = 6.0              # m between cross-sections
 END_SKIP = 10.0         # m kept clear of each end of a road (junctions)
@@ -37,14 +43,32 @@ WALK_NARROW_MIN = 0.6   # m: keep narrow streets within their measured building-
 BUCKET = 16.0           # m, wall segment buckets
 
 
+WALL_CELLS = 48          # cells of building walls kept per process (budget.py: fewer on a small machine)
+# A cell's walls also on disk (store_dir), float32 in the cell's frame (within a few km of its centre: sub-mm): every
+# server process built them from the buildings of the 9 cells around, ~0.6 s a cell on a Steam Deck, and the block
+# process, the road processes and the server each did it again (7.4 s of a 15 s Baltimore block, 2026-10-20)
+WALLS_VERSION = 1
+
 class Walls:
     """Building wall segments (metres, a local frame) with a bucket index for ray casts."""
 
-    def __init__(self, segs):
-        self.segs = np.asarray(segs, np.float64).reshape(-1, 4)       # x0 y0 x1 y1
+    def __init__(self, segs, index=None):
+        """index: (buckets (3, B) int64 rows key, first, count, seg_of (P,) int64) as index_arrays() gives (the
+        store's, memory-mapped), else made here."""
+        # x0 y0 x1 y1: float32 kept as given (the store's file, memory-mapped: one copy in the page cache for every
+        # server process; their float64 copies were ~100-160 MB a process on a small machine, 2026-10-20), widened to
+        # float64 wherever they are computed with (exact: the same numbers as a float64 copy)
+        if isinstance(segs, np.ndarray) and segs.dtype == np.float32 and segs.ndim == 2:
+            self.segs = segs
+        else:
+            self.segs = np.asarray(segs, np.float64).reshape(-1, 4)
+        if index is not None:
+            bk, self.seg_of = index
+            self.keys, self.first, self.counts = bk[0], bk[1], bk[2]     # (rows: contiguous, as the Rust loop takes)
+            return
         # bucket index, vectorised (a Python loop per segment took ~18 s for a city's 9 cells, 2026-10-12):
         # one (segment, bucket) pair per bucket a segment's box touches, sorted by bucket key
-        s = self.segs
+        s = np.asarray(self.segs, np.float64)
         bx0 = np.floor(np.minimum(s[:, 0], s[:, 2]) / BUCKET).astype(np.int64)
         bx1 = np.floor(np.maximum(s[:, 0], s[:, 2]) / BUCKET).astype(np.int64)
         by0 = np.floor(np.minimum(s[:, 1], s[:, 3]) / BUCKET).astype(np.int64)
@@ -56,9 +80,17 @@ class Walls:
         bx = np.repeat(bx0, cnt) + k % np.repeat(nx, cnt)
         by = np.repeat(by0, cnt) + k // np.repeat(nx, cnt)
         key = self._key(bx, by)
-        order = np.argsort(key, kind="stable")
-        self.keys, first, counts = np.unique(key[order], return_index=True, return_counts=True)
-        self.first, self.counts, self.seg_of = first, counts, seg[order]
+        # (any order within a bucket: a ray keeps its nearest hit; np.unique would sort the sorted keys again)
+        order = np.argsort(key)
+        ks = key[order]
+        first = np.flatnonzero(np.r_[True, ks[1:] != ks[:-1]]) if len(ks) else np.zeros(0, np.int64)
+        self.keys = ks[first]
+        self.first, self.counts, self.seg_of = first, np.diff(np.r_[first, len(ks)]), seg[order]
+
+    def index_arrays(self):
+        """(buckets (3, B) int64 rows key, first, count, seg_of (P,) int64): the bucket index, for the store."""
+        return (np.stack([self.keys, self.first, self.counts]).astype(np.int64),
+                np.asarray(self.seg_of, np.int64))
 
     @staticmethod
     def _key(bx, by):
@@ -97,7 +129,7 @@ class Walls:
         c = self.counts[i]
         ray = np.repeat(ray, c)
         j = np.arange(c.sum()) - np.repeat(np.cumsum(c) - c, c) + np.repeat(self.first[i], c)
-        s = self.segs[self.seg_of[j]]
+        s = np.asarray(self.segs[self.seg_of[j]], np.float64)
         pr, dr = p[ray], d[ray]
         a, e = s[:, :2], s[:, 2:] - s[:, :2]
         den = dr[:, 0] * e[:, 1] - dr[:, 1] * e[:, 0]
@@ -119,11 +151,13 @@ def measure_row(centreline, walls):
     import fast
     if fast.AVAILABLE and len(walls.keys):     # the Rust loop (the same result; ~3000 streets a 9-tile set)
         k = walls.__dict__.get("_rs")
+        f32 = walls.segs.dtype == np.float32 and getattr(fast._ef, "VERSION", 0) >= 34
         if k is None:
             k = walls._rs = tuple(np.ascontiguousarray(a, t) for a, t in
                                   ((walls.keys, np.int64), (walls.first, np.int64), (walls.counts, np.int64),
-                                   (walls.seg_of, np.int64), (walls.segs, np.float64)))
-        return fast._ef.measure_row(np.ascontiguousarray(np.asarray(centreline, np.float64)[:, :2]), *k, BUCKET,
+                                   (walls.seg_of, np.int64), (walls.segs, np.float32 if f32 else np.float64)))
+        fn = fast._ef.measure_row32 if f32 else fast._ef.measure_row
+        return fn(np.ascontiguousarray(np.asarray(centreline, np.float64)[:, :2]), *k, BUCKET,
                                     STEP, END_SKIP, REACH, MIN_SAMPLES, WALLED, AGREE)
     xy = np.asarray(centreline, np.float64)[:, :2]
     seg = np.hypot(*np.diff(xy, axis=0).T)
@@ -182,14 +216,80 @@ def polygon_walls(feats, frame):
     return np.concatenate([p[i], p[i + 1]], 1)
 
 
+def _read_segs(path):
+    """A cell's walls from the store, memory-mapped read-only (shared by the server's processes), or None."""
+    try:
+        a = np.asarray(np.load(path, mmap_mode="r", allow_pickle=False))     # (a plain view of the mapping)
+    except FileNotFoundError:
+        return None
+    except (OSError, ValueError, EOFError) as e:        # damaged: built again
+        log.debug("road widths: %s: %s", path, e)
+        return None
+    return a if a.dtype == np.float32 and a.ndim == 2 and a.shape[1] == 4 else None
+
+
+def _index_paths(path):
+    return path[:-4] + ".bk.npy", path[:-4] + ".so.npy"
+
+
+def complete_store(path):
+    """The walls' own file is in the store (their index may be kept beside it)."""
+    return os.path.exists(path)
+
+
+def _read_index(path, nsegs):
+    """The bucket index stored beside a cell's walls (memory-mapped), or None (none, or not of these walls)."""
+    pb, ps = _index_paths(path)
+    try:
+        bk = np.asarray(np.load(pb, mmap_mode="r", allow_pickle=False))
+        so = np.asarray(np.load(ps, mmap_mode="r", allow_pickle=False))
+    except FileNotFoundError:
+        return None
+    except (OSError, ValueError, EOFError) as e:
+        log.debug("road widths: %s: %s", pb, e)
+        return None
+    ok = (bk.dtype == np.int64 and bk.ndim == 2 and bk.shape[0] == 3 and so.dtype == np.int64 and so.ndim == 1
+          and (bk.shape[1] == 0 or int(bk[1, -1]) + int(bk[2, -1]) == len(so)) and (nsegs > 0 or len(so) == 0))
+    return (bk, so) if ok else None
+
+
+def _write_index(path, index):
+    for p, a in zip(_index_paths(path), index):
+        _write_segs(p, a)
+
+
+def _write_segs(path, segs):
+    tmp = f"{path}.{os.getpid()}.{threading.get_ident()}.tmp"
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(tmp, "wb") as fh:
+            np.save(fh, segs)
+        staging.replace_cached(tmp, path)
+    except OSError as e:
+        log.debug("road widths: %s: %s", path, e)
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+
+
+def store_dir(cache_dir, md):
+    """The walls' folder for map data md (its release) under cache_dir, or None."""
+    if not cache_dir or md is None:
+        return None
+    return os.path.join(cache_dir, "roadwidth", f"v{WALLS_VERSION}", str(getattr(md, "release", "x")))
+
+
 class RoadWidths:
     """Measured street widths per road id, decided once per server run (thread-safe). cell_fn(key) ->
     the buildings Features of a map cell (None / raises when unavailable: the road keeps its default)."""
 
-    def __init__(self, cell_fn):
+    def __init__(self, cell_fn, store_dir=None):
+        """store_dir: the walls' files (the map data release's own folder), or None (none kept on disk)."""
         self.cell_fn = cell_fn
+        self.store_dir = store_dir
         self.memo = {}                          # fid -> (carriageway, walk) or None
-        self.walls = {}                         # cell key -> (frame, Walls)
+        self.walls = OrderedDict()              # cell key -> (frame, Walls), the WALL_CELLS last used
         self.lock = threading.Lock()
         self.key_locks = {}                     # cell key -> Lock: one thread builds a cell's walls
 
@@ -211,19 +311,47 @@ class RoadWidths:
             return got
         lon0, lat0, lon1, lat1 = key.bounds()
         frame = geodesy.EnuFrame(0.5 * (lat0 + lat1), 0.5 * (lon0 + lon1))
-        dlat, dlon = 0.5 * (lat1 - lat0), 0.5 * (lon1 - lon0)
-        segs = []
-        for k2 in mapcells.cells_for_bbox(lat0 - dlat * 0.1, lon0 - dlon * 0.1, lat1 + dlat * 0.1, lon1 + dlon * 0.1):
-            try:
-                feats = self.cell_fn(k2)
-            except Exception:
-                feats = None
-            if feats is not None and len(feats):
-                segs.append(polygon_walls(feats, frame))
-        walls = Walls(np.concatenate(segs) if segs else np.zeros((0, 4)))
+        path = (os.path.join(self.store_dir, str(key.z), str(key.x), f"{key.y}.npy")
+                if self.store_dir and hasattr(key, "z") else None)
+        segs = _read_segs(path) if path else None
+        if segs is None:
+            dlat, dlon = 0.5 * (lat1 - lat0), 0.5 * (lon1 - lon0)
+            parts, complete = [], True
+            for k2 in mapcells.cells_for_bbox(lat0 - dlat * 0.1, lon0 - dlon * 0.1, lat1 + dlat * 0.1,
+                                              lon1 + dlon * 0.1):
+                try:
+                    feats = self.cell_fn(k2)
+                except Exception:
+                    feats, complete = None, False       # (not kept: built again once the cell is at hand)
+                if feats is not None and len(feats):
+                    parts.append(polygon_walls(feats, frame))
+            # float32 as the file keeps them, so a process that built them and one that read them agree
+            segs = (np.concatenate(parts) if parts else np.zeros((0, 4))).astype(np.float32)
+            if path and complete:
+                _write_segs(path, segs)
+                segs = _read_segs(path)         # (the file's mapping: shared with the other processes)
+                if segs is None:
+                    segs = (np.concatenate(parts) if parts else np.zeros((0, 4))).astype(np.float32)
+        walls = None
+        if path:            # the bucket index beside them (memory-mapped too), made once
+            index = _read_index(path, len(segs))
+            if index is not None:
+                walls = Walls(segs, index)
+            else:
+                walls = Walls(segs)
+                if complete_store(path):
+                    _write_index(path, walls.index_arrays())
+                    index = _read_index(path, len(segs))
+                    if index is not None:
+                        walls = Walls(segs, index)
+        if walls is None:
+            walls = Walls(segs)
         with self.lock:
-            self.walls.setdefault(str(key), (frame, walls))
-            return self.walls[str(key)]
+            got = self.walls.setdefault(str(key), (frame, walls))
+            self.walls.move_to_end(str(key))
+            while len(self.walls) > WALL_CELLS:     # (a road's width is decided once, memo: the walls can go)
+                self.walls.popitem(last=False)
+            return got
 
     def get(self, fid, lonlat):
         """(carriageway m, sidewalk m) of road fid (geometry lonlat (k, 2)), or None (defaults)."""

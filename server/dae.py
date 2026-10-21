@@ -74,7 +74,7 @@ def write_grid_dae(path, positions, uvs, tris, material="bngEarthDae", texture=N
     tmp = staging.tmp_for(path)
     with open(tmp, "w") as f:
         f.write(xml)
-    os.replace(tmp, path)
+    staging.replace(tmp, path)
 
 
 def grid(n_cells, spacing, zfun=lambda x, y: 0.0, uv_repeat=8.0):

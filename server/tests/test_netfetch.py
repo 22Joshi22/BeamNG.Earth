@@ -367,6 +367,14 @@ class RetryAfterTest(unittest.TestCase):
             f.get(url(MT))
         self.assertEqual(f.unavailable_hosts(), [MT])
 
+    def test_optional_hosts_left_out_of_the_status(self):
+        """GitHub #23: SourceForge (gravity only) blocked in the player's country showed "Degraded" for good."""
+        f, clock, sleep, tr = fetcher()
+        for h in (MT, "downloads.sourceforge.net", "api.open-meteo.com"):
+            f.host(h).breaker.trip(60)
+        self.assertEqual(f.unavailable_hosts(), sorted([MT, "downloads.sourceforge.net", "api.open-meteo.com"]))
+        self.assertEqual(f.unavailable_hosts(optional=False), [MT])
+
     def test_parse(self):
         self.assertEqual(nf.parse_retry_after("7"), 7.0)
         self.assertEqual(nf.parse_retry_after("0"), nf.RETRY_AFTER_MIN)

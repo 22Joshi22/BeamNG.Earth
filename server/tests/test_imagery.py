@@ -546,6 +546,28 @@ class ExportImageryTest(unittest.TestCase):
             time.sleep(0.02)
         return left
 
+    def test_warm_with_children_evicted(self):
+        # the cache cap evicted a parent's last child but not its first: warming read the first one in a loop (it
+        # was on disk, the key never done: 170 s of the server's CPU in a drive, 2026-10-20). Now the parent is
+        # fetched again and the thread rests.
+        im = self.make()
+        self.assertEqual(self.warm(im, [(128.0, 128.0)]), [])
+        n = len([r for r in self.requests if r[0] == "naip"])
+        keys = list(im._warm_want)
+        for src, z, x, y in keys:
+            last = (1 << src.export) - 1
+            path, _ = im._paths(src, z, x | last, y | last)
+            os.remove(path)
+        self.assertTrue(keys and all(not im._warm_done(k) for k in keys))
+        im._warm_want = []
+        self.assertEqual(self.warm(im, [(128.0, 128.0)]), [])
+        self.assertEqual(len([r for r in self.requests if r[0] == "naip"]), n + len(keys), "each parent once more")
+        reads = []
+        orig = im.disk.read
+        im.disk.read = lambda path: reads.append(path) or orig(path)
+        time.sleep(0.3)
+        self.assertEqual(reads, [], "the warm thread rests")
+
     def test_lazy_then_split_tiles(self):
         im = self.make()
         # 1 m texels: z17 (0.93 m pixels here), NAIP's zoom

@@ -67,6 +67,7 @@ import maprasters
 import netfetch
 import overture
 import rangeread
+import staging
 
 log = logging.getLogger("earthd.mapdata")
 
@@ -137,8 +138,17 @@ def digest_arrays(arrays):
     return h.hexdigest()
 
 
-MEM_MB = 64         # decoded cell layers kept in memory per process (a road tile reads its ~4 cells, each read by
-                    # its neighbours too: ~8 ms of decompression and a coordinate transform each time, 2026-10-15)
+# The layer files' arrays uncompressed (<cache>/mapdata-mirror/...: one .npy each and a marker), memory-mapped read-only:
+# every server process decompressed and kept its own copy of the cells it read (each one's largest allocation after
+# the walls, ~90-160 MB, 2026-10-20); a mirrored layer is decompressed once per machine and its pages shared, dropped
+# instead of swapped under memory pressure. At most MIRROR_MB on disk (the least recently read go first); the vector
+# layers' `en` (the cell frame's metres, Features.localize) is kept with them.
+MIRROR_MB = 2048
+MIRROR_SMALL = 65536    # bytes: an array this small is read into memory (no mapping)
+MEM_MB = 192        # decoded cell layers kept in memory per process (a road tile reads its ~4 cells, each read by
+                    # its neighbours too: ~8 ms of decompression and a coordinate transform each time, 2026-10-15).
+                    # A road tile's layers of Baltimore's 4 cells are ~124 MB by _nbytes (the infrastructure 65):
+                    # at 64 every tile decoded them again, 446 loads for 36 tiles (7.5 s of 87 on a Steam Deck)
 
 
 def _nbytes(arrays):
@@ -299,7 +309,7 @@ class MapData:
         os.makedirs(os.path.dirname(path), exist_ok=True)
         tmp = f"{path}.{os.getpid()}.{threading.get_ident()}.tmp.npz"
         np.savez_compressed(tmp, **arrays)
-        os.replace(tmp, path)
+        staging.replace_cached(tmp, path)
 
     def _build(self, key, layer, kind):
         """(content arrays, provenance record or None) of one layer, from the sources."""
@@ -330,16 +340,120 @@ class MapData:
             raise ValueError(f"unknown map layer {layer!r}; choose from {', '.join(ALL_LAYERS)}")
         key = _key(key)
         path = self.path(key, layer)
-        arrays = self._load(path)
+        arrays = self._mirror_load(path)
         if arrays is not None:
             return arrays, True
+        arrays = self._load(path)
+        if arrays is not None:
+            return self._mirrored(key, layer, path, arrays), True
         with self._key_lock(key, layer):
             arrays = self._load(path)           # another thread built it meanwhile
             if arrays is not None:
-                return arrays, True
+                return self._mirrored(key, layer, path, arrays), True
             arrays = self._build(key, layer, kind)
             self._store(path, arrays)
-            return arrays, False
+            return self._mirrored(key, layer, path, arrays), False
+
+    # --- the uncompressed mirror (MIRROR_MB) ---------------------------------------------------
+    def _mirror_dir(self, path):
+        rel = os.path.relpath(path, os.path.join(self.cache_dir, "mapdata"))
+        return os.path.join(self.cache_dir, "mapdata-mirror", rel[:-4])
+
+    @staticmethod
+    def _stamp(path):
+        st = os.stat(path)
+        return f"{st.st_size} {st.st_mtime_ns}"
+
+    def _mirror_load(self, path):
+        """The mirrored arrays of a layer file (the large ones memory-mapped), or None (none, or not of this file)."""
+        if MIRROR_MB <= 0:
+            return None
+        d = self._mirror_dir(path)
+        try:
+            with open(os.path.join(d, "ok")) as fh:
+                stamp, names = fh.readline().rstrip("\n"), fh.read().split("\n")
+            if stamp != self._stamp(path):
+                return None
+            out = {}
+            for n in names:
+                if not n:
+                    continue
+                f = os.path.join(d, n + ".npy")
+                big = os.path.getsize(f) > MIRROR_SMALL
+                a = np.load(f, mmap_mode="r" if big else None, allow_pickle=False)
+                out[n] = np.asarray(a)          # (a plain view of the mapping: np.memmap's Python hooks ran on every slice)
+            os.utime(os.path.join(d, "ok"))         # (read: the last to go)
+            return out
+        except (OSError, ValueError, EOFError):
+            return None
+
+    def _mirrored(self, key, layer, path, arrays):
+        """arrays written to the mirror and read back from it (memory-mapped), or as they are when it cannot be."""
+        if MIRROR_MB <= 0 or "provenance" not in arrays:
+            return arrays
+        d = self._mirror_dir(path)
+        full = dict(arrays)
+        try:
+            if layer in VECTOR_LAYERS and "lonlat" in full and "en.local" not in full:
+                f = mapgeom.Features.from_arrays(layer, {k: v for k, v in full.items() if k != "provenance"}, "")
+                lat_c, lon_c = key.center()
+                full["en.local"] = f.localize(geodesy.EnuFrame(lat_c, lon_c, 0.0)).en
+            stamp = self._stamp(path)
+            tmp = f"{d}.{os.getpid()}.{threading.get_ident()}.tmp"
+            os.makedirs(tmp, exist_ok=True)
+            size = 0
+            for n, a in full.items():
+                np.save(os.path.join(tmp, n + ".npy"), np.asarray(a), allow_pickle=False)
+                size += np.asarray(a).nbytes
+            with open(os.path.join(tmp, "ok"), "w") as fh:
+                fh.write(stamp + "\n" + "\n".join(full) + "\n")
+            try:
+                if os.path.isdir(d):            # (stale: another file's; or another process's, the same)
+                    import shutil
+                    shutil.rmtree(d, ignore_errors=True)
+                os.rename(tmp, d)
+            except OSError:
+                import shutil
+                shutil.rmtree(tmp, ignore_errors=True)
+            self._mirror_note(size)
+        except (OSError, ValueError) as e:
+            log.debug("mapdata mirror %s: %s", d, e)
+            return arrays
+        got = self._mirror_load(path)
+        return got if got is not None else arrays
+
+    _mirror_written = 0
+    _mirror_lock = threading.Lock()
+
+    def _mirror_note(self, nbytes):
+        """Count what this process wrote; every MIRROR_MB / 8 of it, the mirror cut back to MIRROR_MB."""
+        with MapData._mirror_lock:
+            MapData._mirror_written += nbytes
+            if MapData._mirror_written < MIRROR_MB * 1e6 / 8:
+                return
+            MapData._mirror_written = 0
+        self._mirror_prune()
+
+    def _mirror_prune(self):
+        root = os.path.join(self.cache_dir, "mapdata-mirror")
+        entries, total = [], 0
+        for dirpath, dirnames, filenames in os.walk(root):
+            if "ok" in filenames:
+                try:
+                    n = sum(os.path.getsize(os.path.join(dirpath, f)) for f in filenames)
+                    entries.append((os.path.getmtime(os.path.join(dirpath, "ok")), n, dirpath))
+                    total += n
+                except OSError:
+                    pass
+                dirnames[:] = []
+        if total <= MIRROR_MB * 1e6:
+            return
+        import shutil
+        for _, n, dpath in sorted(entries):
+            shutil.rmtree(dpath, ignore_errors=True)
+            total -= n
+            if total <= 0.8 * MIRROR_MB * 1e6:
+                break
 
     # --- cells -----------------------------------------------------------------------------------
     def cell(self, key, layers=LAYERS, kind="demand"):
@@ -379,9 +493,14 @@ class MapData:
                 arrays, hit, dt = results[layer]
                 arrays = dict(arrays)
                 prov = json.loads(str(arrays.pop("provenance")))
+                en = arrays.pop("en.local", None)     # (the mirror's: this frame's, Features.localize)
                 if layer in VECTOR_LAYERS:
                     f = mapgeom.Features.from_arrays(layer, arrays, "")
-                    cd.layers[layer] = f.localize(frame)
+                    if en is not None and len(en) == len(f.lonlat):
+                        f.en = en
+                        cd.layers[layer] = f
+                    else:
+                        cd.layers[layer] = f.localize(frame)
                 elif "missing" in arrays:
                     cd.layers[layer] = None
                 else:

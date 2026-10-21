@@ -384,4 +384,38 @@ do
   T.check(st.HIDDEN.updateDismissed, 'updateDismissed: not on the settings page')
 end
 
+-- the map holds off the car's controls (the user, 2026-10-21: the controller drove the car behind the map): the stock
+-- groups and every driving action by name
+do
+  local filter = { createActionTemplate = function(groups) return { 'camera_1', 'funBoom' } end }
+  local actions = { getActiveActions = function() return {
+    accelerate = { cat = 'vehicle' }, steering = { cat = 'vehicle' }, pickup__toggleBed = { cat = 'vehicle_specific' },
+    bigMapZoom = { cat = 'gameplay' }, funBoom = { cat = 'vehicle' } } end }
+  local got = {}
+  for _, a in ipairs(settings.mapBlockedActions(filter, actions)) do got[a] = (got[a] or 0) + 1 end
+  T.check(got.accelerate == 1 and got.steering == 1 and got.pickup__toggleBed == 1, 'map: driving actions blocked')
+  T.check(got.camera_1 == 1 and got.funBoom == 1 and not got.bigMapZoom, 'map: the stock groups, once each; its own kept')
+  got = {}
+  for _, a in ipairs(settings.mapBlockedActions(filter, nil)) do got[a] = true end
+  T.check(got.accelerate and got.steering and got.brake, 'map: the fallback list without the action list')
+end
+
+-- X and Y on the map: the vehicle triggers they are bound to go to the map while it is open, as before after
+do
+  local sent, orig = {}, {}
+  local vt = { onActionEvent = function(id, v) orig[#orig + 1] = id end }
+  local saved = { core_vehicleTriggers = rawget(_G, 'core_vehicleTriggers'), freeroam_bigMapMode = rawget(_G, 'freeroam_bigMapMode'),
+    guihooks = rawget(_G, 'guihooks'), pushActionMap = rawget(_G, 'pushActionMap'), popActionMap = rawget(_G, 'popActionMap') }
+  core_vehicleTriggers, freeroam_bigMapMode = vt, {}
+  guihooks = { trigger = function(name, d) if name == settings.MAP_INPUT_EVENT then sent[#sent + 1] = d.kind end end }
+  pushActionMap, popActionMap = function() end, function() end
+  settings.mapControls(true)
+  vt.onActionEvent(1, 1) vt.onActionEvent(2, 1) vt.onActionEvent(0, 1)
+  T.check(sent[1] == 'pad_x' and sent[2] == 'pad_y' and #orig == 1 and orig[1] == 0, 'map open: X / Y to the map, others as before')
+  settings.mapControls(false)
+  vt.onActionEvent(1, 1)
+  T.check(#sent == 2 and orig[2] == 1, 'map closed: the triggers as before')
+  for k, v in pairs(saved) do rawset(_G, k, v) end
+end
+
 T.done('test_settings')

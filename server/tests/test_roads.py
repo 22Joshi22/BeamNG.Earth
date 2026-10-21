@@ -139,6 +139,21 @@ class GeometryTest(unittest.TestCase):
         self.assertTrue(all(np.array_equal(a[-1], b[0]) for a, b in zip(chunks[:-1], chunks[1:])), "chunks share their ends")
         self.assertEqual(sum(len(c) for c in chunks) - (len(chunks) - 1), 250)
 
+    def test_a_straight_deck_keeps_its_rise(self):
+        # Lombard Street, Baltimore 2026-10-20: on xy alone a straight bridge kept its two ends in a tile (both at
+        # 22.2 m) and lost the 2.5 m rise between; the abutment's ground stood over the deck and a car drove into it
+        x = np.arange(0.0, 160.0, 10.0)
+        z = 22.0 + 2.5 * np.sin(np.pi * x / 160.0)
+        pts = np.c_[x, np.zeros_like(x), z]
+        self.assertEqual(len(roads.simplify(pts)), 2, "xy alone: the ends")
+        kept = roads.simplify(pts, ztol=roads.SIMPLIFY_Z_M)
+        dense = roads.densify(kept)
+        self.assertLess(np.abs(np.interp(x, dense[:, 0], dense[:, 2]) - z).max(), roads.SIMPLIFY_Z_M + 1e-9)
+        spec = roads.road_specs(features([[(0, 0), (160, 0)]], ["residential"]))[0]
+        chunks = roads._deck_chunks([("b", spec, pts, LON)], (40.0, -50.0, 170.0, 50.0))   # (cut by a tile edge)
+        deck = np.concatenate([np.asarray(c["n"]) for c in chunks if c.get("deck") and not c.get("ctx")])
+        self.assertLess(np.abs(np.interp(deck[:, 0], x, z) - deck[:, 2]).max(), 0.1, "the deck's rise drawn")
+
     def test_tiles_near(self):
         ks = roads.tiles_near(0, 0, 300)
         self.assertIn((0, 0), ks)
@@ -172,6 +187,24 @@ class BuildTileTest(unittest.TestCase):
         self.assertGreater(s[1].width, 10.0, "the motorway itself")
         self.assertEqual(s[2].width, roads.LINK_M[2], "a two-way slip road")
         self.assertEqual(roads.bridge_specs(features([[(0, 0), (100, 0)]], ["motorway"])), [None])
+
+    def test_motorway_lanes_rural_two_urban_three(self):
+        """GitHub #43: every US Interstate had three lanes a direction, rural ones mostly have two; a rural road's edge
+        strips were counted as lanes (a rural divided trunk had three too)."""
+        pts = np.array([(0.0, 0.0, 0.0), (100.0, 0.0, 0.0)])
+
+        def lanes(cls, urban):
+            sp = roads.Spec(roads.carriageway(cls, "paved", urban, None, True), "paved", urban, cls, True, 2.5, 1)
+            n = sum(1 for look, w, line in roads.extras(sp, pts, -100.0) if look is roads.LANE_LINE)
+            return n + 1, sp
+        n, rural = lanes("motorway", False)
+        self.assertEqual(n, 2, "rural motorway carriageway")
+        self.assertAlmostEqual(rural.width, roads.MOTORWAY_RURAL_M + 2 * roads.SHOULDER_M)
+        edges = [line[0][1] for look, w, line in roads.extras(rural, pts, -100.0) if look is roads.EDGE_LINE]
+        self.assertEqual(sorted(round(abs(y), 2) for y in edges), [round(roads.MOTORWAY_RURAL_M / 2, 2)] * 2,
+                         "edge lines between the lanes and the shoulders")
+        self.assertEqual(lanes("motorway", True)[0], 3, "urban motorway carriageway")
+        self.assertEqual(lanes("trunk", False)[0], 2, "rural divided trunk")
 
     def test_divided_trunk_sidewalk_outer_side_only_when_slow(self):
         pts = np.array([(0.0, 0.0, 0.0), (100.0, 0.0, 0.0)])
@@ -260,7 +293,9 @@ class BuildTileTest(unittest.TestCase):
                 data = json.load(fh)
             self.assertEqual(data["walk"]["pos"], [x0, y0, 0.0])
             shape = cdae.read(os.path.join(d, os.path.basename(data["walk"]["shape"])))
-            self.assertEqual([m["name"] for m in shape["materials"]], list(sidewalks.MATERIALS))
+            names = [m["name"] for m in shape["materials"]]      # the ones it uses, in the list's order (cdae.encode)
+        self.assertEqual(names, [m for m in sidewalks.MATERIALS if m in names])
+        self.assertIn("curbs", names)
 
     def test_sidewalk_profile_faces_out(self):
         import sidewalks
@@ -340,7 +375,9 @@ class BuildTileTest(unittest.TestCase):
             path, n = roads.write_tile(d, "/vfs", 1, 0, 0, chunks, walks, mesh)
             import cdae
             shape = cdae.read(os.path.join(d, "walks_1_0_0.cdae"))
-            self.assertEqual([m["name"] for m in shape["materials"]], list(sidewalks.MATERIALS))
+            names = [m["name"] for m in shape["materials"]]      # the ones it uses, in the list's order (cdae.encode)
+        self.assertEqual(names, [m for m in sidewalks.MATERIALS if m in names])
+        self.assertIn("curbs", names)
 
     def test_acute_corner_is_rounded(self):
         # two streets leaving a junction 30 degrees apart (a triangular block's tip, Fells Point, report #46): a curb
@@ -535,6 +572,36 @@ class TrackerTest(unittest.TestCase):
         self.assertEqual(keys, want)
         self.assertEqual(len(built), len(want), "each tile built once")
 
+    def test_empty_and_failed_tiles_not_built_at_every_pose(self):
+        # (from PR #64) a tile with no roads came back None and was built again at every pose; a failed one too, at
+        # once: an empty one now stays done while within reach, a failed one waits TILE_RETRY_S
+        conn = FakeConn()
+        tr = roads.Tracker()
+        built = []
+        fail = {(0, 0)}
+
+        def build(aid, tx, ty):
+            built.append((tx, ty))
+            if (tx, ty) in fail:
+                raise OSError("offline")
+            return None if (tx + ty) % 2 else (f"/p/{aid}_{tx}_{ty}", 1)
+
+        async def go():
+            loop = asyncio.get_running_loop()
+            for _ in range(40):
+                tr.on_pose(conn, 1, 0.0, 0.0, loop, build)
+                await asyncio.sleep(0.01)
+        asyncio.run(go())
+        near = set(roads.tiles_near(0, 0, roads.SEND_M))
+        counts = {k: built.count(k) for k in near}
+        self.assertTrue(all(counts[k] == 1 for k in near if (k[0] + k[1]) % 2), "empty tiles built once")
+        self.assertEqual(counts[(0, 0)], 1, "the failed one not again within TILE_RETRY_S")
+        tr.retry[(0, 0)] = 0.0              # its wait over
+        fail.clear()
+        asyncio.run(go())
+        self.assertEqual(built.count((0, 0)), 2)
+        self.assertIn((1, "0_0"), {(m["anchorId"], m["key"]) for m in conn.sent if m["type"] == "roads_tile"})
+
     def test_far_buildings_skip_the_road_tiles(self):
         import vegetation
         import buildings
@@ -608,6 +675,30 @@ class TrackerTest(unittest.TestCase):
         asyncio.run(go())
         self.assertEqual(set(built), set(roads.tiles_near(128.0, 128.0, roads.SEND_M)), "only the square around the car")
 
+    def test_an_away_camera_gets_its_tiles_after_the_cars_and_keeps_them(self):
+        # the user, 2026-10-20: what is drawn follows the camera, what collides the car
+        import vegetation
+        for make, kind in ((roads.Tracker, "roads"), (vegetation.Tracker, "veg")):
+            conn, built = FakeConn(), []
+            tr = make()
+            cam = (5000.0, 0.0)
+
+            async def go(view, n=60):
+                loop = asyncio.get_running_loop()
+                for _ in range(n):
+                    tr.on_pose(conn, 1, 0.0, 0.0, loop, lambda aid, tx, ty: (built.append((tx, ty)), (f"/p/{tx}_{ty}", 1))[1],
+                               view=view)
+                    await asyncio.sleep(0.01)
+            send = roads.SEND_M if kind == "roads" else vegetation.SEND_M
+            car, seen = set(roads.tiles_near(0, 0, send)), set(roads.tiles_near(*cam, send))
+            asyncio.run(go(cam))
+            self.assertEqual(set(built), car | seen, kind)
+            self.assertEqual(set(built[:len(car)]), car, f"{kind}: the car's tiles first")
+            self.assertFalse([m for m in conn.sent if m["type"].endswith("_drop")], f"{kind}: none dropped")
+            asyncio.run(go(None, 2))            # the camera back at the car: the camera's tiles go
+            drops = {tuple(map(int, m["key"].split("_"))) for m in conn.sent if m["type"].endswith("_drop")}
+            self.assertEqual(drops, seen, kind)
+
     def test_drops_far_and_resends_on_anchor_change(self):
         conn, tr, built = self.run_poses([(1, 0.0, 0.0), (1, 3000.0, 0.0), (2, 3000.0, 0.0)])
         drops = [m for m in conn.sent if m["type"] == "roads_drop"]
@@ -642,6 +733,24 @@ class PaintRoadsTest(unittest.TestCase):
         self.assertEqual(int(out[30, 74]), sf.DIRT, "on the track (20 m east)")
         self.assertEqual(int(out[64, 74]), sf.ASPHALT, "paved wins at the crossing")
         self.assertEqual(int(idx[64, 10]), sf.GRASS, "input untouched")
+
+    def test_bare_verge_beside_roads(self):
+        """Grass tufts stood on the asphalt along road edges (the user, 2026-10-20): a road without sidewalks gets a
+        bare verge (VERGE_M a side) where the ground carries grass; rock stays rock."""
+        lat, lon = self.grid()
+        f = features([[(-200, 0), (200, 0)]], ["residential"])
+        out = sf.paint_roads(np.full(lat.shape, sf.GRASS, np.uint8), lat, lon, [f], 2.0)
+        col = [int(v) for v in out[:, 10]]
+        self.assertEqual(col[64 - 2], sf.ASPHALT, "4 m north: the 8 m road's edge, painted")
+        self.assertEqual(col[64 + 2], sf.ASPHALT, "4 m south: likewise (centred, not half a sample off)")
+        self.assertEqual((col[64 - 3], col[64 + 3]), (sf.VERGE, sf.VERGE), "6 m either side: the verge")
+        self.assertEqual(col[64 - 6], sf.GRASS, "12 m north: grass again")
+        rock = sf.paint_roads(np.full(lat.shape, sf.ROCK, np.uint8), lat, lon, [f], 2.0)
+        self.assertEqual(int(rock[64 - 3, 10]), sf.ROCK)
+        f9 = features([[(-200, 0), (200, 0)]], ["residential"], widths=[(0, 9.0)])
+        out9 = sf.paint_roads(np.full(lat.shape, sf.GRASS, np.uint8), lat, lon, [f9], 2.0)
+        n = int((out9[:, 10] == sf.ASPHALT).sum())
+        self.assertGreaterEqual(n * 2.0, 9.0, "a 9 m road painted at least 9 m wide (was 8)")
 
     def test_cobbles_under_the_tyres(self):
         lat, lon = self.grid()

@@ -1,6 +1,7 @@
 """seacarve: the sea floor carved under ocean polygons, deterministic and continuous across the shoreline
 and across cells; the far tiles' DEM sea sunk; which water-tile samples are sea; near()."""
 import math
+import os
 import sys
 import tempfile
 import unittest
@@ -126,6 +127,27 @@ class SeaCarveTest(unittest.TestCase):
         np.testing.assert_array_equal(a, b)
         with tempfile.TemporaryDirectory() as other:
             np.testing.assert_array_equal(a, seacarve.SeaCarver(BathyMapData(), other).depth(lat, lon))
+
+    def test_raw_copy_and_older_cells(self):
+        """Read back memory-mapped (the raw copy) and from a cell cached before the raw copies (converted): the
+        same water as the build."""
+        import glob
+        lat = np.array([south(7.3), south(31), south(-20)])
+        lon = np.array([LON0, LON0 + 0.001, LON0])
+        a = seacarve.SeaCarver(BathyMapData(), self.tmp.name).water(lat, lon)
+        raws = glob.glob(os.path.join(self.tmp.name, "**", "*.raw.npy"), recursive=True)
+        self.assertTrue(raws)
+        sc = seacarve.SeaCarver(BathyMapData(), self.tmp.name)
+        b = sc.water(lat, lon)
+        mapped = next(r for r, _, _ in sc._mem.values() if r is not None)[0]
+        self.assertFalse(mapped.flags.owndata or mapped.flags.writeable, "a view of the raw copy's mapping")
+        for r in raws:
+            os.remove(r)
+        c = seacarve.SeaCarver(BathyMapData(), self.tmp.name).water(lat, lon)
+        self.assertTrue(glob.glob(os.path.join(self.tmp.name, "**", "*.raw.npy"), recursive=True))
+        for x in (b, c):
+            np.testing.assert_array_equal(a[0], x[0])
+            np.testing.assert_array_equal(a[1], x[1])
 
     def test_without_bathymetry_not_cached(self):
         lat, lon = np.array([south(50)]), np.array([LON0])
@@ -350,6 +372,41 @@ class SeaAtTest(unittest.TestCase):
         self.assertEqual(list(sc.sea_at(Dem(), lat, lon, 512.0)), [False, False, True], "small: the polygons")
         self.assertEqual(list(sc.sea_at(Dem(), lat, lon, 4096.0)), [True, False, False], "large: the DEM band")
 
+
+
+class PlanAgainTest(unittest.TestCase):
+    """earthd: the water planned again after SEA_CHECK_S only when the last plan lacked map data."""
+
+    def conn(self):
+        import types
+        import earthd
+        c = earthd.Connection.__new__(earthd.Connection)
+        c.s = types.SimpleNamespace(anchors={1: types.SimpleNamespace(frame=None)}, sea=None, dem=None)
+        c.sea_busy, c.started = False, []
+
+        def spawn(coro):
+            c.started.append(1)
+            coro.close()
+        c.spawn = spawn
+        return c
+
+    def test_complete_plan_kept(self):
+        import time
+        import earthd
+        import seatiles
+        sq = seatiles.square_of(10.0, 10.0)
+        old = time.monotonic() - earthd.SEA_CHECK_S - 1
+        c = self.conn()
+        c.sea_checked = (1, sq, old, True)
+        c.sea_tiles(1, 10.0, 10.0)
+        self.assertEqual(c.started, [], "complete: not planned again")
+        c.sea_checked = (1, sq, old, False)
+        c.sea_tiles(1, 10.0, 10.0)
+        self.assertEqual(c.started, [1], "incomplete: planned again")
+        c = self.conn()
+        c.sea_checked = (1, sq, time.monotonic(), True)
+        c.sea_tiles(1, 10.0 + seatiles.PLAN_SQUARE, 10.0)
+        self.assertEqual(c.started, [1], "another square: planned")
 
 if __name__ == "__main__":
     unittest.main()

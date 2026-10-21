@@ -185,6 +185,28 @@ def cells_for_bbox(lat0, lon0, lat1, lon1, z=ZOOM, max_cells=4096):
     return [CellKey(z, ix % n, iy) for iy in range(iy0, iy1 + 1) for ix in range(ix0, ix1 + 1)]
 
 
+def cells_near_points(lat, lon, pad_lat, pad_lon, z=ZOOM):
+    """The cells that intersect the box [lat - pad_lat, lat + pad_lat] x [lon - pad_lon, lon + pad_lon] of any
+    point, in row-major order like cells_for_bbox (a subset of the points' bbox cells, perhaps a cell more on an
+    exact edge). For points spread far apart: a straight 27 km track has two vertices, and their bbox ~240 cells."""
+    n = 1 << z
+    lat = np.asarray(lat, np.float64).ravel()
+    lon = np.asarray(lon, np.float64).ravel()
+    if not lat.size:
+        return []
+    x0, y1 = tile_xy(lat - pad_lat, lon - pad_lon, z)
+    x1, y0 = tile_xy(lat + pad_lat, lon + pad_lon, z)
+    ix0, ix1 = np.floor(x0).astype(np.int64), np.floor(x1).astype(np.int64)
+    iy0 = np.clip(np.floor(y0).astype(np.int64), 0, n - 1)
+    iy1 = np.clip(np.floor(y1).astype(np.int64), 0, n - 1)
+    keys = set()
+    for dx in range(int((ix1 - ix0).max()) + 1):
+        for dy in range(int((iy1 - iy0).max()) + 1):
+            ok = (ix0 + dx <= ix1) & (iy0 + dy <= iy1)
+            keys.update(zip(((ix0[ok] + dx) % n).tolist(), (iy0[ok] + dy).tolist()))
+    return [CellKey(z, x, y) for y, x in sorted((y, x) for x, y in keys)]
+
+
 def owner(lon_c, lat_c, z=ZOOM):
     """Cell x, y arrays of the cells that own points (lon_c, lat_c): a feature that spans several
     cells is listed in each of them, and owned by the one containing its bbox centre (so a

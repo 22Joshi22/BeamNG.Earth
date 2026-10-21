@@ -2,6 +2,97 @@
 
 What changed in each release of BeamNG.Earth, newest first.
 
+## 1.5.4 beta (2026-10-21)
+
+Works with BeamNG.drive 0.40.
+
+### Level select
+- **A new level select.** BeamNG.Earth's card in the freeroam menu shows the whole Earth with its details, and lists
+  every saved place as a starting location with its own aerial picture. Places you add, rename or delete show up
+  there by themselves.
+- **Random location** starts you on a road somewhere in the world.
+- **The default places start you on a road.** Some of them used to start you inside a building or on a steep slope.
+  Pécs, Hungary is a new default place, and the Kayenta solar plant is no longer one (it stays in your list if you
+  have it).
+
+### World map
+- **Controller support, laid out like the stock map.** The right stick moves the map, the triggers zoom, A sets the
+  GPS marker (press it again to clear it), X teleports, Y turns autodrive on or off and B goes back.
+- **Reduced the chance of the car moving while you use the map.** The sticks and triggers no longer drive the car
+  behind the map.
+- **The credits box no longer covers the Places panel** or the game's info bar.
+
+### Steam Deck and smaller computers
+- **BeamNG.Earth can now run on a Steam Deck**, in Game Mode too. The launcher starts the game through Steam's
+  runtime, and on computers with less than 20 GB of memory the world server uses smaller caches and fewer helper
+  processes.
+- **The world should build much faster on a Steam Deck.** In testing at Baltimore, the ground under the car was ready
+  about 8 s after a teleport (before: 17.5 s), and everything around it in about 53 s (before: 85 s).
+- **Reduced the chance of "Near the edge of the loaded ground" warnings on a Steam Deck.** Each new piece of ground's
+  aerial photo is now made by a separate helper process, so the next piece is not held up behind the rest of the
+  server's work.
+- **The world server uses much less memory.** Street widths, map data and elevation tiles are now shared between its
+  processes instead of each keeping its own copy (in testing with the Steam Deck settings: about 1.7 GB, before:
+  4.6 GB).
+
+### Driving and loading
+- **The world now loads around the camera, not just the car.** With the free camera or a far chase camera, the
+  ground, roads, buildings and trees load where you are looking, while collision stays around your car.
+- **Roads ahead should load first at high speed** (GitHub #50). Above about 55 mph, road pieces along your path
+  come before those beside or behind you.
+- **Much smoother driving through dense forest** (GitHub #66). Each piece of the world now shows at most a few
+  thousand trees (in testing near Bodø, Norway on a Steam Deck: 1.66 million trees down to 142,000, and about
+  32-36 fps instead of 20 while driving).
+- **Reduced the chance of a hitch the first time you reach a tunnel, a bridge or a new kind of road or building.**
+  The game now sets up BeamNG.Earth's road and building materials while the map loads.
+- **The world server uses less of your CPU while driving.** In testing on a desktop, a 4-minute city drive used about
+  0.6 of a CPU core on average (before: 1.6).
+- **Teleports should finish a little sooner.** In testing, Baltimore was fully loaded about 25 % sooner.
+- **Faster loading in open country with very long straight roads**, such as the Bonneville Salt Flats.
+
+### Bridges
+- **Reduced the chance of driving into the ground at the end of a bridge.** A straight bridge whose deck rises toward
+  its middle could be drawn flat, below the road it meets at the far end, and a deck meeting a steep embankment could
+  end in a step.
+- **Reduced the chance of falling through a bridge that loads late.** A bridge deck that appeared as you drove up to
+  it was kept from turning solid until you had passed it.
+- **Reduced the chance of hitting a low overpass** (GitHub #51). The roads leading onto a short bridge over a highway
+  are now raised on gentle approach ramps, so the bridge clears the lanes (from KyzoFox's PR #64; in testing, the
+  bridge over I-20 near Temple, GA went from about 4.5 m over the lanes to about 10 m).
+- **Reduced the chance of a step where a road meets a bridge** whose two ends are at different heights.
+
+### Roads and ground
+- **Road surfaces now follow the ground's own shape**, and underpasses no longer block the road above them.
+- **Reduced the chance of medians and traffic islands catching a wheel** (GitHub #55). Narrow curbed strips no longer
+  fold back over themselves in their collision.
+- **Rural motorways** have two lanes each way between paved shoulders (GitHub #43).
+- **A bare verge beside roads without sidewalks**, and roads are painted centred and at least their full width.
+- **Salt flats, playas and dry lake beds are bare now.** Rocks lie only where the ground slopes, and trees misread
+  from bright ground are left out.
+- **Fewer cars and trucks drawn as buildings** (GitHub #80). Machine-learned building outlines on public roads are
+  left out.
+- **Reduced the chance of buildings floating over driveways and loading docks** (GitHub #60: a church in Oklahoma
+  City floated 10 m up).
+
+### From contributors (PR #41 by Madderose, PR #64 by KyzoFox)
+- **Reduced the chance of a trailer coming off** when the world re-centres around you.
+- **Faster handling of large bursts of messages** from the world server, and fewer road pieces casting shadows.
+- **Tiles without roads are no longer rebuilt again and again.**
+
+### Other fixes
+- **Linux: the launcher no longer mistakes Steam Linux Runtime for Proton** (GitHub #56). With that compatibility
+  setting the mod was put into an old Proton folder the game no longer used.
+- **Reduced the chance of terrain failing to load on Windows** when the world server's cache files are in use by
+  another of its processes (GitHub #67, "Access is denied").
+- **The mod now stays out of the way on other maps**, apart from keeping its connection to the world server.
+- **"Degraded" no longer shows** for services the world does not need (weather, search, routing, the update check)
+  (GitHub #23).
+- **Reduced the chance of the server stopping writing files** if its session folder is deleted while it runs
+  (GitHub #27, #54).
+
+If you want to talk about this mod with me or other people, join my Discord server at
+[discord.gg/tgf](https://discord.gg/tgf) and head to the #beamng-earth channel.
+
 ## 1.5.3 beta (2026-10-19)
 
 Works with BeamNG.drive 0.40.

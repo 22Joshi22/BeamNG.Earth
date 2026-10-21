@@ -563,7 +563,7 @@ def ensure_egm2008(cache_dir=CACHE_DIR, log=print, net=None):
 
 def load_egm2008(nmax=DEFAULT_NMAX, cache_dir=CACHE_DIR, log=print, **kw):
     """EGM2008 truncated to degree ``nmax`` (<= 2190)."""
-    arr = np.load(ensure_egm2008(cache_dir, log=log), mmap_mode="r")   # read as needed
+    arr = np.asarray(np.load(ensure_egm2008(cache_dir, log=log), mmap_mode="r"))   # read as needed (a plain view)
     L = tri_len(min(nmax, EGM2008_NMAX))
     model = GravityModel(arr[0, :L], arr[1, :L], nmax=nmax, corr_c=arr[2, :L], corr_s=arr[3, :L],
                          name=f"EGM2008/{nmax}", **kw)

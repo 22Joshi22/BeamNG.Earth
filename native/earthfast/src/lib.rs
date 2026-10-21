@@ -4,6 +4,20 @@ use numpy::{PyArray1, PyArray2, PyReadonlyArray1, PyReadonlyArray2, PyReadonlyAr
 use pyo3::types::PyBytes;
 use pyo3::prelude::*;
 
+/// Work (about the number of inner-loop steps) below which a kernel keeps the GIL: a thread that lets it go waits for
+/// it again behind the interpreter's busy threads, up to the switch interval (5 ms), so a call of a few microseconds
+/// cost milliseconds (the server's event loop on a Steam Deck spent ~22 s of a Baltimore teleport there, 2026-10-20).
+const RELEASE_MIN: usize = 200_000;
+
+fn release<T, F>(py: Python<'_>, work: usize, f: F) -> T
+where
+    F: pyo3::marker::Ungil + FnOnce() -> T,
+    T: pyo3::marker::Ungil,
+{
+    if work >= RELEASE_MIN { py.allow_threads(f) } else { f() }
+}
+
+
 /// Even-odd point-in-polygon (the polygon's last vertex joins its first), as islands._inside.
 #[inline]
 fn inside(px: &[f64], py: &[f64], x: f64, y: f64) -> bool {
@@ -55,7 +69,7 @@ fn island_ring_rays<'py>(py: Python<'py>, poly: PyReadonlyArray2<'py, f64>, segs
     let pys: Vec<f64> = p.column(1).to_vec();
     let s = to_segs(&segs);
     let h = hw.as_slice().unwrap().to_vec();
-    let out = py.allow_threads(|| {
+    let out = release(py, px.len() * s.len().max(1), || {
         let mut out = Vec::with_capacity(rays * 2);
         for k in 0..rays {
             let a = 2.0 * std::f64::consts::PI * (k as f64) / (rays as f64);
@@ -313,7 +327,7 @@ fn geodetic_to_enu<'py>(py: Python<'py>, lat: PyReadonlyArray1<'py, f64>, lon: P
     const E2: f64 = F * (2.0 - F);
     let (la, lo, hh, o, r) = (lat.as_array(), lon.as_array(), h.as_array(), origin.as_array(), rot.as_array());
     let n = la.len();
-    let (e, nn, u) = py.allow_threads(|| {
+    let (e, nn, u) = release(py, n * 40, || {
     let (mut e, mut nn, mut u) = (Vec::with_capacity(n), Vec::with_capacity(n), Vec::with_capacity(n));
     for i in 0..n {
         let (phi, lam, hv) = (la[i].to_radians(), lo[i].to_radians(), hh[i]);
@@ -347,7 +361,7 @@ fn enu_to_geodetic<'py>(py: Python<'py>, e: PyReadonlyArray1<'py, f64>, n: PyRea
     const EP2: f64 = E2 / (1.0 - E2);
     let (ea, na, ua, o, r) = (e.as_array(), n.as_array(), u.as_array(), origin.as_array(), rot.as_array());
     let m = ea.len();
-    let (lat, lon, hgt) = py.allow_threads(|| {
+    let (lat, lon, hgt) = release(py, m * 60, || {
     let (mut lat, mut lon, mut hgt) = (Vec::with_capacity(m), Vec::with_capacity(m), Vec::with_capacity(m));
     for i in 0..m {
         let (ev, nv, uv) = (ea[i], na[i], ua[i]);
@@ -640,8 +654,9 @@ fn densify<'py>(py: Python<'py>, pts: PyReadonlyArray2<'py, f64>, spacing: f64) 
 
 /// roadwidth.Walls.rays for one ray: the distance to the first wall from (px, py) along unit (dx, dy) within
 /// reach, or NaN. keys / first / counts / seg_of: the Walls bucket index, segs (m, 4).
-fn wall_ray(keys: &[i64], first: &[i64], counts: &[i64], seg_of: &[i64], segs: &numpy::ndarray::ArrayView2<f64>,
-            bucket: f64, px: f64, py: f64, dx: f64, dy: f64, reach: f64) -> f64 {
+fn wall_ray<T: Copy + Into<f64>>(keys: &[i64], first: &[i64], counts: &[i64], seg_of: &[i64],
+                                  segs: &numpy::ndarray::ArrayView2<T>, bucket: f64, px: f64, py: f64, dx: f64, dy: f64,
+                                  reach: f64) -> f64 {
     let (qx, qy) = (px + dx * reach, py + dy * reach);
     let bx0 = (px.min(qx) / bucket).floor() as i64;
     let bx1 = (px.max(qx) / bucket).floor() as i64;
@@ -654,8 +669,9 @@ fn wall_ray(keys: &[i64], first: &[i64], counts: &[i64], seg_of: &[i64], segs: &
             let Ok(i) = keys.binary_search(&key) else { continue };
             for j in first[i]..first[i] + counts[i] {
                 let sgi = seg_of[j as usize] as usize;
-                let (ax, ay) = (segs[[sgi, 0]], segs[[sgi, 1]]);
-                let (ex, ey) = (segs[[sgi, 2]] - ax, segs[[sgi, 3]] - ay);
+                // (float32 walls widened as read: exactly the float64 numbers the arithmetic used before)
+                let (ax, ay): (f64, f64) = (segs[[sgi, 0]].into(), segs[[sgi, 1]].into());
+                let (ex, ey) = (Into::<f64>::into(segs[[sgi, 2]]) - ax, Into::<f64>::into(segs[[sgi, 3]]) - ay);
                 let den = dx * ey - dy * ex;
                 if den.abs() <= 1e-12 {
                     continue;
@@ -719,12 +735,11 @@ fn np_percentile(v: &[f64], q: f64) -> f64 {
 }
 
 /// roadwidth.measure_row: the right-of-way between the building walls of a street (centreline (k, >=2)), or None.
-#[pyfunction]
 #[allow(clippy::too_many_arguments)]
-fn measure_row(line: PyReadonlyArray2<f64>, keys: PyReadonlyArray1<i64>, first: PyReadonlyArray1<i64>,
-               counts: PyReadonlyArray1<i64>, seg_of: PyReadonlyArray1<i64>, segs: PyReadonlyArray2<f64>,
-               bucket: f64, step: f64, end_skip: f64, reach: f64, min_samples: usize, walled: f64, agree: f64)
-               -> Option<f64> {
+fn measure_row_any<T: Copy + Into<f64> + numpy::Element>(
+        line: PyReadonlyArray2<f64>, keys: PyReadonlyArray1<i64>, first: PyReadonlyArray1<i64>,
+        counts: PyReadonlyArray1<i64>, seg_of: PyReadonlyArray1<i64>, segs: PyReadonlyArray2<T>, bucket: f64,
+        step: f64, end_skip: f64, reach: f64, min_samples: usize, walled: f64, agree: f64) -> Option<f64> {
     let l = line.as_array();
     let k = l.nrows();
     if k < 2 {
@@ -779,6 +794,26 @@ fn measure_row(line: PyReadonlyArray2<f64>, keys: PyReadonlyArray1<i64>, first: 
         return None;
     }
     Some(med)
+}
+
+#[pyfunction]
+#[allow(clippy::too_many_arguments)]
+fn measure_row(line: PyReadonlyArray2<f64>, keys: PyReadonlyArray1<i64>, first: PyReadonlyArray1<i64>,
+               counts: PyReadonlyArray1<i64>, seg_of: PyReadonlyArray1<i64>, segs: PyReadonlyArray2<f64>,
+               bucket: f64, step: f64, end_skip: f64, reach: f64, min_samples: usize, walled: f64, agree: f64)
+               -> Option<f64> {
+    measure_row_any(line, keys, first, counts, seg_of, segs, bucket, step, end_skip, reach, min_samples, walled, agree)
+}
+
+/// measure_row with the walls as float32 (roadwidth keeps them as the shared memory-mapped file: one copy for every
+/// server process instead of a float64 copy in each).
+#[pyfunction]
+#[allow(clippy::too_many_arguments)]
+fn measure_row32(line: PyReadonlyArray2<f64>, keys: PyReadonlyArray1<i64>, first: PyReadonlyArray1<i64>,
+                 counts: PyReadonlyArray1<i64>, seg_of: PyReadonlyArray1<i64>, segs: PyReadonlyArray2<f32>,
+                 bucket: f64, step: f64, end_skip: f64, reach: f64, min_samples: usize, walled: f64, agree: f64)
+                 -> Option<f64> {
+    measure_row_any(line, keys, first, counts, seg_of, segs, bucket, step, end_skip, reach, min_samples, walled, agree)
 }
 
 /// grading.grade_points: base heights at the points (px, py) graded under the plans' segments a-b (heights za-zb,
@@ -1600,7 +1635,7 @@ fn season_grade<'py>(py: Python<'py>, rgb: PyReadonlyArray3<'py, u8>, n: PyReado
 fn tangents<'py>(py: Python<'py>, v: PyReadonlyArray2<'py, f64>, uv: PyReadonlyArray2<'py, f64>,
                  nrm: PyReadonlyArray2<'py, f64>, idx: PyReadonlyArray2<'py, i64>) -> Bound<'py, PyArray2<f64>> {
     let (v, uv, nr, ix) = (v.as_array(), uv.as_array(), nrm.as_array(), idx.as_array());
-    let out = py.allow_threads(|| {
+    let out = release(py, ix.shape()[0] * 20, || {
         let n = v.nrows();
         let m = ix.nrows();
         let mut sd = vec![[0f64; 3]; m];
@@ -1917,7 +1952,7 @@ fn view_distances<'py>(py: Python<'py>, bboxes: PyReadonlyArray2<'py, f64>, px: 
                        penalty: f64) -> Bound<'py, PyArray1<f64>> {
     let b = bboxes.as_array();
     let n = b.shape()[0];
-    let out: Vec<f64> = py.allow_threads(|| {
+    let out: Vec<f64> = release(py, n * cone.len().max(1), || {
         (0..n).map(|k| {
             let (x0, y0, x1, y1) = (b[[k, 0]], b[[k, 1]], b[[k, 2]], b[[k, 3]]);
             let dx = (x0 - px).max(0.0).max(px - x1);
@@ -2036,7 +2071,7 @@ fn over_tunnel(py: Python<'_>, mut mask: numpy::PyReadwriteArray1<'_, bool>, e: 
                n: PyReadonlyArray1<'_, f64>, xy: PyReadonlyArray2<'_, f64>, hw: f64, keep_in: f64) {
     let (ev, nv, xv) = (e.as_array(), n.as_array(), xy.as_array());
     let mut mv = mask.as_array_mut();
-    py.allow_threads(|| {
+    release(py, ev.len() * xv.shape()[0].max(1), || {
         let np_ = ev.len();
         let k = xv.shape()[0];
         if np_ == 0 || k < 2 {
@@ -2091,7 +2126,7 @@ fn over_tunnel(py: Python<'_>, mut mask: numpy::PyReadwriteArray1<'_, bool>, e: 
 fn points_near_segments<'py>(py: Python<'py>, p: PyReadonlyArray2<'py, f64>, a: PyReadonlyArray2<'py, f64>,
                              b: PyReadonlyArray2<'py, f64>, hw: PyReadonlyArray1<'py, f64>) -> Bound<'py, PyArray1<bool>> {
     let (pv, av, bv, hv) = (p.as_array(), a.as_array(), b.as_array(), hw.as_array());
-    let out: Vec<bool> = py.allow_threads(|| {
+    let out: Vec<bool> = release(py, pv.shape()[0] * av.shape()[0].max(1), || {
         let ns = av.shape()[0];
         let seg: Vec<[f64; 6]> = (0..ns).map(|k| {
             let (a0, a1) = (av[[k, 0]], av[[k, 1]]);
@@ -2175,7 +2210,7 @@ fn arch_raise_part(py: Python<'_>, mut z: numpy::PyReadwriteArray1<'_, f64>, px:
     let pxs = px.as_slice().expect("contiguous px");
     let pys = pyy.as_slice().expect("contiguous py");
     let zs = z.as_slice_mut().expect("contiguous z");
-    py.allow_threads(|| {
+    release(py, zs.len() * xv.shape()[0].max(1), || {
         let k = xv.shape()[0];
         if k < 2 { return; }
         // per segment: start, direction, squared length, its length, arc at its start, floor at both ends
@@ -2221,7 +2256,7 @@ fn arch_raise_part(py: Python<'_>, mut z: numpy::PyReadwriteArray1<'_, f64>, px:
 fn subdivide_tris<'py>(py: Python<'py>, pts: PyReadonlyArray2<'py, f64>, tris: PyReadonlyArray2<'py, i64>, max_edge: f64)
                        -> (Bound<'py, PyArray2<f64>>, Bound<'py, PyArray2<i64>>) {
     let (pv, tv) = (pts.as_array(), tris.as_array());
-    let (p_out, t_out) = py.allow_threads(|| {
+    let (p_out, t_out) = release(py, tv.shape()[0] * 50, || {
         let mut p: Vec<[f64; 2]> = (0..pv.shape()[0]).map(|i| [pv[[i, 0]], pv[[i, 1]]]).collect();
         let mut stack: Vec<[usize; 3]> = (0..tv.shape()[0]).rev()
             .map(|i| [tv[[i, 0]] as usize, tv[[i, 1]] as usize, tv[[i, 2]] as usize]).collect();
@@ -2263,7 +2298,7 @@ fn deck_edges_covered<'py>(py: Python<'py>, p: PyReadonlyArray2<'py, f64>, op: P
                            a: PyReadonlyArray2<'py, f64>, b: PyReadonlyArray2<'py, f64>, hw: PyReadonlyArray1<'py, f64>,
                            os: PyReadonlyArray1<'py, i64>, dz: f64) -> Bound<'py, PyArray1<bool>> {
     let (pv, opv, av, bv, hv, osv) = (p.as_array(), op.as_array(), a.as_array(), b.as_array(), hw.as_array(), os.as_array());
-    let out: Vec<bool> = py.allow_threads(|| {
+    let out: Vec<bool> = release(py, pv.shape()[0] * av.shape()[0].max(1), || {
         let ns = av.shape()[0];
         // per segment: start, direction, squared length, half width, z at both ends, owner
         let seg: Vec<[f64; 9]> = (0..ns).map(|k| {
@@ -2570,6 +2605,161 @@ fn mesh_warp<'py>(py: Python<'py>, img: PyReadonlyArray3<'py, u8>, qx: PyReadonl
     out.into_pyarray(py)
 }
 
+/// The terrain block's height at (x, y) from its samples grid[j, i] (lattice index i0 + i, j0 + j, every cell m): each
+/// square cut from its south-west corner to its north-east one, as the engine draws it. NaN outside the grid.
+#[inline]
+fn terrain_at(grid: &numpy::ndarray::ArrayView2<f64>, i0: i64, j0: i64, cell: f64, x: f64, y: f64) -> f64 {
+    let (gx, gy) = (x / cell, y / cell);
+    let (mut i, mut j) = (gx.floor() as i64, gy.floor() as i64);
+    let (ny, nx) = (grid.shape()[0] as i64, grid.shape()[1] as i64);
+    // a point on the grid's last line belongs to the square before it
+    if i - i0 == nx - 1 && gx == (i as f64) { i -= 1; }
+    if j - j0 == ny - 1 && gy == (j as f64) { j -= 1; }
+    let (li, lj) = (i - i0, j - j0);
+    if li < 0 || lj < 0 || li + 1 >= nx || lj + 1 >= ny { return f64::NAN; }
+    let (fx, fy) = (gx - i as f64, gy - j as f64);
+    let (li, lj) = (li as usize, lj as usize);
+    let (a, b, c, d) = (grid[[lj, li]], grid[[lj, li + 1]], grid[[lj + 1, li]], grid[[lj + 1, li + 1]]);
+    if fy > fx { a + fy * (c - a) + fx * (d - c) } else { a + fx * (b - a) + fy * (d - b) }
+}
+
+/// roadmesh.build's road surface on the terrain block: triangles (t, 3) over points (n, 2), uvs (n, 2), each given
+/// the terrain's heights at its corners (grid: as terrain_at); where the ground inside departs from that plane by more
+/// than tol (checked at the grid points inside and where its edges cross the terrain's edges) it is cut along the
+/// terrain's edges and every piece takes the terrain's heights: within tol of the drawn ground
+/// everywhere. Returns (points (m, 3), uvs (m, 2), triangles (r, 3), source triangle (r,)); points not shared.
+#[pyfunction]
+#[allow(clippy::too_many_arguments)]
+fn follow_tris<'py>(py: Python<'py>, pts: PyReadonlyArray2<'py, f64>, uv: PyReadonlyArray2<'py, f64>,
+                    tris: PyReadonlyArray2<'py, i64>, cell: f64, grid: PyReadonlyArray2<'py, f64>, i0: i64, j0: i64,
+                    tol: f64)
+                    -> (Bound<'py, PyArray2<f64>>, Bound<'py, PyArray2<f64>>, Bound<'py, PyArray2<i64>>,
+                        Bound<'py, PyArray1<i64>>) {
+    let (pv, uvv, tv, gv) = (pts.as_array(), uv.as_array(), tris.as_array(), grid.as_array());
+    let (p_out, uv_out, t_out, src) = release(py, tv.shape()[0] * 200, || {
+        type V = [f64; 4];
+        let cell = if cell > 0.0 { cell } else { 2.0 };
+        let fams: [(f64, f64); 3] = [(1.0, 0.0), (0.0, 1.0), (-1.0, 1.0)];
+        let ter = |x: f64, y: f64| terrain_at(&gv, i0, j0, cell, x, y);
+        let mut p_out: Vec<[f64; 3]> = Vec::new();
+        let mut uv_out: Vec<[f64; 2]> = Vec::new();
+        let mut t_out: Vec<[i64; 3]> = Vec::new();
+        let mut src: Vec<i64> = Vec::new();
+        let lerp = |a: &V, b: &V, f: f64| -> V {
+            [a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f, a[2] + (b[2] - a[2]) * f, a[3] + (b[3] - a[3]) * f]
+        };
+        for ti in 0..tv.shape()[0] {
+            let tri: Vec<V> = (0..3).map(|k| {
+                let i = tv[[ti, k]] as usize;
+                [pv[[i, 0]], pv[[i, 1]], uvv[[i, 0]], uvv[[i, 1]]]
+            }).collect();
+            let z: Vec<f64> = tri.iter().map(|q| ter(q[0], q[1])).collect();
+            // the plane through the corners: z = z0 + s (p1 - p0) + t (p2 - p0) in barycentric terms
+            let (x0, y0, x1, y1, x2, y2) = (tri[0][0], tri[0][1], tri[1][0], tri[1][1], tri[2][0], tri[2][1]);
+            let det = (x1 - x0) * (y2 - y0) - (x2 - x0) * (y1 - y0);
+            let mut split = !z.iter().all(|v| v.is_finite()) || det.abs() < 1e-12;
+            if !split {
+                let plane = |x: f64, y: f64| {
+                    let s = ((x - x0) * (y2 - y0) - (x2 - x0) * (y - y0)) / det;
+                    let t = ((x1 - x0) * (y - y0) - (x - x0) * (y1 - y0)) / det;
+                    (z[0] + s * (z[1] - z[0]) + t * (z[2] - z[0]), s, t)
+                };
+                let dev = |x: f64, y: f64| { let tz = ter(x, y); if tz.is_finite() { (tz - plane(x, y).0).abs() } else { f64::INFINITY } };
+                // the grid points inside
+                let (lx, hx) = (x0.min(x1).min(x2), x0.max(x1).max(x2));
+                let (ly, hy) = (y0.min(y1).min(y2), y0.max(y1).max(y2));
+                'outer: for gi in ((lx / cell).ceil() as i64)..=((hx / cell).floor() as i64) {
+                    for gj in ((ly / cell).ceil() as i64)..=((hy / cell).floor() as i64) {
+                        let (x, y) = (gi as f64 * cell, gj as f64 * cell);
+                        let (_, s, t) = plane(x, y);
+                        if s >= -1e-9 && t >= -1e-9 && s + t <= 1.0 + 1e-9 && dev(x, y) > tol { split = true; break 'outer; }
+                    }
+                }
+                // where its edges cross the terrain's edges
+                if !split {
+                    'edges: for e in 0..3 {
+                        let (a, b) = (&tri[e], &tri[(e + 1) % 3]);
+                        for &(nx, ny) in fams.iter() {
+                            let (da, db) = (nx * a[0] + ny * a[1], nx * b[0] + ny * b[1]);
+                            let (lo, hi) = (da.min(db), da.max(db));
+                            for k in ((lo / cell).floor() as i64 + 1)..=((hi / cell).ceil() as i64 - 1) {
+                                let line = k as f64 * cell;
+                                if line <= lo || line >= hi { continue; }
+                                let f = (line - da) / (db - da);
+                                let q = lerp(a, b, f);
+                                if dev(q[0], q[1]) > tol { split = true; break 'edges; }
+                            }
+                        }
+                    }
+                }
+            }
+            if !split {
+                let base = p_out.len() as i64;
+                for (k, q) in tri.iter().enumerate() {
+                    p_out.push([q[0], q[1], z[k]]);
+                    uv_out.push([q[2], q[3]]);
+                }
+                t_out.push([base, base + 1, base + 2]);
+                src.push(ti as i64);
+                continue;
+            }
+            let mut polys: Vec<Vec<V>> = vec![tri];
+            for &(nx, ny) in fams.iter() {
+                let mut next: Vec<Vec<V>> = Vec::new();
+                for poly in polys.into_iter() {
+                    let d: Vec<f64> = poly.iter().map(|q| nx * q[0] + ny * q[1]).collect();
+                    let (lo, hi) = d.iter().fold((f64::INFINITY, f64::NEG_INFINITY), |a, &x| (a.0.min(x), a.1.max(x)));
+                    let mut rest = poly;
+                    for k in ((lo / cell).floor() as i64 + 1)..=((hi / cell).ceil() as i64 - 1) {
+                        let line = k as f64 * cell;
+                        if line <= lo + 1e-9 || line >= hi - 1e-9 { continue; }
+                        let n = rest.len();
+                        let mut below: Vec<V> = Vec::new();
+                        let mut above: Vec<V> = Vec::new();
+                        for j in 0..n {
+                            let (a, b) = (&rest[j], &rest[(j + 1) % n]);
+                            let (da, db) = (nx * a[0] + ny * a[1] - line, nx * b[0] + ny * b[1] - line);
+                            if da <= 0.0 { below.push(*a); }
+                            if da >= 0.0 { above.push(*a); }
+                            if (da < 0.0 && db > 0.0) || (da > 0.0 && db < 0.0) {
+                                let x = lerp(a, b, da / (da - db));
+                                below.push(x);
+                                above.push(x);
+                            }
+                        }
+                        if below.len() >= 3 { next.push(below); }
+                        rest = above;
+                        if rest.len() < 3 { break; }
+                    }
+                    if rest.len() >= 3 { next.push(rest); }
+                }
+                polys = next;
+            }
+            for poly in polys.iter() {
+                let area: f64 = (0..poly.len()).map(|j| {
+                    let (a, b) = (&poly[j], &poly[(j + 1) % poly.len()]);
+                    a[0] * b[1] - b[0] * a[1]
+                }).sum::<f64>() / 2.0;
+                if area.abs() < 1e-8 { continue; }
+                let base = p_out.len() as i64;
+                for q in poly.iter() {
+                    p_out.push([q[0], q[1], ter(q[0], q[1])]);
+                    uv_out.push([q[2], q[3]]);
+                }
+                for a in 1..(poly.len() as i64 - 1) {
+                    t_out.push([base, base + a, base + a + 1]);
+                    src.push(ti as i64);
+                }
+            }
+        }
+        (p_out, uv_out, t_out, src)
+    });
+    let pa = numpy::ndarray::Array2::from_shape_vec((p_out.len(), 3), p_out.into_iter().flatten().collect()).unwrap();
+    let ua = numpy::ndarray::Array2::from_shape_vec((uv_out.len(), 2), uv_out.into_iter().flatten().collect()).unwrap();
+    let ta = numpy::ndarray::Array2::from_shape_vec((t_out.len(), 3), t_out.into_iter().flatten().collect()).unwrap();
+    (pa.into_pyarray(py), ua.into_pyarray(py), ta.into_pyarray(py), src.into_pyarray(py))
+}
+
 #[pymodule]
 fn earthfast(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(island_ring_rays, m)?)?;
@@ -2585,6 +2775,7 @@ fn earthfast(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(inside_blockers, m)?)?;
     m.add_function(wrap_pyfunction!(densify, m)?)?;
     m.add_function(wrap_pyfunction!(measure_row, m)?)?;
+    m.add_function(wrap_pyfunction!(measure_row32, m)?)?;
     m.add_function(wrap_pyfunction!(grade_points, m)?)?;
     m.add_function(wrap_pyfunction!(resample, m)?)?;
     m.add_function(wrap_pyfunction!(tunnel_sections, m)?)?;
@@ -2616,6 +2807,7 @@ fn earthfast(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(points_near_segments, m)?)?;
     m.add_function(wrap_pyfunction!(over_tunnel, m)?)?;
     m.add_function(wrap_pyfunction!(veg_rows_json, m)?)?;
-    m.add("VERSION", 32)?;
+    m.add_function(wrap_pyfunction!(follow_tris, m)?)?;
+    m.add("VERSION", 34)?;
     Ok(())
 }

@@ -107,7 +107,14 @@ def classify(classes, u, square, lat=None, lon=None):
     classes = np.asarray(classes, np.uint8)
     idx = _LUT[classes]
     if lat is not None and lon is not None:
-        idx = np.where((classes == 50) & lawns(lat, lon), np.uint8(LAWN), idx)
+        # (KyzoFox 1.5.4: lawns() only at the built-up samples, the only ones it can change: on rural ground
+        # that is almost none of a block)
+        urban = classes == 50
+        if urban.any():
+            idx = idx.copy()
+            sub = idx[urban]
+            sub[lawns(np.asarray(lat, np.float64)[urban], np.asarray(lon, np.float64)[urban])] = np.uint8(LAWN)
+            idx[urban] = sub
     u = np.asarray(u, np.float64)
     if min(u.shape) < 2:            # no slope from a single row / column
         return idx.astype(np.uint8)
@@ -129,6 +136,15 @@ def _hash01(ix, iy, seed):
 
 def _value_noise(x, y, seed):
     """Smooth value noise in [-1, 1] at points (x, y) given in lattice units."""
+    return _value_noises(x, y, (seed,))[0]
+
+
+def _value_noises(x, y, seeds):
+    """_value_noise(x, y, seed) for each of seeds, the lattice work done once (warp's dx and dy share their points).
+    KyzoFox 1.5.4: the four corner hashes come from a table of the lattice points the samples touch. A 1 km
+    block's million samples sit in a few thousand lattice cells (12-40 m features, 2 m samples), and hashing every
+    corner of every sample was most of the terrain block's "landcover" time (warp + lawns: 6 noises). The same values
+    exactly (the same hash and arithmetic, looked up)."""
     x0 = np.floor(x)
     y0 = np.floor(y)
     fx = x - x0
@@ -137,11 +153,40 @@ def _value_noise(x, y, seed):
     fy = fy * fy * (3.0 - 2.0 * fy)
     ix = x0.astype(np.int64)
     iy = y0.astype(np.int64)
-    a = _hash01(ix, iy, seed)
-    b = _hash01(ix + 1, iy, seed)
-    c = _hash01(ix, iy + 1, seed)
-    d = _hash01(ix + 1, iy + 1, seed)
-    return (a + (b - a) * fx) + ((c + (d - c) * fx) - (a + (b - a) * fx)) * fy
+    table = None
+    if ix.size >= NOISE_TABLE_MIN:
+        bx, by = int(ix.min()), int(iy.min())
+        w, h = int(ix.max()) - bx + 2, int(iy.max()) - by + 2
+        if w * h * NOISE_TABLE_SHARE <= ix.size:
+            gy, gx = np.mgrid[by:by + h, bx:bx + w]
+            k = (iy - by) * w + (ix - bx)
+            table = (gx, gy, k, w)
+    out = []
+    for seed in seeds:
+        if table is not None:
+            gx, gy, k, w = table
+            tab = _hash01(gx, gy, seed).ravel()
+            a, b, c, d = tab[k], tab[k + 1], tab[k + w], tab[k + w + 1]
+        else:
+            a = _hash01(ix, iy, seed)
+            b = _hash01(ix + 1, iy, seed)
+            c = _hash01(ix, iy + 1, seed)
+            d = _hash01(ix + 1, iy + 1, seed)
+        top = b - a
+        top *= fx
+        top += a                        # a + (b - a) * fx
+        bot = d - c
+        bot *= fx
+        bot += c                        # c + (d - c) * fx
+        bot -= top
+        bot *= fy
+        bot += top                      # top + (bot - top) * fy
+        out.append(bot)
+    return out
+
+
+NOISE_TABLE_MIN = 4096      # samples from which _value_noise hashes a lattice table ...
+NOISE_TABLE_SHARE = 4       # ... when the table has at most a quarter as many points as there are samples
 
 
 def warp(lat, lon):
@@ -156,8 +201,9 @@ def warp(lat, lon):
     dx = np.zeros_like(lat)
     dy = np.zeros_like(lat)
     for k, (size, amp) in enumerate(WARP_OCTAVES):
-        dx += amp * _value_noise(xm / size, ym / size, 2 * k + 1)
-        dy += amp * _value_noise(xm / size, ym / size, 2 * k + 2)
+        nx, ny = _value_noises(xm / size, ym / size, (2 * k + 1, 2 * k + 2))
+        dx += amp * nx
+        dy += amp * ny
     return lat + dy / M_PER_DEG, lon + dx / np.maximum(m_lon, 1e-6)
 
 
@@ -199,21 +245,31 @@ def paint_roads(idx, lat, lon, feats_list, square, urban_fn=None, widths=None, e
     draws = {k: ImageDraw.Draw(im) for k, im in layers.items()}
     lawn = Image.new("L", (w, h), 0)            # divided roads' medians (under the roads: they paint over it)
     lawn_draw = ImageDraw.Draw(lawn)
+    verge = Image.new("L", (w, h), 0)           # a bare strip beside roads without sidewalks (VERGE_M)
+    verge_draw = ImageDraw.Draw(verge)
     seen = set()
 
     def line(x, y, spec, aisle):
         width, kind = spec.width, spec.kind
         if aisle:
             width += 2 * AISLE_STALLS_M         # the stalls either side (parking.aisle_spots): no grass under cars
-        if roadsmod.has_sidewalks(spec):
+        walks = roadsmod.has_sidewalks(spec)
+        if walks:
             width += 2 * (spec.walk + square)   # the sidewalks (+ a sample: tufts at the outer edge): grass grew up
                                                 # through them (ground cover is the terrain's: Lauterbrunnen, Baltimore
                                                 # 2026-10-15)
-        px = max(1, int(round(width / square)))
+        # rounded up to an odd number of samples: a 9 m road was painted 8 m wide (round(4.5) = 4), and an even width
+        # sits half a sample off the line (PIL), its one edge a metre short
+        px = max(1, int(math.ceil(width / square - 1e-9)))
+        px += 1 - px % 2
         c, r = to_px(x, y)
-        if c.max() < -px or c.min() > w + px or r.max() < -px or r.min() > h + px:
+        vx = 0 if walks else 2 * int(math.ceil(VERGE_M / square))     # (even: the verge stays odd, centred)
+        if c.max() < -px - vx or c.min() > w + px + vx or r.max() < -px - vx or r.min() > h + px + vx:
             return
-        draws[kind].line(list(zip(c.tolist(), r.tolist())), fill=255, width=px, joint="curve")
+        pts = list(zip(c.tolist(), r.tolist()))
+        draws[kind].line(pts, fill=255, width=px, joint="curve")
+        if vx:
+            verge_draw.line(pts, fill=255, width=px + vx, joint="curve")
 
     for feats in feats_list:
         if feats is None or len(feats) == 0:
@@ -243,12 +299,20 @@ def paint_roads(idx, lat, lon, feats_list, square, urban_fn=None, widths=None, e
         line(np.asarray(lo), np.asarray(la), spec, False)
     out = idx.copy()
     out[np.asarray(lawn) > 0] = LAWN
+    v = np.asarray(verge) > 0
+    out[v & np.isin(out, VERGE_FROM)] = VERGE
     for k in ROAD_ORDER:
         m = np.asarray(layers[k]) > 0
         out[m] = ROAD_MATERIAL[k]
     return out
 
 
+# A road without sidewalks gets a verge of VERGE_M a side painted bare where the ground would carry grass or shrubs:
+# the ground cover goes by the 2 m layer samples, and tufts stood on the asphalt along its edges in many places (the
+# user, 2026-10-20: "grass on the road")
+VERGE_M = 2.0
+VERGE_FROM = (GRASS, LAWN, DUSTY)
+VERGE = DIRT
 AISLE_STALLS_M = 5.5        # a parking aisle's stall rows (parking.LOT_SPOT_D_M), painted with it
 PARKING_CLASSES = {"parking"}     # Overture infrastructure (transit) polygons drawn as asphalt: no grass on a lot
 # Squares and pedestrian areas (Overture land_use subtype "pedestrian": Mexico City's Zocalo read as bare dirt,
@@ -318,7 +382,7 @@ def write_masks(idx, out_dir, stem):
         path = os.path.join(out_dir, name)
         tmp = staging.tmp_for(path)
         Image.fromarray(np.where(idx == i, 255, 0).astype(np.uint8), "L").save(tmp, format="PNG", compress_level=1)
-        os.replace(tmp, path)
+        staging.replace(tmp, path)
     return names
 
 
@@ -381,13 +445,13 @@ def photo_lawns(out_dir, ter_name, mask_names_, rgb):
     tmp = staging.tmp_for(path)
     with open(tmp, "wb") as f:
         f.write(data)
-    os.replace(tmp, path)
+    staging.replace(tmp, path)
     north = lay[::-1]
     for i in (LAWN, DIRT, SNOW, LOOSE):
         p = os.path.join(out_dir, mask_names_[i])
         tmp = staging.tmp_for(p)
         Image.fromarray(np.where(north == i, 255, 0).astype(np.uint8), "L").save(tmp, format="PNG", compress_level=1)
-        os.replace(tmp, p)
+        staging.replace(tmp, p)
     return k
 
 

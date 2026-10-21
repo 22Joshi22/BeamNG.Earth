@@ -63,6 +63,12 @@ class GraphTest(unittest.TestCase):
             lo, li = navgraph._lanes(w, False)
             self.assertEqual(lo, li, cls)
 
+    def test_rural_motorway_two_lanes(self):
+        import roads
+        for urban, n in ((False, 2), (True, 3)):
+            sp = roads.Spec(roads.carriageway("motorway", "paved", urban, None, True), "paved", urban, "motorway", True)
+            self.assertEqual(navgraph._lanes(navgraph.driving_width(sp), True), (n, 0), urban)
+
     def test_tunnel_stretch_left_out(self):
         f = features([[(0, 0), (300, 0)]], ["primary"], levels=[(0, -1.0, 0.4, 0.7)])
         f.rules["connectors"] = rules([(0, "A", 0.0, 0.0), (0, "B", 1.0, 1.0)])
