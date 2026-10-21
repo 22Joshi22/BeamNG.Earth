@@ -48,7 +48,6 @@ VERTEX_STEP = 4.0           # m between the plan's vertices (segments for the gr
                             # 2026-10-17: a San Francisco street's slope changed 4.4 % rms per 2 m, 1.2 % at 4 m;
                             # grading a 1 km block 0.06 -> 0.14 s)
 BUCKET = 32.0               # m, query-point buckets
-PAIR_BATCH = 2_000_000      # (segment, point) pairs graded at once (bounds the temporaries, ~200 MB)
 ROAD_LIFT = 0.04            # m the physics ground is raised under roads (see Grader.apply)
 BLEND_R = 4.0               # m: roads near each other blend their targets by 1 / (1 + (d / BLEND_R)^2)
 PROFILE_ZOOM = int(os.environ.get("BNE_DEM_ZOOM", "16"))   # DEM zoom of the profiles (one zoom for every caller)
@@ -884,9 +883,8 @@ class Grader:
 
 
 def grade_points(px, py, base, plans, lift=0.0):
-    """base at the points (px, py) graded under the plans (see the module doc). Pure.
-    All segments at once, in batches of about PAIR_BATCH (segment, point) pairs (a Python loop per
-    segment was the server's largest CPU cost while driving, 2026-10-12)."""
+    """base at the points (px, py) graded under the plans (see the module doc), by the Rust loop (native/earthfast
+    grade_points: a Python loop per segment was the server's largest CPU cost while driving, 2026-10-12). Pure."""
     px = np.asarray(px, np.float64)
     py = np.asarray(py, np.float64)
     base = np.asarray(base, np.float64)
@@ -894,12 +892,6 @@ def grade_points(px, py, base, plans, lift=0.0):
     if not len(px):
         return out
     x0, y0, x1, y1 = px.min(), py.min(), px.max(), py.max()
-    bx = np.floor((px - x0) / BUCKET).astype(np.int64)
-    by = np.floor((py - y0) / BUCKET).astype(np.int64)
-    nbx = int(bx.max()) + 1
-    key = by * nbx + bx
-    order = np.argsort(key, kind="stable")
-    sk = key[order]
     # every segment of the plans near the points: ends, end heights, reach (core half width + T_MAX)
     A, B, ZA, ZB, H, AB, CUT = [], [], [], [], [], [], []
     for p in plans:
@@ -924,140 +916,18 @@ def grade_points(px, py, base, plans, lift=0.0):
     if not A:
         return out
     A, B, ZA, ZB, H, AB, CUT = (np.concatenate(v) for v in (A, B, ZA, ZB, H, AB, CUT))
-    sharp = bool(np.isfinite(CUT).any())
     import fast
-    if fast.AVAILABLE and getattr(fast._ef, "VERSION", 0) >= 36 and not sharp:   # the Rust loop: the same pairs in the same order
-        f64 = np.float64
-        return fast._ef.grade_points(np.ascontiguousarray(px, f64), np.ascontiguousarray(py, f64),
-                                     np.ascontiguousarray(base, f64), np.ascontiguousarray(A[:, :2], f64),
-                                     np.ascontiguousarray(B[:, :2], f64), np.ascontiguousarray(ZA, f64),
-                                     np.ascontiguousarray(ZB, f64), np.ascontiguousarray(H, f64),
-                                     np.ascontiguousarray(AB, np.uint8), float(lift),
-                                     float(SLOPE_RUN), float(T_MIN), float(T_MAX), float(BLEND_R), float(BUCKET),
-                                     float(WALL_CUT_M), float(WALL_T_M), float(WALL_FLAT_M), float(WALL_AHEAD_M),
-                                     bool(SEP_ON), float(SEP_FROM_M), float(SEP_FULL_M), float(CORE_FADE_M),
-                                     float(SIDE_FADE_M))
-    reach = H + T_MAX
-    lo_x = np.minimum(A[:, 0], B[:, 0]) - reach
-    hi_x = np.maximum(A[:, 0], B[:, 0]) + reach
-    lo_y = np.minimum(A[:, 1], B[:, 1]) - reach
-    hi_y = np.maximum(A[:, 1], B[:, 1]) + reach
-    near = ~((hi_x < x0) | (lo_x > x1) | (hi_y < y0) | (lo_y > y1))
-    A, B, ZA, ZB, H, AB, CUT = A[near], B[near], ZA[near], ZB[near], H[near], AB[near], CUT[near]
-    lo_x, hi_x, lo_y, hi_y = lo_x[near], hi_x[near], lo_y[near], hi_y[near]
-    cx0 = np.maximum(0, np.floor((lo_x - x0) / BUCKET)).astype(np.int64)
-    cx1 = np.minimum(nbx - 1, np.floor((hi_x - x0) / BUCKET)).astype(np.int64)
-    cy0 = np.maximum(0, np.floor((lo_y - y0) / BUCKET)).astype(np.int64)
-    cy1 = np.floor((hi_y - y0) / BUCKET).astype(np.int64)
-    # (segment, bucket row) pairs -> the sorted points' range of that row's buckets cx0..cx1
-    nrow = np.maximum(cy1 - cy0 + 1, 0)
-    seg = np.repeat(np.arange(len(A)), nrow)
-    row = np.repeat(cy0, nrow) + (np.arange(nrow.sum()) - np.repeat(np.cumsum(nrow) - nrow, nrow))
-    i0 = np.searchsorted(sk, row * nbx + cx0[seg], "left")
-    i1 = np.searchsorted(sk, row * nbx + cx1[seg], "right")
-    cnt = np.maximum(i1 - i0, 0)
-    keep = cnt > 0
-    seg, i0, cnt = seg[keep], i0[keep], cnt[keep]
-    num = np.zeros(len(px))
-    den = np.zeros(len(px))
-    wmax = np.zeros(len(px))
-    # two passes: the highest core of a road's last ABUT_NEAR_M before a bridge (Plan.abut) over each point first, then
-    # the blend without the roads more than WALL_CUT_M under it beside them, outside their own cores (their wall's
-    # strip, their slopes): the abutment is its road's (GitHub #38: a motorway's abutment 1.1 m beyond the strip of the
-    # road it spans, cut 5 m below it, was pulled 2.4 m down by its segments there, a pit at the deck's end the car
-    # flipped on at 55 mph). Only there: everywhere, a street's core edge beside a lower street (San Francisco) became a
-    # step where the blend came back. A road's own next segments lie ahead of the point, not beside
-    top = np.full(len(px), -np.inf)
-    raised = np.full(len(px), -np.inf)          # (sharp) the cuttings' tops over the points beside them
-    cmax = np.zeros(len(px))            # (SEP_ON) how much the point is in a core, and that core's height
-    csum = np.zeros(len(px))
-    cz = np.zeros(len(px))
-    ends = np.cumsum(cnt)
-    beff = base
-    for pass_ in (0, 1):
-        if pass_ == 1 and sharp:
-            beff = np.maximum(base, raised)
-            out = beff.copy()
-        start = 0
-        while start < len(seg):
-            stop = int(np.searchsorted(ends, (ends[start - 1] if start else 0) + PAIR_BATCH, "right"))
-            stop = max(stop, start + 1)
-            c = cnt[start:stop]
-            s_ = np.repeat(seg[start:stop], c)
-            idx = order[np.repeat(i0[start:stop], c) + (np.arange(c.sum()) - np.repeat(np.cumsum(c) - c, c))]
-            a = A[s_]
-            ab = B[s_] - a
-            qx, qy = px[idx] - a[:, 0], py[idx] - a[:, 1]
-            L2 = ab[:, 0] * ab[:, 0] + ab[:, 1] * ab[:, 1]
-            long_ = L2 > 1e-12
-            t = np.where(long_, np.clip((qx * ab[:, 0] + qy * ab[:, 1]) / np.where(long_, L2, 1.0), 0.0, 1.0), 0.0)
-            d = np.hypot(qx - t * ab[:, 0], qy - t * ab[:, 1])
-            target = ZA[s_] + (ZB[s_] - ZA[s_]) * t
-            if pass_ == 0:
-                inside = (d <= H[s_]) & AB[s_]
-                np.maximum.at(top, idx[inside], target[inside])
-                if sharp:                   # a cutting beside the segment: the ground raised to its top past its wall
-                    cs = CUT[s_]
-                    left = (qx * ab[:, 1] - qy * ab[:, 0]) < 0
-                    cwall = np.where(left, cs[:, 0], cs[:, 3])
-                    ctop = np.where(left, cs[:, 1], cs[:, 4])
-                    creach = np.where(left, cs[:, 2], cs[:, 5])
-                    lab0 = np.sqrt(np.maximum(L2, 1e-24))
-                    al0 = (qx * ab[:, 0] + qy * ab[:, 1]) / lab0
-                    ahead0 = np.maximum(np.maximum(-al0, al0 - lab0), 0.0)
-                    side0 = np.abs(qx * ab[:, 1] - qy * ab[:, 0]) / lab0
-                    # (beside the segment, or just past its end: at a bend's outside the joint's wedge as well)
-                    inband = np.isfinite(ctop) & (side0 > cwall) & (side0 <= creach + 0.5) & (ahead0 < SHARP_STEP_M * 2)
-                    np.maximum.at(raised, idx[inband], ctop[inband])
-                if SEP_ON:
-                    v = np.clip((d - H[s_]) / CORE_FADE_M, 0.0, 1.0)
-                    cn = 1.0 - v * v * (3.0 - 2.0 * v)
-                    k = cn > 0
-                    np.maximum.at(cmax, idx[k], cn[k])
-                    csum += np.bincount(idx[k], cn[k], len(px))
-                    cz += np.bincount(idx[k], cn[k] * target[k], len(px))
-                start = stop
-                continue
-            Hs = H[s_]
-            drop = np.zeros(len(d), bool)
-            if sharp:                       # (on a cutting's side the core ends at its wall)
-                cs = CUT[s_]
-                left = (qx * ab[:, 1] - qy * ab[:, 0]) < 0
-                cwall = np.where(left, cs[:, 0], cs[:, 3])
-                ctop = np.where(left, cs[:, 1], cs[:, 4])
-                Hs = np.where(np.isfinite(cwall), np.minimum(Hs, cwall), Hs)
-                # where the ground falls away at a wall the road ends there: past it, another level's ground
-                drop = np.isfinite(cwall) & ~np.isfinite(ctop) & (d > cwall)
-            Lab = np.sqrt(np.maximum(L2, 1e-24))
-            # (a zero-length segment: the point is beside it, as in the Rust loop)
-            side = np.where(long_, np.abs(qx * ab[:, 1] - qy * ab[:, 0]) / Lab, d)
-            along = (qx * ab[:, 0] + qy * ab[:, 1]) / Lab
-            ahead = np.where(long_, np.maximum(np.maximum(-along, along - Lab), 0.0), 0.0)
-            wall = (beff[idx] - target > WALL_CUT_M) & (ahead < side) & (ahead < WALL_AHEAD_M)
-            T = np.where(wall, WALL_T_M, np.clip(SLOPE_RUN * np.abs(target - beff[idx]), T_MIN, T_MAX))
-            u = np.clip((d - Hs - np.where(wall, WALL_FLAT_M, 0.0)) / T, 0.0, 1.0)
-            w = 1.0 - u * u * (3.0 - 2.0 * u)           # 1 on the core, smooth to 0 over T
-            m = (w > 0) & ~((d > Hs) & (ahead < side) & (target < top[idx] - WALL_CUT_M)) & ~drop
-            i = idx[m]
-            # the blend between roads by inverse distance from each centreline (times w), so two roads
-            # near each other (divided carriageways, junctions) meet in a gradual slope; with w alone
-            # the target jumped at a core's edge (2026-10-11, the user's car flipped at speed:
-            # centreline 2nd difference p99 0.17 m per metre, worst 0.5 m)
-            wb = w[m] / (1.0 + (d[m] / BLEND_R) ** 2)
-            if SEP_ON:
-                ref = cz[i] / np.maximum(csum[i], 1e-12)
-                h = np.clip((np.abs(target[m] - ref) - SEP_FROM_M) / (SEP_FULL_M - SEP_FROM_M), 0.0, 1.0)
-                o = np.clip((d[m] - Hs[m]) / CORE_FADE_M, 0.0, 1.0)
-                b = np.clip((side[m] - ahead[m]) / SIDE_FADE_M, 0.0, 1.0)
-                sep = cmax[i] * (h * h * (3.0 - 2.0 * h)) * (o * o * (3.0 - 2.0 * o)) * (b * b * (3.0 - 2.0 * b))
-                wb = wb * (1.0 - sep)
-            num += np.bincount(i, wb * target[m], len(px))
-            den += np.bincount(i, wb, len(px))
-            np.maximum.at(wmax, i, w[m])
-            start = stop
-    g = den > 0
-    out[g] = beff[g] + wmax[g] * (num[g] / den[g] - beff[g] + lift)
-    return out
+    fast.require(39, "grade_points")         # (the Rust loop: native/earthfast)
+    f64 = np.float64
+    return fast._ef.grade_points(np.ascontiguousarray(px, f64), np.ascontiguousarray(py, f64),
+                                 np.ascontiguousarray(base, f64), np.ascontiguousarray(A[:, :2], f64),
+                                 np.ascontiguousarray(B[:, :2], f64), np.ascontiguousarray(ZA, f64),
+                                 np.ascontiguousarray(ZB, f64), np.ascontiguousarray(H, f64),
+                                 np.ascontiguousarray(AB, np.uint8), np.ascontiguousarray(CUT, f64), float(lift),
+                                 float(SLOPE_RUN), float(T_MIN), float(T_MAX), float(BLEND_R), float(BUCKET),
+                                 float(WALL_CUT_M), float(WALL_T_M), float(WALL_FLAT_M), float(WALL_AHEAD_M),
+                                 bool(SEP_ON), float(SEP_FROM_M), float(SEP_FULL_M), float(CORE_FADE_M),
+                                 float(SIDE_FADE_M), float(SHARP_STEP_M))
 
 
 def bridge_lifts(line, all_bridges, ground_lines, z_at):

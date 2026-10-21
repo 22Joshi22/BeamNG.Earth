@@ -123,11 +123,6 @@ class AbutmentTest(unittest.TestCase):
         plain = grading.Plan(xy, np.full(21, 372.9), 6.9)     # (not onto a bridge, nor SEP_ON: blended as before)
         with unittest.mock.patch.object(grading, "SEP_ON", False):
             self.assertLess(grading.grade_points(px, py, base, [plain, lower])[0], 372.0)
-        import fast
-        if fast.AVAILABLE and getattr(fast._ef, "VERSION", 0) >= 36:
-            with unittest.mock.patch.object(fast, "AVAILABLE", False):
-                py_out = grading.grade_points(px, py, base, [approach, lower])
-            self.assertTrue(np.allclose(out, py_out, atol=1e-9), "Rust and Python agree")
 
 
 class SeparationTest(unittest.TestCase):
@@ -147,20 +142,6 @@ class SeparationTest(unittest.TestCase):
         with unittest.mock.patch.object(grading, "SEP_ON", False):
             old = grading.grade_points(self.px, self.py, self.base, [self.street, self.bank])
         self.assertGreater(np.ptp(old), 1.0, "(the bank pulled its edge up before)")
-
-    def test_rust_and_python_agree(self):
-        import fast
-        if not (fast.AVAILABLE and getattr(fast._ef, "VERSION", 0) >= 36):
-            self.skipTest("no Rust module")
-        z = np.full(3, 590.0)
-        dot = grading.Plan(np.array([[30.0, 4.0], [30.0, 4.0], [34.0, 4.0]]), z, 2.0)    # a zero-length segment
-        plans = [self.street, self.bank, dot]
-        px, py = np.meshgrid(np.arange(-20.0, 40.0, 0.7), np.arange(-25.0, 15.0, 0.7))
-        base = 589.0 + 0.4 * np.abs(py.ravel())
-        out = grading.grade_points(px.ravel(), py.ravel(), base, plans)
-        with unittest.mock.patch.object(fast, "AVAILABLE", False):
-            ref = grading.grade_points(px.ravel(), py.ravel(), base, plans)
-        self.assertLess(np.abs(out - ref).max(), 1e-9)
 
 
 class ShoulderTest(unittest.TestCase):

@@ -14,6 +14,20 @@ except ImportError:         # no binary for this platform / Python: the Python c
 AVAILABLE = _ef is not None
 
 
+class NativeMissing(RuntimeError):
+    """The server's Rust module (native/earthfast) is missing or older than a kernel needs."""
+
+
+def require(version, what):
+    """Raise NativeMissing unless the module is loaded at VERSION >= version (what: the kernel, for the message). The
+    kernels that have no Python twin any more (the user, 2026-10-21: "we dont need 2 versions of the same thing")."""
+    have = getattr(_ef, "VERSION", 0) if _ef is not None else None
+    if have is None or have < version:
+        raise NativeMissing(f"{what} needs the server's native module (earthfast) version {version} or newer, "
+                            f"{'none was loaded' if have is None else f'version {have} was'}: rebuild it with "
+                            "python3 tools/build_native.py, or use a release build")
+
+
 def segments(lines_hw):
     """(segs (m, 4) ax ay bx by, hw (m,)) of [(polyline (k, 2), half width)]."""
     segs, hws = [], []

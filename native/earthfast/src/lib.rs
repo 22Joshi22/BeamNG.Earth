@@ -824,13 +824,21 @@ fn measure_row32(line: PyReadonlyArray2<f64>, keys: PyReadonlyArray1<i64>, first
 fn grade_points<'py>(py: Python<'py>, px: PyReadonlyArray1<'py, f64>, pyy: PyReadonlyArray1<'py, f64>,
                      base: PyReadonlyArray1<'py, f64>, a: PyReadonlyArray2<'py, f64>, b: PyReadonlyArray2<'py, f64>,
                      za: PyReadonlyArray1<'py, f64>, zb: PyReadonlyArray1<'py, f64>, h: PyReadonlyArray1<'py, f64>,
-                     abut: PyReadonlyArray1<'py, u8>, lift: f64, slope_run: f64, t_min: f64, t_max: f64, blend_r: f64,
+                     abut: PyReadonlyArray1<'py, u8>, cut: PyReadonlyArray2<'py, f64>, lift: f64, slope_run: f64,
+                     t_min: f64, t_max: f64, blend_r: f64,
                      bucket: f64, wall_cut: f64, wall_t: f64, wall_flat: f64, wall_ahead: f64,
-                     sep: bool, sep_from: f64, sep_full: f64, core_fade: f64, side_fade: f64)
+                     sep: bool, sep_from: f64, sep_full: f64, core_fade: f64, side_fade: f64, sharp_step: f64)
                      -> Bound<'py, PyArray1<f64>> {
     let (px, pyy, base) = (px.as_array(), pyy.as_array(), base.as_array());
     let (a, b, za, zb, h) = (a.as_array(), b.as_array(), za.as_array(), zb.as_array(), h.as_array());
     let abut = abut.as_array();
+    let cut = cut.as_array();               // (segments, 6): a cutting's wall, top and top offset, left then right
+    let sharp = cut.iter().any(|v| v.is_finite());
+    let has_cut: Vec<bool> = (0..h.len()).map(|s| (0..6).any(|k| cut[[s, k]].is_finite())).collect();
+    let cut_reach: Vec<f64> = (0..h.len()).map(|s| {
+        let r = cut[[s, 2]].max(cut[[s, 5]]).max(cut[[s, 0]]).max(cut[[s, 3]]);
+        if r.is_finite() { r + 0.5 + 2.0 * sharp_step } else { 0.0 }
+    }).collect();
     let n = px.len();
     let mut out: Vec<f64> = base.iter().copied().collect();
     if n == 0 {
@@ -858,13 +866,22 @@ fn grade_points<'py>(py: Python<'py>, px: PyReadonlyArray1<'py, f64>, pyy: PyRea
     let mut cmax = vec![0.0f64; n];
     let mut csum = vec![0.0f64; n];
     let mut cz = vec![0.0f64; n];
+    let mut raised = vec![f64::NEG_INFINITY; n];    // (sharp) the cuttings' tops over the points beside them
+    let mut beff: Vec<f64> = base.iter().copied().collect();
     let smooth = |v: f64| { let v = v.clamp(0.0, 1.0); v * v * (3.0 - 2.0 * v) };
     for pass in 0..2 {
+        if pass == 1 && sharp {
+            for i in 0..n {
+                beff[i] = base[i].max(raised[i]);
+            }
+        }
         for s in 0..h.len() {
-            if pass == 0 && abut[s] == 0 && !sep {
+            if pass == 0 && abut[s] == 0 && !sep && !has_cut[s] {
                 continue;
             }
-            let reach = if pass == 0 { h[s] + if sep { core_fade } else { 0.0 } } else { h[s] + t_max };
+            // (pass 0 within the blend's reach too: the Python loop pairs the points with a segment once, at h + t_max)
+            let reach = if pass == 0 { (h[s] + if sep { core_fade } else { 0.0 }).max(cut_reach[s]).min(h[s] + t_max) }
+                        else { h[s] + t_max };
             let (ax, ay, bx, by) = (a[[s, 0]], a[[s, 1]], b[[s, 0]], b[[s, 1]]);
             let (lo_x, hi_x) = (ax.min(bx) - reach, ax.max(bx) + reach);
             let (lo_y, hi_y) = (ay.min(by) - reach, ay.max(by) + reach);
@@ -886,9 +903,21 @@ fn grade_points<'py>(py: Python<'py>, px: PyReadonlyArray1<'py, f64>, pyy: PyRea
                     let t = if l2 > 1e-12 { ((qx * abx + qy * aby) / l2).clamp(0.0, 1.0) } else { 0.0 };
                     let d = (qx - t * abx).hypot(qy - t * aby);
                     let target = za[s] + (zb[s] - za[s]) * t;
+                    let left = (qx * aby - qy * abx) < 0.0;
+                    let co = if left { 0 } else { 3 };
+                    let (cwall, ctop, creach) = (cut[[s, co]], cut[[s, co + 1]], cut[[s, co + 2]]);
                     if pass == 0 {
                         if abut[s] != 0 && d <= h[s] && target > top[idx] {
                             top[idx] = target;
+                        }
+                        if has_cut[s] && ctop.is_finite() {     // the ground raised to a cutting's top past its wall
+                            let lab0 = l2.max(1e-24).sqrt();
+                            let al0 = (qx * abx + qy * aby) / lab0;
+                            let ahead0 = (-al0).max(al0 - lab0).max(0.0);
+                            let side0 = (qx * aby - qy * abx).abs() / lab0;
+                            if side0 > cwall && side0 <= creach + 0.5 && ahead0 < sharp_step * 2.0 && ctop > raised[idx] {
+                                raised[idx] = ctop;
+                            }
                         }
                         if sep {
                             let cn = 1.0 - smooth((d - h[s]) / core_fade);
@@ -912,18 +941,21 @@ fn grade_points<'py>(py: Python<'py>, px: PyReadonlyArray1<'py, f64>, pyy: PyRea
                     } else { 0.0 };
                     // (and not far past a road's end: beside a tunnel the approach's last segment flattened a strip
                     // 10 m along it, a pit beside the arch, 2026-10-17)
-                    let wall = base[idx] - target > wall_cut && ahead < side && ahead < wall_ahead;
-                    let tt = if wall { wall_t } else { (slope_run * (target - base[idx]).abs()).clamp(t_min, t_max) };
+                    // (on a cutting's side the core ends at its wall; where the ground falls away there the road ends)
+                    let hs = if cwall.is_finite() { h[s].min(cwall) } else { h[s] };
+                    let drop = cwall.is_finite() && !ctop.is_finite() && d > cwall;
+                    let wall = beff[idx] - target > wall_cut && ahead < side && ahead < wall_ahead;
+                    let tt = if wall { wall_t } else { (slope_run * (target - beff[idx]).abs()).clamp(t_min, t_max) };
                     // a wall: flat on one terrain step behind it (no slope in front of its face), then up
-                    let u = ((d - h[s] - if wall { wall_flat } else { 0.0 }) / tt).clamp(0.0, 1.0);
+                    let u = ((d - hs - if wall { wall_flat } else { 0.0 }) / tt).clamp(0.0, 1.0);
                     let w = 1.0 - u * u * (3.0 - 2.0 * u);
-                    if w > 0.0 && !(d > h[s] && ahead < side && target < top[idx] - wall_cut) {
+                    if w > 0.0 && !drop && !(d > hs && ahead < side && target < top[idx] - wall_cut) {
                         let r = d / blend_r;
                         let mut wb = w / (1.0 + r * r);
                         if sep {
                             let rf = cz[idx] / csum[idx].max(1e-12);
                             let f = cmax[idx] * smooth(((target - rf).abs() - sep_from) / (sep_full - sep_from))
-                                * smooth((d - h[s]) / core_fade) * smooth((side - ahead) / side_fade);
+                                * smooth((d - hs) / core_fade) * smooth((side - ahead) / side_fade);
                             wb *= 1.0 - f;
                         }
                         num[idx] += wb * target;
@@ -937,8 +969,9 @@ fn grade_points<'py>(py: Python<'py>, px: PyReadonlyArray1<'py, f64>, pyy: PyRea
         }
     }
     for i in 0..n {
+        out[i] = beff[i];
         if den[i] > 0.0 {
-            out[i] = base[i] + wmax[i] * (num[i] / den[i] - base[i] + lift);
+            out[i] = beff[i] + wmax[i] * (num[i] / den[i] - beff[i] + lift);
         }
     }
     out.into_pyarray(py)
@@ -2845,6 +2878,6 @@ fn earthfast(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(over_tunnel, m)?)?;
     m.add_function(wrap_pyfunction!(veg_rows_json, m)?)?;
     m.add_function(wrap_pyfunction!(follow_tris, m)?)?;
-    m.add("VERSION", 36)?;
+    m.add("VERSION", 39)?;
     Ok(())
 }
