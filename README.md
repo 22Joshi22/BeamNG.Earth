@@ -4,9 +4,8 @@ A 1:1 scale, streamed Earth for [BeamNG.drive](https://www.beamng.com/): drive a
 planet on real elevation data and satellite imagery, with distance-based level of detail and the
 real curvature of the Earth.
 
-Status: beta (see VERSION). Tested on BeamNG.drive 0.39.4 on Linux (Vulkan). See
-[docs/ROADMAP.md](docs/ROADMAP.md) for what is coming (high-speed streaming, real view distance,
-roads, water, navigation, traffic, cities).
+Status: beta (see VERSION). Tested on BeamNG.drive 0.40.1 on Linux (Vulkan) and the Steam Deck. See
+[docs/ROADMAP.md](docs/ROADMAP.md) for what is coming.
 
 ## Features (working today)
 **The world**
@@ -25,10 +24,14 @@ roads, water, navigation, traffic, cities).
   wood, Mediterranean stucco, East Asian and Latin American looks), real heights, roofs, windows, shopfronts,
   porches, churches with steeples, glass towers, far-away buildings drawn as a skyline.
 - Roads as meshes with lane markings, sidewalks and curbs, curb ramps, storm drains, cobblestone streets,
-  bridges with decks, traffic islands; the ground graded under them; street lights, utility poles with
-  wires, traffic signals, stop signs and speed-limit signs (mph or km/h by country).
+  traffic islands, roundabouts, rural motorways with shoulders and toll booths; the ground graded under them, with
+  stone retaining walls where a road is cut into a hill; street lights, utility poles with wires, traffic signals,
+  stop signs and speed-limit signs (mph or km/h by country).
+- Bridges drawn as their real type (beam, truss, arch, cable-stayed, suspension) with real heights and spans, piers
+  that keep clear of the roads under them; tunnels through hills, with portals, lights and low arches where little
+  is over them.
 - Water: the sea with real depth (cars sink), lakes, and rivers kept beside the roads.
-- Airports with graded, marked runways.
+- Airports with graded, marked runways; landmarks such as the pyramids of Giza.
 
 **Time, weather and physics**
 - **Real time**: the sun, moon and stars are where they really are for the place, the date and the clock
@@ -58,9 +61,10 @@ roads, water, navigation, traffic, cities).
   parking lots (stock BeamNG parking).
 
 **Map and navigation**
+- A level select with famous places and a **Random location** button (it starts you on a road).
 - World map (**M**): pan and zoom the globe, satellite or street map (EOX) with a roads & labels overlay,
   borders and place names (the **Layers** button), search for addresses and places as you type, teleport
-  anywhere.
+  anywhere. Works with a controller, laid out like the stock map.
 - GPS routes to any destination (OSRM on OpenStreetMap), with the stock route arrows on the road.
 - **Autodrive**: the car drives itself along the GPS route (in lane, legal speed, minding traffic).
 - Saved places and recent places.
@@ -70,15 +74,18 @@ roads, water, navigation, traffic, cities).
   wrong and the data credits on screen, as BeamNG UI apps in a ".Earth" app layout (based on Freeroam's;
   move or resize them in the UI apps editor), and a one-time welcome page about the project.
 - Settings in the pause menu, keybinds, in-game reports (notes and performance recordings to share).
-- Easy setup: `install.py` installs everything, `start.py` keeps the mod in sync and starts the server.
+- Easy setup: one download per system (Windows .exe, Linux AppImage) that installs the mod and starts the server
+  and the game; from the source, `install.py` installs everything and `start.py` keeps the mod in sync.
+- Runs on a Steam Deck (aim: 30 fps on the Handheld graphics preset).
 - Offline play from the download cache (with a size cap and "clear cache").
 - Update check: the mod tells you in game (and on its settings page, with a link) when a newer version is on
   GitHub.
 
 ## How it works
-- A small **companion server** (`server/`, Python) downloads elevation and imagery, builds terrain
-  tiles in a local flat frame around a moving origin, and streams them to the game over a local
-  socket. The game's Lua cannot reach the internet, so the server is required.
+- A **companion server** (`server/`: Python, with its heavy work in a Rust module, `native/earthfast`) downloads
+  elevation, imagery and map data, builds terrain, roads, buildings and the rest in a local flat frame around a
+  moving origin, and streams them to the game over a local socket. The game's Lua cannot reach the internet, so the
+  server is required.
 - The **mod** (`mod/beamng_earth/`) loads the tiles as meshes, keeps an invisible physics terrain
   under the car, moves the world origin as you drive (floating origin), and blends level-of-detail
   changes so nothing pops.
@@ -86,7 +93,7 @@ roads, water, navigation, traffic, cities).
   [docs/V1_4_SPEC.md](docs/V1_4_SPEC.md), research notes in [docs/research/](docs/research/).
 
 ## Install and play
-**You need:** BeamNG.drive (tested with 0.39.x) on Steam, free disk space for the map download cache (it grows
+**You need:** BeamNG.drive (tested with 0.40.x) on Steam, free disk space for the map download cache (it grows
 as you visit places, up to 20 GB by default; settings page > "Download cache size" sets 5-50 GB), and an internet
 connection (the map is downloaded while you play).
 
@@ -127,7 +134,10 @@ More detail (traffic, the status bar, reporting problems, troubleshooting): [doc
 
 ### Developer setup
 `python3 install.py` also works from a checkout (mod copy, `.venv`, then `python3 start.py`); by hand:
-1. Python 3.10+ with the packages in `server/requirements.txt`.
+1. Python 3.10+ with the packages in `server/requirements.txt`. The server needs its Rust module: the checkout
+   carries it built for Linux x86-64 (`server/earthfast.abi3.so`) and Windows (`server/earthfast.pyd`); after
+   changing `native/earthfast`, or on another system, build it with `python3 tools/build_native.py` (Rust's cargo;
+   `--windows` cross-builds the `.pyd` with cargo-zigbuild).
 2. Copy (or sync) `mod/beamng_earth/` to
    `<BeamNG user folder>/current/mods/unpacked/beamng_earth/`.
 3. Start the server: `python3 server/earthd.py`
@@ -140,7 +150,7 @@ docstring; for the .exe run `tools/build_bootloader.py` first: a bootloader buil
 false positives); GitHub Actions (`.github/workflows/release.yml`) builds both and publishes the release `v<VERSION>`
 whenever `main` gets a `VERSION` without one. Release zip of the source: `python3 tools/package.py`.
 
-Tests: `cd server && python3 -m unittest discover -s tests -p "test_*.py"` and
+Tests: `cd server && python3 -m unittest discover -s tests -t tests` and
 `cd mod/tests && for f in test_*.lua; do luajit $f; done`.
 
 ## Data sources and attribution
