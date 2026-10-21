@@ -139,6 +139,21 @@ class GeometryTest(unittest.TestCase):
         self.assertTrue(all(np.array_equal(a[-1], b[0]) for a, b in zip(chunks[:-1], chunks[1:])), "chunks share their ends")
         self.assertEqual(sum(len(c) for c in chunks) - (len(chunks) - 1), 250)
 
+    def test_a_straight_deck_keeps_its_rise(self):
+        # Lombard Street, Baltimore 2026-10-20: on xy alone a straight bridge kept its two ends in a tile (both at
+        # 22.2 m) and lost the 2.5 m rise between; the abutment's ground stood over the deck and a car drove into it
+        x = np.arange(0.0, 160.0, 10.0)
+        z = 22.0 + 2.5 * np.sin(np.pi * x / 160.0)
+        pts = np.c_[x, np.zeros_like(x), z]
+        self.assertEqual(len(roads.simplify(pts)), 2, "xy alone: the ends")
+        kept = roads.simplify(pts, ztol=roads.SIMPLIFY_Z_M)
+        dense = roads.densify(kept)
+        self.assertLess(np.abs(np.interp(x, dense[:, 0], dense[:, 2]) - z).max(), roads.SIMPLIFY_Z_M + 1e-9)
+        spec = roads.road_specs(features([[(0, 0), (160, 0)]], ["residential"]))[0]
+        chunks = roads._deck_chunks([("b", spec, pts, LON)], (40.0, -50.0, 170.0, 50.0))   # (cut by a tile edge)
+        deck = np.concatenate([np.asarray(c["n"]) for c in chunks if c.get("deck") and not c.get("ctx")])
+        self.assertLess(np.abs(np.interp(deck[:, 0], x, z) - deck[:, 2]).max(), 0.1, "the deck's rise drawn")
+
     def test_tiles_near(self):
         ks = roads.tiles_near(0, 0, 300)
         self.assertIn((0, 0), ks)

@@ -42,6 +42,7 @@ SEND_M = 640.0          # tiles whose square comes this close to the player (Che
 DROP_M = 960.0          # ... and dropped beyond this
 OVERLAP = 2.0           # m a road reaches past its tile's edge (no gap at tile seams)
 SIMPLIFY_M = 0.25       # RDP tolerance (Road Spline's layerMgr)
+SIMPLIFY_Z_M = 0.05     # ... and the vertical one of lines drawn at their own heights (decks, tunnels: simplify ztol)
 MAX_NODES = 100         # nodes per DecalRoad (Road Spline's chunk size)
 MAX_SPACING = 12.0      # m between nodes at most (official maps: median 11-12 m)
 BUILD_PER_POSE = 4      # tiles started per pose at most
@@ -1271,10 +1272,8 @@ def tunnel_profile(lines, ground_fn):
             dk = np.minimum(d[a] + s, d[b] + (s[-1] - s))
             low = np.maximum(low, np.where(np.isfinite(dk), ez[e] - TUNNEL_GRADE * dk, -np.inf))
         z = np.maximum(z, low)
-        if len(z) > 3:
-            zz = grading.smooth_profile(z, TUNNEL_STEP, grading.SIGMA_M)
-            zz[0], zz[-1] = z[0], z[-1]
-            z = zz
+        if len(z) > 3:          # (the ends' trend kept: smoothed then pinned, a floor bent up beside a portal)
+            z = _smooth_pinned(z, TUNNEL_STEP, grading.SIGMA_M)
         out.append(z)
     return out
 
@@ -1650,8 +1649,11 @@ def clip_polyline(pts, x0, y0, x1, y1):
     return pieces
 
 
-def simplify(pts, tol=SIMPLIFY_M):
-    """Ramer-Douglas-Peucker on the xy of a polyline (k, D). Pure."""
+def simplify(pts, tol=SIMPLIFY_M, ztol=None):
+    """Ramer-Douglas-Peucker on the xy of a polyline (k, D). ztol (D >= 3): a point is also kept where its height is
+    more than this off the line between the kept ones (a deck drawn at its own heights: on xy alone a straight bridge
+    kept its two ends in a tile and lost its rise between, 2.5 m below the abutment it met; a car drove into the
+    ground, Baltimore's Lombard Street 2026-10-20). Pure."""
     if len(pts) < 3:
         return pts
     keep = np.zeros(len(pts), bool)
@@ -1669,6 +1671,11 @@ def simplify(pts, tol=SIMPLIFY_M):
             d = np.hypot(seg[:, 0] - a[0], seg[:, 1] - a[1])
         else:
             d = np.abs(ab[0] * (seg[:, 1] - a[1]) - ab[1] * (seg[:, 0] - a[0])) / L
+        if ztol is not None and pts.shape[1] >= 3:
+            t = (np.clip(((seg[:, 0] - a[0]) * ab[0] + (seg[:, 1] - a[1]) * ab[1]) / (L * L), 0.0, 1.0)
+                 if L >= 1e-9 else np.zeros(len(seg)))
+            dz = np.abs(pts[i + 1:j, 2] - (pts[i, 2] + t * (pts[j, 2] - pts[i, 2])))
+            d = np.maximum(d, dz * (tol / ztol))
         k = int(np.argmax(d))
         if d[k] > tol:
             m = i + 1 + k
@@ -2909,7 +2916,7 @@ def _tunnel_chunks(tunnels, cells, exact):
                 lines.append((look, w, line))
         for look, w, line in lines:
             for piece in clip_polyline(line, *exact):
-                for c in split(densify(simplify(piece))):
+                for c in split(densify(simplify(piece, ztol=SIMPLIFY_Z_M))):
                     if len(c) >= 2:
                         ch = _chunk(look, w, c)
                         ch["fixed"] = True
@@ -2972,11 +2979,9 @@ def _bridge_chunks(frame, bseen, elev, exact, bridges=None, cells=None):
         # smoothed along it like a road profile (the ends keep their heights: the abutments)
         g = g + DECK_CLEAR
         z = np.maximum(z, g)
-        if len(z) > 3:
+        if len(z) > 3:          # (the ends' trend kept: smoothed then pinned, the deck bent up beside an abutment)
             import grading
-            zz = grading.smooth_profile(z, DECK_STEP, grading.SIGMA_M)
-            zz[0], zz[-1] = z[0], z[-1]
-            z = np.maximum(zz, g)
+            z = np.maximum(_smooth_pinned(z, DECK_STEP, grading.SIGMA_M), g)
         decks.append((fid, spec, np.c_[xy, z], lon))
     return _deck_chunks(decks, exact)
 
@@ -2994,7 +2999,7 @@ def _deck_chunks(decks, exact):
     wide = (x0 - DECK_CONTEXT_M, y0 - DECK_CONTEXT_M, x1 + DECK_CONTEXT_M, y1 + DECK_CONTEXT_M)
     for fid, spec, pts, lon in decks:
         for piece in clip_polyline(pts, *wide):
-            for c in split(densify(simplify(piece))):
+            for c in split(densify(simplify(piece, ztol=SIMPLIFY_Z_M))):
                 if len(c) >= 2:
                     ch = _chunk({**DECK, "deck": True}, spec.width, c)
                     ch.update(fixed=True, deck=True, fid=fid, ctx=True)
@@ -3006,7 +3011,7 @@ def _deck_chunks(decks, exact):
                 lines.append((look, w, line))
         for look, w, line in lines:
             for piece in clip_polyline(line, *exact):
-                for c in split(densify(simplify(piece))):
+                for c in split(densify(simplify(piece, ztol=SIMPLIFY_Z_M))):
                     if len(c) >= 2:
                         ch = _chunk(look, w, c)
                         ch["fixed"] = True
