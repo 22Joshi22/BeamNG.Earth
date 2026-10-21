@@ -145,6 +145,9 @@ M.CATALOG = {
   speedk80 = { { '/levels/driver_training/art/shapes/race/sign_speed80kph', 2.47 } },
   speedk100 = { { '/levels/driver_training/art/shapes/race/sign_speed100kph', 2.47 } },
   hydrant = { { '/levels/west_coast_usa/art/shapes/objects/hydrant1', 1.5 } },
+  -- a toll plaza's island with its booth (server buildings.toll_booth_rows; the user, 2026-10-21: "west coast has one,
+  -- reference that"): 22 m along its local y, 1.6 m wide
+  tollbooth = { { WCA .. 'objects/s_toll_booth_center', 4.96 } },
   bench = { { ECA .. 'clutter/clutter_city_bench_wood', 0.9 } },
   bin = { { '/art/shapes/garage_and_dealership/Clutter/clutter_city_bin_round', 1.1 }, { WCA .. 'objects/garbage_bin_a', 1.1 } },
   polelamp = { { ECA .. 'buildings/electrical_pole_lamp', 1.1 } },
@@ -167,6 +170,9 @@ local MATERIALS = {
   '/levels/automation_test_track/art/shapes/buildings',     -- the utility pole's wood_trim / painted metal
   ECA .. 'signs_usa', '/art/shapes/objects', '/levels/east_coast_usa/art/shapes', WCA .. 'objects', ECA .. 'buildings',
   UT .. 'ut_roadsigns', '/levels/driver_training/art/shapes/race',
+  -- the toll booth's (its kerbs, glass, trim and lamps)
+  '/art/shapes/garage_and_dealership/garage', '/art/shapes/garage_and_dealership', '/art/shapes/race/dragstrip',
+  '/art/shapes/objects/windows_doors_reflective',
 }
 
 local stopwatch = require('beamngEarth/stopwatch')

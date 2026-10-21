@@ -1,5 +1,6 @@
 """buildings: footprints become closed walls and a roof, heights predicted where the data has none,
 deterministic, every triangle facing out."""
+import math
 import os
 import sys
 import tempfile
@@ -684,6 +685,40 @@ class PortalSkipTest(unittest.TestCase):
         lines = bld.tunnel_lines(FRAME, [f], -128.0, -128.0)
         self.assertEqual(len(lines), 1, "the street's tunnel only")
         self.assertAlmostEqual(float(lines[0][:, 1].mean()), 50.0 + 128.0, delta=0.5)
+
+
+class TollBoothTest(unittest.TestCase):
+    """A toll plaza's islands (low mapped "buildings") with booths on them are West Coast USA's toll booth (the user's
+    report at the Golden Gate, 2026-10-21: bare boxes on slabs)."""
+
+    @staticmethod
+    def box(cx, cy, length, width, angle_deg):
+        u = np.array([math.cos(math.radians(angle_deg)), math.sin(math.radians(angle_deg))])
+        v = np.array([-u[1], u[0]])
+        c = np.array([cx, cy])
+        return np.array([c - u * length / 2 - v * width / 2, c + u * length / 2 - v * width / 2,
+                         c + u * length / 2 + v * width / 2, c - u * length / 2 + v * width / 2])
+
+    def test_island_with_booth_becomes_the_stock_booth(self):
+        island = bld.Spec(ring=self.box(50, 50, 16, 1.5, 40), height=0.2, min_h=0.0, cls="")
+        booth = bld.Spec(ring=self.box(50.5, 50.4, 3, 1.5, 40), height=4.75, min_h=0.0, cls="")
+        plaza = bld.Spec(ring=self.box(50, 50, 34, 8, 40), height=0.01, min_h=0.0, cls="")
+        house = bld.Spec(ring=self.box(90, 90, 10, 8, 0), height=6.0, min_h=0.0, cls="")
+        isl = [bld.oriented_box(island.ring)]
+        items = bld._toll_mark([(island, 1.0, 1.2), (booth, 1.0, 1.2), (plaza, 1.0, 1.2), (house, 1.0, 1.5)],
+                                     isl)
+        self.assertEqual([s for s, _, _ in items], [island, plaza, house], "the booth on the island left out")
+        self.assertEqual(island.cls, "toll_booth")
+        self.assertEqual(plaza.cls, "", "a plaza's flat footprint round the islands stays as it is")
+        rows = bld.toll_booth_rows(items, 100.0, 200.0)
+        self.assertEqual(len(rows), 1)
+        g, x, y, z, yaw = rows[0][:5]
+        self.assertEqual(g, bld.G_TOLLBOOTH)
+        self.assertAlmostEqual(x, 150.0, places=1)
+        self.assertAlmostEqual(y, 250.0, places=1)
+        self.assertAlmostEqual(z, 1.0)
+        self.assertAlmostEqual(yaw, 310.0, places=0, msg="its local y along the island (40 deg): yaw 40 - 90")
+        self.assertIsNone(bld.build([(island, 1.0, 1.2)]), "the island itself not built")
 
 
 if __name__ == "__main__":

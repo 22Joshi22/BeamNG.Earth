@@ -1519,6 +1519,8 @@ def build(specs_and_ground, lite=False):
     cornices, whole walls instead of one quad per bay."""
     m = Mesh()
     for spec, gmin, gmax in specs_and_ground:
+        if spec.cls == "toll_booth":        # a stock prop (toll_booth_rows)
+            continue
         mat_idx = _Looks(spec.seed)
         if spec.cls in BRIDGE_CLASSES:
             _steel_frame(m, spec, gmin, mat_idx[spec.facade if spec.facade in LOOKS else STEEL], lite)
@@ -2242,7 +2244,124 @@ def tile_buildings(frame, x0, y0, x1, y1, layers, elev, water=None, part_layers=
                 continue
         spec.gring = g              # the ground at each corner (door_ground: the door's, not the footprint's highest)
         out.append((spec, float(g.min()), float(g.max())))
+    lines = roads_xy if roads_xy else ml_roads_xy
+    if lines and out:
+        isl = _toll_islands(frame, layers, parts_of, lines, x0, y0)
+        if isl:
+            out = _toll_mark(out, isl)
     return out
+
+
+# Toll plazas (the user's report at the Golden Gate Bridge, 2026-10-21: "Toll booths need work. west coast has one,
+# reference that"): OSM maps a plaza's islands as low "buildings" (0.2 m there) with the booths as building parts
+# standing on them; drawn as buildings they were bare boxes on slabs. An island with a booth on it, along a road, is
+# West Coast USA's toll booth instead (trees.lua group "tollbooth": the island, its booth and kerbs in one shape, 22 m
+# long along its local y), placed along the island (toll_booth_rows); the island and its booth parts are not built.
+G_TOLLBOOTH = "tollbooth"
+TOLLBOOTH_H = 4.96          # m: the stock shape's height (s_toll_booth_center)
+TOLL_ISLAND_MAX_H = 1.0     # m: an island is a "building" no taller than this ...
+TOLL_ISLAND_MIN_L = 8.0     # ... at least this long ...
+TOLL_ISLAND_MAX_W = 4.0     # ... and at most this wide
+TOLL_BOOTH_H = (2.0, 8.0)   # m: a booth on it: a footprint this tall ...
+TOLL_BOOTH_MAX_AREA = 40.0  # ... and this small (m2), its centre on the island
+TOLL_ROAD_M = 25.0          # m: a road this near the island's centre ...
+TOLL_ROAD_DEG = 25.0        # ... running along it within this
+
+
+def _on_box(p, box, pad=1.0):
+    """Is point p (2,) within the oriented box (centre, axis u, half length, half width) grown by pad?"""
+    c, u, hl, hw = box
+    d = np.asarray(p, np.float64) - c
+    return abs(float(d @ u)) <= hl + pad and abs(float(d[0] * u[1] - d[1] * u[0])) <= hw + pad
+
+
+def _toll_islands(frame, layers, parts_of, lines, x0, y0):
+    """The toll islands among all the buildings of the tile's cells, as oriented boxes relative to (x0, y0): a low
+    building (TOLL_ISLAND_*) with a booth (TOLL_BOOTH_*) among all the cells' building parts centred on it, along a
+    road (lines, relative to (x0, y0)). Not only the tile's own buildings: a part is in its building's tile, and the
+    Golden Gate's booths are parts of the plaza's footprint, centred in the next tile from most islands."""
+    booths = []
+    for prings in parts_of.values():
+        for pring, hh in prings:
+            if hh is None or not (TOLL_BOOTH_H[0] <= hh[0] + hh[1] <= TOLL_BOOTH_H[1]):
+                continue
+            r = pring - np.array([x0, y0])
+            if _area2(r) / 2 <= TOLL_BOOTH_MAX_AREA:
+                booths.append(r[:-1].mean(0) if len(r) > 1 and np.allclose(r[0], r[-1]) else r.mean(0))
+    if not booths:
+        return []
+    segs = [np.concatenate([np.asarray(ln, np.float64)[:-1], np.asarray(ln, np.float64)[1:]], 1)
+            for ln in lines if len(ln) >= 2]
+    if not segs:
+        return []
+    segs = np.concatenate(segs)
+    a, b = segs[:, :2], segs[:, 2:]
+    ab = b - a
+    L = np.maximum(np.hypot(ab[:, 0], ab[:, 1]), 1e-9)
+    cos_max = math.cos(math.radians(TOLL_ROAD_DEG))
+    out, seen = [], set()
+    for f in layers:
+        if f is None or len(f.kind) == 0 or f.attrs.get("height") is None:
+            continue
+        h = np.asarray(f.attrs["height"], np.float64)
+        ids = getattr(f, "ids", None)
+        for i in np.flatnonzero(np.isfinite(h) & (h > 0) & (h <= TOLL_ISLAND_MAX_H)).tolist():
+            key = ids[i] if ids is not None else None
+            if key is not None and key in seen:
+                continue
+            seen.add(key)
+            parts = f.parts(i)
+            if not parts or not parts[0] or len(parts[0][0]) < 4:
+                continue
+            e, n = mapgeom.enu_xy(f, frame, np.asarray(parts[0][0], np.float64))
+            box = oriented_box(np.stack([e - x0, n - y0], 1)[:-1])
+            c, u, hl, hw = box
+            if 2 * hl < TOLL_ISLAND_MIN_L or 2 * hw > TOLL_ISLAND_MAX_W:
+                continue
+            if not any(_on_box(q, box) for q in booths):
+                continue
+            tt = np.clip(((c - a) * ab).sum(1) / (L * L), 0.0, 1.0)
+            dist = np.hypot(*(a + tt[:, None] * ab - c).T)
+            if ((dist <= TOLL_ROAD_M) & (np.abs((ab @ u) / L) >= cos_max)).any():
+                out.append(box)
+    return out
+
+
+def _toll_mark(items, islands):
+    """items with each toll island (islands: _toll_islands' boxes) marked cls "toll_booth" and the booths standing on
+    them left out (West Coast USA's booth stands there instead: toll_booth_rows). Pure."""
+    out = []
+    for spec, gmin, gmax in items:
+        p = spec.ring.mean(0)
+        on = next((bx for bx in islands if _on_box(p, bx)), None)
+        if on is None:
+            out.append((spec, gmin, gmax))
+            continue
+        h = spec.height or 0.0
+        if h <= TOLL_ISLAND_MAX_H:
+            _c, _u, hl, hw = oriented_box(spec.ring)
+            if 2 * hl >= TOLL_ISLAND_MIN_L and 2 * hw <= TOLL_ISLAND_MAX_W and (spec.min_h or 0) <= 0.5:
+                spec.cls = "toll_booth"         # the island itself (not a plaza's flat footprint round it)
+            out.append((spec, gmin, gmax))
+        elif not (TOLL_BOOTH_H[0] <= h <= TOLL_BOOTH_H[1] and _area2(spec.ring) / 2 <= TOLL_BOOTH_MAX_AREA):
+            out.append((spec, gmin, gmax))
+    return out
+
+
+def toll_booth_rows(items, x0, y0):
+    """Prop rows (trees.lua rows, group G_TOLLBOOTH) of the toll islands (_toll_mark) among items (rings relative to
+    (x0, y0)): West Coast USA's booth along each island, on its lowest ground."""
+    rows = []
+    for spec, gmin, _gmax in items:
+        if spec.cls != "toll_booth":
+            continue
+        c, u, _hl, _hw = oriented_box(spec.ring)
+        if u[0] < 0 or (u[0] == 0 and u[1] < 0):    # one way along the axis for every island: the booths face alike
+            u = -u
+        yaw = (math.degrees(math.atan2(u[1], u[0])) - 90.0) % 360.0       # (its length is the shape's local y)
+        rows.append([G_TOLLBOOTH, round(float(c[0] + x0), 2), round(float(c[1] + y0), 2), round(gmin, 2),
+                     round(yaw, 1), 1.0, TOLLBOOTH_H, 0.5])
+    return rows
 
 
 def collider_boxes(items, x0, y0):
