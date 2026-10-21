@@ -2603,6 +2603,32 @@ LOW_HOLE_STEP = 2.5         # ... the cut a terrain grid step further (the squar
 TUNNEL_HOLE_MARGIN = 0.5    # m around the tube a portal's terrain hole reaches (above, below and sideways)
 
 
+def _mouth_cut(u, x0, y0, square, xy, hw, m0, m1, end_m):
+    """The samples of the block (heights u) beside xy within hw and within end_m of an end flagged m0 / m1, whatever the
+    ground's height (tunnel_hole_mask's low arch cut, numpy: the Rust kernel's sums). Pure."""
+    n = u.shape[0]
+    mask = np.zeros(u.shape, bool)
+    sj = np.r_[0.0, np.cumsum(np.hypot(*np.diff(xy, axis=0).T))]
+    for j in range(len(xy) - 1):
+        a, b = xy[j], xy[j + 1]
+        lo, hi = np.minimum(a, b) - hw, np.maximum(a, b) + hw
+        ix0, iy0 = max(0, int(np.floor((lo[0] - x0) / square))), max(0, int(np.floor((lo[1] - y0) / square)))
+        ix1, iy1 = min(n - 1, int(np.ceil((hi[0] - x0) / square))), min(n - 1, int(np.ceil((hi[1] - y0) / square)))
+        if ix0 > ix1 or iy0 > iy1:
+            continue
+        X, Y = np.meshgrid(x0 + np.arange(ix0, ix1 + 1) * square, y0 + np.arange(iy0, iy1 + 1) * square)
+        ab = b - a
+        L2 = max(float(ab @ ab), 1e-12)
+        t = ((X - a[0]) * ab[0] + (Y - a[1]) * ab[1]) / L2
+        inside = (t >= 0.0) & (t <= 1.0)
+        t = np.clip(t, 0.0, 1.0)
+        d = np.hypot(X - (a[0] + t * ab[0]), Y - (a[1] + t * ab[1]))
+        s_ = sj[j] + t * (sj[j + 1] - sj[j])
+        ends = ((s_ <= end_m) & m0) | ((s_ >= sj[-1] - end_m) & m1)
+        mask[iy0:iy1 + 1, ix0:ix1 + 1] |= inside & (d <= hw) & ends
+    return mask
+
+
 def tunnel_hole_mask(parts, u, cx, cy, square, heights=None, mouths=None):
     """Where the terrain block (heights u [iy, ix]: sample (ix, iy) at (cx - half + ix * square, cy - half +
     iy * square), half = n * square / 2) must be a hole for the tunnels `parts` ([(fid, spec, xy, z, lon)]: a
@@ -2615,10 +2641,17 @@ def tunnel_hole_mask(parts, u, cx, cy, square, heights=None, mouths=None):
     half = n * square / 2
     x0, y0 = cx - half, cy - half
     mask = np.zeros(u.shape, bool)
+    # twin tunnels (twin_tunnels): their one tube round both reaches over the strip between them too, and its mouths are
+    # cut whatever the height (the ground left between the carriageways sloped into the shared opening, its portal face
+    # covering what is above)
+    parts = list(parts)
+    n_own = len(parts)
+    parts += [(parts[i][0], parts[i][1]._replace(width=w), mid[:, :2], mid[:, 2], parts[i][4])
+              for i, j, mid, w in twin_tunnels([p for p in parts if np.isfinite(np.asarray(p[3])).all()]) if len(mid) >= 2]
     rust = fast.AVAILABLE and hasattr(fast._ef, "tunnel_holes")
     if rust:
         u = np.ascontiguousarray(u, np.float64)
-    for _fid, spec, xy, z, _lon in parts:
+    for k_, (_fid, spec, xy, z, _lon) in enumerate(parts):
         xy = np.asarray(xy, np.float64)
         z = np.asarray(z, np.float64)
         if len(xy) < 2 or not np.isfinite(z).all():
@@ -2626,6 +2659,16 @@ def tunnel_hole_mask(parts, u, cx, cy, square, heights=None, mouths=None):
         hw = spec.width / 2 + roadmesh.TUNNEL_SHOULDER + TUNNEL_HOLE_MARGIN
         th = (heights or {}).get(_fid, roadmesh.TUNNEL_H)       # heights: a low arch's tube (TunnelProfiles.heights)
         low = th < roadmesh.TUNNEL_H - 0.05
+        if k_ >= n_own and not low:     # a twin tube's mouths, whatever the height (the low arches' cut, no side reach)
+            m0, m1 = (mouths or {}).get(_fid, (True, True))
+            mouth_mask = np.zeros(u.shape, bool)
+            if rust:
+                fast._ef.tunnel_holes(mouth_mask, u, float(x0), float(y0), float(square), np.ascontiguousarray(xy),
+                                      np.ascontiguousarray(z), float(hw), float(th), True, bool(m0), bool(m1),
+                                      float(TUNNEL_HOLE_MARGIN), float(LOW_HOLE_M + LOW_HOLE_STEP), 0.0)
+            else:
+                mouth_mask = _mouth_cut(u, x0, y0, square, xy, hw, m0, m1, LOW_HOLE_M + LOW_HOLE_STEP)
+            mask |= mouth_mask
         if rust:                # the Rust kernel (the same sums, per part)
             m0, m1 = (mouths or {}).get(_fid, (True, True))
             fast._ef.tunnel_holes(mask, u, float(x0), float(y0), float(square), np.ascontiguousarray(xy),
@@ -2926,10 +2969,77 @@ def retaining_walls(frame, roads, elev, exact, decks=()):
     return out
 
 
+TWIN_SHARE = 0.8        # a tunnel part beside another for this share of its length (their tubes overlapping) ...
+TWIN_DZ_M = 2.0         # ... with its floor within this of the other's: twin tubes, one tube round both (GitHub #84:
+                        # the Route des Tamarins' two carriageways 9.5 m apart on Réunion, each an 11 m road in its own
+                        # tube, the tubes through each other's walls and portals)
+TWIN_STEP_M = 10.0
+
+
+def _line_near(xy, other):
+    """Per point of xy (k, 2): (distance to the polyline other (m, 2), the nearest point on it, its index t along it
+    as a float segment index). Pure."""
+    a, b = other[:-1], other[1:]
+    d = b - a
+    L2 = np.maximum((d * d).sum(1), 1e-12)
+    out_d, out_q = np.empty(len(xy)), np.empty((len(xy), 2))
+    for i, p in enumerate(xy):
+        t = np.clip(((p - a) * d).sum(1) / L2, 0.0, 1.0)
+        q = a + t[:, None] * d
+        dd = np.hypot(*(q - p).T)
+        j = int(np.argmin(dd))
+        out_d[i], out_q[i] = dd[j], q[j]
+    return out_d, out_q
+
+
+def twin_tunnels(parts):
+    """Pairs of tunnel parts ([(fid, spec, xy, z, lon)]) side by side: [(i, j, midline (k, 3), width)] with i < j their
+    indices, the midline along part i (each point halfway to j's line, the floors' mean) and the width of a road
+    surface covering both carriageways (the tube round both: roadmesh.tunnel). Each part in one pair at most. Pure."""
+    import roadmesh
+    taken, out = set(), []
+    for i, (fa, sa, xa, za, _) in enumerate(parts):
+        if i in taken or len(xa) < 2:
+            continue
+        xa = np.asarray(xa, np.float64)
+        sj = np.r_[0.0, np.cumsum(np.hypot(*np.diff(xa, axis=0).T))]
+        if sj[-1] < 1.0:
+            continue
+        ss = np.linspace(0.0, sj[-1], max(2, int(sj[-1] / TWIN_STEP_M) + 1))
+        P = np.c_[np.interp(ss, sj, xa[:, 0]), np.interp(ss, sj, xa[:, 1])]
+        Z = np.interp(ss, sj, np.asarray(za, np.float64))
+        for j in range(i + 1, len(parts)):
+            fb, sb, xb, zb, _ = parts[j]
+            if j in taken or len(xb) < 2:
+                continue
+            xb = np.asarray(xb, np.float64)
+            reach = (sa.width + sb.width) / 2 + 2 * roadmesh.TUNNEL_SHOULDER + 1.0      # their tubes would overlap
+            d, q = _line_near(P, xb)
+            near = d < reach
+            if near.mean() < TWIN_SHARE:
+                continue
+            tb = np.r_[0.0, np.cumsum(np.hypot(*np.diff(xb, axis=0).T))]
+            _, qb = _line_near(q, xb)           # (q on xb: its floor by the arc to it)
+            sb_at = np.array([tb[k] + np.hypot(*(qb[n] - xb[k])) for n, k in enumerate(
+                [int(np.argmin(np.hypot(*(xb[:-1] - p).T) + np.hypot(*(xb[1:] - p).T))) for p in qb])])
+            zq = np.interp(sb_at, tb, np.asarray(zb, np.float64))
+            if np.abs(Z[near] - zq[near]).max() > TWIN_DZ_M:
+                continue
+            mid = np.c_[(P + q) / 2, (Z + zq) / 2]
+            k0, k1 = int(np.flatnonzero(near)[0]), int(np.flatnonzero(near)[-1])     # (where they run side by side)
+            width = float(np.median(d[near])) + (sa.width + sb.width) / 2
+            out.append((i, j, mid[k0:k1 + 1], width))
+            taken.update((i, j))
+            break
+    return out
+
+
 def _tunnel_chunks(tunnels, cells, exact):
     """The chunks of the tunnels crossing the tile box `exact`: the road surface ("deck", "tunnel": the tube is
     built around it, roadmesh.tunnel) and its lines, every one "fixed" at the floor's heights; a surface chunk
-    ending at its part's end carries "portal": [start is one, end is one]."""
+    ending at its part's end carries "portal": [start is one, end is one]. Twin tunnels (twin_tunnels): their surfaces
+    are floors without a tube ("no_tube"), and one "tube_only" chunk along their midline (not drawn as a road) carries
+    the tube round both, with the first's portals."""
     out = []
     if getattr(tunnels, "open_parts", None) is not None:
         for fid, spec, xy, z, lon in tunnels.open_parts(cells, exact):
@@ -2946,15 +3056,21 @@ def _tunnel_chunks(tunnels, cells, exact):
                             # at the floor's own heights the ground graded from the grader's profile covered it
                             # outside 97th Street's arch, 2026-10-17)
                             out.append(_chunk(look, w, c))
-    for fid, spec, xy, z, lon in tunnels.parts(cells, exact):
-        if not np.isfinite(z).all():
-            continue
+    parts = [p for p in tunnels.parts(cells, exact) if np.isfinite(p[3]).all()]
+    twins = twin_tunnels(parts)
+    twinned = {k for i, j, _, _ in twins for k in (i, j)}
+    jobs = []                                   # (fid, its ends, [(look, width, line)])
+    for i, j, mid, width in twins:              # the tube round both, with the first's portals
+        if len(mid) >= 2:
+            jobs.append((parts[i][0], (mid[0, :2], mid[-1, :2]), [({**TUNNEL, "tunnel": True, "tube_only": True}, width, mid)]))
+    for n, (fid, spec, xy, z, lon) in enumerate(parts):
         pts = np.c_[xy, z]
-        ends = (pts[0, :2], pts[-1, :2])
-        lines = [({**TUNNEL, "deck": True, "tunnel": True}, spec.width, pts)]
+        lines = [({**TUNNEL, "deck": True, "tunnel": True, "no_tube": n in twinned}, spec.width, pts)]
         for look, w, line in extras(spec, pts, lon):
             if look["m"] != SIDEWALK["m"] and look["m"] != GUTTER["m"]:
                 lines.append((look, w, line))
+        jobs.append((fid, (pts[0, :2], pts[-1, :2]), lines))
+    for fid, ends, lines in jobs:
         for look, w, line in lines:
             for piece in clip_polyline(line, *exact):
                 for c in split(densify(simplify(piece, ztol=SIMPLIFY_Z_M))):
@@ -2962,7 +3078,11 @@ def _tunnel_chunks(tunnels, cells, exact):
                         ch = _chunk(look, w, c)
                         ch["fixed"] = True
                         if look.get("tunnel"):
-                            ch["deck"] = ch["tunnel"] = True
+                            ch["tunnel"] = True
+                            ch["deck"] = not look.get("tube_only")      # (a twin's tube: no floor, no road surface)
+                            for flag in ("no_tube", "tube_only"):
+                                if look.get(flag):
+                                    ch[flag] = True
                             if getattr(tunnels, "height", None) is not None:
                                 ch["tunnel_h"] = tunnels.height(fid)
                             if getattr(tunnels, "portal_ups", None) is not None:
@@ -3168,7 +3288,16 @@ def build_tile(frame, tx, ty, cells, elev, urban_fn=None, walks=None, bridges=No
         elif deck_context is not None:          # the decks around the tile (roadmesh.deck's parapet test)
             deck_context.append(ch)
     if tunnels is not None:                     # TunnelProfiles: road surfaces and lines through tunnels
-        chunks.extend(_tunnel_chunks(tunnels, cells, (x0, y0, x1, y1)))
+        tch = _tunnel_chunks(tunnels, cells, (x0, y0, x1, y1))
+        chunks.extend(tch)
+        import roadmesh
+        # (retaining walls: none in a tube either, its vault over them; between twin tunnels' carriageways one stood in
+        # their shared mouth, GitHub #84)
+        for c in tch:
+            if c.get("tunnel") and not c.get("no_tube"):
+                n = np.array(c["n"], np.float64)
+                n[:, 2] += float(c.get("tunnel_h") or roadmesh.TUNNEL_H)
+                decks_near.append({"n": n, "w": float(c["w"]) + 2 * roadmesh.TUNNEL_SHOULDER})
     exact = (x0, y0, x1, y1)
     if walls is not None:                       # retaining walls where a road is cut into the ground (roadmesh.tunnel)
         walls.extend(retaining_walls(frame, roads, elev, exact, decks=decks_near))
@@ -3421,7 +3550,7 @@ def write_tile(out_dir, vfs_dir, aid, tx, ty, chunks, walks=None, road_mesh=None
     path = os.path.join(out_dir, name)
     # (from PR #41, Madderose) with a road mesh the mod makes no DecalRoads: their chunks were ~36 % of the file it
     # parses on its main thread
-    data = {"v": VERSION, "chunks": [] if road_mesh is not None else chunks}
+    data = {"v": VERSION, "chunks": [] if road_mesh is not None else [c for c in chunks if not c.get("tube_only")]}
     if road_mesh is not None:
         x0, y0, _, _ = tile_bbox(tx, ty)
         shape = f"road_{aid}_{tx}_{ty}.cdae"

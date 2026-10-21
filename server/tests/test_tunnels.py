@@ -249,6 +249,66 @@ class Sections(unittest.TestCase):
         self.assertTrue(m_one[:, xs < 2].any())
 
 
+class TwinTunnels(unittest.TestCase):
+    """GitHub #84: two carriageways 9.5 m apart, each an 11 m road in its own tube, the tubes through each other."""
+
+    def parts(self, gap=9.5, length=220.0, dz=0.0):
+        a = ("a", Spec(11.0, "paved", False, "trunk"), np.array([[0.0, 0.0], [length, 0.0]]), np.array([10.0, 11.0]), 0.0)
+        b = ("b", Spec(11.0, "paved", False, "trunk"), np.array([[length, gap], [0.0, gap]]),
+             np.array([11.0 + dz, 10.0 + dz]), 0.0)
+        return [a, b]
+
+    def test_found_with_a_midline_and_a_width_round_both(self):
+        tw = roads.twin_tunnels(self.parts())
+        self.assertEqual(len(tw), 1)
+        i, j, mid, width = tw[0]
+        self.assertEqual((i, j), (0, 1))
+        self.assertTrue(np.allclose(mid[:, 1], 4.75))
+        self.assertAlmostEqual(width, 9.5 + 11.0)
+        self.assertAlmostEqual(float(mid[0, 2]), 10.0, places=6)
+        self.assertEqual(roads.twin_tunnels(self.parts(gap=40.0)), [], "apart: two tubes")
+        self.assertEqual(roads.twin_tunnels(self.parts(dz=5.0)), [], "one over the other: two tubes")
+
+    def test_chunks_one_tube_round_both(self):
+        class T:
+            def __init__(self, parts):
+                self._p = parts
+
+            def parts(self, cells, exact):
+                return self._p
+        ch = roads._tunnel_chunks(T(self.parts()), [], (-50.0, -50.0, 300.0, 300.0))
+        tubes = [c for c in ch if c.get("tunnel") and not c.get("no_tube")]
+        self.assertTrue(tubes and all(c.get("tube_only") and not c.get("deck") for c in tubes))
+        floors = [c for c in ch if c.get("no_tube")]
+        self.assertEqual(len({round(c["n"][0][1], 1) for c in floors}), 2, "both carriageways' floors")
+        self.assertTrue(all(c.get("deck") for c in floors))
+        mesh = roadmesh.tunnel(ch, (0.0, 0.0, 0.0))
+        self.assertIsNotNone(mesh)
+        P = mesh[0]
+        self.assertLess(float(P[:, 1].min()), -5.5)     # the walls outside both carriageways
+        self.assertGreater(float(P[:, 1].max()), 9.5 + 5.5)
+
+    def test_holes_round_both_and_their_mouths(self):
+        import fast
+        parts = self.parts()
+        n, sq = 128, 2.0
+        u = np.full((n, n), 30.0)                       # a hill over them: the tubes' insides are not cut ...
+        xs = 110.0 - n * sq / 2 + np.arange(n) * sq
+        m = roads.tunnel_hole_mask(parts, u, 110.0, 0.0, sq)
+        ys = 0.0 - n * sq / 2 + np.arange(n) * sq
+        mid_row = int(np.argmin(np.abs(ys - 4.75)))
+        self.assertTrue(m[mid_row, (xs > 0) & (xs < 4)].any(), "... but the shared mouth is, between them too")
+        self.assertFalse(m[mid_row, (xs > 20) & (xs < 200)].any())
+        if hasattr(fast._ef, "tunnel_holes"):
+            ef, avail = fast._ef, fast.AVAILABLE
+            try:
+                fast.AVAILABLE = False
+                b = roads.tunnel_hole_mask(parts, u, 110.0, 0.0, sq)
+            finally:
+                fast._ef, fast.AVAILABLE = ef, avail
+            self.assertTrue(np.array_equal(m, b), "Rust and numpy alike")
+
+
 class FloorAt(unittest.TestCase):
     def test_in_the_tube_and_beside_it(self):
         # a teleport into a park arch: the car on its floor, not the soil over it

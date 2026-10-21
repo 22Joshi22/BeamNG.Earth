@@ -339,6 +339,7 @@ def build(frame, chunks, elev, origin, lift=0.0, clip=None, follow=False, q=None
     over the drawn ground (within FOLLOW_TOL; drawn(lat, lon): the block's heights where they are not elev's, its
     ground raised over low arches): a ribbon straight across the road stood under the ground's bumps (up to 30 cm on hills), so it was drawn
     5 cm over it and the tyres sank into it (the user, 2026-10-20)."""
+    chunks = [c for c in chunks if not c.get("tube_only")]  # (twin tunnels' tube: no road surface, roads._tunnel_chunks)
     if clip is not None:
         chunks = [_reach_past(c, clip) for c in chunks]
     rb = ribbons(chunks)                        # deck surfaces too: their asphalt over deck()'s concrete
@@ -834,7 +835,7 @@ def tunnel(chunks, origin, walls=()):
     makes its slab) a tube of concrete (TUNNEL_SIDE) faced inwards: shoulders, walls and a vault TUNNEL_H over the
     floor; at a chunk end that is a portal ("portal") a face around the opening, seen from both sides. (positions,
     tris, uvs, materials, tri material index) or None. Pure."""
-    tc = [c for c in chunks if c.get("tunnel")]
+    tc = [c for c in chunks if c.get("tunnel") and not c.get("no_tube")]     # (twins: one tube_only round both)
     rb = [(r, c) for r, c in zip(ribbons(tc), tc) if r[5] is not None] if tc else []
     if not rb and not walls:
         return None
