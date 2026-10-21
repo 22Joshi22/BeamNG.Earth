@@ -53,7 +53,11 @@ URGENT_WORKERS = 16         # Dem.urgent(): its own fetch threads (with the 16 s
 MIRROR_MB = 1024
 MIRROR_MAX_AGE_S = 30 * 86400
 DECODED_VERSION = 1
-MAX_ZOOM = 15               # AWS stops at z15; nothing in v1 needs more
+MAX_ZOOM = 15               # AWS stops at z15 (the far field's zooms: zoom_for's default cap)
+# The near terrain and the road profiles read Mapterhorn's lidar one zoom deeper where it has it (the user, 2026-10-21:
+# "the terrain data gets smoothed ... sharper terrain features get lost": z16 is ~0.8 m a pixel at 48 N, z15 ~1.6 m, the
+# terrain's lattice 2 m); a z16 tile it lacks is its z15 parent upsampled (AWS has no z16). BNE_DEM_ZOOM=15: as before.
+FINE_ZOOM = int(os.environ.get("BNE_DEM_ZOOM", "16"))
 GLOBAL_ZOOM = 12            # Mapterhorn is complete on land up to here
 GROUND_MARGIN = 96          # px of the neighbouring z12 tiles the ground filter sees around a tile
 MAX_LAT = 85.0511287798     # Web Mercator limit
@@ -345,6 +349,10 @@ class Dem:
             # as it is (with AWS bathymetry: a failure says nothing about where the sea is).
             self._count("mapterhorn:failover")
             self._partial()
+            if z > MAX_ZOOM:            # (AWS stops at z15: its tile upsampled)
+                a = self._from_ancestor(z, x, y, MAX_ZOOM)
+                self.served[key] = MAPTERHORN["name"]
+                return a
             try:
                 a = self._aws_tile(z, x, y)
             except netfetch.FetchError as e2:
@@ -355,6 +363,10 @@ class Dem:
             self.served[key] = MAPTERHORN["name"]
             if self.ground_filter and z == GLOBAL_ZOOM and not self._lidar(x, y):
                 a = self._ground12(x, y, a)
+            return a
+        if z > MAX_ZOOM:                # (no lidar this deep here: the z15 tile upsampled)
+            a = self._from_ancestor(z, x, y, MAX_ZOOM)
+            self.served[key] = MAPTERHORN["name"]
             return a
         if self.ground_filter and z > GLOBAL_ZOOM:
             # no lidar here: the surface model's ground, upsampled
@@ -430,9 +442,13 @@ class Dem:
 
     def _from_ground12(self, z, x, y):
         """Tile (z, x, y), z > 12, bilinear from its z12 ancestor's ground (edges held at the ancestor's)."""
-        d = z - GLOBAL_ZOOM
+        return self._from_ancestor(z, x, y, GLOBAL_ZOOM)
+
+    def _from_ancestor(self, z, x, y, z0):
+        """Tile (z, x, y) bilinear from its ancestor at zoom z0 (as loaded: z12's ground; edges held at the ancestor's)."""
+        d = z - z0
         ax, ay = x >> d, y >> d
-        key = (GLOBAL_ZOOM, ax, ay)
+        key = (z0, ax, ay)
         with self._lock:
             anc = self._lru.get(key)
         if anc is None:
@@ -520,8 +536,8 @@ class Dem:
     def sample(self, lat, lon, zoom, progress=None):
         """Bilinear elevation (m) at arbitrary lat/lon arrays from zoom-level tiles.
         Points beyond the Web Mercator limit (|lat| > 85.05) return 0."""
-        if zoom > MAX_ZOOM:
-            raise ValueError(f"zoom {zoom} > {MAX_ZOOM}")
+        if zoom > max(MAX_ZOOM, FINE_ZOOM):
+            raise ValueError(f"zoom {zoom} > {max(MAX_ZOOM, FINE_ZOOM)}")
         lat = np.asarray(lat, dtype=np.float64)
         lon = np.asarray(lon, dtype=np.float64)
         shape = np.broadcast(lat, lon).shape
