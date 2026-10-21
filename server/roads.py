@@ -2848,6 +2848,8 @@ WALL_STEP = 2.0         # m between a retaining wall's points
 WALL_PROBE_M = 1.0      # m beyond the cut's foot (grading.WALL_T_M) where the natural ground's height is read
 WALL_TOP_M = 0.15       # m the wall stands over the ground behind it
 WALL_FOOT_M = 0.3       # m it reaches under the road
+WALL_STEP_UP_M = 0.5     # m the graded ground climbs over the road where a wall's face goes (short of the core's edge)
+WALL_GRID_M = 2.0        # the terrain's lattice (heightmap.SQUARE)
 
 
 WALL_KEEP_M = 1.2       # m: a wall goes on while the cut stays this deep (it starts at grading.WALL_CUT_M) ...
@@ -2939,19 +2941,31 @@ def retaining_walls(frame, roads, elev, exact, decks=()):
         nl = np.stack([-d[:, 1], d[:, 0]], axis=1)
         width = max(spec.width, carriageway(spec.cls, spec.kind, True, None, spec.oneway))
         core = width / 2 + grading.shoulder(spec)
+        steps = np.arange(width / 2 + 0.5, core + 0.01, 1.0)       # (the grading's sharp cuttings end the core sooner)
         for side in (1.0, -1.0):
             probe = xy + nl * side * (core + grading.WALL_FLAT_M + grading.WALL_T_M + WALL_PROBE_M)
             pts_all.append(probe)
-            info.append((xy, z, nl * side, core, inside))
+            for o in steps:
+                pts_all.append(xy + nl * side * o)
+            info.append((xy, z, nl * side, core, inside, width / 2, steps))
     if not pts_all:
         return []
     P = np.concatenate(pts_all)
     la, lo, _ = frame.enu_to_geodetic(P[:, 0], P[:, 1], np.zeros(len(P)))
     g = np.asarray(frame.geodetic_to_enu(la, lo, np.asarray(elev(la, lo), np.float64))[2], np.float64)
     out, k = [], 0
-    for xy, z, out_n, core, inside in info:
+    for xy, z, out_n, core, inside, rh, steps in info:
         gg = g[k:k + len(xy)]
         k += len(xy)
+        face = np.full(len(xy), core + 0.1)
+        if len(steps):              # the wall where the graded ground starts to climb (a sharp cutting: before the core's edge)
+            gs = g[k:k + len(xy) * len(steps)].reshape(len(steps), len(xy)).T
+            k += len(xy) * len(steps)
+            up = gs - z[:, None] > WALL_STEP_UP_M
+            first = np.argmax(up, axis=1)
+            # (a grid square in front of the climb: the terrain's 2 m lattice draws a step at an angle to it as teeth
+            # reaching that far out, which the wall's face then hides)
+            face = np.where(up.any(axis=1), np.maximum(steps[first] - 1.0 - WALL_GRID_M, rh + 0.1), face)
         cut = _wall_runs(gg - z) & inside & ~_under_decks(xy + out_n * core, z, decks)
         i = 0
         while i < len(cut):
@@ -2963,7 +2977,7 @@ def retaining_walls(frame, roads, elev, exact, decks=()):
                 j += 1
             if j > i:
                 sl = slice(i, j + 1)
-                out.append({"base": xy[sl] + out_n[sl] * (core + 0.1), "top": gg[sl] + WALL_TOP_M,
+                out.append({"base": xy[sl] + out_n[sl] * face[sl][:, None], "top": gg[sl] + WALL_TOP_M,
                             "foot": z[sl] - WALL_FOOT_M, "toward": -out_n[sl]})
             i = j + 1
     return out

@@ -254,6 +254,7 @@ class GraderTest(unittest.TestCase):
         b = g.plans(la2, lo2)
         self.assertEqual([id(p) for p in a], [id(p) for p in b])
 
+    @unittest.mock.patch.object(grading, "SHARP_ON", False)        # (the profile's samples alone counted)
     def test_long_parts_planned_near_the_cell_only(self):
         # a 30 km straight track (one segment): its plan in a cell covers the cell and CLIP_MARGIN_M round it, not
         # its whole length (each cell sampled the ground to both ends: thousands of DEM tiles, 2026-10-20), with the

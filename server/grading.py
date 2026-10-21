@@ -71,6 +71,17 @@ WALL_AHEAD_M = 2.5          # ... only beside a segment or this little past its 
 # further their height is from that core's: not at all from SEP_FULL_M, as before up to SEP_FROM_M, and their weight
 # comes back over CORE_FADE_M past the core (no step at its edge).
 SEP_ON = os.environ.get("BNE_GRADE_SEP", "on") != "off"
+# Sharp cuttings (the user, 2026-10-21: the elevation data is smoothed, "sharper terrain features get lost": a street in
+# a walled cutting read as a 4 m slope its asphalt climbed, McGraw-Graben, Munich). Beside a built road whose ground
+# rises SHARP_MIN_M or more within SHARP_REACH_M of its core at SHARP_GRADE or steeper on average (a wall the data
+# smoothed into a ramp), the ground is raised to that top from the core's edge out: the road's wall rule (WALL_CUT_M)
+# then flattens a strip, steps up and roads.retaining_walls stands a wall there.
+SHARP_ON = os.environ.get("BNE_SHARP", "on") != "off"
+SHARP_REACH_M = 10.0
+SHARP_STEP_M = 1.0
+SHARP_MIN_M = 2.0
+SHARP_GRADE = 0.6
+SHARP_RUN_N = 3             # consecutive plan vertices (VERTEX_STEP apart) a cutting holds for at least
 SEP_FROM_M = 2.0
 SEP_FULL_M = 4.0
 CORE_FADE_M = 2.0
@@ -143,10 +154,14 @@ def resample(xy, step):
 class Plan:
     """One road's grading: vertices (n, 2) in the frame's ENU metres, their target heights, core half width; abut: does
     it lead onto a bridge at its (first, last) vertex (grade_points)."""
-    __slots__ = ("xy", "z", "half", "bbox", "abut")
+    __slots__ = ("xy", "z", "half", "bbox", "abut", "cut", "road_half")
 
-    def __init__(self, xy, z, half, abut=(False, False)):
+    def __init__(self, xy, z, half, abut=(False, False), cut=None, road_half=None):
         self.xy, self.z, self.half, self.abut = xy, z, float(half), (bool(abut[0]), bool(abut[1]))
+        # (n - 1, 6) per segment, NaN where none: a cutting's wall offset from the centre line, its top's height and
+        # the top's offset, on the left, then the right (_add_cuts)
+        self.cut = cut
+        self.road_half = float(road_half) if road_half is not None else float(half)    # the carriageway's half width
         pad = half + T_MAX
         self.bbox = (xy[:, 0].min() - pad, xy[:, 1].min() - pad, xy[:, 0].max() + pad, xy[:, 1].max() + pad)
 
@@ -236,7 +251,83 @@ def plan_roads(frame, parts, elev, abut=None):
                 if ab[int(at_end)]:
                     z = fill_abutment(z, at_end)
         out.append(_plan(xy, z, spec, ab))
+    if SHARP_ON:
+        _add_cuts(frame, [p if p is not None and sp.kind in roadsmod.BUILT else None
+                          for p, (_ll, sp) in zip(out, parts)], elev)
     return out
+
+
+def _add_cuts(frame, plans, elev):
+    """Sets Plan.cut on the plans (None entries skipped): per segment and side a cutting's wall (SHARP_*), from the raw
+    ground elev(lat, lon) sampled outward from the carriageway's edge: the ground rising SHARP_MIN_M or more at
+    SHARP_GRADE or steeper on average. The data spreads a vertical wall evenly round where it stands: its wall is put
+    where the climb is half done (never on the carriageway), its top where it is done."""
+    offs = np.arange(0.0, SHARP_REACH_M + 1e-9, SHARP_STEP_M)
+    pts, owners = [], []
+    for j, p in enumerate(plans):
+        if p is None or len(p.xy) < 2:
+            continue
+        xy = p.xy[:, :2]
+        t = np.gradient(xy, axis=0)
+        t /= np.maximum(np.hypot(*t.T), 1e-9)[:, None]
+        nl = np.stack([-t[:, 1], t[:, 0]], axis=1)
+        o = p.road_half + offs + (p.half - p.road_half)      # from the carriageway edge to past the core
+        o = np.r_[p.road_half + offs[offs < p.half - p.road_half], o]
+        for side in (1.0, -1.0):
+            q = xy[:, None, :] + nl[:, None, :] * side * o[None, :, None]
+            pts.append(q.reshape(-1, 2))
+        owners.append((j, o))
+    if not pts:
+        return
+    allp = np.concatenate(pts)
+    la, lo, _ = frame.enu_to_geodetic(allp[:, 0], allp[:, 1], 0.0)
+    g = np.asarray(elev(np.asarray(la), np.asarray(lo)), np.float64)       # (as plan_roads' heights)
+    k = 0
+    for j, o in owners:
+        p = plans[j]
+        n = len(p.xy)
+        res = []
+        for _side in (1.0, -1.0):
+            gg = g[k:k + n * len(o)].reshape(n, len(o))
+            k += n * len(o)
+            rise = gg - p.z[:, None]
+
+            def wall_of(r):
+                """(ok, wall offset, top rise, top offset) of a climb r (n, len(o)) per vertex."""
+                top = r.max(axis=1)
+                ti = np.argmax(r >= 0.9 * top[:, None], axis=1)     # (where the climb is done, not a plateau's creep)
+                half_i = np.argmax(r >= (top / 2.0)[:, None], axis=1)
+                foot_i = np.argmax(r >= 0.25 * top[:, None], axis=1)
+                steep = (top * 0.75) / np.maximum(o[ti] - o[foot_i], SHARP_STEP_M)
+                ok_ = (top >= SHARP_MIN_M) & (steep >= SHARP_GRADE)
+                return ok_, np.maximum(o[half_i], p.road_half + 0.2), top, o[ti]
+
+            ok_up, wall_up, top, reach_o = wall_of(rise)
+            ok_dn, wall_dn, _drop, _ = wall_of(-rise)       # the ground falls away: the core ends there, nothing raised
+            ok_dn &= ~ok_up
+            ok = ok_up | ok_dn
+            wall = np.where(ok_up, wall_up, wall_dn)
+            # runs of SHARP_RUN_N vertices at least (a single steep sample is noise, not a wall)
+            run = np.zeros(n, bool)
+            i = 0
+            while i < n:
+                if not ok[i]:
+                    i += 1
+                    continue
+                e = i
+                while e + 1 < n and ok[e + 1]:
+                    e += 1
+                if e - i + 1 >= SHARP_RUN_N:
+                    run[i:e + 1] = True
+                i = e + 1
+            seg = run[:-1] & run[1:]
+            ztop = np.where(ok_up, p.z + top, np.nan)
+            up = seg & np.isfinite(ztop[:-1]) & np.isfinite(ztop[1:])
+            res.append(np.where(seg, np.maximum(wall[:-1], wall[1:]), np.nan))
+            res.append(np.where(up, np.minimum(ztop[:-1], ztop[1:]), np.nan))
+            res.append(np.where(up, np.maximum(reach_o[:-1], reach_o[1:]), np.nan))
+        if np.isfinite(res[0]).any() or np.isfinite(res[3]).any():
+            p.cut = np.stack(res, axis=1)
 
 
 def _plan(xy, z, spec, abut=(False, False)):
@@ -247,7 +338,7 @@ def _plan(xy, z, spec, abut=(False, False)):
     keep = np.r_[np.arange(0, len(xy) - 1, every), len(xy) - 1]
     # the carriageway as a city street would have it (never from the land cover), or the measured one
     width = max(spec.width, roadsmod.carriageway(spec.cls, spec.kind, True, None, spec.oneway)) if built else spec.width
-    return Plan(xy[keep], zs[keep], width / 2 + shoulder(spec), abut)
+    return Plan(xy[keep], zs[keep], width / 2 + shoulder(spec), abut, road_half=width / 2)
 
 
 def shoulder(spec):
@@ -426,7 +517,7 @@ class Grader:
                 if a is not None:
                     add = a if add is None else np.maximum(add, a)
             if add is not None:
-                plans[i] = (fid, Plan(p.xy, p.z + add, p.half, p.abut))
+                plans[i] = (fid, Plan(p.xy, p.z + add, p.half, p.abut, p.cut, p.road_half))
 
     def _abut_ends(self, key, pe, ok=None):
         """Which of the points pe (n, 2) (road ends; ok: those to look at) near cell key are within APPROACH_TOUCH_M
@@ -810,7 +901,7 @@ def grade_points(px, py, base, plans, lift=0.0):
     order = np.argsort(key, kind="stable")
     sk = key[order]
     # every segment of the plans near the points: ends, end heights, reach (core half width + T_MAX)
-    A, B, ZA, ZB, H, AB = [], [], [], [], [], []
+    A, B, ZA, ZB, H, AB, CUT = [], [], [], [], [], [], []
     for p in plans:
         if p.bbox[2] < x0 or p.bbox[0] > x1 or p.bbox[3] < y0 or p.bbox[1] > y1 or len(p.xy) < 2:
             continue
@@ -828,11 +919,14 @@ def grade_points(px, py, base, plans, lift=0.0):
             if abut[1]:
                 ab |= arc[-1] - arc[1:] < ABUT_NEAR_M
         AB.append(ab)
+        cut = getattr(p, "cut", None)
+        CUT.append(cut if cut is not None else np.full((len(p.xy) - 1, 6), np.nan))
     if not A:
         return out
-    A, B, ZA, ZB, H, AB = (np.concatenate(v) for v in (A, B, ZA, ZB, H, AB))
+    A, B, ZA, ZB, H, AB, CUT = (np.concatenate(v) for v in (A, B, ZA, ZB, H, AB, CUT))
+    sharp = bool(np.isfinite(CUT).any())
     import fast
-    if fast.AVAILABLE and getattr(fast._ef, "VERSION", 0) >= 36:   # the Rust loop: the same pairs in the same order
+    if fast.AVAILABLE and getattr(fast._ef, "VERSION", 0) >= 36 and not sharp:   # the Rust loop: the same pairs in the same order
         f64 = np.float64
         return fast._ef.grade_points(np.ascontiguousarray(px, f64), np.ascontiguousarray(py, f64),
                                      np.ascontiguousarray(base, f64), np.ascontiguousarray(A[:, :2], f64),
@@ -849,7 +943,7 @@ def grade_points(px, py, base, plans, lift=0.0):
     lo_y = np.minimum(A[:, 1], B[:, 1]) - reach
     hi_y = np.maximum(A[:, 1], B[:, 1]) + reach
     near = ~((hi_x < x0) | (lo_x > x1) | (hi_y < y0) | (lo_y > y1))
-    A, B, ZA, ZB, H, AB = A[near], B[near], ZA[near], ZB[near], H[near], AB[near]
+    A, B, ZA, ZB, H, AB, CUT = A[near], B[near], ZA[near], ZB[near], H[near], AB[near], CUT[near]
     lo_x, hi_x, lo_y, hi_y = lo_x[near], hi_x[near], lo_y[near], hi_y[near]
     cx0 = np.maximum(0, np.floor((lo_x - x0) / BUCKET)).astype(np.int64)
     cx1 = np.minimum(nbx - 1, np.floor((hi_x - x0) / BUCKET)).astype(np.int64)
@@ -874,11 +968,16 @@ def grade_points(px, py, base, plans, lift=0.0):
     # flipped on at 55 mph). Only there: everywhere, a street's core edge beside a lower street (San Francisco) became a
     # step where the blend came back. A road's own next segments lie ahead of the point, not beside
     top = np.full(len(px), -np.inf)
+    raised = np.full(len(px), -np.inf)          # (sharp) the cuttings' tops over the points beside them
     cmax = np.zeros(len(px))            # (SEP_ON) how much the point is in a core, and that core's height
     csum = np.zeros(len(px))
     cz = np.zeros(len(px))
     ends = np.cumsum(cnt)
+    beff = base
     for pass_ in (0, 1):
+        if pass_ == 1 and sharp:
+            beff = np.maximum(base, raised)
+            out = beff.copy()
         start = 0
         while start < len(seg):
             stop = int(np.searchsorted(ends, (ends[start - 1] if start else 0) + PAIR_BATCH, "right"))
@@ -897,6 +996,19 @@ def grade_points(px, py, base, plans, lift=0.0):
             if pass_ == 0:
                 inside = (d <= H[s_]) & AB[s_]
                 np.maximum.at(top, idx[inside], target[inside])
+                if sharp:                   # a cutting beside the segment: the ground raised to its top past its wall
+                    cs = CUT[s_]
+                    left = (qx * ab[:, 1] - qy * ab[:, 0]) < 0
+                    cwall = np.where(left, cs[:, 0], cs[:, 3])
+                    ctop = np.where(left, cs[:, 1], cs[:, 4])
+                    creach = np.where(left, cs[:, 2], cs[:, 5])
+                    lab0 = np.sqrt(np.maximum(L2, 1e-24))
+                    al0 = (qx * ab[:, 0] + qy * ab[:, 1]) / lab0
+                    ahead0 = np.maximum(np.maximum(-al0, al0 - lab0), 0.0)
+                    side0 = np.abs(qx * ab[:, 1] - qy * ab[:, 0]) / lab0
+                    # (beside the segment, or just past its end: at a bend's outside the joint's wedge as well)
+                    inband = np.isfinite(ctop) & (side0 > cwall) & (side0 <= creach + 0.5) & (ahead0 < SHARP_STEP_M * 2)
+                    np.maximum.at(raised, idx[inband], ctop[inband])
                 if SEP_ON:
                     v = np.clip((d - H[s_]) / CORE_FADE_M, 0.0, 1.0)
                     cn = 1.0 - v * v * (3.0 - 2.0 * v)
@@ -906,16 +1018,26 @@ def grade_points(px, py, base, plans, lift=0.0):
                     cz += np.bincount(idx[k], cn[k] * target[k], len(px))
                 start = stop
                 continue
+            Hs = H[s_]
+            drop = np.zeros(len(d), bool)
+            if sharp:                       # (on a cutting's side the core ends at its wall)
+                cs = CUT[s_]
+                left = (qx * ab[:, 1] - qy * ab[:, 0]) < 0
+                cwall = np.where(left, cs[:, 0], cs[:, 3])
+                ctop = np.where(left, cs[:, 1], cs[:, 4])
+                Hs = np.where(np.isfinite(cwall), np.minimum(Hs, cwall), Hs)
+                # where the ground falls away at a wall the road ends there: past it, another level's ground
+                drop = np.isfinite(cwall) & ~np.isfinite(ctop) & (d > cwall)
             Lab = np.sqrt(np.maximum(L2, 1e-24))
             # (a zero-length segment: the point is beside it, as in the Rust loop)
             side = np.where(long_, np.abs(qx * ab[:, 1] - qy * ab[:, 0]) / Lab, d)
             along = (qx * ab[:, 0] + qy * ab[:, 1]) / Lab
             ahead = np.where(long_, np.maximum(np.maximum(-along, along - Lab), 0.0), 0.0)
-            wall = (base[idx] - target > WALL_CUT_M) & (ahead < side) & (ahead < WALL_AHEAD_M)
-            T = np.where(wall, WALL_T_M, np.clip(SLOPE_RUN * np.abs(target - base[idx]), T_MIN, T_MAX))
-            u = np.clip((d - H[s_] - np.where(wall, WALL_FLAT_M, 0.0)) / T, 0.0, 1.0)
+            wall = (beff[idx] - target > WALL_CUT_M) & (ahead < side) & (ahead < WALL_AHEAD_M)
+            T = np.where(wall, WALL_T_M, np.clip(SLOPE_RUN * np.abs(target - beff[idx]), T_MIN, T_MAX))
+            u = np.clip((d - Hs - np.where(wall, WALL_FLAT_M, 0.0)) / T, 0.0, 1.0)
             w = 1.0 - u * u * (3.0 - 2.0 * u)           # 1 on the core, smooth to 0 over T
-            m = (w > 0) & ~((d > H[s_]) & (ahead < side) & (target < top[idx] - WALL_CUT_M))
+            m = (w > 0) & ~((d > Hs) & (ahead < side) & (target < top[idx] - WALL_CUT_M)) & ~drop
             i = idx[m]
             # the blend between roads by inverse distance from each centreline (times w), so two roads
             # near each other (divided carriageways, junctions) meet in a gradual slope; with w alone
@@ -925,7 +1047,7 @@ def grade_points(px, py, base, plans, lift=0.0):
             if SEP_ON:
                 ref = cz[i] / np.maximum(csum[i], 1e-12)
                 h = np.clip((np.abs(target[m] - ref) - SEP_FROM_M) / (SEP_FULL_M - SEP_FROM_M), 0.0, 1.0)
-                o = np.clip((d[m] - H[s_][m]) / CORE_FADE_M, 0.0, 1.0)
+                o = np.clip((d[m] - Hs[m]) / CORE_FADE_M, 0.0, 1.0)
                 b = np.clip((side[m] - ahead[m]) / SIDE_FADE_M, 0.0, 1.0)
                 sep = cmax[i] * (h * h * (3.0 - 2.0 * h)) * (o * o * (3.0 - 2.0 * o)) * (b * b * (3.0 - 2.0 * b))
                 wb = wb * (1.0 - sep)
@@ -934,7 +1056,7 @@ def grade_points(px, py, base, plans, lift=0.0):
             np.maximum.at(wmax, i, w[m])
             start = stop
     g = den > 0
-    out[g] = base[g] + wmax[g] * (num[g] / den[g] - base[g] + lift)
+    out[g] = beff[g] + wmax[g] * (num[g] / den[g] - beff[g] + lift)
     return out
 
 
