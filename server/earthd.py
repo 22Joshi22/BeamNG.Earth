@@ -3690,6 +3690,28 @@ def parse_radii(text):
     return r2, r1
 
 
+OPEN_FILES = 65536      # raise_open_files: the soft limit wanted
+
+
+def raise_open_files():
+    """Unix: the soft limit on open files raised to the hard one (at most OPEN_FILES), before any worker starts (they
+    inherit it). Every decoded DEM tile a process keeps is a memory-mapped file (dem.py's mirror), and CPython's mmap
+    keeps its own descriptor: a few hundred per worker soon after a start, and the default soft limit of 1024 ran out
+    on a drive (GitHub #99: "Too many open files": far tiles and map cells failed)."""
+    try:
+        import resource
+    except ImportError:             # (Windows: no such limit)
+        return
+    try:
+        soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+        want = OPEN_FILES if hard == resource.RLIM_INFINITY else min(hard, OPEN_FILES)
+        if soft != resource.RLIM_INFINITY and soft < want:
+            resource.setrlimit(resource.RLIMIT_NOFILE, (want, hard))
+            log.info("open files limit: %d -> %d", soft, want)
+    except (ValueError, OSError) as e:
+        log.warning("open files limit not raised: %s", e)
+
+
 def main():
     home = os.path.expanduser("~")
     ap = argparse.ArgumentParser(description="BeamNG.Earth companion server")
@@ -3860,6 +3882,7 @@ def main():
         ap.error("--horizon needs --near-visual mesh (terrain mode is frozen at the v1.3.1 layout)")
     logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO,
                         format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    raise_open_files()
     import sampler
     sampler.maybe_start()           # BNGE_SAMPLE=<path>: a sampling profile of this process's threads (debugging)
     import budget
