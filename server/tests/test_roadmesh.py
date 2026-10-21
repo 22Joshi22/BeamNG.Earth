@@ -259,6 +259,21 @@ class DeckRulesTest(unittest.TestCase):
         self.assertTrue((zs[1][mid] - zs[0][mid] >= roads.DECK_ROAD_CLEAR - 0.6).all(),
                         float((zs[1][mid] - zs[0][mid]).min()))
 
+    def test_no_step_onto_a_steep_abutment(self):
+        # Lombard Street, Baltimore (2026-10-20): the map's bridge line ends down its east embankment, whose top stands
+        # over the deck's climb cap from that end; the deck met it in a 0.86 m step in 4 m and cars stopped dead there
+        import roads
+        s = np.arange(0.0, 164.1, 4.0)
+        xy = np.c_[s, np.zeros_like(s)]
+        g = np.interp(s, [0, 20, 24, 128, 133, 137, 164], [20.4, 22.0, 18.4, 18.4, 25.0, 24.7, 22.2])
+        zs = roads.deck_profile([xy], lambda q: np.interp(q[:, 0], s, g))
+        z = zs[0]
+        self.assertTrue((z >= g - 1e-6).all(), "never under the ground")
+        top = int(np.argmax(z))
+        self.assertAlmostEqual(s[top], 132.0, delta=4.0)
+        self.assertTrue((np.diff(z[top - 8:top + 1]) >= -1e-6).all(), f"no dip before the top: {z[top - 8:top + 1]}")
+        self.assertLess(abs(np.diff(z[top - 3:top + 4], 2)).max(), 0.4, "rounded over the embankment's top (1.06 before)")
+
     def test_water_clearance(self):
         import roads
         self.assertEqual(roads.water_clear(10.0), roads.WATER_CLEAR_MIN)

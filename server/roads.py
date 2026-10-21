@@ -1075,6 +1075,13 @@ def deck_profile_once(lines, ground_fn, crossings=(), clear=None, grade=None, li
         if not np.isfinite(z).all():
             out.append(z)
             continue
+        # ground standing over a cap raises it, falling at DECK_MAX_GRADE either way: capped from its abutment, a deck
+        # met a steep embankment's ground in a step where the ground took over (0.86 m in 4 m onto Lombard Street's
+        # east abutment in Baltimore, the bridge's map line ending down the embankment; cars stopped dead, 2026-10-20)
+        # the floor: the ground rounded over its peaks (a vertical curve of DECK_CREST_R), so a deck smoothed under a
+        # sharp peak and floored there has no spike
+        g = np.maximum(g, _ground_envelope(s, g, 0.0, 1.0 / (2.0 * DECK_CREST_R)))
+        cap[k] = np.maximum(cap[k], _ground_envelope(s, g, DECK_MAX_GRADE))
         zz = np.maximum(np.minimum(np.maximum(z, req[k]), cap[k]), g)
         if deg[a] == 1:                         # an abutment keeps the ground's height
             zz[0] = z[0]
@@ -1093,6 +1100,7 @@ def deck_profile_once(lines, ground_fn, crossings=(), clear=None, grade=None, li
     return out
 
 
+DECK_CREST_R = 60.0     # m: the ground under a deck is its floor rounded to vertical curves this wide (deck_profile_once)
 DECK_SIGMA = 12.0       # m, deck profile smoothing (at least) ...
 DECK_SIGMA_SHARE = 25.0  # ... a 25th of the part's length ...
 DECK_SIGMA_MAX = 40.0   # ... at most
@@ -1127,6 +1135,17 @@ def _dedupe(xy, tol=0.5):
     else:
         keep.append(len(xy) - 1)
     return xy[keep]
+
+
+def _ground_envelope(s, g, grade, curve=0.0):
+    """The least profile over the ground heights g (at arcs s) that falls from each no faster than grade * d + curve *
+    d^2 at d m from it: max_j g_j - grade |s - s_j| - curve (s - s_j)^2. Pure."""
+    s, g = np.asarray(s, np.float64), np.asarray(g, np.float64)
+    out = np.full(len(s), -np.inf)
+    for i0 in range(0, len(s), 512):        # (in blocks: a long chain's (n, n) would be large)
+        d = np.abs(s[None, :] - s[i0:i0 + 512, None])
+        out = np.maximum(out, (g[i0:i0 + 512, None] - grade * d - curve * d * d).max(axis=0))
+    return out
 
 
 def _smooth_pinned(z, step, sigma):
