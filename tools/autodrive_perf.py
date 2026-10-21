@@ -43,8 +43,9 @@ ROAD_LIMIT_LUA = r"""
 local v = getPlayerVehicle(0)
 if not v or not map or not map.findClosestRoad then return '0' end
 local a, b = map.findClosestRoad(v:getPosition())
-local n = a and map.getMap().nodes[a]
-local l = n and n.links and n.links[b]
+local nodes = map.getMap().nodes
+local na, nb = a and nodes[a], b and nodes[b]
+local l = (na and na.links and na.links[b]) or (nb and nb.links and nb.links[a])   -- (each edge on one of its nodes)
 return tostring(l and l.speedLimit or 0)
 """
 
@@ -382,6 +383,34 @@ veh:setPositionRotation(n.pos.x, n.pos.y, ((z and z > -1e6) and z or n.pos.z) + 
 return string.format('snap: node %%s %%.1f m away', tostring(best), math.sqrt(bd))
 """
 
+# On the GPS route: the car set at the route's node nearest it (not the last two), facing the next one; for a start
+# whose nearest fast road is not the route's (the other carriageway of a motorway: the AI cut across the median to its
+# route, deck_fast10 2026-10-20).
+ROUTE_SNAP_LUA = r"""
+local gm = rawget(_G, 'core_groundMarkers')
+local veh = getPlayerVehicle(0)
+local m = map.getMap()
+if not (gm and gm.routePlanner and veh and m and m.nodes) then return 'route snap: no route' end
+local ids = require('beamngEarth/gps').pathNodes(gm.routePlanner.path)
+local p = veh:getPosition()
+local best, bd = nil, math.huge
+for k = 1, #ids - 2 do
+  local n = m.nodes[ids[k]]
+  if n and n.pos and m.nodes[ids[k + 1]] then
+    local d = (n.pos.x - p.x) ^ 2 + (n.pos.y - p.y) ^ 2
+    if d < bd then best, bd = k, d end
+  end
+end
+if not best then return 'route snap: no node' end
+local A, B = m.nodes[ids[best]].pos, m.nodes[ids[best + 1]].pos
+local dir = vec3(B.x - A.x, B.y - A.y, 0):normalized()
+local rot = quatFromDir(dir, vec3(0, 0, 1))
+local z = be:getSurfaceHeightBelow(A + vec3(0, 0, 3))
+veh:setPositionRotation(A.x, A.y, ((z and z > -1e6) and z or A.z) + 0.5, rot.x, rot.y, rot.z, rot.w)
+return string.format('route snap: node %%d of %%d, %%.1f m away', best, #ids, math.sqrt(bd))
+"""
+ROUTE_SNAP_OFF_M = 15.0     # the start this far off the GPS route: set on it (ROUTE_SNAP_LUA)
+
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -400,7 +429,7 @@ def main():
                     "up at speed; the summary's lead says how far ahead the road meshes were ready")
     ap.add_argument("--fast-after", type=float, default=0.0,
                     help="with --ai-mph: drive at the legal speed this many seconds first (out of town onto the "
-                    "motorway), then at --ai-mph (the autodrive restarted with it) once the road under the car has a "
+                    "motorway), then at --ai-mph (ai.setSpeed, its path kept) once the road under the car has a "
                     "limit of --fast-kmh or more (the AI crashed at 105 mph in town, deck_fast5 2026-10-20)")
     ap.add_argument("--fast-kmh", type=float, default=80.0)
     ap.add_argument("--snap-kmh", type=float, default=0.0,
@@ -445,6 +474,18 @@ def main():
         except (Exception, SystemExit, ValueError):
             return 0.0
     lua("beamngEarth_settings.uiMapGps(%r, %r, 'autodrive_perf') return 'ok'" % a.to)
+    if a.start:                     # off the route (another carriageway): on it, then the autodrive from there
+        for _ in range(15):
+            time.sleep(2)
+            try:
+                g = lua_json("return jsonEncode(require('beamngEarth/gps').status())")
+            except (Exception, SystemExit):
+                g = None
+            if g and g.get("off") is not None and not g.get("planning"):
+                if g["off"] > ROUTE_SNAP_OFF_M:
+                    print(lua(ROUTE_SNAP_LUA), flush=True)
+                    time.sleep(3)
+                break
     lua("return tostring(beamngEarth_settings.uiGpsAutodrive(true).autodrive)")
     obs = obs_start() if a.obs else None
     grec = None
@@ -462,8 +503,10 @@ def main():
                 t0 = time.time()
                 if fast_at is not None and t0 >= fast_at and road_limit() >= a.fast_kmh / 3.6:  # (--fast-after)
                     fast_at = None
-                    lua("require('beamngEarth/gps').speedOverride = %s beamngEarth_settings.uiGpsAutodrive(false) "
-                        "beamngEarth_settings.uiGpsAutodrive(true) return 1" % fast)
+                    # the AI's speed alone (its path kept; the override for the paths given later): restarted, the
+                    # AI got a fresh path and cut across a motorway median to it (deck_fast9, 2026-10-20)
+                    lua("require('beamngEarth/gps').speedOverride = %s getPlayerVehicle(0):queueLuaCommand("
+                        "'ai.setSpeedMode(\"set\") ai.setSpeed(%s)') return 1" % (fast, fast))
                     print("now at %.0f mph" % a.ai_mph, flush=True)
                 try:
                     r = lua_json(LUA_POLL)
