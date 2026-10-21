@@ -732,7 +732,24 @@ function M.feedback(what)
   return { ok = true }
 end
 
+-- X and Y on the map are the menus' cui_action_2 / cui_context; the UI turns each menu action's map on only for an
+-- element that says it takes it, and off again on a route or scope change (with the map open both were off on a Steam
+-- Deck, 2026-10-21; turned on, X worked once, then the reopened map had them off). Kept on while the map is open.
+M.MAP_MENU_ACTIONS = { cui_action_2 = true, cui_context = true }
+M.MAP_MENU_CHECK_S = 0.25
+local menuCheckAt = 0
+local function keepMapMenuActions()
+  local b = rawget(_G, 'core_input_bindings')
+  if not (b and b.getMenuActionStates and b.setMenuActionsEnabled) or os.clock() < menuCheckAt then return end
+  menuCheckAt = os.clock() + M.MAP_MENU_CHECK_S
+  local states = b.getMenuActionStates() or {}
+  for name in pairs(M.MAP_MENU_ACTIONS) do
+    if states[name] == false then pcall(b.setMenuActionsEnabled, M.MAP_MENU_ACTIONS) return end
+  end
+end
+
 function M.onUpdate()
+  if mapOpen then keepMapMenuActions() end
   if feedbackQ then
     feedbackQ.frames = feedbackQ.frames - 1
     if feedbackQ.frames <= 0 then

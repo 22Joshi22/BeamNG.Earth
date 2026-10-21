@@ -1,5 +1,6 @@
 <template>
-  <div class="earth-map" :class="{ embedded }" @keydown.esc.stop="onEscape" tabindex="-1" ref="rootEl">
+  <div class="earth-map" :class="{ embedded }" @keydown.esc.stop="onEscape" tabindex="-1" ref="rootEl"
+       v-bng-on-ui-nav:action_2,context="onNavDeclared">
     <!-- the map itself: tiles, the lat/lon grid, markers -->
     <div
       class="map-view"
@@ -245,6 +246,7 @@
 <script setup>
 import { ref, computed, watch, onMounted, onUnmounted, nextTick } from "vue"
 import { useEvents } from "@/services/events"
+import { vBngOnUiNav } from "@/common/directives"
 import * as mm from "./mapmath.js"
 import layerData from "./maplayers.js"
 
@@ -637,15 +639,31 @@ function padTick(ts) {
   else padLast = 0
 }
 
+// moving the map takes the controls back from the panels: the selected button lets go (the user, 2026-10-21: "if you
+// move the map refocus the controls on it and deselect any UI elements")
+function releaseButtons() {
+  const root = rootEl.value
+  if (!root) return
+  root.querySelectorAll(".focus-visible").forEach(el => { el.classList.remove("focus-visible"); if (el.blur) el.blur() })
+  if (document.activeElement && root.contains(document.activeElement) && document.activeElement !== root) document.activeElement.blur()
+  root.focus({ preventScroll: true })
+}
+
 function padStart() {
-  if (!padMode.value) {
-    padMode.value = true
-    // the buttons give the stick up (as the stock map hands the UI's focus back to the map)
-    if (rootEl.value) rootEl.value.querySelectorAll(".focus-visible").forEach(el => el.blur && el.blur())
-    if (document.activeElement && rootEl.value && rootEl.value.contains(document.activeElement)) document.activeElement.blur()
-  }
+  padMode.value = true
+  if (padActive()) releaseButtons()
   if (!padFrame && padActive()) padFrame = nextFrame(padTick) || 1
 }
+
+// the d-pad / left stick walk the buttons: the selected one scrolled into its panel's view (the saved places below
+// the panel's edge could not be reached, the user 2026-10-21)
+function showSelected() {
+  nextTick(() => {
+    const el = rootEl.value && rootEl.value.querySelector(".focus-visible")
+    if (el && el.scrollIntoView) el.scrollIntoView({ block: "nearest", inline: "nearest" })
+  })
+}
+const FOCUS_MOVES = new Set(["focus_u", "focus_d", "focus_l", "focus_r", "focus_ud", "focus_lr"])
 
 function buttonFocused() {
   return !!(rootEl.value && rootEl.value.querySelector(".focus-visible"))
@@ -704,7 +722,13 @@ mapEvents.on("BeamNGEarthMapInput", d => {
     case "pad_x": case "pad_y": padButton(d.kind, a); break
   }
 })
-mapEvents.on("UINavigation", (name, value) => padButton(name, value))
+mapEvents.on("UINavigation", (name, value) => {
+  if (FOCUS_MOVES.has(name)) { if (Number(value)) showSelected(); return }
+  padButton(name, value)
+})
+// declared to the menus (v-bng-on-ui-nav on the root) so the UI keeps X / Y on while the map is open; the presses
+// themselves are taken from 'UINavigation' above (padButton: once a press)
+function onNavDeclared() { return false }
 // the mouse takes over again: no crosshair
 watch(cursor, () => { if (padMode.value && !padActive()) padMode.value = false })
 
