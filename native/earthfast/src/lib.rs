@@ -825,7 +825,8 @@ fn grade_points<'py>(py: Python<'py>, px: PyReadonlyArray1<'py, f64>, pyy: PyRea
                      base: PyReadonlyArray1<'py, f64>, a: PyReadonlyArray2<'py, f64>, b: PyReadonlyArray2<'py, f64>,
                      za: PyReadonlyArray1<'py, f64>, zb: PyReadonlyArray1<'py, f64>, h: PyReadonlyArray1<'py, f64>,
                      abut: PyReadonlyArray1<'py, u8>, lift: f64, slope_run: f64, t_min: f64, t_max: f64, blend_r: f64,
-                     bucket: f64, wall_cut: f64, wall_t: f64, wall_flat: f64, wall_ahead: f64)
+                     bucket: f64, wall_cut: f64, wall_t: f64, wall_flat: f64, wall_ahead: f64,
+                     sep: bool, sep_from: f64, sep_full: f64, core_fade: f64, side_fade: f64)
                      -> Bound<'py, PyArray1<f64>> {
     let (px, pyy, base) = (px.as_array(), pyy.as_array(), base.as_array());
     let (a, b, za, zb, h) = (a.as_array(), b.as_array(), za.as_array(), zb.as_array(), h.as_array());
@@ -853,12 +854,17 @@ fn grade_points<'py>(py: Python<'py>, px: PyReadonlyArray1<'py, f64>, pyy: PyRea
     // two passes: the highest core of a road's last stretch before a bridge (abut) over each point, then the blend
     // without the roads more than wall_cut under it beside them, outside their own cores (grading.grade_points, #38)
     let mut top = vec![f64::NEG_INFINITY; n];
+    // (sep) how much each point is in a core, and that core's height: other roads beside it count less (#92)
+    let mut cmax = vec![0.0f64; n];
+    let mut csum = vec![0.0f64; n];
+    let mut cz = vec![0.0f64; n];
+    let smooth = |v: f64| { let v = v.clamp(0.0, 1.0); v * v * (3.0 - 2.0 * v) };
     for pass in 0..2 {
         for s in 0..h.len() {
-            if pass == 0 && abut[s] == 0 {
+            if pass == 0 && abut[s] == 0 && !sep {
                 continue;
             }
-            let reach = if pass == 0 { h[s] } else { h[s] + t_max };
+            let reach = if pass == 0 { h[s] + if sep { core_fade } else { 0.0 } } else { h[s] + t_max };
             let (ax, ay, bx, by) = (a[[s, 0]], a[[s, 1]], b[[s, 0]], b[[s, 1]]);
             let (lo_x, hi_x) = (ax.min(bx) - reach, ax.max(bx) + reach);
             let (lo_y, hi_y) = (ay.min(by) - reach, ay.max(by) + reach);
@@ -881,8 +887,18 @@ fn grade_points<'py>(py: Python<'py>, px: PyReadonlyArray1<'py, f64>, pyy: PyRea
                     let d = (qx - t * abx).hypot(qy - t * aby);
                     let target = za[s] + (zb[s] - za[s]) * t;
                     if pass == 0 {
-                        if d <= h[s] && target > top[idx] {
+                        if abut[s] != 0 && d <= h[s] && target > top[idx] {
                             top[idx] = target;
+                        }
+                        if sep {
+                            let cn = 1.0 - smooth((d - h[s]) / core_fade);
+                            if cn > 0.0 {
+                                if cn > cmax[idx] {
+                                    cmax[idx] = cn;
+                                }
+                                csum[idx] += cn;
+                                cz[idx] += cn * target;
+                            }
                         }
                         continue;
                     }
@@ -903,7 +919,13 @@ fn grade_points<'py>(py: Python<'py>, px: PyReadonlyArray1<'py, f64>, pyy: PyRea
                     let w = 1.0 - u * u * (3.0 - 2.0 * u);
                     if w > 0.0 && !(d > h[s] && ahead < side && target < top[idx] - wall_cut) {
                         let r = d / blend_r;
-                        let wb = w / (1.0 + r * r);
+                        let mut wb = w / (1.0 + r * r);
+                        if sep {
+                            let rf = cz[idx] / csum[idx].max(1e-12);
+                            let f = cmax[idx] * smooth(((target - rf).abs() - sep_from) / (sep_full - sep_from))
+                                * smooth((d - h[s]) / core_fade) * smooth((side - ahead) / side_fade);
+                            wb *= 1.0 - f;
+                        }
                         num[idx] += wb * target;
                         den[idx] += wb;
                         if w > wmax[idx] {
@@ -2823,6 +2845,6 @@ fn earthfast(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(over_tunnel, m)?)?;
     m.add_function(wrap_pyfunction!(veg_rows_json, m)?)?;
     m.add_function(wrap_pyfunction!(follow_tris, m)?)?;
-    m.add("VERSION", 35)?;
+    m.add("VERSION", 36)?;
     Ok(())
 }

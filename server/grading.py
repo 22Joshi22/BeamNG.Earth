@@ -65,6 +65,16 @@ TUNNEL_KEEP_IN_M = 3.0      # (roads.LOW_HOLE_M: a low arch's mouths, flat at it
 TUNNEL_KEEP_M = 5.0         # m beside a covered tunnel's road where the ground over it is left ungraded ...
 OVER_TUNNEL_SMALL_M = 0.5   # ... but for a change smaller than this (a road crossing over it, graded flush)
 WALL_AHEAD_M = 2.5          # ... only beside a segment or this little past its end (a joint between two: VERTEX_STEP)
+# Roads at other heights beside a road's core (GitHub #92: a street in a cutting had its half under a service road on
+# the bank 7.5 m above it pulled 2-4 m up its slope; hairpins blended into each other; an upper road's edge dragged into
+# a pit by the road under it). Beside a point in a core, another road's segments outside their own core count less the
+# further their height is from that core's: not at all from SEP_FULL_M, as before up to SEP_FROM_M, and their weight
+# comes back over CORE_FADE_M past the core (no step at its edge).
+SEP_ON = os.environ.get("BNE_GRADE_SEP", "on") != "off"
+SEP_FROM_M = 2.0
+SEP_FULL_M = 4.0
+CORE_FADE_M = 2.0
+SIDE_FADE_M = 2.0           # m of (side - ahead) over which a segment counts as beside the point (ahead: its own road)
 RETRY_S = 60.0              # s before a cell whose road data failed is asked for again
 
 # Overpass approach ramps (from KyzoFox's 1.5.4, PR #64). A short bridge over a road had its ends on the ground on both
@@ -822,7 +832,7 @@ def grade_points(px, py, base, plans, lift=0.0):
         return out
     A, B, ZA, ZB, H, AB = (np.concatenate(v) for v in (A, B, ZA, ZB, H, AB))
     import fast
-    if fast.AVAILABLE and getattr(fast._ef, "VERSION", 0) >= 35:   # the Rust loop: the same pairs in the same order
+    if fast.AVAILABLE and getattr(fast._ef, "VERSION", 0) >= 36:   # the Rust loop: the same pairs in the same order
         f64 = np.float64
         return fast._ef.grade_points(np.ascontiguousarray(px, f64), np.ascontiguousarray(py, f64),
                                      np.ascontiguousarray(base, f64), np.ascontiguousarray(A[:, :2], f64),
@@ -830,7 +840,9 @@ def grade_points(px, py, base, plans, lift=0.0):
                                      np.ascontiguousarray(ZB, f64), np.ascontiguousarray(H, f64),
                                      np.ascontiguousarray(AB, np.uint8), float(lift),
                                      float(SLOPE_RUN), float(T_MIN), float(T_MAX), float(BLEND_R), float(BUCKET),
-                                     float(WALL_CUT_M), float(WALL_T_M), float(WALL_FLAT_M), float(WALL_AHEAD_M))
+                                     float(WALL_CUT_M), float(WALL_T_M), float(WALL_FLAT_M), float(WALL_AHEAD_M),
+                                     bool(SEP_ON), float(SEP_FROM_M), float(SEP_FULL_M), float(CORE_FADE_M),
+                                     float(SIDE_FADE_M))
     reach = H + T_MAX
     lo_x = np.minimum(A[:, 0], B[:, 0]) - reach
     hi_x = np.maximum(A[:, 0], B[:, 0]) + reach
@@ -862,6 +874,9 @@ def grade_points(px, py, base, plans, lift=0.0):
     # flipped on at 55 mph). Only there: everywhere, a street's core edge beside a lower street (San Francisco) became a
     # step where the blend came back. A road's own next segments lie ahead of the point, not beside
     top = np.full(len(px), -np.inf)
+    cmax = np.zeros(len(px))            # (SEP_ON) how much the point is in a core, and that core's height
+    csum = np.zeros(len(px))
+    cz = np.zeros(len(px))
     ends = np.cumsum(cnt)
     for pass_ in (0, 1):
         start = 0
@@ -882,12 +897,20 @@ def grade_points(px, py, base, plans, lift=0.0):
             if pass_ == 0:
                 inside = (d <= H[s_]) & AB[s_]
                 np.maximum.at(top, idx[inside], target[inside])
+                if SEP_ON:
+                    v = np.clip((d - H[s_]) / CORE_FADE_M, 0.0, 1.0)
+                    cn = 1.0 - v * v * (3.0 - 2.0 * v)
+                    k = cn > 0
+                    np.maximum.at(cmax, idx[k], cn[k])
+                    csum += np.bincount(idx[k], cn[k], len(px))
+                    cz += np.bincount(idx[k], cn[k] * target[k], len(px))
                 start = stop
                 continue
             Lab = np.sqrt(np.maximum(L2, 1e-24))
-            side = np.abs(qx * ab[:, 1] - qy * ab[:, 0]) / Lab
+            # (a zero-length segment: the point is beside it, as in the Rust loop)
+            side = np.where(long_, np.abs(qx * ab[:, 1] - qy * ab[:, 0]) / Lab, d)
             along = (qx * ab[:, 0] + qy * ab[:, 1]) / Lab
-            ahead = np.maximum(np.maximum(-along, along - Lab), 0.0)
+            ahead = np.where(long_, np.maximum(np.maximum(-along, along - Lab), 0.0), 0.0)
             wall = (base[idx] - target > WALL_CUT_M) & (ahead < side) & (ahead < WALL_AHEAD_M)
             T = np.where(wall, WALL_T_M, np.clip(SLOPE_RUN * np.abs(target - base[idx]), T_MIN, T_MAX))
             u = np.clip((d - H[s_] - np.where(wall, WALL_FLAT_M, 0.0)) / T, 0.0, 1.0)
@@ -899,6 +922,13 @@ def grade_points(px, py, base, plans, lift=0.0):
             # the target jumped at a core's edge (2026-10-11, the user's car flipped at speed:
             # centreline 2nd difference p99 0.17 m per metre, worst 0.5 m)
             wb = w[m] / (1.0 + (d[m] / BLEND_R) ** 2)
+            if SEP_ON:
+                ref = cz[i] / np.maximum(csum[i], 1e-12)
+                h = np.clip((np.abs(target[m] - ref) - SEP_FROM_M) / (SEP_FULL_M - SEP_FROM_M), 0.0, 1.0)
+                o = np.clip((d[m] - H[s_][m]) / CORE_FADE_M, 0.0, 1.0)
+                b = np.clip((side[m] - ahead[m]) / SIDE_FADE_M, 0.0, 1.0)
+                sep = cmax[i] * (h * h * (3.0 - 2.0 * h)) * (o * o * (3.0 - 2.0 * o)) * (b * b * (3.0 - 2.0 * b))
+                wb = wb * (1.0 - sep)
             num += np.bincount(i, wb * target[m], len(px))
             den += np.bincount(i, wb, len(px))
             np.maximum.at(wmax, i, w[m])
