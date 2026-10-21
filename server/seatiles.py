@@ -21,6 +21,20 @@ TILE_MAX = 8192.0
 SPLIT_K = 0.75              # a square closer to the player than SPLIT_K * its size is split (<= 34 tiles)
 RADIUS_M = 8192.0           # tiles within this of the player; beyond, the far tiles' photo
 SAMPLES = 64                # sea_at is asked on a SAMPLES x SAMPLES grid per tile (32-128 m apart)
+# Land below the sea (the Netherlands' polders, GitHub #8 / #53: a quarter of the country lies under sea level, and a
+# tile's WaterBlock floods all of its square): a tile more than SEA_FLOOD_SHARE of which is land more than SEA_FLOOD_M
+# under the sea is split, on down to SEA_TILE_FLOOR, where it is kept only when it is mostly sea
+SEA_FLOOD_M = 0.3
+SEA_FLOOD_FAR_M = 2.0           # ... for the tiles placed by the DEM band (> POLY_TILE_MAX, far): the polders are 2-6 m
+                                # under the sea, a coarse DEM's marshes and shores a metre (Manhattan's 28 tiles: 62)
+POLY_TILE_MAX = 2048.0          # (seacarve.POLY_TILE_MAX)
+SEA_TILE_FLOOR = 64.0
+SEA_FLOOR_K = 0.0625            # ... farther away, down to this share of the distance (a 16 km straight shore split to
+                                # 128 m all along was 146 tiles; the far shore's strip of sea goes without)
+SEA_FLOOD_SHARE = 0.05
+SEA_SPLIT_SAMPLES = (16, 64)    # samples per edge of a tile checked for low land: size / 32, within these
+SEA_MAX_TILES = 200             # nearest first
+SEA_E = 0.0                     # m: the sea surface (seacarve.SEA_E)
 EARTH_R = 6371000.0
 
 
@@ -80,34 +94,64 @@ def squares(x, y, radius=None):
     return out
 
 
-def plan(frame, x, y, sea_at, radius=None):
+def _grid(frame, corners, s, n):
+    """The (lat, lon) of an n x n grid of sample points in each square (x0, y0) of size s, square by square."""
+    f = (np.arange(n) + 0.5) / n
+    c = np.asarray(corners, np.float64)
+    E = np.repeat((c[:, 0:1] + f[None, :] * s)[:, None, :], n, axis=1)     # [k, j, i]
+    N = np.repeat((c[:, 1:2] + f[None, :] * s)[:, :, None], n, axis=2)
+    lat, lon, _ = frame.enu_to_geodetic(E.ravel(), N.ravel(), 0.0)
+    return lat, lon
+
+
+def plan(frame, x, y, sea_at, radius=None, ground_at=None):
     """The sea tiles around (x, y) in `frame` (a geodesy.EnuFrame). sea_at(lat, lon, size) -> bool array:
-    which sample points of a tile of that size are sea."""
+    which sample points of a tile of that size are sea. ground_at(lat, lon, size) -> the ground's heights there
+    (None: not checked): a tile with land under the sea in it is split (SEA_FLOOD_M)."""
     leaves = squares(x, y, radius)
     if not leaves:
         return []
-    f = (np.arange(SAMPLES) + 0.5) / SAMPLES
-    out = []
-    by_size = {}
-    for x0, y0, s in leaves:
-        by_size.setdefault(s, []).append((x0, y0))
-    for s, corners in sorted(by_size.items()):
-        c = np.asarray(corners, np.float64)
-        gx = (c[:, 0:1] + f[None, :] * s)                  # [n, SAMPLES]
-        gy = (c[:, 1:2] + f[None, :] * s)
-        E = np.repeat(gx[:, None, :], SAMPLES, axis=1)     # [n, j, i]
-        N = np.repeat(gy[:, :, None], SAMPLES, axis=2)
-        lat, lon, _ = frame.enu_to_geodetic(E.ravel(), N.ravel(), 0.0)
-        sea = np.asarray(sea_at(lat, lon, s), bool).reshape(len(c), -1).any(axis=1)
-        for (x0, y0), keep in zip(corners, sea):
-            if not keep:
+    keep = []
+    todo = list(leaves)
+    while todo:
+        by_size = {}
+        for x0, y0, s in todo:
+            by_size.setdefault(s, []).append((x0, y0))
+        todo = []
+        for s, corners in sorted(by_size.items()):
+            lat, lon = _grid(frame, corners, s, SAMPLES)
+            sea = np.asarray(sea_at(lat, lon, s), bool).reshape(len(corners), -1)
+            has = sea.any(axis=1)
+            corners = [c for c, h in zip(corners, has) if h]
+            if not corners:
                 continue
-            cx, cy = x0 + s / 2, y0 + s / 2
-            la, lo, _ = frame.enu_to_geodetic(cx, cy, 0.0)
-            z = float(np.asarray(frame.geodetic_to_enu(la, lo, 0.0)[2]))
-            # the local vertical at (cx, cy): the sphere's normal, the frame's up tilted by the offset
-            nx, ny = cx / EARTH_R, cy / EARTH_R
-            out.append(Tile(f"{int(s)}_{int(x0 // s)}_{int(y0 // s)}", cx, cy, z, s, nx, ny))
+            if ground_at is None:
+                keep += [(x0, y0, s) for x0, y0 in corners]
+                continue
+            n = int(min(max(s / 32.0, SEA_SPLIT_SAMPLES[0]), SEA_SPLIT_SAMPLES[1]))
+            lat, lon = _grid(frame, corners, s, n)
+            wet = np.asarray(sea_at(lat, lon, s), bool).reshape(len(corners), -1)
+            g = np.asarray(ground_at(lat, lon, s), np.float64).reshape(len(corners), -1)
+            low = ~wet & (g < SEA_E - (SEA_FLOOD_M if s <= POLY_TILE_MAX else SEA_FLOOD_FAR_M))   # land under the sea
+            for (x0, y0), w, lo in zip(corners, wet, low):
+                # (a share, not any: the DEM's water under the piers the map has as land, Manhattan's waterfront,
+                # split every tile on to 200)
+                if lo.mean() <= SEA_FLOOD_SHARE:
+                    keep.append((x0, y0, s))
+                elif s / 2 >= max(SEA_TILE_FLOOR, SEA_FLOOR_K * _dist(x, y, x0, y0, s)):
+                    h = s / 2
+                    todo += [(x0 + a * h, y0 + b * h, h) for a in (0, 1) for b in (0, 1)]
+                elif w.mean() >= 0.5:
+                    keep.append((x0, y0, s))
+    keep.sort(key=lambda t: _dist(x, y, t[0], t[1], t[2]))
+    out = []
+    for x0, y0, s in keep[:SEA_MAX_TILES]:
+        cx, cy = x0 + s / 2, y0 + s / 2
+        la, lo, _ = frame.enu_to_geodetic(cx, cy, 0.0)
+        z = float(np.asarray(frame.geodetic_to_enu(la, lo, 0.0)[2]))
+        # the local vertical at (cx, cy): the sphere's normal, the frame's up tilted by the offset
+        nx, ny = cx / EARTH_R, cy / EARTH_R
+        out.append(Tile(f"{int(s)}_{int(x0 // s)}_{int(y0 // s)}", cx, cy, z, s, nx, ny))
     return out
 
 
@@ -118,8 +162,10 @@ LAKE_TILE_MIN = 64.0
 LAKE_TILE_FLOOR = 16.0      # ... split on to this where land under the water's plane would flood (LAKE_FLOOD_SHARE)
 LAKE_FLOOD_SHARE = 0.05     # a tile's share of samples that may be land under the water's plane
 LAKE_SAMPLES = 24           # samples per tile edge when checking a lake tile
-LAKE_FLOOD_M = 1.0          # land inside a lake tile lower than the lake by more than this splits it
-                            # (a valley below a dam; the banks themselves are ~ at the lake's level)
+LAKE_FLOOD_M = 0.3          # land inside a lake tile lower than the lake by more than this splits it
+                            # (a valley below a dam; the banks themselves are ~ at the lake's level). At 1 m the
+                            # tiles of a flat Dutch town's canals flooded its streets 3x the canals' own area
+                            # (Petten: 17 ha of land under 6 ha of water tiles, 1.5 ha at 0.3 m; GitHub #8 / #53)
 LAKE_MAX_TILES = 120        # nearest first (lakes and wide rivers)
 LAKE_DEM_ZOOM = 15
 LEVEL_TOL_M = 0.4            # a tile's water is at most this far from its plane (else it is split)

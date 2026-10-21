@@ -284,17 +284,64 @@ class LakeTest(unittest.TestCase):
             self.assertAlmostEqual(t.z, float(f.geodetic_to_enu(la, lo, 50.0)[2]), places=5)
 
 
+CAN_LAT, CAN_LON = 39.36, -76.62          # a 40 m wide town canal the DEM does not see (flat 2 m all round),
+CW, CL = 40 / 111320.0, 0.006               # and a polder's lake 2 m under the sea in ground 1.5 m under it
+
+
+class CanalMapData(FakeMapData):
+    def cell(self, key, layers=None, kind="demand"):
+        self.calls += 1
+        rect = lambda la, lo, h, w: [(lo, la), (lo + w, la), (lo + w, la + h), (lo, la + h), (lo, la)]   # noqa: E731
+        return Cell(LakeWater([("water", rect(CAN_LAT, CAN_LON, CW, CL)),
+                               ("lake", rect(CAN_LAT + 10 * CW, CAN_LON, 5 * CW, CL)),
+                               ("lake", rect(CAN_LAT + 20 * CW, CAN_LON, 5 * CW, CL))], ["k", "p", "z"]))
+
+
+class CanalDem:
+    def sample(self, lat, lon, zoom, progress=None):
+        lat = np.asarray(lat, np.float64)
+        polder = (lat > CAN_LAT + 6 * CW) & (lat < CAN_LAT + 18 * CW)
+        inside = (lat > CAN_LAT + 10 * CW) & (lat < CAN_LAT + 15 * CW)
+        lon = np.asarray(lon, np.float64)
+        at_sea_level = (lat > CAN_LAT + 20 * CW) & (lat < CAN_LAT + 25 * CW) & (lon > CAN_LON) & (lon < CAN_LON + CL)
+        return np.where(polder, np.where(inside, -2.0, -1.5), np.where(at_sea_level, 0.1, 2.0))
+
+
+class ShoreTest(unittest.TestCase):
+    def test_level_no_higher_than_the_ground_round_it(self):
+        # GitHub #8 / #53: a canal's water at street level flooded the streets (Petten, Maarssen)
+        sc = seacarve.SeaCarver(CanalMapData(), None, dem=CanalDem())
+        mid = (np.array([CAN_LAT + CW / 2]), np.array([CAN_LON + CL / 2]))
+        self.assertAlmostEqual(float(sc.lake_at(*mid)[0]), 2.0 - seacarve.SHORE_DROP_M, places=4)
+
+    def test_an_inland_lake_at_sea_level_is_not_the_sea(self):
+        sc = seacarve.SeaCarver(CanalMapData(), None, dem=CanalDem())
+        mid = (np.array([CAN_LAT + 22.5 * CW]), np.array([CAN_LON + CL / 2]))
+        self.assertAlmostEqual(float(sc.lake_at(*mid)[0]), 0.1, places=4)
+        self.assertFalse(bool(sc.sea_at(CanalDem(), *mid, 512.0)[0]))
+
+    def test_a_lake_under_the_sea_stays_a_lake(self):
+        sc = seacarve.SeaCarver(CanalMapData(), None, dem=CanalDem())
+        mid = (np.array([CAN_LAT + 12.5 * CW]), np.array([CAN_LON + CL / 2]))
+        self.assertAlmostEqual(float(sc.lake_at(*mid)[0]), -2.0, places=4)
+        self.assertFalse(bool(sc.sea_at(CanalDem(), *mid, 512.0)[0]), "not the sea (a tile at 0 m over the polder)")
+
+
 RIV_LAT, RIV_LON = 39.33, -76.62           # a 100 m wide, 1.2 km long river falling west to east, then a
 W = 100 / 111320.0                          # tidal one at sea level south of it
 L = 1200 / (111320.0 * math.cos(math.radians(39.33)))
 
 
 class RiverMapData(FakeMapData):
+    ocean = True        # the sea just south of the tidal river (False: an inland river at sea level)
+
     def cell(self, key, layers=None, kind="demand"):
         self.calls += 1
         rect = lambda la, lo: [(lo, la), (lo + L, la), (lo + L, la + W), (lo, la + W), (lo, la)]   # noqa: E731
-        return Cell(LakeWater([("river", rect(RIV_LAT, RIV_LON)), ("river", rect(RIV_LAT - 3 * W, RIV_LON))],
-                              ["r", "t"]))
+        polys = [("river", rect(RIV_LAT, RIV_LON)), ("river", rect(RIV_LAT - 3 * W, RIV_LON))]
+        if self.ocean:
+            polys.append(("ocean", rect(RIV_LAT - 4 * W, RIV_LON)))
+        return Cell(LakeWater(polys, ["r", "t", "o"][:len(polys)]))
 
 
 class RiverDem:
@@ -335,6 +382,17 @@ class RiverTest(unittest.TestCase):
         self.assertGreater(float(d[0]), 0.0)
         self.assertEqual(float(lv[0]), seacarve.SEA_E)
         self.assertTrue(np.isnan(self.sc.lake_at(*p)[0]))
+
+    def test_inland_river_at_sea_level_is_not_sea(self):
+        # GitHub #8: the Vecht at Maarssen (~0 m, 50 km from the coast) was "tidal", the sea's tiles over the town
+        md = RiverMapData()
+        md.ocean = False
+        sc = seacarve.SeaCarver(md, None, dem=RiverDem())
+        p = (np.array([RIV_LAT - 2.5 * W]), np.array([RIV_LON + L / 2]))
+        d, lv = sc.water(*p)
+        self.assertGreater(float(d[0]), 0.0)
+        self.assertNotEqual(float(lv[0]), seacarve.SEA_E)
+        self.assertFalse(bool(sc.sea_at(RiverDem(), *p, 512.0)[0]))
 
     def test_no_tiles_for_rivers(self):
         import seatiles
