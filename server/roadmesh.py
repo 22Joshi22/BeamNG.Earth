@@ -494,7 +494,8 @@ def deck(chunks, origin, piers=(), context=(), beams=()):
         mats.append(DECK_SIDE)
     side = mats.index(DECK_SIDE)                # opaque concrete; the asphalt is the road mesh's
     cr = [r for r in ribbons(list(context)) if r[5] is not None]
-    covered = _parapet_cover([(r, c) for r, c in rb], [(r, c) for r, c in zip(cr, context)])
+    cov_ctx = [(r, c) for r, c in zip(cr, context)] + _ground_carriageways(chunks)
+    covered = _parapet_cover([(r, c) for r, c in rb], cov_ctx)
     for n, ((left, right, v, m, layer, z), c) in enumerate(rb):
         k = len(z)
         lat = left - right
@@ -622,6 +623,29 @@ def _piers_clear(piers, rb):
                 break
         if not hit:
             out.append(p)
+    return out
+
+
+GROUND_COVER_MIN_W = 3.0    # m: a ground road this wide at a deck edge's height leaves it without a parapet
+
+
+def _ground_carriageways(chunks):
+    """[(ribbon with the nodes' own heights, chunk)] of the tile's ground roads (no decks, tunnels, sidewalks, markings,
+    gutters or driveways) for _parapet_cover: a deck at grade across a road has no parapet over its lanes (GitHub #96:
+    the Pitt River Bridge's ramps, at grade over Lougheed Highway, stood their walls across its lanes)."""
+    out = []
+    for c in chunks:
+        if c.get("deck") or c.get("tunnel") or c.get("fixed") or c.get("h") is not None or c.get("drive") \
+                or float(c.get("w", 0.0)) < GROUND_COVER_MIN_W or layer_of(c) != "base":
+            continue
+        pts = np.asarray(c["n"], np.float64)
+        if len(pts) < 2 or pts.shape[1] < 3:
+            continue
+        xy, sv, z = _resample(pts, DRAPE_STEP)
+        if len(xy) < 2:
+            continue
+        n = _normals(xy) * (float(c["w"]) / 2)
+        out.append(((xy + n, xy - n, sv, c["m"], "base", z), c))
     return out
 
 

@@ -207,6 +207,18 @@ class BridgeLookTest(unittest.TestCase):
         ys = np.unique(np.round(self.parapet_tops(P)[:, 1], 2))
         self.assertTrue(((ys > 3.0) & (ys < 5.0)).any(), "over a lower deck the edge is free")
 
+    def test_no_parapet_across_a_road_at_grade(self):
+        """GitHub #96: a ramp's deck at grade over a road stood its parapets across the road's lanes; over a road well
+        under it the parapets stay."""
+        road = lambda z: {"m": "road_asphalt_2lane", "w": 10.0, "tl": 11.0, "p": 10,
+                          "n": [[25.0, -30.0, z], [25.0, 30.0, z]]}
+        def tops_over_road(z_road):
+            P = roadmesh.deck([self.deck(0.0, "a"), road(z_road)], (0.0, 0.0, 0.0))[0]
+            t = self.parapet_tops(P)
+            return ((t[:, 0] > 21.0) & (t[:, 0] < 29.0)).sum()
+        self.assertEqual(tops_over_road(19.5), 0, "at grade: no wall across the road")
+        self.assertGreater(tops_over_road(12.0), 0, "a road 8 m below: the parapets stay")
+
     def test_tunnel_floor_is_a_slab(self):
         d = self.deck(0.0, "a")
         d["tunnel"] = True
