@@ -809,6 +809,18 @@ class MedianTest(unittest.TestCase):
 
 
 class WallRunsTest(unittest.TestCase):
+    def test_no_wall_under_a_bridge_deck(self):
+        # the Bruce Highway (the user's report, 2026-10-21): beside a motorway under an overpass the ground is the
+        # abutment's fill; the wall rose to it, through the deck
+        xy = np.c_[np.zeros(21), np.arange(-20.0, 21.0, 2.0)]          # a wall line along a road at z 8
+        z = np.full(len(xy), 8.0)
+        deck = {"deck": True, "w": 10.0, "n": [[-50.0, 0.0, 16.0], [50.0, 0.0, 16.0]]}   # 8 m over it, 10 m wide
+        under = roads._under_decks(xy, z, [deck])
+        self.assertTrue(under[np.abs(xy[:, 1]) <= 5 + roads.WALL_DECK_MARGIN_M].all())
+        self.assertFalse(under[np.abs(xy[:, 1]) > 5 + roads.WALL_DECK_MARGIN_M + 0.5].any())
+        low = dict(deck, n=[[-50.0, 0.0, 9.0], [50.0, 0.0, 9.0]])      # a deck at the road's own level: its approach
+        self.assertFalse(roads._under_decks(xy, z, [low]).any())
+
     def test_one_wall_over_a_wavering_cut(self):
         cut = np.array([0, 0.5, 2.5, 1.9, 2.2, 1.5, 0.9, 1.0, 2.4, 2.6, 1.3, 0.2, 0, 2.1, 0, 0, 0])
         w = roads._wall_runs(cut)

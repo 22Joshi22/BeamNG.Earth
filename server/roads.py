@@ -2847,13 +2847,36 @@ def _wall_runs(cut):
     return out
 
 
-def retaining_walls(frame, roads, elev, exact):
+WALL_DECK_MARGIN_M = 3.0    # m beyond a bridge deck's edge where a road under it gets no retaining wall ...
+WALL_DECK_OVER_M = 2.0      # ... a deck this far over the road (an overpass, not the road's own approach)
+
+
+def _under_decks(xy, z, decks):
+    """Which points xy (k, 2) at road heights z lie under a bridge deck (deck chunks: "n" points [x, y, z], "w" m):
+    within its half width + WALL_DECK_MARGIN_M and the deck WALL_DECK_OVER_M or more over them. Pure."""
+    out = np.zeros(len(xy), bool)
+    for ch in decks or ():
+        n = np.asarray(ch["n"], np.float64)
+        if len(n) < 2:
+            continue
+        a, b = n[:-1, :2], n[1:, :2]
+        d = _seg_dist(np.asarray(xy, np.float64), a, b)        # (k, m)
+        j = d.argmin(axis=1)
+        near = d[np.arange(len(xy)), j] <= float(ch.get("w") or 0) / 2 + WALL_DECK_MARGIN_M
+        dz = np.minimum(n[j, 2], n[j + 1, 2]) - np.asarray(z, np.float64)
+        out |= near & (dz >= WALL_DECK_OVER_M)
+    return out
+
+
+def retaining_walls(frame, roads, elev, exact, decks=()):
     """Stone retaining walls along the ground roads cut deeper than grading.WALL_CUT_M into the ground (the grading
     leaves the ground at its natural height right behind them): [dict(base (k, 2) the wall's face line, top (k,),
     foot (k,), toward (k, 2) unit vectors to the road)] of the walls in the tile box `exact`. The edge of the road's
     flat core (as grading plans it), from the road level up to the ground behind; none where another road comes in
-    (its ground is graded to the road). Central Park's 86th Street Transverse between its stone walls (the user's
-    photos, 2026-10-17). Pure given elev."""
+    (its ground is graded to the road), nor under a bridge deck (decks: the deck chunks near the tile; the ground beside
+    a motorway under an overpass is its abutment's fill, and the wall rose through the deck, the user's report on the
+    Bruce Highway, 2026-10-21). Central Park's 86th Street Transverse between its stone walls (the user's photos,
+    2026-10-17). Pure given elev."""
     import grading
     x0, y0, x1, y1 = exact
     pts_all, info = [], []
@@ -2886,7 +2909,7 @@ def retaining_walls(frame, roads, elev, exact):
     for xy, z, out_n, core, inside in info:
         gg = g[k:k + len(xy)]
         k += len(xy)
-        cut = _wall_runs(gg - z) & inside
+        cut = _wall_runs(gg - z) & inside & ~_under_decks(xy + out_n * core, z, decks)
         i = 0
         while i < len(cut):
             if not cut[i]:
@@ -3136,7 +3159,10 @@ def build_tile(frame, tx, ty, cells, elev, urban_fn=None, walks=None, bridges=No
                 for c in split(densify(simplify(piece))):
                     if len(c) >= 2:
                         chunks.append(_chunk(look, lw, c))
+    decks_near = []                             # (retaining_walls: none under a bridge)
     for ch in _bridge_chunks(frame, bseen, elev, (x0, y0, x1, y1), bridges, cells):
+        if ch.get("deck"):
+            decks_near.append(ch)
         if not ch.get("ctx"):
             chunks.append(ch)
         elif deck_context is not None:          # the decks around the tile (roadmesh.deck's parapet test)
@@ -3145,7 +3171,7 @@ def build_tile(frame, tx, ty, cells, elev, urban_fn=None, walks=None, bridges=No
         chunks.extend(_tunnel_chunks(tunnels, cells, (x0, y0, x1, y1)))
     exact = (x0, y0, x1, y1)
     if walls is not None:                       # retaining walls where a road is cut into the ground (roadmesh.tunnel)
-        walls.extend(retaining_walls(frame, roads, elev, exact))
+        walls.extend(retaining_walls(frame, roads, elev, exact, decks=decks_near))
     corners, jcuts, crosswalks, jramps, jlines, jinternal = ({}, {}, [], {}, {}, set()) if walks is None else \
         junctions.find(roads, has_sidewalks, None, PARKING_M,
                        lambda sp: sp.urban and sp.cls in PARKING_CLASSES and sp.kind in BUILT and not sp.oneway
