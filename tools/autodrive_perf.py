@@ -385,13 +385,15 @@ if not best then return 'snap: no node' end
 local n = m.nodes[best]
 local rot = quatFromDir(bdir, vec3(0, 0, 1))
 local z = be:getSurfaceHeightBelow(n.pos + vec3(0, 0, 3))
-veh:setPositionRotation(n.pos.x, n.pos.y, ((z and z > -1e6) and z or n.pos.z) + 0.5, rot.x, rot.y, rot.z, rot.w)
+spawn.safeTeleport(veh, vec3(n.pos.x, n.pos.y, ((z and z > -1e6) and z or n.pos.z) + 0.5), rot)
 return string.format('snap: node %%s %%.1f m away', tostring(best), math.sqrt(bd))
 """
 
 # On the GPS route: the car set at the route's node nearest it (not the last two), facing the next one (a start on the
-# other carriageway of a motorway: the AI cut across the median to its route, deck_fast10 2026-10-20; one facing back
-# along the route turned round first, I-10 2026-10-21).
+# other carriageway of a motorway: the AI cut across the median to its route, deck_fast10 2026-10-20). Both snaps place
+# the car with spawn.safeTeleport: setPositionRotation reads the rotation in the vehicle's own frame (it faces -y) and
+# every run started facing back along the route and turned round first (the user, 2026-10-21: "you seem to always
+# start the car pointed in the opposite direction of the route you set").
 ROUTE_SNAP_LUA = r"""
 local gm = rawget(_G, 'core_groundMarkers')
 local veh = getPlayerVehicle(0)
@@ -412,7 +414,7 @@ local A, B = m.nodes[ids[best]].pos, m.nodes[ids[best + 1]].pos
 local dir = vec3(B.x - A.x, B.y - A.y, 0):normalized()
 local rot = quatFromDir(dir, vec3(0, 0, 1))
 local z = be:getSurfaceHeightBelow(A + vec3(0, 0, 3))
-veh:setPositionRotation(A.x, A.y, ((z and z > -1e6) and z or A.z) + 0.5, rot.x, rot.y, rot.z, rot.w)
+spawn.safeTeleport(veh, vec3(A.x, A.y, ((z and z > -1e6) and z or A.z) + 0.5), rot)
 return string.format('route snap: node %d of %d, %.1f m away', best, #ids, math.sqrt(bd))
 """
 
