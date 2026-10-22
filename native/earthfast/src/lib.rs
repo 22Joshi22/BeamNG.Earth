@@ -973,11 +973,12 @@ fn grade_points<'py>(py: Python<'py>, px: PyReadonlyArray1<'py, f64>, pyy: PyRea
                     // (another road's carriageway here, at another level: this road gives way past its own carriageway)
                     // (a road's own carriageway never gives way: a hairpin's band over the leg above sank its lanes
                     // under the terrain, the Stelvio Pass, the user's report 2026-10-21)
-                    let yields = if bid[idx] >= 0 {
-                        d > rh[s] && bid[idx] != rid[s] && (target - bz[idx]).abs() > wall_cut
-                    } else {
-                        d > rh[s] && carid[idx] >= 0 && carid[idx] != rid[s] && (target - carz[idx]).abs() > wall_cut
-                    };
+                    // (a carriageway first: a road's cutting band reaching over another road's carriageway at another level
+                    // (its "climb" was that road's embankment) does not pull that road's ground; a bridge's abutment sank
+                    // 2.5 m under the deck into the street below, a wall cars hit, GitHub #108 Meppen)
+                    let on_other_car = carid[idx] >= 0 && carid[idx] != rid[s] && (target - carz[idx]).abs() > wall_cut;
+                    let yields = d > rh[s] && (on_other_car
+                        || (bid[idx] >= 0 && bid[idx] != rid[s] && (target - bz[idx]).abs() > wall_cut));
                     if w > 0.0 && !drop && !yields && !(d > hs && ahead < side && target < top[idx] - wall_cut) {
                         let r = d / blend_r;
                         let mut wb = w / (1.0 + r * r);
