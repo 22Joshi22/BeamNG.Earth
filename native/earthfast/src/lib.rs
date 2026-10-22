@@ -2990,6 +2990,42 @@ fn sharp_cuts<'py>(py: Python<'py>, g: PyReadonlyArray1<'py, f64>, z: PyReadonly
     Some(numpy::ndarray::Array2::from_shape_vec((n - 1, 6), flat).unwrap().into_pyarray(py))
 }
 
+
+/// The points of a polyline xy (k, 2) at a tight bend: its direction half_span m back along it and half_span m on differ by
+/// min_turn_deg or more (a hairpin's apex and its approaches). Retaining walls and sharp cuttings stop there (the user,
+/// the Stelvio Pass 2026-10-21: the wall between a hairpin's legs ran on into the turn, full height to its end).
+#[pyfunction]
+fn tight_bends<'py>(py: Python<'py>, xy: PyReadonlyArray2<'py, f64>, half_span: f64, min_turn_deg: f64)
+                    -> Bound<'py, PyArray1<bool>> {
+    let p = xy.as_array();
+    let k = p.nrows();
+    let mut out = vec![false; k];
+    if k < 3 {
+        return out.into_pyarray(py);
+    }
+    let mut s = vec![0.0f64; k];
+    for i in 1..k {
+        s[i] = s[i - 1] + (p[[i, 0]] - p[[i - 1, 0]]).hypot(p[[i, 1]] - p[[i - 1, 1]]);
+    }
+    let dir = |d: f64| -> (f64, f64) {         // the unit direction of the segment at arc d (clamped)
+        let d = d.clamp(0.0, s[k - 1]);
+        let mut j = s.partition_point(|&v| v < d).clamp(1, k - 1);
+        while j > 1 && s[j] - s[j - 1] < 1e-9 {
+            j -= 1;
+        }
+        let (dx, dy) = (p[[j, 0]] - p[[j - 1, 0]], p[[j, 1]] - p[[j - 1, 1]]);
+        let l = dx.hypot(dy).max(1e-12);
+        (dx / l, dy / l)
+    };
+    let cos_min = min_turn_deg.to_radians().cos();
+    for i in 0..k {
+        let (ux, uy) = dir(s[i] - half_span);
+        let (vx, vy) = dir(s[i] + half_span);
+        out[i] = ux * vx + uy * vy <= cos_min;
+    }
+    out.into_pyarray(py)
+}
+
 #[pymodule]
 fn earthfast(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(island_ring_rays, m)?)?;
@@ -3040,6 +3076,7 @@ fn earthfast(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(follow_tris, m)?)?;
     m.add_function(wrap_pyfunction!(sharp_probes, m)?)?;
     m.add_function(wrap_pyfunction!(sharp_cuts, m)?)?;
-    m.add("VERSION", 41)?;
+    m.add_function(wrap_pyfunction!(tight_bends, m)?)?;
+    m.add("VERSION", 42)?;
     Ok(())
 }

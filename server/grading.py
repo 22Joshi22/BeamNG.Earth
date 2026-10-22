@@ -245,6 +245,25 @@ def plan_roads(frame, parts, elev, abut=None):
     return out
 
 
+WALL_MAX_H_M = 4.0      # m a sharp cutting's wall stands over the road at most (the slope above it is graded)
+HAIRPIN_SPAN_M = 20.0   # a road's direction this far back and on ...
+HAIRPIN_TURN_DEG = 90.0  # ... turned this much: a tight bend (earthfast.tight_bends) ...
+HAIRPIN_PAD_M = 15.0    # ... and this far either side of it: no sharp cutting, no retaining wall
+
+
+def bend_zone(xy):
+    """Which points of a polyline (k, 2) lie at or within HAIRPIN_PAD_M (along it) of a tight bend."""
+    import fast
+    fast.require(42, "tight_bends")
+    xy = np.ascontiguousarray(np.asarray(xy, np.float64)[:, :2])
+    m = np.asarray(fast._ef.tight_bends(xy, float(HAIRPIN_SPAN_M), float(HAIRPIN_TURN_DEG)))
+    if not m.any():
+        return m
+    s = np.r_[0.0, np.cumsum(np.hypot(*np.diff(xy, axis=0).T))]
+    sb = s[m]
+    return np.abs(s[:, None] - sb[None, :]).min(axis=1) <= HAIRPIN_PAD_M
+
+
 def _add_cuts(frame, plans, elev):
     """Sets Plan.cut on the plans (None entries skipped): per segment and side a cutting's wall (SHARP_*), from the raw
     ground elev(lat, lon) sampled outward from the carriageway's edge: the ground rising SHARP_MIN_M or more at
@@ -252,7 +271,7 @@ def _add_cuts(frame, plans, elev):
     where the climb is half done (never on the carriageway; a fall: never inside the core, its sidewalk on the level),
     its top where it is done (the Rust kernels earthfast.sharp_probes / sharp_cuts; the ground lookup between them)."""
     import fast
-    fast.require(41, "sharp cuttings")
+    fast.require(42, "sharp cuttings")
     f64 = np.float64
     jobs = []
     for p in plans:
@@ -273,7 +292,18 @@ def _add_cuts(frame, plans, elev):
                                   float(SHARP_STEP_M), int(SHARP_RUN_N))
         k += len(q)
         if cut is not None:
-            p.cut = cut
+            # (none at a tight bend: a hairpin's apex and approaches are graded smoothly, no wall into the turn)
+            bend = bend_zone(p.xy[:, :2])
+            cut = cut.copy()
+            if bend.any():
+                cut[bend[:-1] | bend[1:]] = np.nan
+            # (a cutting's wall at most WALL_MAX_H_M tall, the ground above it sloping back to the hill as real pass
+            # walls do; a 12 m wall stood between the Stelvio's hairpin legs, 2026-10-21)
+            zmin = np.minimum(p.z[:-1], p.z[1:])
+            for c in (1, 4):
+                cut[:, c] = np.minimum(cut[:, c], zmin + WALL_MAX_H_M)
+            if np.isfinite(cut[:, 0]).any() or np.isfinite(cut[:, 3]).any():
+                p.cut = cut
 
 
 def _plan(xy, z, spec, abut=(False, False)):

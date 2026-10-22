@@ -2688,6 +2688,8 @@ WALL_FULL = 0.9         # the graded ground this share of the way up to the natu
 WALL_THICK_MIN_M = 1.0  # ... at least this deep and at most WALL_THICK_MAX_M
 WALL_THICK_MAX_M = 3.5
 WALL_OTHER_GAP_M = 0.3  # m a wall's top keeps from another road's carriageway
+WALL_TAPER_M = 8.0      # m at each end of a wall over which it comes down ...
+WALL_TAPER_LOW_M = 0.6  # ... to this over the road
 WALL_SLAB_DZ = 0.8      # m the ground behind a wall may fall under its top before the top ends there ...
 WALL_COPING_MIN_M = 0.5  # ... at least its coping
 WALL_DIAG_M = 2.9       # the terrain lattice's diagonal (heightmap.SQUARE 2 m)
@@ -2795,6 +2797,26 @@ def _off_wall_tops(chunks, walls):
 WALL_TOP_EDGE_M = 0.3   # a road surface goes this far onto a wall's top at most (_off_wall_tops)
 
 
+def _taper(xy, run):
+    """Per point of a road's wall sample line xy (k, 2): its wall's height factor, 0 at the ends of each run of run (k,)
+    rising (smoothstep) to 1 over WALL_TAPER_M (no full-height wall ending in a cliff, the user 2026-10-21). Pure."""
+    s = np.r_[0.0, np.cumsum(np.hypot(*np.diff(np.asarray(xy, np.float64)[:, :2], axis=0).T))]
+    f = np.zeros(len(xy))
+    i = 0
+    while i < len(run):
+        if not run[i]:
+            i += 1
+            continue
+        j = i
+        while j + 1 < len(run) and run[j + 1]:
+            j += 1
+        d = np.minimum(s[i:j + 1] - s[i], s[j] - s[i:j + 1]) / WALL_TAPER_M
+        d = np.clip(d, 0.0, 1.0)
+        f[i:j + 1] = d * d * (3 - 2 * d)
+        i = j + 1
+    return f
+
+
 def _on_carriageways(pts, others, gap):
     """Which points (k, 2) lie on a carriageway of others {fid: (centreline (m, 2), half width)} (+ gap). Pure."""
     import fast
@@ -2892,7 +2914,11 @@ def _parapets(xy, z, out_n, rh, inside, steps, gs, others, own, decks):
             j += 1
         if j - i + 1 >= WALL_MIN_N:
             sl = slice(i, j + 1)
-            out.append({"base": base[sl], "top": z[sl] + PARAPET_H, "foot": z[sl] - 1.0, "toward": -out_n[sl],
+            # (its foot down to the ground behind it, which falls away: it stood in the air seen from below)
+            back = np.flatnonzero((steps >= rh) & (steps <= rh + 2.5))
+            g_back = gs[sl][:, back].min(axis=1) if len(back) else z[sl] - 1.0
+            out.append({"base": base[sl], "top": z[sl] + PARAPET_H, "foot": np.minimum(z[sl] - 1.0, g_back - 0.3),
+                        "toward": -out_n[sl],
                         "thick": np.full(j - i + 1, PARAPET_W), "concrete": False, "rock": False, "parapet": True,
                         "road_z": z[sl]})
         i = j + 1
@@ -3015,7 +3041,12 @@ def retaining_walls(frame, roads, elev, exact, decks=()):
     g = np.asarray(frame.geodetic_to_enu(la, lo, np.asarray(elev(la, lo), np.float64))[2], np.float64)
     out, k = [], 0
     others = {fid: (np.asarray(pts, np.float64)[:, :2], spec.width / 2) for fid, spec, pts, _ in roads if len(pts) >= 2}
+    bend_of = {}
     for xy, z, out_n, core, inside, rh, steps, concrete, fid, rural, parapets in info:
+        key = (id(xy), len(xy))
+        if key not in bend_of:          # (a tight bend: no wall into it, grading.bend_zone)
+            bend_of[key] = grading.bend_zone(xy)
+        bends = bend_of[key]
         gg = g[k:k + len(xy)]
         k += len(xy)
         face = np.full(len(xy), core + 0.1)
@@ -3047,9 +3078,12 @@ def retaining_walls(frame, roads, elev, exact, decks=()):
             thick = np.minimum(thick, np.maximum(reach - 0.5, WALL_COPING_MIN_M))
         if parapets and len(steps):
             out.extend(_parapets(xy, z, out_n, rh, inside, steps, gs, others, fid, decks))
-        cut = _wall_runs(gg - z) & inside & ~_under_decks(xy + out_n * core, z, decks)
+        full = _wall_runs(gg - z) & ~_under_decks(xy + out_n * core, z, decks) & ~bends
         # (no face standing on a carriageway: a hairpin's other leg, the same road, the Stelvio Pass 2026-10-21)
-        cut &= ~_on_carriageways(xy + out_n * face[:, None], others, 0.0)
+        full &= ~_on_carriageways(xy + out_n * face[:, None], others, 0.0)
+        # (its ends lowered over WALL_TAPER_M toward the road, the whole wall's ends, not a tile edge's)
+        taper = _taper(xy, full)
+        cut = full & inside
         i = 0
         while i < len(cut):
             if not cut[i]:
@@ -3068,10 +3102,12 @@ def retaining_walls(frame, roads, elev, exact, decks=()):
                 # (never over another road: a hairpin's wall top covered the road above, the Stelvio Pass, the user's
                 # report 2026-10-21)
                 th = np.minimum(th, _clear_depth(base, out_n[sl], th, others, fid))
+                tp = np.minimum(top_g[sl], z[sl] + grading.WALL_MAX_H_M) + WALL_TOP_M      # (no taller than that)
+                tp = z[sl] + WALL_TAPER_LOW_M + (tp - z[sl] - WALL_TAPER_LOW_M).clip(0) * taper[sl]
                 # (rock faces only as an experiment, BNE_CLIFF_WALLS=on, for tall rural cuts: the Stelvio's hairpins are
                 # walled in dry stone, tall cuts too, Mapillary 2026-10-21; the user chose stone walls for passes)
                 tall = CLIFF_WALLS_ON and float(np.max(top_g[sl] - z[sl])) > CLIFF_MIN_CUT_M
-                out.append({"base": base, "top": top_g[sl] + WALL_TOP_M, "foot": z[sl] - WALL_FOOT_M,
+                out.append({"base": base, "top": np.maximum(tp, z[sl] + WALL_TAPER_LOW_M), "foot": z[sl] - WALL_FOOT_M,
                             "toward": -out_n[sl], "thick": th, "concrete": concrete, "rock": rural and tall,
                             "road_z": z[sl], "clear": _clear_depth(base, out_n[sl], np.full(len(base), CLIFF_REACH_M),
                                                                    others, fid),
