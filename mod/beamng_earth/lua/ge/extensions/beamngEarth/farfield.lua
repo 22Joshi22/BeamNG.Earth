@@ -380,6 +380,11 @@ local function spawn(inst)
   o:setField('shapeName', 0, inst.shape)
   o:setField('collisionType', 0, 'None')
   o:setField('decalType', 0, 'None')
+  -- dynamic (as the game's own runtime traffic signals): a static object added redraws the sun's cached shadow map
+  -- (~6 ms, RenderShadows), and the tiles streaming in while driving did it 10-20 times a second, the engine's
+  -- smoothed clock turning each into a slow-down and catch-up (the user, 2026-10-22: "a consistant pulse in the games
+  -- flow"; 80 mph on I-10: 20.8 -> 6.6 redraws a second with the road tiles dynamic too). Collision is the same
+  o:setField('dynamic', 0, 'true')
   o.canSave = false
   o.hidden = true
   o:setPosition(vec3(inst.x, inst.y, inst.z))

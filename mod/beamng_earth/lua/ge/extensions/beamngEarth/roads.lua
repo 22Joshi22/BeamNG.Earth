@@ -359,6 +359,7 @@ local function createWalk(walk, collide)
   -- mesh to Visible Mesh Final'); the same collision (in-game rays, 2026-10-17)
   o:setField('collisionType', 0, type(collide) == 'string' and collide or (collide and 'Visible Mesh Final' or 'None'))
   o:setField('decalType', 0, 'None')
+  o:setField('dynamic', 0, 'true')    -- no redraw of the cached sun shadow map for each tile (farfield.lua spawn)
   o.canSave = false
   o:setPosition(vec3(walk.pos[1], walk.pos[2], walk.pos[3]))
   o:registerObject('')
