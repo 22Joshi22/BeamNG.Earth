@@ -2403,49 +2403,43 @@ class TunnelProfiles(BridgeProfiles):
         ROAD_CAP_GAP_M short of the carriageway, the face ROAD_CAP_OVER_M over the road at most (an underpass under
         the E6 in Norway: its stone top 1.7 m over the lanes, 4 m into them, GitHub #2). ((start, end) depths or None
         where nothing changes, ups)."""
+        import fast
         import roadmesh
+        fast.require(45, "first_probe_near_lines")
         side = width / 2 + roadmesh.TUNNEL_SHOULDER + roadmesh.LOW_PORTAL_SIDE
         caps, ups, any_ = [None, None], list(ups), False
+        lines, radius = [], []
+        for gk, lns in ground.items():
+            hw = self._hw.get(gk)
+            if hw is None:
+                continue
+            for ln in lns:
+                lines.append(np.asarray(ln, np.float64).reshape(-1, 2))
+                radius.append(hw)
+        if not lines or len(xy) < 2:
+            return None, ups
+        pts = np.concatenate(lines)
+        starts = np.concatenate([[0], np.cumsum([len(ln) for ln in lines])]).astype(np.int64)
+        radius = np.asarray(radius, np.float64)
+        ds = np.arange(0.0, roadmesh.LOW_CAP_M + 0.25, 0.5)
         for e, (at, nb) in enumerate(((0, 1), (-1, -2))):
-            if not mouths[e] or len(xy) < 2:
+            if not mouths[e]:
                 continue
             p = xy[at]
             tin = xy[nb] - p
             tin = tin / max(float(np.hypot(*tin)), 1e-9)
             nrm = np.array([-tin[1], tin[0]])
-            near = []
-            for gk, lines in ground.items():
-                hw = self._hw.get(gk)
-                if hw is None:
-                    continue
-                for ln in lines:
-                    ln = np.asarray(ln, np.float64)
-                    if len(ln) < 2 or min(np.hypot(*(ln[0] - p)), np.hypot(*(ln[-1] - p))) < ROAD_CAP_JOIN_M:
-                        continue
-                    near.append((ln, hw))
-            if not near:
-                continue
+            mid = p + tin * ds[:, None]
+            probes = np.stack([mid, mid + nrm * side, mid - nrm * side], 1).reshape(-1, 2)
+            got = fast._ef.first_probe_near_lines(pts, starts, radius, ROAD_CAP_GAP_M, (float(p[0]), float(p[1])),
+                                                  ROAD_CAP_JOIN_M, probes)
             depth = None
-            for d in np.arange(0.0, roadmesh.LOW_CAP_M + 0.25, 0.5):
-                hit = None
-                for q in (p + tin * d, p + tin * d + nrm * side, p + tin * d - nrm * side):
-                    for ln, hw in near:
-                        a_, b_ = ln[:-1], ln[1:]
-                        dd = b_ - a_
-                        t = np.clip(((q - a_) * dd).sum(1) / np.maximum((dd * dd).sum(1), 1e-9), 0.0, 1.0)
-                        c = a_ + t[:, None] * dd
-                        j = int(np.argmin(np.hypot(*(c - q).T)))
-                        if float(np.hypot(*(c[j] - q))) < hw + ROAD_CAP_GAP_M:
-                            hit = c[j]
-                            break
-                    if hit is not None:
-                        break
-                if hit is not None:
-                    depth = max(0.0, d - ROAD_CAP_GAP_M)
-                    road_z = float(self._ground(hit[None])[0])
-                    top = road_z + ROAD_CAP_OVER_M - float(floor[at]) - th
-                    ups[e] = float(max(roadmesh.LOW_PORTAL_UP, min(ups[e], top)))
-                    break
+            if got is not None:
+                i, hx, hy = got
+                depth = max(0.0, float(ds[i // 3]) - ROAD_CAP_GAP_M)
+                road_z = float(self._ground(np.array([[hx, hy]]))[0])
+                top = road_z + ROAD_CAP_OVER_M - float(floor[at]) - th
+                ups[e] = float(max(roadmesh.LOW_PORTAL_UP, min(ups[e], top)))
             if depth is not None:
                 caps[e], any_ = depth, True
         return (tuple(caps) if any_ else None), ups
@@ -2650,8 +2644,8 @@ def block_arch_raise(tunnels, cell_fn, frame, la, lo, z, box):
         e, n, _ = frame.geodetic_to_enu(np.asarray(la, np.float64).ravel(), np.asarray(lo, np.float64).ravel(), 0.0)
         return arch_raise(parts, tunnels.heights, np.asarray(e), np.asarray(n),
                           np.asarray(z, np.float64).ravel(), getattr(tunnels, "mouths", None)).reshape(np.shape(z))
-    except Exception as ex:         # no raise rather than no block
-        log.debug("arch raise: %s: %s", type(ex).__name__, ex)
+    except Exception as ex:         # no raise rather than no block (a network error quietly; a bug where it shows)
+        (log.debug if isinstance(ex, OSError) else log.warning)("arch raise: %s: %s", type(ex).__name__, ex)
         return z
 
 
@@ -2671,7 +2665,7 @@ def block_tunnel_holes(tunnels, cell_fn, frame, keep, cx, cy, square):
     try:
         parts = tunnels.parts(cells, (cx - half, cy - half, cx + half, cy + half))
     except Exception as e:          # a chain's other cells not at hand (offline): no holes this time
-        log.debug("tunnel holes: %s: %s", type(e).__name__, e)
+        (log.debug if isinstance(e, OSError) else log.warning)("tunnel holes: %s: %s", type(e).__name__, e)
         return None
     if not parts:
         return None
