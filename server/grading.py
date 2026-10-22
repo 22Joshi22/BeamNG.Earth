@@ -273,10 +273,9 @@ def _add_cuts(frame, plans, elev):
     import fast
     fast.require(42, "sharp cuttings")
     f64 = np.float64
+    keep = [p for p in plans if p is not None and len(p.xy) >= 2]
     jobs = []
-    for p in plans:
-        if p is None or len(p.xy) < 2:
-            continue
+    for p in keep:
         q, o = fast._ef.sharp_probes(np.ascontiguousarray(p.xy[:, :2], f64), float(p.road_half), float(p.half),
                                      float(SHARP_REACH_M), float(SHARP_STEP_M))
         jobs.append((p, q, o))
@@ -398,15 +397,17 @@ class Grader:
         plans = []
         if feats is not None and len(feats):
             specs = roadsmod.road_specs(feats, None, self.widths)
-            parts, ids = [], []
+            parts, ids, clipped = [], [], []
             box = self._clip_box(key)
             for i in range(len(feats)):
                 if specs[i] is None:
                     continue
                 for ring in roadsmod.ground_parts(feats, i):     # not bridges / tunnels
-                    for r in self._near_cell(np.asarray(ring, np.float64), box):
+                    pieces = self._near_cell(np.asarray(ring, np.float64), box)
+                    for r in pieces:
                         parts.append((r, specs[i]))
                         ids.append(str(feats.ids[i]))
+                        clipped.append(len(pieces) > 1 or r is not ring)
             pspecs = []
             abut = None
             if (ABUT_FILL_ON or APPROACH_ON) and parts:
@@ -416,17 +417,28 @@ class Grader:
                     abut = self._abut_ends(key, np.stack([np.asarray(e), np.asarray(n)], axis=1)).reshape(-1, 2)
                 except Exception as e:      # no fills rather than no grading
                     log.debug("grading: abutments of %s: %s: %s", key, type(e).__name__, e)
-            for fid, part, p in zip(ids, parts, plan_roads(self.frame, parts, self.elev, abut)):
+            pclip = []
+            for fid, part, cl, p in zip(ids, parts, clipped, plan_roads(self.frame, parts, self.elev, abut)):
                 if p is not None:
                     p.rid = road_id(fid)
-                if p is not None:
                     plans.append((fid, p))
                     pspecs.append(part[1])
+                    pclip.append(cl)
             if APPROACH_ON and plans:
                 try:
                     self._lift_approaches(key, plans, pspecs)
                 except Exception as e:      # ungraded approaches rather than no grading
                     log.debug("grading: approaches of %s: %s: %s", key, type(e).__name__, e)
+            # a long road's piece (planned with CLIP_MARGIN_M of the road either side for its profile) kept only within
+            # the cell's own box: every stretch of road in one cell's plans, once (overlapping pieces from neighbouring
+            # cells counted a road up to 9 times, and every batch of points graded differently: patches of ground
+            # through the Stelvio's asphalt, GitHub #108's 2.5 m step at a bridge end in Meppen, 2026-10-21)
+            own = self._clip_box(key, 0.0)
+            if own is not None:
+                kept = []
+                for (fid, p), cl in zip(plans, pclip):
+                    kept.extend((fid, q) for q in (trim_plan(p, own) if cl else [p]))
+                plans = kept
             secs = self._tunnel_sections(feats, key, [p for _f, p in plans])
             plans.extend((fid + TUNNEL_TAG, Plan(xy, z, spec.width / 2 + shoulder(spec)))
                          for fid, spec, xy, z, k in secs if k == 0)
@@ -441,15 +453,15 @@ class Grader:
             self.opens.setdefault(key, opens)
             return self.cells[key]
 
-    def _clip_box(self, key):
-        """The cell's box in the frame (east / north), CLIP_MARGIN_M wider each side; None for a key without bounds."""
+    def _clip_box(self, key, margin=CLIP_MARGIN_M):
+        """The cell's box in the frame (east / north), margin wider each side; None for a key without bounds."""
         if not hasattr(key, "bounds"):
             return None
         lon0, lat0, lon1, lat1 = key.bounds()
         e, n, _ = self.frame.geodetic_to_enu(np.array([lat0, lat0, lat1, lat1]), np.array([lon0, lon1, lon0, lon1]),
                                              0.0)
         e, n = np.asarray(e), np.asarray(n)
-        m = CLIP_MARGIN_M
+        m = margin
         return float(e.min()) - m, float(n.min()) - m, float(e.max()) + m, float(n.max()) + m
 
     def _near_cell(self, ring, box):
@@ -758,10 +770,7 @@ class Grader:
         """The Plans touching the points' area (each road once); roads_only: not the tunnels' (TUNNEL_TAG)."""
         lat = np.asarray(lat, np.float64)
         lon = np.asarray(lon, np.float64)
-        # (every cell whose plans reach the points: each plans its roads CLIP_MARGIN_M past its edges, and a batch that
-        # left one out graded the same point up to 2 m apart from one that had it - the terrain block and the road
-        # mesh disagreed, patches of ground through a hairpin's asphalt on the Stelvio Pass, 2026-10-21)
-        pad = (T_MAX + CLIP_MARGIN_M + 40.0) / 111320.0
+        pad = (T_MAX + 40.0) / 111320.0
         padlon = pad / max(0.05, math.cos(math.radians(float(np.mean(lat)))))
         keys = mapcells.cells_for_bbox(float(lat.min()) - pad, float(lon.min()) - padlon,
                                        float(lat.max()) + pad, float(lon.max()) + padlon)
@@ -843,6 +852,42 @@ class Grader:
             fast._ef.over_tunnel(mask, ee, nn, np.ascontiguousarray(xy[:, :2], np.float64), float(hw),
                                  float(TUNNEL_KEEP_IN_M))
         return mask if mask.any() else None
+
+
+def trim_plan(p, box):
+    """The pieces of Plan p within box (x0, y0, x1, y1): cut at its edges (earthfast.clip_segments), heights and
+    cuttings with them; an end not at p's own end leads onto no bridge. [Plan]."""
+    import fast
+    fast.require(44, "clip_segments")
+    xy = np.ascontiguousarray(np.asarray(p.xy, np.float64)[:, :2])
+    if len(xy) < 2:
+        return [p]
+    t = np.asarray(fast._ef.clip_segments(xy, tuple(float(v) for v in box)))
+    ok = np.isfinite(t[:, 0])
+    if ok.all() and (t[:, 0] == 0.0).all() and (t[:, 1] == 1.0).all():
+        return [p]
+    out, i, n = [], 0, len(ok)
+    while i < n:
+        if not ok[i]:
+            i += 1
+            continue
+        j = i
+        while j + 1 < n and ok[j + 1] and t[j, 1] == 1.0 and t[j + 1, 0] == 0.0:
+            j += 1
+        t0, t1 = t[i, 0], t[j, 1]
+        a = xy[i] + (xy[i + 1] - xy[i]) * t0
+        b = xy[j] + (xy[j + 1] - xy[j]) * t1
+        za = p.z[i] + (p.z[i + 1] - p.z[i]) * t0
+        zb = p.z[j] + (p.z[j + 1] - p.z[j]) * t1
+        pxy = np.vstack([a, xy[i + 1:j + 1], b])
+        pz = np.r_[za, p.z[i + 1:j + 1], zb]
+        if np.hypot(*(pxy[-1] - pxy[0])) > 1e-6 or len(pxy) > 2:
+            q = Plan(pxy, pz, p.half, (p.abut[0] and i == 0 and t0 == 0.0, p.abut[1] and j == n - 1 and t1 == 1.0),
+                     None if p.cut is None else np.asarray(p.cut)[i:j + 1].copy(), p.road_half)
+            q.rid = getattr(p, "rid", -1)
+            out.append(q)
+        i = j + 1
+    return out
 
 
 def road_id(fid):

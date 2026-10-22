@@ -2233,13 +2233,49 @@ fn points_near_segments<'py>(py: Python<'py>, p: PyReadonlyArray2<'py, f64>, a: 
             let (ab0, ab1) = (bv[[k, 0]] - a0, bv[[k, 1]] - a1);
             [a0, a1, ab0, ab1, (ab0 * ab0 + ab1 * ab1).max(1e-9), hv[k]]
         }).collect();
-        (0..pv.shape()[0]).map(|i| {
+        let np_ = pv.shape()[0];
+        let near = |i: usize, g: &[f64; 6]| {
             let (p0, p1) = (pv[[i, 0]], pv[[i, 1]]);
-            seg.iter().any(|g| {
-                let t = (((p0 - g[0]) * g[2] + (p1 - g[1]) * g[3]) / g[4]).clamp(0.0, 1.0);
-                let d = (p0 - (g[0] + t * g[2])).hypot(p1 - (g[1] + t * g[3]));
-                d < g[5]
-            })
+            let t = (((p0 - g[0]) * g[2] + (p1 - g[1]) * g[3]) / g[4]).clamp(0.0, 1.0);
+            let d = (p0 - (g[0] + t * g[2])).hypot(p1 - (g[1] + t * g[3]));
+            d < g[5]
+        };
+        if np_ * ns < 4096 || np_ == 0 {
+            return (0..np_).map(|i| seg.iter().any(|g| near(i, g))).collect();
+        }
+        // a uniform grid over the points: each segment listed in the cells its box (+ its half width) covers, each
+        // point tests its own cell's segments (long roads' thousands of segments against a wall's points)
+        let (mut x0, mut y0, mut x1, mut y1) = (f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY);
+        for i in 0..np_ {
+            x0 = x0.min(pv[[i, 0]]); x1 = x1.max(pv[[i, 0]]);
+            y0 = y0.min(pv[[i, 1]]); y1 = y1.max(pv[[i, 1]]);
+        }
+        let cell = (((x1 - x0) * (y1 - y0)).max(1.0) / np_ as f64).sqrt().max(4.0) * 2.0;
+        let nx = (((x1 - x0) / cell).floor() as usize + 1).min(4096);
+        let ny = (((y1 - y0) / cell).floor() as usize + 1).min(4096);
+        let mut grid: Vec<Vec<u32>> = vec![Vec::new(); nx * ny];
+        for (k, g) in seg.iter().enumerate() {
+            let (ax, ay, bx, by) = (g[0], g[1], g[0] + g[2], g[1] + g[3]);
+            let r = g[5];
+            let (lx, hx) = (ax.min(bx) - r, ax.max(bx) + r);
+            let (ly, hy) = (ay.min(by) - r, ay.max(by) + r);
+            if hx < x0 || lx > x1 || hy < y0 || ly > y1 {
+                continue;
+            }
+            let cx0 = (((lx - x0) / cell).floor().max(0.0)) as usize;
+            let cx1 = ((((hx - x0) / cell).floor()).max(0.0) as usize).min(nx - 1);
+            let cy0 = (((ly - y0) / cell).floor().max(0.0)) as usize;
+            let cy1 = ((((hy - y0) / cell).floor()).max(0.0) as usize).min(ny - 1);
+            for cy in cy0..=cy1 {
+                for cx in cx0..=cx1 {
+                    grid[cy * nx + cx].push(k as u32);
+                }
+            }
+        }
+        (0..np_).map(|i| {
+            let cx = (((pv[[i, 0]] - x0) / cell).floor().max(0.0) as usize).min(nx - 1);
+            let cy = (((pv[[i, 1]] - y0) / cell).floor().max(0.0) as usize).min(ny - 1);
+            grid[cy * nx + cx].iter().any(|&k| near(i, &seg[k as usize]))
         }).collect()
     });
     numpy::ndarray::Array1::from(out).into_pyarray(py)
@@ -3096,6 +3132,49 @@ fn regional_groups<'py>(py: Python<'py>, group: PyReadonlyArray1<'py, u8>, heigh
     out.into_pyarray(py)
 }
 
+
+/// Each segment of a polyline xy (k, 2) clipped to the box (x0, y0, x1, y1) (Liang-Barsky): (k - 1, 2) the parameters
+/// (t0, t1) along it of the part inside, NaN for a segment wholly outside. grading: a long road's plan trimmed to its
+/// cell's own box, so every stretch of road is planned once (GitHub #108 / the Stelvio Pass: overlapping copies from
+/// neighbouring cells counted a road several times, the ground graded differently by every batch).
+#[pyfunction]
+fn clip_segments<'py>(py: Python<'py>, xy: PyReadonlyArray2<'py, f64>, bx: (f64, f64, f64, f64))
+                      -> Bound<'py, PyArray2<f64>> {
+    let p = xy.as_array();
+    let k = p.nrows();
+    let n = k.saturating_sub(1);
+    let (x0, y0, x1, y1) = bx;
+    let mut out = vec![f64::NAN; n * 2];
+    for i in 0..n {
+        let (ax, ay, bx_, by) = (p[[i, 0]], p[[i, 1]], p[[i + 1, 0]], p[[i + 1, 1]]);
+        let (dx, dy) = (bx_ - ax, by - ay);
+        let (mut t0, mut t1) = (0.0f64, 1.0f64);
+        let mut inside = true;
+        for (pp, qq) in [(-dx, ax - x0), (dx, x1 - ax), (-dy, ay - y0), (dy, y1 - ay)] {
+            if pp.abs() < 1e-15 {
+                if qq < 0.0 {
+                    inside = false;
+                    break;
+                }
+            } else {
+                let r = qq / pp;
+                if pp < 0.0 {
+                    if r > t1 { inside = false; break; }
+                    if r > t0 { t0 = r; }
+                } else {
+                    if r < t0 { inside = false; break; }
+                    if r < t1 { t1 = r; }
+                }
+            }
+        }
+        if inside && t1 > t0 {
+            out[2 * i] = t0;
+            out[2 * i + 1] = t1;
+        }
+    }
+    numpy::ndarray::Array2::from_shape_vec((n, 2), out).unwrap().into_pyarray(py)
+}
+
 #[pymodule]
 fn earthfast(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(island_ring_rays, m)?)?;
@@ -3148,6 +3227,7 @@ fn earthfast(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(sharp_cuts, m)?)?;
     m.add_function(wrap_pyfunction!(tight_bends, m)?)?;
     m.add_function(wrap_pyfunction!(regional_groups, m)?)?;
-    m.add("VERSION", 43)?;
+    m.add_function(wrap_pyfunction!(clip_segments, m)?)?;
+    m.add("VERSION", 44)?;
     Ok(())
 }
