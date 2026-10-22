@@ -232,8 +232,9 @@ end
 -- M4 stale-anchor rule (rebase.KEEP_EDGE > 0, the 512² block): at or past the distance (a re-request
 -- after a stale anchor was discarded) the terrain goes where the player will be when the answer
 -- arrives, p + v * (measured anchor latency + 1 s), so a slow server cannot make it stale forever.
-local function rebaseHint(pl)
-  local rem = math.max(0, rebase.distance - pl.dist)
+local function rebaseHint(pl, idle)
+  -- an idle rebase commits as soon as the anchor is ready: centred where the player is now
+  local rem = idle and 0 or math.max(0, rebase.distance - pl.dist)
   if rem <= 0 and rebase.KEEP_EDGE > 0 then
     local lead = rebase.aheadLead(st.anchorLatency)
     local lat = lead - rebase.LEAD_EXTRA_S
@@ -1050,7 +1051,11 @@ local function updateWorld(dt)
     local x0, y0, x1, y1 = lattice.groundBox(tr.cx or 0, tr.cy or 0)
     edgeDist = math.min(nx - x0, x1 - nx, ny - y0, y1 - ny)
   end
-  local action = rebase.decide(pl.dist, p, staleDist, st.clock, st.retryAt, edgeDist)
+  -- the game waits anyway (paused, a hold, the car standing still, loading after a teleport): rebase now
+  -- (rebase.IDLE_DISTANCE) instead of later in the middle of a drive
+  local idle = st.paused or dropHold.active or st.guard.pausedByUs ~= nil or st.slowFor > SLOW_S
+    or st.clock < st.loadingUntil
+  local action = rebase.decide(pl.dist, p, staleDist, st.clock, st.retryAt, edgeDist, idle)
   if p and p.ready and p.purpose == 'resync' then
     -- the player may have driven off the terrain the server prepared meanwhile: ask again
     if staleDist > rebase.STALE_DIST then
@@ -1067,7 +1072,12 @@ local function updateWorld(dt)
   end
   if (action == 'commit' or action == 'resync') and st.paused then action = nil end -- vehicles move only with physics running
   if action == 'prefetch' then
-    if net.isConnected() then requestAnchor(pl.lat, pl.lon, 'rebase', rebaseHint(pl)) end
+    if net.isConnected() then
+      local early = rebase.idleDue(pl.dist, idle) and pl.dist < rebase.distance - rebase.PREFETCH_MARGIN
+      if requestAnchor(pl.lat, pl.lon, 'rebase', rebaseHint(pl, early)) and early then
+        log('I', 'beamngEarth', string.format('idle rebase: preparing the new origin now (%.0f m out, the game waits)', pl.dist))
+      end
+    end
   elseif action == 'commit' or action == 'resync' then
     -- a heavy op: it runs once the governor has ramped streaming down (asked again every frame);
     -- terrain-follow waits meanwhile, its state belongs to the frame that is about to change

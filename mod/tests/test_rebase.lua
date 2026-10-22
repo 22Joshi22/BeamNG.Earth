@@ -48,4 +48,28 @@ T.check(rebase.aheadLead(nil) == rebase.LATENCY_S + rebase.LEAD_EXTRA_S and reba
 T.check(rebase.configure(1024) == 1024 and rebase.STALE_DIST == 450 and rebase.KEEP_EDGE == 0, 'configure(1024) restores v1.3.1')
 T.check(rebase.configure(nil) == 1024, 'no size: 1024')
 
+-- idle rebase (the user 2026-10-22): while the game waits anyway, from IDLE_DISTANCE on, prepared and committed then
+rebase.setDistance(15000)
+rebase.configure(1024)
+local I = rebase.IDLE_DISTANCE
+T.check(I == 4000, 'idle rebase from 4 km')
+T.check(d(I - 1, nil, nil, 0, 0, nil, true) == nil, 'idle, nearer than IDLE_DISTANCE: no prefetch')
+T.check(d(I, nil, nil, 0, 0, nil, true) == 'prefetch', 'idle at IDLE_DISTANCE: prefetch now')
+T.check(d(I, nil, nil, 0, 0, nil, false) == nil, 'driving at IDLE_DISTANCE: no prefetch (as before)')
+T.check(d(I, nil, nil, 3, 5, nil, true) == nil, 'idle: retryAt still respected')
+T.check(d(I + 100, { purpose = 'rebase', ready = true }, 0, 0, 0, nil, true) == 'commit', 'idle, ready: commit now')
+T.check(d(I + 100, { purpose = 'rebase', ready = true }, 0, 0, 0, nil, false) == nil,
+  'ready, but driving again below the distance: wait for the distance (as before)')
+T.check(d(I + 100, { purpose = 'rebase', ready = true }, 451, 0, 0, nil, true) == 'discard',
+  'idle, but the prepared terrain is not under the player: discard')
+T.check(d(I + 100, { purpose = 'rebase' }, nil, 0, 0, nil, true) == nil, 'idle, not ready yet: wait')
+rebase.setDistance(3000)
+local R = { purpose = 'rebase', ready = true }
+T.check(d(2999, R, 0, 0, 0, nil, true) == nil and d(3000, R, 0, 0, 0, nil, true) == 'commit',
+  'a rebase distance below IDLE_DISTANCE: idle uses the rebase distance')
+rebase.setDistance(15000)
+rebase.IDLE_DISTANCE = 0
+T.check(d(I, nil, nil, 0, 0, nil, true) == nil and not rebase.idleDue(10000, true), 'IDLE_DISTANCE 0: off')
+rebase.IDLE_DISTANCE = I
+
 T.done('test_rebase')
