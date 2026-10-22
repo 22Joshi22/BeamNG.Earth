@@ -389,9 +389,9 @@ veh:setPositionRotation(n.pos.x, n.pos.y, ((z and z > -1e6) and z or n.pos.z) + 
 return string.format('snap: node %%s %%.1f m away', tostring(best), math.sqrt(bd))
 """
 
-# On the GPS route: the car set at the route's node nearest it (not the last two), facing the next one; for a start
-# whose nearest fast road is not the route's (the other carriageway of a motorway: the AI cut across the median to its
-# route, deck_fast10 2026-10-20).
+# On the GPS route: the car set at the route's node nearest it (not the last two), facing the next one (a start on the
+# other carriageway of a motorway: the AI cut across the median to its route, deck_fast10 2026-10-20; one facing back
+# along the route turned round first, I-10 2026-10-21).
 ROUTE_SNAP_LUA = r"""
 local gm = rawget(_G, 'core_groundMarkers')
 local veh = getPlayerVehicle(0)
@@ -413,9 +413,8 @@ local dir = vec3(B.x - A.x, B.y - A.y, 0):normalized()
 local rot = quatFromDir(dir, vec3(0, 0, 1))
 local z = be:getSurfaceHeightBelow(A + vec3(0, 0, 3))
 veh:setPositionRotation(A.x, A.y, ((z and z > -1e6) and z or A.z) + 0.5, rot.x, rot.y, rot.z, rot.w)
-return string.format('route snap: node %%d of %%d, %%.1f m away', best, #ids, math.sqrt(bd))
+return string.format('route snap: node %d of %d, %.1f m away', best, #ids, math.sqrt(bd))
 """
-ROUTE_SNAP_OFF_M = 15.0     # the start this far off the GPS route: set on it (ROUTE_SNAP_LUA)
 
 
 def main():
@@ -480,17 +479,16 @@ def main():
         except (Exception, SystemExit, ValueError):
             return 0.0
     lua("beamngEarth_settings.uiMapGps(%r, %r, 'autodrive_perf') return 'ok'" % a.to)
-    if a.start:                     # off the route (another carriageway): on it, then the autodrive from there
-        for _ in range(15):
-            time.sleep(2)
-            try:
+    if a.start:                     # on the planned route facing along it, then the autodrive from there: the snap
+        for _ in range(15):         # above aims at the goal in a straight line, and on I-10 the car started facing
+            time.sleep(2)           # back along the route and turned round first (the user, 2026-10-21: "you seem to
+            try:                    # always start the car pointed in the opposite direction of the route")
                 g = lua_json("return jsonEncode(require('beamngEarth/gps').status())")
             except (Exception, SystemExit):
                 g = None
             if g and g.get("off") is not None and not g.get("planning"):
-                if g["off"] > ROUTE_SNAP_OFF_M:
-                    print(lua(ROUTE_SNAP_LUA), flush=True)
-                    time.sleep(3)
+                print(lua(ROUTE_SNAP_LUA), flush=True)
+                time.sleep(3)
                 break
     lua("return tostring(beamngEarth_settings.uiGpsAutodrive(true).autodrive)")
     obs = obs_start() if a.obs else None
