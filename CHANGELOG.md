@@ -2,6 +2,113 @@
 
 What changed in each release of BeamNG.Earth, newest first.
 
+## 1.5.5 beta (2026-10-22)
+
+Works with BeamNG.drive 0.40.1.
+
+### Smoother driving and loading
+- **Less of a pulse in the game's flow while driving.** Each new piece of road or distant landscape that loaded in
+  made the game redraw the sun's shadows, many times a second, and the game's clock sped up and slowed down around
+  each one. In testing at 80 mph, slow frames went from about 17 a second to about 2.
+- **Reduced the chance of freezes of a few seconds after an update.** Updating the mod made the game rebuild every
+  ground texture again, one at a time as each new kind of ground came into view (2.5-3 s each). Files that did not
+  change now keep their old time.
+- **Reduced the chance of a stutter as new ground loads.** Each piece of ground sets its aerial photo before it swaps
+  in, so the game rebuilds its ground textures once instead of twice (from Alfao's PR #71; in testing on a desktop,
+  the frame where new ground appears went from about 40 ms to about 22 ms).
+- **Faster ground loading in cities with short tunnels and underpasses.** Working out where a road passes over an
+  underpass's entrance took up to two minutes for one piece of ground in Oslo; it now takes a fraction of a second.
+- **Reduced the chance of roads no longer loading for the rest of a session** (GitHub #76, #91). When one of the world
+  server's helper processes crashed, the roads and buildings it builds stopped coming while the ground went on
+  loading; the server now starts the helper again.
+- **Reduced the chance of "Too many open files" errors on Linux** (GitHub #99). The world server now raises its limit
+  at start.
+- **Reduced the chance of driving onto a bridge or into a tunnel before it is solid on slower computers.** Their
+  collision now loads before sidewalks' and buildings' (in testing on a Steam Deck at 80 mph into Phoenix, an overpass
+  deck had turned solid only as the car reached it).
+- **Reduced the chance of low-detail distant ground showing through the ground around you** (GitHub #46), mostly on
+  slower computers at speed.
+
+### Terrain and roads
+- **Sharper terrain along roads cut into hills.** The elevation data blurs steep road cuttings into gentle ramps.
+  Where the ground rises steeply beside a road, the road now sits in a real cutting with a retaining wall: dry stone
+  walls in the mountains and towns, concrete along motorways and major roads, and low stone parapets along the drops
+  of mountain roads. Walls stop before tight hairpin bends and are at most about 4 m tall, with the slope above them.
+- **More detailed ground where the best elevation data exists** (most of Europe and much of the US): the near terrain
+  and the road profiles use elevation tiles twice as detailed as before.
+- **Reduced the chance of roads at different heights pulling each other up or down** (GitHub #92). A road beside a
+  street in a cutting, or up on a bank, pulled the street's edge up its slope, and sunken roads blended into the
+  streets above them; each road now stays level across its own lanes in more places (in testing: Munich's sunken
+  McGraw-Graben, a cutting in Pullach). Tight mountain hairpins, such as on the Stelvio Pass, still need work: the
+  ground between their levels can still be uneven.
+- **Reduced the chance of patches of ground showing through the road** on long mountain roads and highways.
+- **Reduced the chance of sidewalks hanging down walls and slopes** beside sunken or raised roads.
+- **Motorway ramps should now have one proper lane** (GitHub #107). A ramp took the main road's wide shoulders, so its
+  edge lines stood about 1.6 m apart and the traffic AI saw two lanes; ramps now get one 3.7 m lane between narrower
+  shoulders.
+- **Reduced the chance of a ledge where a ramp leaves an elevated motorway** (I-83 in Baltimore had a step across the
+  lanes that stopped cars).
+- **Squares and pedestrian areas are paved as they are mapped** (GitHub #70): asphalt, stone setts or brick, and sand
+  or gravel ones are left to the aerial photo, where every square used to be red brick. Fountains, lawns and buildings
+  inside a square are no longer paved over.
+- **Reduced the chance of traffic signal poles standing in the road.** The game's working traffic lights now stand
+  where the mod's signal poles do, clear of the lanes and of bridge decks.
+- **Reduced the chance of yard fences standing in the street** (GitHub #105). Fence pieces now keep 2 m from every
+  road.
+
+### Bridges and tunnels
+- **Reduced the chance of crashing into a wall of ground at the end of a bridge** (GitHub #108). Where a street passed
+  under a bridge right by its end, the ground at the bridge end was pulled down toward the street, and the deck ended
+  at a 2-3 m wall (Meppen, Germany).
+- **Reduced the chance of a dip and a step where a bridge meets its road.** On the D1 motorway near Prešov, Slovakia
+  the deck sank 3.6 m and met a 1.4 m step, and a car flipped there at 55 mph; the road now keeps its grade to the
+  bridge.
+- **Cable-stayed and arch bridges are drawn as they stand today** (GitHub #65). The Port Mann Bridge near Vancouver
+  was drawn as the arch bridge it replaced in 2012. Stays and arches also keep clear of the lanes.
+- **Reduced the chance of bridge walls standing across a road** (GitHub #96), as on the Pitt River Bridge's ramps over
+  Lougheed Highway.
+- **Reduced the chance of retaining walls standing in the way under a bridge deck** (one went through the Bruce
+  Highway's deck in Australia).
+- **Twin tunnels share one tube** (GitHub #84). Two carriageways side by side in a tunnel each had their own tube,
+  standing through each other's walls and portals.
+- **Reduced the chance of ridges or dams across rivers and harbours over underwater tunnels** (found by storm-ace,
+  GitHub #85), such as across the Maas in Rotterdam and along Baltimore's Fort McHenry tunnel.
+
+### Water
+- **Reduced the chance of water flooding towns and polders in the Netherlands** (GitHub #8, #53). Lakes now keep their
+  own level, no higher than the ground round them, and water no longer covers land well below it (in testing at
+  Maarssen the streets are dry).
+- **Reduced the chance of deep holes in harbours on lakes** (GitHub #45). A harbour or bay on a lake was carved down
+  as if it were the sea, with holes nearly 180 m deep along Chicago's lakeshore.
+
+### Buildings and places
+- **Reduced the chance of buildings standing across roads** (GitHub #48). Narrow shelters and walkways a road passes
+  under are raised over it, and shelters are drawn as low canopies.
+- **Reduced the chance of houses standing between a road's two carriageways** (GitHub #90).
+- **The pyramids of Giza are drawn as stone pyramids** (GitHub #47), not as large buildings with windows.
+- **Grain elevators in small US towns are drawn as plain concrete towers** instead of brick apartment blocks with
+  windows.
+- **Fewer flat boxes drawn as buildings.** Footprints mapped less than 0.1 m tall (plazas, pads) are left out.
+- **Toll plazas show toll booths**, using West Coast USA's toll booth.
+
+### Trees
+- **Fewer palm trees where they don't belong** (GitHub #110). Palms are now common only in South Florida, the Rio
+  Grande Valley, coastal Southern California and the tropics, and the Southeast's conifers look like pines.
+- **Tropical trees' vines and hanging roots are textured again.** They showed as bright orange "no texture" stripes in
+  the tropics.
+
+### Traffic
+- **Reduced the chance of AI traffic turning around right after it appears** (GitHub #72). In testing in Bathurst,
+  Australia: 3 turnarounds in 79 appearances before, none in 129 after.
+
+### Other
+- **Fewer "data sources not answering" warnings.** A regional aerial-photo service being down no longer shows the
+  warning while the worldwide imagery fills in; ground left with no imagery at all still says so.
+- **In-game reports name the release version** (they showed the mod's internal version number).
+
+If you want to talk about this mod with me or other people, join my Discord server at
+[discord.gg/tgf](https://discord.gg/tgf) and head to the #beamng-earth channel.
+
 ## 1.5.4 beta (2026-10-21)
 
 Works with BeamNG.drive 0.40.
