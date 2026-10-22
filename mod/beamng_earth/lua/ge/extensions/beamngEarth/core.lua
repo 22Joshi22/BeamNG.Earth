@@ -53,6 +53,7 @@ local levelinfo = require('beamngEarth/levelinfo') -- the level select's spawn p
 local banner = require('beamngEarth/banner') -- the connection banner (docs/DEVTOOLS.md)
 local hudapps = require('beamngEarth/hudapps') -- the same three as BeamNG UI apps (the ".Earth" app layout)
 local edgeguard = require('beamngEarth/edgeguard') -- never fall off the last block (docs/ROADMAP.md)
+local pauseowner = require('beamngEarth/pauseowner') -- who holds the game's pause (the player's pause is kept)
 local drophold = require('beamngEarth/drophold') -- a car dropped far away waits for its ground
 local groundcover = require('beamngEarth/groundcover') -- grass on the surface layers (docs/ROADMAP.md v1.5)
 local roads = require('beamngEarth/roads') -- DecalRoads from the server's road tiles (docs/ROADMAP.md v1.6)
@@ -891,14 +892,8 @@ M.dropHoldState = function() return dropHold end      -- (tests, tools)
 -- The game's own pause (simTimeAuthority, what the pause key does): holding the car by setting its position every frame
 -- strained it (its damage rose 0 -> 93k in 7 s of holding, the user 2026-10-18: "the hold seems to damage my car",
 -- "can you use the actual pause system"). Resumed only if the hold paused it; the player resuming it ends the hold.
-local function simPause(on)
-  local sta = rawget(_G, 'simTimeAuthority')
-  if sta and sta.pause then sta.pause(on) end
-end
-local function simPaused()
-  local sta = rawget(_G, 'simTimeAuthority')
-  return sta and sta.getPause and sta.getPause() or false
-end
+-- The pause goes through pauseowner.lua: a pause the player asks for while we hold it is kept when we are done.
+local function simPaused() return pauseowner.paused() end
 
 local function setCarAt(veh, x, y, z)
   -- the cluster moves by the reference node: set it where it is relative to the vehicle's position, at the target
@@ -909,7 +904,7 @@ local function setCarAt(veh, x, y, z)
 end
 
 local function endHold(h)
-  if h.pausedByUs and simPaused() then simPause(false) end
+  if h.pausedByUs then pauseowner.release('drophold') end
   h.pausedByUs = nil
   roads.setHold(false)
 end
@@ -934,15 +929,13 @@ local function updateDropHold(dt)
   if not st.paused and drophold.observe(h, pl.x, pl.y, pl.z, pl.speed, dt, st.anchorId, box, busy, nearReady) == 'start' then
     log('I', 'beamngEarth', string.format('drop hold: the car is %.0f m from the block; paused until its ground, bridges ' ..
       'and buildings load', box and math.max(box[1] - pl.x, pl.x - box[3], box[2] - pl.y, pl.y - box[4], 0) or -1))
-    if not simPaused() then
-      simPause(true)
-      h.pausedByUs = true
-    end
+    h.pausedByUs = pauseowner.take('drophold') or nil
   end
   roads.setHold(h.active)
   if not h.active then return end
   if h.pausedByUs and not simPaused() then         -- the player resumed: their call
     drophold.cancel(h)
+    pauseowner.drop('drophold')
     h.pausedByUs = nil
     roads.setHold(false)
     log('I', 'beamngEarth', 'drop hold: resumed by the player')
@@ -1522,6 +1515,8 @@ end
 -- The game's UI state (pause menu, loading screens): the credits hide in the pause menu.
 local function onUiChangedState(toState, fromState)
   credits.setUiState(toState)
+  -- the pause menu: loading done while it is open keeps the game paused until it closes (pauseowner.lua)
+  pauseowner.setMenu(type(toState) == 'string' and toState:sub(1, 4) == 'menu')
 end
 
 ------------------------------------------------------------------------------------------
@@ -1531,6 +1526,7 @@ local function onLevelStart()
   -- the connection outlives levels: keep its session and the request id sequence
   local sessionId, nextRequestId, mapPort = st.sessionId, st.nextRequestId, st.mapPort
   resetState()
+  pauseowner.reset()                       -- the new level's guard and drop hold hold nothing yet
   st.sessionId, st.nextRequestId, st.mapPort = sessionId, nextRequestId, mapPort   -- the connection's (hello)
   farfield.forget()
   terrain.onLevelChanged()
@@ -1633,6 +1629,7 @@ M.onFilesChanged = onFilesChanged
 
 local function onExtensionUnloaded()
   groundcover.enginePatch(false)
+  pauseowner.unload()                      -- the game's own pause function back
   net.close()
   farfield.clear()
   roads.clear()

@@ -123,19 +123,14 @@ end
 
 -- One frame with the engine: veh (the player's vehicle), box (the collidable area), clock (s).
 -- Returns the mode. Far inside the block nothing is called at all.
-local function simPaused()
-  local sta = rawget(_G, 'simTimeAuthority')
-  return sta and sta.getPause and sta.getPause() or false
-end
-local function simPause(on)
-  local sta = rawget(_G, 'simTimeAuthority')
-  if sta and sta.pause then sta.pause(on) end
-end
+-- (pauseowner.lua: a pause the player asks for while the guard holds it is kept when the guard lets go)
+local pauseowner = require('beamngEarth/pauseowner')
+local function simPaused() return pauseowner.paused() end
 
 -- A guard pause ends: the block followed (the car RESUME_INSIDE_M past the stop line), or the guard is turned off
 -- (the server healthy again: core.lua calls this then).
 function M.release(g)
-  if g.pausedByUs and simPaused() then simPause(false) end
+  if g.pausedByUs then pauseowner.release('edgeguard') end
   g.pausedByUs = nil
 end
 
@@ -144,6 +139,7 @@ function M.update(g, veh, box, clock)
   local d = min(p.x - box[1], box[3] - p.x, p.y - box[2], box[4] - p.y)
   if g.pausedByUs then
     if not simPaused() then                       -- the player resumed: let them drive back inwards
+      pauseowner.drop('edgeguard')
       g.pausedByUs, g.resumedAt = nil, clock
     elseif d > M.STOP_M + M.RESUME_INSIDE_M then  -- the block followed
       M.release(g)
@@ -159,8 +155,7 @@ function M.update(g, veh, box, clock)
   local mode, _, rescue, pause = M.step(g, { clock = clock, x = p.x, y = p.y, z = p.z, vx = v.x, vy = v.y, box = box,
     ground = M.groundBelow(p) })
   if pause and not simPaused() and clock - (g.resumedAt or -math.huge) >= M.RESUME_GRACE_S then
-    simPause(true)
-    g.pausedByUs = true
+    g.pausedByUs = pauseowner.take('edgeguard') or nil
   end
   if rescue then
     local dir = veh:getDirectionVector()
