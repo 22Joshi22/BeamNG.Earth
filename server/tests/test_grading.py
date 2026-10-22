@@ -27,6 +27,65 @@ class ProfileTest(unittest.TestCase):
         self.assertEqual(len(sm), len(s))
 
 
+SPEC = roads.Spec(7.0, "paved", False, "residential", False, 0.0, 0, None, 0, 0)
+
+
+def _ll(x, y):
+    la, lo, _ = FRAME.enu_to_geodetic(np.asarray(x, float), np.asarray(y, float), 0.0)
+    return np.stack([lo, la], axis=1)
+
+
+class JoinedPartsTest(unittest.TestCase):
+    """A street split into parts (Overture: at every junction) is graded like one road (the user 2026-10-22: "average
+    out roads to make them less bumpy ... stop them from being weirdly twisted")."""
+
+    @staticmethod
+    def sag(e):
+        return 0.06 * e + 0.0004 * e ** 2
+
+    def elev(self, la, lo):
+        e, _n, _ = FRAME.geodetic_to_enu(np.asarray(la), np.asarray(lo), 0.0)
+        return self.sag(np.asarray(e))
+
+    def graded(self):
+        x = np.arange(-120.0, 0.01, 5.0)
+        parts = [(_ll(x, 0 * x), SPEC), (_ll(-x[::-1], 0 * x), SPEC)]
+        plans = grading.plan_roads(FRAME, parts, self.elev)
+        px = np.arange(-30.0, 30.1, 1.0)
+        return px, grading.grade_points(px, np.zeros(len(px)), self.sag(px), plans)
+
+    def test_no_step_at_a_joint(self):
+        px, out = self.graded()
+        s = np.arange(-200.0, 200.1, 1.0)
+        one = grading.smooth_profile(self.sag(s), 1.0, grading.SIGMA_M)[170:231]
+        self.assertLess(np.abs(out - one).max(), 0.02, "the two parts graded as one smooth road")
+        slope = np.diff(out[::2]) / 2.0
+        self.assertLess(np.abs(np.diff(slope)).max(), 0.005, "no kink at the joint")
+
+    def test_a_free_end_keeps_its_grade(self):
+        s = np.arange(0.0, 80.1, 2.0)
+        z = 0.06 * s
+        self.assertTrue(np.allclose(grading.smooth_road(z, 2.0, 12.0), z, atol=1e-6), "no flat spot at the ends")
+
+    def test_only_the_road_that_goes_on_is_joined(self):
+        xy = lambda p: np.asarray(p, float)          # noqa: E731
+        main = xy([[-40, 0], [-20, 0], [0, 0]])
+        straight = xy([[0, 0], [20, 0.5], [40, 1]])
+        side = xy([[0, 0], [0, 20], [0, 40]])           # a 90 degree turn: a junction
+        far = xy([[3, 0], [23, 0]])                      # not at the end
+        dirt = SPEC._replace(kind="dirt")
+        j = grading.continuations([main, side, straight, far], [SPEC, SPEC, SPEC, SPEC])
+        self.assertEqual(j[0][1], (2, False), "the main road goes on straight, not round the corner")
+        self.assertIsNone(j[0][0])
+        self.assertIsNone(j[3][0])
+        j = grading.continuations([main, straight], [SPEC, dirt])
+        self.assertIsNone(j[0][1], "a paved road does not run on into a dirt track")
+
+    def test_faster_roads_smoothed_over_more(self):
+        self.assertGreater(grading.sigma_of(SPEC._replace(cls="motorway")), grading.sigma_of(SPEC))
+        self.assertEqual(grading.sigma_of(SPEC._replace(kind="dirt")), grading.DIRT_SIGMA_M)
+
+
 class CrestTest(unittest.TestCase):
     def test_no_kinks_over_a_crest(self):
         # a road over a crest (the grade falls 4 % per 10 m): the graded centreline's slope changes smoothly, not

@@ -32,10 +32,23 @@ import roads as roadsmod
 
 log = logging.getLogger("earthd.grading")
 
-VERSION = 2
+VERSION = 3                 # 3: road parts joined before smoothing, free ends keep their grade, sigma per class
 PROFILE_STEP = 2.0          # m between profile samples
 SIGMA_M = 12.0              # m, profile smoothing of built roads
 DIRT_SIGMA_M = 5.0          # m, profile smoothing of gravel / dirt roads
+# Faster roads are built with longer vertical curves: smoothed over more (the user 2026-10-22: "average out roads to
+# make them less bumpy"; at 150-300 mph a 12 m curve on a motorway is a jump).
+SIGMA_BY_CLASS = {"motorway": 24.0, "trunk": 20.0, "primary": 16.0}
+# A road part (Overture splits a street at every junction) used to be smoothed on its own, mirrored at its ends: that
+# set its grade to zero at both ends and moved them up to ~0.6 m off on a 6 % hill, so every joint between two parts
+# of one street was a step with a flat spot (bumps, worst uphill), and where the two parts' heights met across the
+# carriageway the road leaned to one side (twisted). Now each part's profile runs on into the part that continues it
+# (JOIN_M, JOIN_TURN_DEG; EXTEND_SIGMAS x its sigma), and a free end keeps its grade (odd reflection). The same street
+# then has the same smooth heights on both sides of a joint.
+JOIN_ON = os.environ.get("BNE_ROAD_JOIN", "on") != "off"
+JOIN_M = 1.0                # m: two parts' ends this near each other are joined
+JOIN_TURN_DEG = 60.0        # ... when the road turns at most this much there (else a junction, not one road)
+EXTEND_SIGMAS = 3.0
 SHOULDER_M = 1.0            # m of flat shoulder beyond the carriageway, each side
 SIDEWALK_MARGIN_M = 0.5     # m of flat ground beyond a sidewalk (roads.SIDEWALK_CLASSES)
 LONG_PART_M = 3000.0        # a road part longer than this is planned per cell, only within CLIP_MARGIN_M of the cell
@@ -129,6 +142,84 @@ def smooth_profile(z, step, sigma):
     return fast._ef.smooth_profile(np.ascontiguousarray(z, np.float64), float(step), float(sigma))
 
 
+def smooth_road(z, step, sigma, pre=0, post=0):
+    """smooth_profile of a road part's profile z that has `pre` / `post` samples of the roads continuing it at its
+    start / end (its own samples are z[pre:len(z) - post], returned). Beyond those it goes on at its grade (odd
+    reflection), so a free end is not flattened. Pure."""
+    z = np.asarray(z, np.float64)
+    n = len(z)
+    if n < 2:
+        return z[pre:n - post].copy()
+    pad = int(math.ceil(EXTEND_SIGMAS * sigma / step))
+    zp = np.pad(z, pad, mode="reflect", reflect_type="odd")
+    sm = smooth_profile(zp, step, sigma)[pad:pad + n]
+    return sm[pre:n - post]
+
+
+def sigma_of(spec):
+    """The profile smoothing (m) of a road (SIGMA_M, DIRT_SIGMA_M, SIGMA_BY_CLASS)."""
+    if spec.kind not in roadsmod.BUILT:
+        return DIRT_SIGMA_M
+    return max(SIGMA_M, SIGMA_BY_CLASS.get(spec.cls, SIGMA_M))
+
+
+def _unit(v):
+    L = math.hypot(v[0], v[1])
+    return (v[0] / L, v[1] / L) if L > 1e-9 else (0.0, 0.0)
+
+
+def continuations(prof, specs):
+    """For each part (resampled ENU polyline prof[j] (k, 2) or None) the parts continuing it at its start and its end:
+    [(start, end)], each None or (other part, True if the other is joined at its end). Ends within JOIN_M, the road
+    turning at most JOIN_TURN_DEG, both built or both not; the straightest one wins (ties: the lower index), so it is
+    deterministic. Pure."""
+    ends = []                       # (x, y, part, at_end, outward unit vector)
+    for j, xy in enumerate(prof):
+        if xy is None or len(xy) < 2:
+            continue
+        ends.append((xy[0, 0], xy[0, 1], j, False, _unit(xy[0] - xy[1])))
+        ends.append((xy[-1, 0], xy[-1, 1], j, True, _unit(xy[-1] - xy[-2])))
+    out = [[None, None] for _ in prof]
+    if not ends:
+        return out
+    cell = max(JOIN_M, 1e-3)
+    grid = {}
+    for e in ends:
+        grid.setdefault((int(math.floor(e[0] / cell)), int(math.floor(e[1] / cell))), []).append(e)
+    cos_max = math.cos(math.radians(JOIN_TURN_DEG))
+    for x, y, j, at_end, d in ends:
+        gx, gy = int(math.floor(x / cell)), int(math.floor(y / cell))
+        best = None
+        for ix in (gx - 1, gx, gx + 1):
+            for iy in (gy - 1, gy, gy + 1):
+                for ox, oy, k, k_end, dk in grid.get((ix, iy), ()):
+                    if k == j or math.hypot(ox - x, oy - y) > JOIN_M:
+                        continue
+                    if (specs[k].kind in roadsmod.BUILT) != (specs[j].kind in roadsmod.BUILT):
+                        continue
+                    # going on: out of j's end, into k (k's inward direction = -its outward one)
+                    c = -(d[0] * dk[0] + d[1] * dk[1])
+                    if c < cos_max:
+                        continue
+                    key = (-c, k, k_end)
+                    if best is None or key < best[0]:
+                        best = (key, (k, k_end))
+        out[j][int(at_end)] = best[1] if best else None
+    return out
+
+
+def _extension(xy, from_end, length, step):
+    """The first `length` m of polyline xy (k, 2) walked from its end (from_end) or its start, without the joint point
+    itself, resampled every `step` m ((m, 2), m >= 0). Pure."""
+    pts = xy[::-1] if from_end else xy
+    seg = np.hypot(*np.diff(pts, axis=0).T)
+    s = np.concatenate(([0.0], np.cumsum(seg)))
+    t = np.arange(step, min(length, s[-1]) + 1e-9, step)
+    if not len(t):
+        return np.zeros((0, 2))
+    return np.stack([np.interp(t, s, pts[:, 0]), np.interp(t, s, pts[:, 1])], axis=1)
+
+
 def resample(xy, step):
     """Points every `step` m along a polyline (xy (k, 2)), the last point kept, and their arc lengths."""
     import fast
@@ -219,10 +310,27 @@ def plan_roads(frame, parts, elev, abut=None):
         xy, _ = resample(np.stack([E[k:k + m], N[k:k + m]], axis=1), PROFILE_STEP)
         k += m
         prof.append(xy if len(xy) >= 2 else None)
-    pts = [xy for xy in prof if xy is not None]
-    if not pts:
+    if not any(xy is not None for xy in prof):
         return [None] * len(parts)
-    allxy = np.concatenate(pts)
+    specs = [spec for _ll, spec in parts]
+    # each part's profile runs on into the parts continuing it (see JOIN_ON): its own points with the others' before
+    # and after, all sampled in the one elev call
+    joins = continuations(prof, specs) if JOIN_ON else [[None, None] for _ in prof]
+    ext = []
+    for j, xy in enumerate(prof):
+        if xy is None:
+            ext.append(None)
+            continue
+        reach = EXTEND_SIGMAS * sigma_of(specs[j])
+        pre = post = np.zeros((0, 2))
+        if joins[j][0] is not None:
+            o, o_end = joins[j][0]
+            pre = _extension(prof[o], o_end, reach, PROFILE_STEP)[::-1]
+        if joins[j][1] is not None:
+            o, o_end = joins[j][1]
+            post = _extension(prof[o], o_end, reach, PROFILE_STEP)
+        ext.append((pre, post))
+    allxy = np.concatenate([np.concatenate((e[0], xy, e[1])) for xy, e in zip(prof, ext) if xy is not None])
     la, lo, _ = frame.enu_to_geodetic(allxy[:, 0], allxy[:, 1], 0.0)
     zall = np.asarray(elev(la, lo), np.float64)
     out, k = [], 0
@@ -230,15 +338,19 @@ def plan_roads(frame, parts, elev, abut=None):
         if xy is None:
             out.append(None)
             continue
-        z = zall[k:k + len(xy)]
-        k += len(xy)
+        npre, npost = len(ext[j][0]), len(ext[j][1])
+        n = npre + len(xy) + npost
+        zx = zall[k:k + n].copy()
+        k += n
         ab = (False, False)
         if abut is not None and ABUT_FILL_ON:
             ab = (bool(abut[j][0]), bool(abut[j][1]))
+            own = zx[npre:npre + len(xy)]
             for at_end in (False, True):
                 if ab[int(at_end)]:
-                    z = fill_abutment(z, at_end)
-        out.append(_plan(xy, z, spec, ab))
+                    own = fill_abutment(own, at_end)
+            zx[npre:npre + len(xy)] = own
+        out.append(_plan(xy, zx, spec, ab, npre, npost))
     if SHARP_ON:
         _add_cuts(frame, [p if p is not None and sp.kind in roadsmod.BUILT else None
                           for p, (_ll, sp) in zip(out, parts)], elev)
@@ -305,9 +417,11 @@ def _add_cuts(frame, plans, elev):
                 p.cut = cut
 
 
-def _plan(xy, z, spec, abut=(False, False)):
+def _plan(xy, z, spec, abut=(False, False), pre=0, post=0):
+    """The Plan of a road part: xy its points, z their heights with `pre` / `post` heights of the roads continuing it
+    before / after (smooth_road)."""
     built = spec.kind in roadsmod.BUILT
-    zs = smooth_profile(z, PROFILE_STEP, SIGMA_M if built else DIRT_SIGMA_M)
+    zs = smooth_road(z, PROFILE_STEP, sigma_of(spec), pre, post)
     # thin to VERTEX_STEP (the profile stays smooth between: linear in the grading pass)
     every = max(1, int(round(VERTEX_STEP / PROFILE_STEP)))
     keep = np.r_[np.arange(0, len(xy) - 1, every), len(xy) - 1]
