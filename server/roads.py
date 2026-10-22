@@ -2793,6 +2793,23 @@ def _off_wall_tops(chunks, walls):
 WALL_TOP_EDGE_M = 0.3   # a road surface goes this far onto a wall's top at most (_off_wall_tops)
 
 
+def _on_carriageways(pts, others, gap):
+    """Which points (k, 2) lie on a carriageway of others {fid: (centreline (m, 2), half width)} (+ gap). Pure."""
+    import fast
+    pts = np.ascontiguousarray(np.asarray(pts, np.float64))
+    hit = np.zeros(len(pts), bool)
+    if not len(pts):
+        return hit
+    lo, hi = pts.min(0), pts.max(0)
+    for ln, h in others.values():
+        if len(ln) < 2 or (ln.max(0) + h + gap < lo).any() or (ln.min(0) - h - gap > hi).any():
+            continue
+        fast.require(0, "points_near_segments")
+        hit |= np.asarray(fast._ef.points_near_segments(pts, np.ascontiguousarray(ln[:-1]), np.ascontiguousarray(ln[1:]),
+                                                        np.full(len(ln) - 1, h + gap)))
+    return hit
+
+
 def _clear_depth(base, out, depth, others, own):
     """Per point of a wall's face line base (k, 2): how far (up to depth (k,)) out from it along out (k, 2) stays off
     every other road's carriageway in others {fid: (centreline (m, 2), half width)} (less WALL_OTHER_GAP_M). Pure."""
@@ -2802,7 +2819,9 @@ def _clear_depth(base, out, depth, others, own):
     hit = np.zeros(len(q), bool)
     lo, hi = q.min(0), q.max(0)
     for f2, (ln, h) in others.items():
-        if f2 == own or len(ln) < 2:
+        # (its own road too: a hairpin's other leg; the face stands past its own carriageway, so the stretch beside it
+        # never hits)
+        if len(ln) < 2:
             continue
         if (ln.max(0) + h < lo).any() or (ln.min(0) - h > hi).any():
             continue
@@ -2852,7 +2871,7 @@ def _parapets(xy, z, out_n, rh, inside, steps, gs, others, own, decks):
         return []
     drop = (z[:, None] - gs[:, near]).max(axis=1) > PARAPET_DROP_M
     base = xy + out_n * (rh + PARAPET_OFF_M)
-    ok = drop & inside & ~_under_decks(base, z, decks)
+    ok = drop & inside & ~_under_decks(base, z, decks) & ~_on_carriageways(base, others, 0.0)
     # not across a road joining it (its junctions), nor where another road runs beside
     for f2, (ln, h) in others.items():
         if f2 == own or len(ln) < 2 or not ok.any():
@@ -3021,6 +3040,8 @@ def retaining_walls(frame, roads, elev, exact, decks=()):
         if parapets and len(steps):
             out.extend(_parapets(xy, z, out_n, rh, inside, steps, gs, others, fid, decks))
         cut = _wall_runs(gg - z) & inside & ~_under_decks(xy + out_n * core, z, decks)
+        # (no face standing on a carriageway: a hairpin's other leg, the same road, the Stelvio Pass 2026-10-21)
+        cut &= ~_on_carriageways(xy + out_n * face[:, None], others, 0.0)
         i = 0
         while i < len(cut):
             if not cut[i]:
