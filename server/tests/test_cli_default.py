@@ -109,6 +109,7 @@ def compute(server_dir):
             c.dispatch({"type": "hello", "protocol": earthd.PROTOCOL, "format": 4, "modVersion": "0.4.0"})
             hello = dict(w.msgs[-1])
             hello.pop("sessionId")
+            hello.pop("appVersion", None)     # the release (VERSION): changes every release
             out["hello"] = hello
             c.status("Ready")
             out["status"] = w.msgs[-1]

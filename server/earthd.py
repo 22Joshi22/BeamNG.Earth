@@ -72,7 +72,7 @@ import time  # noqa: E402
 from collections import OrderedDict, deque  # noqa: E402
 import concurrent.futures  # noqa: E402
 import multiprocessing  # noqa: E402
-from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor  # noqa: E402
+from concurrent.futures import ThreadPoolExecutor  # noqa: E402
 from dataclasses import dataclass, field, replace  # noqa: E402
 
 import numpy as np  # noqa: E402
@@ -90,6 +90,7 @@ import parking as parkingmod  # noqa: E402
 import roads as roadsmod  # noqa: E402
 import randomplace as randomplacemod  # noqa: E402
 import placepreview as placepreviewmod  # noqa: E402
+import pools as poolsmod  # noqa: E402
 import grading as gradingmod  # noqa: E402
 import roadmesh as roadmeshmod  # noqa: E402
 import roadwidth as roadwidthmod  # noqa: E402
@@ -798,7 +799,7 @@ class Server:
 
     def new_anchor(self, lat, lon):
         a = Anchor(self._next_anchor, lat, lon, geodesy.EnuFrame(lat, lon))
-        a.hm_zoom = demmod.zoom_for(lat, 2.5)       # ~2 m pixels where the data exists
+        a.hm_zoom = demmod.zoom_for(lat, 1.25, demmod.FINE_ZOOM)    # ~1 m pixels where the data exists (dem.FINE_ZOOM)
         a.zooms = {lvl: self.layout.dem_zoom(lat, lvl) for lvl in range(1, farfield.HORIZON_MAX_LEVEL + 1)}
         a.zooms[0] = a.hm_zoom                      # L0 shares the terrain's DEM (§1.4)
         if self.deshadow is not None:
@@ -1077,6 +1078,7 @@ class Server:
         if items is not None:           # front doors and shopfronts, driveways into the road mesh
             drives = []
             props.extend(buildingsmod.doors(items, lines, x0, y0, drives))
+            props.extend(buildingsmod.toll_booth_rows(items, x0, y0))
             drives.extend(buildingsmod.garage_drives(items, lines, x0, y0))
             chunks += drives
             park = parkingmod.clear_of(park, props, drives)
@@ -1122,6 +1124,7 @@ class Server:
                 anchor.grader = gradingmod.Grader(anchor.frame, self.mapdata,
                                                   lambda la, lo: self.dem.sample(la, lo, gradingmod.PROFILE_ZOOM),
                                                   self.road_widths)
+                anchor.grader.wet = self.sea.depth if self.sea is not None else None    # (no dams: underwater tunnels)
             return anchor.grader
 
     def warm_roads(self, anchor, x, y, vx, vy):
@@ -2511,6 +2514,7 @@ class Connection:
                 # the mod's format is the newest it reads (a FORMAT 4 mod reads 3 too)
                 self.status(f"format mismatch: mod {msg.get('format')}, server {lay.format}")
             m = {"type": "hello", "protocol": PROTOCOL, "format": lay.format, "serverVersion": SERVER_VERSION,
+                 "appVersion": updatesmod.local_version() or "",     # the release (VERSION): the players' reports
                  "sessionId": self.s.sid, "farFormat": self.s.far_format, "material": farfield.MATERIAL,
                  "nearVisual": self.s.near_visual, "attribution": self.s.attribution()}
             if self.s.imagery is not None:      # the world map credits the sources its view shows
@@ -3067,12 +3071,21 @@ class Connection:
                     z = dem.sample(la, lo, seatilesmod.LAKE_DEM_ZOOM)
                     return grader.apply(la, lo, z) if grader is not None else z
 
+                def sea_ground(la, lo, size):
+                    # the ground under a sea tile at about its samples' spacing (seatiles.plan: land under the sea,
+                    # the polders, splits it)
+                    n = min(max(size / 32.0, seatilesmod.SEA_SPLIT_SAMPLES[0]), seatilesmod.SEA_SPLIT_SAMPLES[1])
+                    z = demmod.zoom_for(float(np.mean(la)), size / n)
+                    z = min(max(z, getattr(demmod, "MIN_ZOOM", 0)), demmod.MAX_ZOOM)
+                    return dem.sample(la, lo, z)
+
                 def plan():
                     pacer.hold()        # (a teleport's first block first)
                     asked = sea.warm_asked
                     # with the cells at hand (the others are built in the background and used by the
                     # next plan, SEA_CHECK_S later): water appears at once at a new place
-                    tiles = (seatilesmod.plan(frame, x, y, lambda la, lo, size: sea.sea_at(dem, la, lo, size, False))
+                    tiles = (seatilesmod.plan(frame, x, y, lambda la, lo, size: sea.sea_at(dem, la, lo, size, False),
+                                              ground_at=sea_ground)
                              + seatilesmod.plan_lakes(frame, x, y, lambda la, lo: sea.lake_at(la, lo, False),
                                                       lake_ground))
                     def carved(la, lo):     # the river beds' level (seacarve), NaN elsewhere
@@ -3486,14 +3499,14 @@ async def main_async(args):
         ctx = multiprocessing.get_context("spawn")
         for _ in (LANE_REQUEST, LANE_PREFETCH):
             warm_q = ctx.Queue(maxsize=64)
-            block_pools.append((ProcessPoolExecutor(
-                1, mp_context=ctx, initializer=blockworker.init,
+            block_pools.append((poolsmod.RespawningPool(
+                "block", 1, mp_context=ctx, initializer=blockworker.init,
                 initargs=(args.cache_dir, args.offline, args.roads == "on",
                           args.grading == "on" and args.roads == "on",
                           args.road_widths == "on" and args.roads == "on", args.surface == "on", warm_q,
                           logging.getLogger().level, args.airports == "on", args.sea == "on")), warm_q))
-        far_pool = ProcessPoolExecutor(
-            args.workers, mp_context=ctx, initializer=blockworker.init,
+        far_pool = poolsmod.RespawningPool(
+            "far tile", args.workers, mp_context=ctx, initializer=blockworker.init,
             initargs=(args.cache_dir, args.offline, args.roads == "on",
                       args.grading == "on" and args.roads == "on",
                       args.road_widths == "on" and args.roads == "on", False, ctx.Queue(maxsize=1),
@@ -3507,15 +3520,15 @@ async def main_async(args):
             log.warning("airports: no runway grading (%s)", e)
     road_pool = None
     if args.block_process == "on" and args.roads == "on" and args.road_processes > 0:
-        road_pool = ProcessPoolExecutor(          # road tiles (blockworker.roads_tile)
-            args.road_processes, mp_context=ctx, initializer=blockworker.init,
+        road_pool = poolsmod.RespawningPool(      # road tiles (blockworker.roads_tile)
+            "road tile", args.road_processes, mp_context=ctx, initializer=blockworker.init,
             initargs=(args.cache_dir, args.offline, True, args.grading == "on", args.road_widths == "on",
                       args.surface == "on", ctx.Queue(maxsize=1), logging.getLogger().level,
                       args.airports == "on", args.sea == "on", NICE_ROADS))
     far_bld_pool = None
     if road_pool is not None and args.buildings == "on":
-        far_bld_pool = ProcessPoolExecutor(       # far building tiles (blockworker.far_buildings_tile)
-            1, mp_context=ctx, initializer=blockworker.init,
+        far_bld_pool = poolsmod.RespawningPool(   # far building tiles (blockworker.far_buildings_tile)
+            "far building", 1, mp_context=ctx, initializer=blockworker.init,
             initargs=(args.cache_dir, args.offline, True, args.grading == "on", args.road_widths == "on",
                       args.surface == "on", ctx.Queue(maxsize=1), logging.getLogger().level,
                       args.airports == "on", args.sea == "on", NICE_FAR_BUILDINGS))
@@ -3676,6 +3689,28 @@ def parse_radii(text):
     if not 0 <= r2 <= r1:
         raise argparse.ArgumentTypeError("need 0 <= exact-level radius <= next-level radius")
     return r2, r1
+
+
+OPEN_FILES = 65536      # raise_open_files: the soft limit wanted
+
+
+def raise_open_files():
+    """Unix: the soft limit on open files raised to the hard one (at most OPEN_FILES), before any worker starts (they
+    inherit it). Every decoded DEM tile a process keeps is a memory-mapped file (dem.py's mirror), and CPython's mmap
+    keeps its own descriptor: a few hundred per worker soon after a start, and the default soft limit of 1024 ran out
+    on a drive (GitHub #99: "Too many open files": far tiles and map cells failed)."""
+    try:
+        import resource
+    except ImportError:             # (Windows: no such limit)
+        return
+    try:
+        soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+        want = OPEN_FILES if hard == resource.RLIM_INFINITY else min(hard, OPEN_FILES)
+        if soft != resource.RLIM_INFINITY and soft < want:
+            resource.setrlimit(resource.RLIMIT_NOFILE, (want, hard))
+            log.info("open files limit: %d -> %d", soft, want)
+    except (ValueError, OSError) as e:
+        log.warning("open files limit not raised: %s", e)
 
 
 def main():
@@ -3848,6 +3883,13 @@ def main():
         ap.error("--horizon needs --near-visual mesh (terrain mode is frozen at the v1.3.1 layout)")
     logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO,
                         format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    raise_open_files()
+    import fast
+    try:
+        fast.require(fast.MIN_VERSION, "the world server")     # at start, not in the middle of a drive
+    except fast.NativeMissing as ex:
+        log.error("%s", ex)
+        raise SystemExit(str(ex))
     import sampler
     sampler.maybe_start()           # BNGE_SAMPLE=<path>: a sampling profile of this process's threads (debugging)
     import budget

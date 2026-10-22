@@ -427,27 +427,20 @@ def view_cone(cam):
 
 
 def view_distance(t, cone, x, y):
-    """Distance of tile t from (x, y) for the load order: VIEW_PENALTY times as far outside the view cone."""
-    d = t.distance(x, y)
-    if cone is None or d <= 0:
-        return d
-    cx, cy, fx, fy, cosmax = cone
-    x0, y0, x1, y1 = t.bbox
-    dx, dy = (x0 + x1) / 2 - cx, (y0 + y1) / 2 - cy
-    r = math.hypot(dx, dy)
-    if r <= (x1 - x0):                  # around the camera: always in view
-        return d
-    return d if (dx * fx + dy * fy) / r >= cosmax else d * VIEW_PENALTY
+    """Distance of tile t from (x, y) for the load order: VIEW_PENALTY times as far outside the view cone (around the
+    camera always in view): view_distances of the one tile."""
+    return view_distances([t], cone, x, y)[0]
 
 
 def view_distances(tiles, cone, x, y):
-    """view_distance of every tile (a list), in Rust (earthfast.view_distances) when built."""
+    """view_distance of every tile (a list), in Rust (earthfast.view_distances)."""
     if cone is None:                    # no camera: exactly the distances (and tie order) of before
         return [t.distance(x, y) for t in tiles]
-    if fast._ef is not None and hasattr(fast._ef, "view_distances") and tiles:
-        bb = np.array([t.bbox for t in tiles], np.float64)
-        return fast._ef.view_distances(bb, float(x), float(y), list(cone) if cone else [], float(VIEW_PENALTY)).tolist()
-    return [view_distance(t, cone, x, y) for t in tiles]
+    if not tiles:
+        return []
+    fast.require(1, "view_distances")
+    bb = np.array([t.bbox for t in tiles], np.float64)
+    return fast._ef.view_distances(bb, float(x), float(y), list(cone) if cone else [], float(VIEW_PENALTY)).tolist()
 
 
 def nearest_first(tiles, x, y):

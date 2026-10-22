@@ -123,6 +123,11 @@ def main():
     # (detail_ground.dds: "only RGB formats are supported!" is logged and the texture loads anyway, since 2026-10-10)
     errs = [ln for ln in text.splitlines() if "|E|" in ln and "beamngEarth" in ln and "detail_ground.dds" not in ln]
     check(res, not errs, "mod errors in the log", "none" if not errs else f"{len(errs)}, first: {errs[0][:140]}")
+    # a shape's material that no loaded materials file maps draws orange "NO TEXTURE" (0.40 moved tro_tree_1's vines
+    # into a materials file of their own; trees.lua MATERIALS lists the files). Only shapes loaded this session show.
+    nomat = sorted({m.group(1) for m in re.finditer(r"\[NO-MATERIAL\] Unable to find material mapping to: (\S+)", text)})
+    check(res, not nomat, "shapes' materials mapped (trees.lua MATERIALS)",
+          "none missing" if not nomat else f"{len(nomat)} missing (orange NO TEXTURE): " + ", ".join(nomat[:8]))
     shape = [ln for ln in text.splitlines() if ("Unable to load" in ln or "invalid detail" in ln.lower())
              and "/temp/beamngEarth/" in ln]
     check(res, not shape, "shape files load", "no load errors" if not shape else f"{len(shape)}: {shape[0][:140]}")

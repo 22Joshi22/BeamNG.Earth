@@ -70,22 +70,9 @@ def _yaw(dx, dy):
 
 def _clear(p, others, own):
     import fast
-    if isinstance(others, fast.Others):         # the Rust check (Python below without the module)
-        r = others.clear(p, own, CLEAR_OTHER_M)
-        if r is not None:
-            return r
-        others = others.others
-    for fid, half, line in others:
-        if fid == own:
-            continue
-        a, b = line[:-1, :2], line[1:, :2]
-        d = b - a
-        L2 = np.maximum((d * d).sum(1), 1e-12)
-        t = np.clip(((p[:2] - a) * d).sum(1) / L2, 0, 1)
-        q = a + t[:, None] * d
-        if np.hypot(*(q - p[:2]).T).min() < half + CLEAR_OTHER_M:
-            return False
-    return True
+    if not isinstance(others, fast.Others):
+        others = fast.Others(others)
+    return bool(others.clear(p, own, CLEAR_OTHER_M))
 
 
 WIRE_ARMS = (-0.8, 0.0, 0.8)    # m along the cross-arm (the pole's local x) of the three wires
@@ -246,11 +233,22 @@ def _seg_dist_min(p, line):
     return float(np.hypot(*(a + t[:, None] * d - p).T).min())
 
 
-def junction_props(roads, box, curb_h=0.15, left_hand=False):
+def signal_spot(c, u, right, wide, half, lines):
+    """Where an approach's signal or sign stands at junction point c (arm direction u away from it, right: the kerb
+    side): past the junction's widest arm (wide: its half width) and outside the approach's carriageway (half), moved
+    off every carriageway in lines [(half width, centreline (k, 2))], bridge decks included (a signal pole stood on a
+    ramp's deck where it comes down to Fallsway, Baltimore, and a car hit it, 2026-10-21); None when nowhere is clear.
+    junction_props' props and navgraph's switchable heads (which stand in for them) both stand here."""
+    c = np.asarray(c, np.float64)[:2]
+    near = [(h, ln) for h, ln in lines if len(ln) >= 2 and np.hypot(*(ln - c).T).min() < 80.0]
+    return _off_carriageways(c, u, right, wide + 2.5, half + 1.0, near)
+
+
+def junction_props(roads, box, curb_h=0.15, left_hand=False, decks=()):
     """Signals at urban junctions of two or more major roads (every arm), stop signs at urban junctions
     of minor roads (the minor arms meeting a major road; the stem of a T; half the four-way ones, hashed).
     Each on the approach's right (its left where traffic drives on the left), at the junction's edge, facing
-    the drivers who come in."""
+    the drivers who come in. decks: [(centreline (k, 3), half width)] of the bridge decks near (signal_spot)."""
     x0, y0, x1, y1 = box
     rows = []
     junctions = _arms(roads)
@@ -258,6 +256,7 @@ def junction_props(roads, box, curb_h=0.15, left_hand=False):
     import islands
     ring = islands.ring_fids(roads)
     lines = [(spec.width / 2, np.asarray(pts, np.float64)[:, :2]) for _, spec, pts, _ in roads if len(pts) >= 2]
+    lines += [(float(h), np.asarray(pts, np.float64)[:, :2]) for pts, h in decks if len(pts) >= 2]
     for k, arms in junctions.items():
         on_ring = sum(1 for a in arms if a[0] in ring) >= 2
         if len(arms) < 3 or (not on_ring and not all(a[1].urban for a in arms)):
@@ -265,7 +264,6 @@ def junction_props(roads, box, curb_h=0.15, left_hand=False):
         p = arms[0][3]
         if not (x0 <= p[0] < x1 and y0 <= p[1] < y1):
             continue
-        near = [(h, ln) for h, ln in lines if np.hypot(*(ln - p[:2]).T).min() < 80.0]
         put = junction_controls(arms, k, link_ok, ring)
         if not put:
             continue
@@ -274,7 +272,7 @@ def junction_props(roads, box, curb_h=0.15, left_hand=False):
             # the approach comes in along -u; its right is (-u_y, u_x)... rotated: right of travel (-u)
             inc = -u
             right = np.array([inc[1], -inc[0]]) * (-1 if left_hand else 1)     # the kerb side of the approach
-            q = _off_carriageways(c[:2], u, right, wide + 2.5, spec.width / 2 + 1.0, near)
+            q = signal_spot(c, u, right, wide, spec.width / 2, lines)
             if q is None or not (x0 - 20 <= q[0] < x1 + 20 and y0 - 20 <= q[1] < y1 + 20):
                 continue
             rows.append([what, round(float(q[0]), 2), round(float(q[1]), 2), round(float(c[2] + curb_h), 2),
@@ -493,7 +491,7 @@ def place(roads, walks, box, curb_h=0.15, wires=None, town=False, left_hand=Fals
             put(G_BENCH, BENCH_SPACING, _h01(fid, side, "bench") * BENCH_SPACING, w - 0.45, 0.9,
                 lambda out: _yaw(-out[0], -out[1]) + BENCH_YAW)
             put(G_BIN, BIN_SPACING, _h01(fid, side, "bin") * BIN_SPACING, 0.7, 1.1, lambda out: _yaw(-out[0], -out[1]))
-    rows.extend(junction_props(roads, box, curb_h, left_hand))
+    rows.extend(junction_props(roads, box, curb_h, left_hand, decks))
     if speeds:
         rows.extend(speed_signs(roads, speeds, box, left_hand, mph))
     for fid, spec, line, _ in roads:

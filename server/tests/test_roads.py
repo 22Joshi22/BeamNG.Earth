@@ -57,6 +57,21 @@ def flat(lat, lon):
     return np.full(np.shape(lat), 10.0)
 
 
+
+class WalkLevelTest(unittest.TestCase):
+    def test_sidewalk_stops_at_a_wall(self):
+        """A sidewalk along y = 6 at the road's level 10 m: where the ground under it climbs a wall (x 30..50) it stops."""
+        run = np.c_[np.arange(0.0, 81.0, 2.0), np.full(41, 6.0), np.full(41, 10.0)]
+
+        def elev(la, lo):
+            e = (np.asarray(lo) - LON) * M_LON
+            return 10.0 + 0.3 * np.sin(e / 7.0) + np.where((e > 30) & (e < 50), 4.0, 0.0)
+        pieces = roads._on_level(FRAME, elev, run)
+        self.assertEqual(len(pieces), 2)
+        self.assertLess(pieces[0][-1, 0], 31.0)
+        self.assertGreater(pieces[1][0, 0], 49.0)
+        self.assertEqual(len(roads._on_level(FRAME, lambda la, lo: np.full(np.shape(la), 10.4), run)), 1)
+
 class RulesTest(unittest.TestCase):
     def test_surface_kind(self):
         self.assertEqual(roads.surface_kind("residential", None), "paved")
@@ -112,6 +127,17 @@ class DualCarriagewayTest(unittest.TestCase):
         ex = roads.extras(sp[0], np.array([[0, 0, 0], [300, 0, 0.0]]), LON)
         self.assertFalse(any(abs(abs(float(pts[0][1])) - roads.CENTRE["gap"]) < 1e-6 for _, _, pts in ex),
                          "no double centre line (a lane line instead)")
+
+    def test_carriageways_never_overlap(self):
+        """Two one-way trunk carriageways 9.6 m apart (Munich's McGraw-Graben): each narrower than the gap, not the
+        class's 11 m; far apart they keep the class's width."""
+        near = self.feats([[(0, 0), (300, 0)], [(300, 9.6), (0, 9.6)]], ["Graben", "Graben"], ["trunk", "trunk"])
+        far = self.feats([[(0, 0), (300, 0)], [(300, 30), (0, 30)]], ["Graben", "Graben"], ["trunk", "trunk"])
+        sp = roads.road_specs(near)
+        for s_ in sp:
+            self.assertAlmostEqual(s_.width, 9.6 - roads.DUAL_MIN_MEDIAN_M, delta=0.15)
+        w = roads.carriageway("trunk", "paved", False, None, True)
+        self.assertTrue(all(abs(s_.width - w) < 1e-9 for s_ in roads.road_specs(far)))
 
     def test_other_names_and_crossing_roads_untouched(self):
         f = self.feats([[(0, 0), (300, 0)], [(300, 20), (0, 20)], [(150, -100), (150, 100)]],
@@ -205,6 +231,10 @@ class BuildTileTest(unittest.TestCase):
                          "edge lines between the lanes and the shoulders")
         self.assertEqual(lanes("motorway", True)[0], 3, "urban motorway carriageway")
         self.assertEqual(lanes("trunk", False)[0], 2, "rural divided trunk")
+        # a ramp (one lane, LINK_M): its edge lines a lane apart, not inside the motorway's shoulders (GitHub #107)
+        ramp = roads.Spec(roads.LINK_M[1], "paved", False, "motorway", True, 2.5, 1)
+        edges = [line[0][1] for look, w, line in roads.extras(ramp, pts, -100.0) if look is roads.EDGE_LINE]
+        self.assertAlmostEqual(abs(edges[0] - edges[1]), roads.LINK_LANE_M, places=2)
 
     def test_divided_trunk_sidewalk_outer_side_only_when_slow(self):
         pts = np.array([(0.0, 0.0, 0.0), (100.0, 0.0, 0.0)])
@@ -602,6 +632,28 @@ class TrackerTest(unittest.TestCase):
         self.assertEqual(built.count((0, 0)), 2)
         self.assertIn((1, "0_0"), {(m["anchorId"], m["key"]) for m in conn.sent if m["type"] == "roads_tile"})
 
+    def test_a_tile_failing_again_and_again_is_logged(self):
+        # (GitHub #91) network errors are expected and retried quietly, but a tile that never comes left no trace
+        conn = FakeConn()
+        tr = roads.Tracker()
+
+        def build(aid, tx, ty):
+            if (tx, ty) == (0, 0):
+                raise OSError("Access is denied")
+            return None
+
+        async def go():
+            loop = asyncio.get_running_loop()
+            for _ in range(10):
+                tr.on_pose(conn, 1, 0.0, 0.0, loop, build)
+                await asyncio.sleep(0.01)
+        with self.assertLogs("earthd.roads", "WARNING") as cm:
+            for _ in range(roads.TILE_FAILS_WARN):
+                tr.retry.clear()
+                asyncio.run(go())
+        self.assertEqual(len(cm.output), 1)
+        self.assertIn("Access is denied", cm.output[0])
+
     def test_far_buildings_skip_the_road_tiles(self):
         import vegetation
         import buildings
@@ -809,6 +861,18 @@ class MedianTest(unittest.TestCase):
 
 
 class WallRunsTest(unittest.TestCase):
+    def test_no_wall_under_a_bridge_deck(self):
+        # the Bruce Highway (the user's report, 2026-10-21): beside a motorway under an overpass the ground is the
+        # abutment's fill; the wall rose to it, through the deck
+        xy = np.c_[np.zeros(21), np.arange(-20.0, 21.0, 2.0)]          # a wall line along a road at z 8
+        z = np.full(len(xy), 8.0)
+        deck = {"deck": True, "w": 10.0, "n": [[-50.0, 0.0, 16.0], [50.0, 0.0, 16.0]]}   # 8 m over it, 10 m wide
+        under = roads._under_decks(xy, z, [deck])
+        self.assertTrue(under[np.abs(xy[:, 1]) <= 5 + roads.WALL_DECK_MARGIN_M].all())
+        self.assertFalse(under[np.abs(xy[:, 1]) > 5 + roads.WALL_DECK_MARGIN_M + 0.5].any())
+        low = dict(deck, n=[[-50.0, 0.0, 9.0], [50.0, 0.0, 9.0]])      # a deck at the road's own level: its approach
+        self.assertFalse(roads._under_decks(xy, z, [low]).any())
+
     def test_one_wall_over_a_wavering_cut(self):
         cut = np.array([0, 0.5, 2.5, 1.9, 2.2, 1.5, 0.9, 1.0, 2.4, 2.6, 1.3, 0.2, 0, 2.1, 0, 0, 0])
         w = roads._wall_runs(cut)

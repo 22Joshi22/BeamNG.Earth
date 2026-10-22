@@ -154,5 +154,42 @@ class OverpassIntegrationTest(unittest.TestCase):
         self.assertLess(np.abs(z - FLAT).max(), 0.05, "the motorway's approaches stay on the ground")
 
 
+class TwinKeepTest(unittest.TestCase):
+    def test_twins_kept_ground_only_where_both_run(self):
+        # GitHub #84: one twin's portal 3 m deeper than the other's; the other's kept ground reached over its approach
+        from roads import Spec
+        sp = Spec(11.0, "paved", False, "trunk", True, 0.0, 0, None, None, False)
+        xs = np.arange(0.0, 100.1, 1.0)            # (sections come resampled every few metres)
+        a = ("a", sp, np.c_[xs, np.zeros_like(xs)], np.full(len(xs), 5.0), 2)
+        b = ("b", sp, np.c_[103.0 - xs, np.full(len(xs), 9.5)], np.full(len(xs), 5.0), 2)
+        out = grading._twin_trimmed([a, b])
+        xa = np.asarray(out[0][2])
+        self.assertGreaterEqual(float(xa[:, 0].min()), 3.0 - 1e-6, "a's keep starts at b's (deeper) portal")
+        self.assertLessEqual(float(xa[:, 0].max()), 100.0 + 1e-6)
+        xb = np.asarray(out[1][2])
+        self.assertLessEqual(float(xb[:, 0].max()), 100.0 + 1e-6, "b's ends where a's does")
+        self.assertEqual(grading._twin_trimmed([a]), [a])
+
+
+class UnderwaterTunnelTest(unittest.TestCase):
+    def test_no_plan_along_a_tunnel_under_water(self):
+        # storm-ace's GitHub #85: the Maastunnel's sections were planned (at -0.4..-1.2 m over the river, whose DEM reads
+        # about its surface) and the plan raised the carved bed (-6 m) into a dam across the river; roads.TunnelProfiles
+        # leaves such tunnels out, now so does the grading (Rotterdam probe: no plan, the ground as it is)
+        f = features([[(-300, 0), (300, 0)]], ["trunk"], flags=[(0, "is_tunnel", 0.0, 1.0)], ids=["maas"])
+
+        def dem(la, lo):                    # the DEM: banks at 3 m, the river's surface at 0.5 m
+            e, _, _ = FRAME.geodetic_to_enu(la, lo, 0.0)
+            return np.where(np.abs(np.asarray(e)) < 200, 0.5, 3.0)
+        la, lo, _ = FRAME.enu_to_geodetic(np.linspace(-280.0, 280.0, 57), np.zeros(57), 0.0)
+        raw = dem(la, lo)
+        g = grading.Grader(FRAME, FakeMD(f), dem)
+        dry = g.apply(la, lo, raw)
+        self.assertGreater(float(np.abs(dry - raw).max()), 0.3, "on land the tunnel's sections are planned")
+        g2 = grading.Grader(FRAME, FakeMD(f), dem)
+        g2.wet = lambda la, lo: np.where(np.asarray(dem(la, lo)) < 1.0, 6.0, 0.0)
+        self.assertTrue(np.allclose(g2.apply(la, lo, raw), raw), "under water: none")
+
+
 if __name__ == "__main__":
     unittest.main()

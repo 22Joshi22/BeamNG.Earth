@@ -102,21 +102,6 @@ class FollowTest(unittest.TestCase):
             return 10.0 + 0.8 * np.sin(e / 3.1) * np.cos(n / 2.3) + 0.05 * e
         return elev
 
-    def test_kernel_and_python_agree(self):
-        import fast
-        if not (fast.AVAILABLE and hasattr(fast._ef, "follow_tris")):
-            self.skipTest("no kernel")
-        rng = np.random.default_rng(5)
-        P = rng.uniform(-9, 9, (60, 2))
-        T = np.array([rng.choice(60, 3, replace=False) for _ in range(40)], np.int64)
-        UV = rng.uniform(0, 1, (60, 2))
-        gx, gy = np.meshgrid(np.arange(-7, 8) * 2.0, np.arange(-7, 8) * 2.0)
-        grid = np.round((np.sin(gx / 3) * np.cos(gy / 2) + 0.03 * gx) * 32) / 32
-        a = fast._ef.follow_tris(P, UV, T, 2.0, grid, -7, -7, 0.005)
-        b = roadmesh._follow_py(P, UV, T, 2.0, grid, -7, -7, 0.005)
-        for x, y in zip(a, b):
-            self.assertTrue(np.allclose(np.asarray(x), y, equal_nan=True))
-
     def test_with_filled_polygons(self):
         """A tile with corner asphalt (a filled polygon) follows the ground too: the polygon's points once took the
         name of the height quantum and every such road tile failed (a Steam Deck in Baltimore, 2026-10-20)."""
@@ -207,6 +192,18 @@ class BridgeLookTest(unittest.TestCase):
         ys = np.unique(np.round(self.parapet_tops(P)[:, 1], 2))
         self.assertTrue(((ys > 3.0) & (ys < 5.0)).any(), "over a lower deck the edge is free")
 
+    def test_no_parapet_across_a_road_at_grade(self):
+        """GitHub #96: a ramp's deck at grade over a road stood its parapets across the road's lanes; over a road well
+        under it the parapets stay."""
+        road = lambda z: {"m": "road_asphalt_2lane", "w": 10.0, "tl": 11.0, "p": 10,
+                          "n": [[25.0, -30.0, z], [25.0, 30.0, z]]}
+        def tops_over_road(z_road):
+            P = roadmesh.deck([self.deck(0.0, "a"), road(z_road)], (0.0, 0.0, 0.0))[0]
+            t = self.parapet_tops(P)
+            return ((t[:, 0] > 21.0) & (t[:, 0] < 29.0)).sum()
+        self.assertEqual(tops_over_road(19.5), 0, "at grade: no wall across the road")
+        self.assertGreater(tops_over_road(12.0), 0, "a road 8 m below: the parapets stay")
+
     def test_tunnel_floor_is_a_slab(self):
         d = self.deck(0.0, "a")
         d["tunnel"] = True
@@ -258,6 +255,20 @@ class DeckRulesTest(unittest.TestCase):
         mid = slice(40, 110)
         self.assertTrue((zs[1][mid] - zs[0][mid] >= roads.DECK_ROAD_CLEAR - 0.6).all(),
                         float((zs[1][mid] - zs[0][mid]).min()))
+
+    def test_ramp_of_a_higher_level_starts_at_the_fork(self):
+        # I-83, Baltimore (2026-10-21): a ramp (level 2) leaving the mainline (level 1) overlaps it from the fork on; it
+        # was lifted to clear it there and started 2.2 m over the fork, a ledge across the lanes
+        import roads
+        flat = lambda q: np.full(len(q), 2.0)      # noqa: E731
+        main_in = np.c_[np.zeros(51), np.arange(-200.0, 0.1, 4.0)]
+        main_on = np.c_[np.zeros(51), np.arange(0.0, 200.1, 4.0)]
+        t = np.arange(0.0, 200.1, 4.0)
+        ramp = np.c_[0.0004 * t ** 2, t]            # diverging slowly: 4 m apart after 100 m
+        zs = roads.deck_profile([main_in, main_on, ramp], flat, [(0, 100.0, 2.0)], levels=[1.0, 1.0, 2.0],
+                                widths=[11.0, 11.0, 6.0])
+        self.assertLess(abs(zs[2][0] - zs[0][-1]), 0.3, (zs[0][-1], zs[1][0], zs[2][0]))
+        self.assertLess(abs(zs[1][0] - zs[0][-1]), 0.3)
 
     def test_no_step_onto_a_steep_abutment(self):
         # Lombard Street, Baltimore (2026-10-20): the map's bridge line ends down its east embankment, whose top stands

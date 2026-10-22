@@ -247,6 +247,8 @@ class Checks:
     def __init__(self, on_event):
         self.on_event = on_event
         self.prev = None
+        self.damage = 0.0       # the damage last read (a lone 0 among damaged readings is a missed one: GitHub #38 runs)
+        self.zeros = 0
         self.still_since = None
         self.off = False
         self.events = []
@@ -256,8 +258,12 @@ class Checks:
         rem = g.get("remaining")
         ahead = rem is None or rem > ARRIVED_M
         ev = None
-        if self.prev is not None and (r.get("damage") or 0) - (self.prev.get("damage") or 0) > CRASH_DAMAGE:
-            ev = {"kind": "crash", "damage": round(r["damage"]), "mph_before": round(self.prev["v"] * 2.23694, 1)}
+        dmg = r.get("damage") or 0
+        self.zeros = self.zeros + 1 if dmg == 0 else 0
+        if self.prev is not None and dmg - self.damage > CRASH_DAMAGE:
+            ev = {"kind": "crash", "damage": round(dmg), "mph_before": round(self.prev["v"] * 2.23694, 1)}
+        if dmg > 0 or self.zeros >= 2:      # (two zeros in a row: the car was reset)
+            self.damage = dmg
         if r["v"] < STALL_MS and ahead and not g.get("planning"):
             self.still_since = self.still_since if self.still_since is not None else r["t"]
             if ev is None and r["t"] - self.still_since >= STOP_S:
@@ -379,13 +385,15 @@ if not best then return 'snap: no node' end
 local n = m.nodes[best]
 local rot = quatFromDir(bdir, vec3(0, 0, 1))
 local z = be:getSurfaceHeightBelow(n.pos + vec3(0, 0, 3))
-veh:setPositionRotation(n.pos.x, n.pos.y, ((z and z > -1e6) and z or n.pos.z) + 0.5, rot.x, rot.y, rot.z, rot.w)
+spawn.safeTeleport(veh, vec3(n.pos.x, n.pos.y, ((z and z > -1e6) and z or n.pos.z) + 0.5), rot)
 return string.format('snap: node %%s %%.1f m away', tostring(best), math.sqrt(bd))
 """
 
-# On the GPS route: the car set at the route's node nearest it (not the last two), facing the next one; for a start
-# whose nearest fast road is not the route's (the other carriageway of a motorway: the AI cut across the median to its
-# route, deck_fast10 2026-10-20).
+# On the GPS route: the car set at the route's node nearest it (not the last two), facing the next one (a start on the
+# other carriageway of a motorway: the AI cut across the median to its route, deck_fast10 2026-10-20). Both snaps place
+# the car with spawn.safeTeleport: setPositionRotation reads the rotation in the vehicle's own frame (it faces -y) and
+# every run started facing back along the route and turned round first (the user, 2026-10-21: "you seem to always
+# start the car pointed in the opposite direction of the route you set").
 ROUTE_SNAP_LUA = r"""
 local gm = rawget(_G, 'core_groundMarkers')
 local veh = getPlayerVehicle(0)
@@ -406,10 +414,9 @@ local A, B = m.nodes[ids[best]].pos, m.nodes[ids[best + 1]].pos
 local dir = vec3(B.x - A.x, B.y - A.y, 0):normalized()
 local rot = quatFromDir(dir, vec3(0, 0, 1))
 local z = be:getSurfaceHeightBelow(A + vec3(0, 0, 3))
-veh:setPositionRotation(A.x, A.y, ((z and z > -1e6) and z or A.z) + 0.5, rot.x, rot.y, rot.z, rot.w)
-return string.format('route snap: node %%d of %%d, %%.1f m away', best, #ids, math.sqrt(bd))
+spawn.safeTeleport(veh, vec3(A.x, A.y, ((z and z > -1e6) and z or A.z) + 0.5), rot)
+return string.format('route snap: node %d of %d, %.1f m away', best, #ids, math.sqrt(bd))
 """
-ROUTE_SNAP_OFF_M = 15.0     # the start this far off the GPS route: set on it (ROUTE_SNAP_LUA)
 
 
 def main():
@@ -474,17 +481,16 @@ def main():
         except (Exception, SystemExit, ValueError):
             return 0.0
     lua("beamngEarth_settings.uiMapGps(%r, %r, 'autodrive_perf') return 'ok'" % a.to)
-    if a.start:                     # off the route (another carriageway): on it, then the autodrive from there
-        for _ in range(15):
-            time.sleep(2)
-            try:
+    if a.start:                     # on the planned route facing along it, then the autodrive from there: the snap
+        for _ in range(15):         # above aims at the goal in a straight line, and on I-10 the car started facing
+            time.sleep(2)           # back along the route and turned round first (the user, 2026-10-21: "you seem to
+            try:                    # always start the car pointed in the opposite direction of the route")
                 g = lua_json("return jsonEncode(require('beamngEarth/gps').status())")
             except (Exception, SystemExit):
                 g = None
             if g and g.get("off") is not None and not g.get("planning"):
-                if g["off"] > ROUTE_SNAP_OFF_M:
-                    print(lua(ROUTE_SNAP_LUA), flush=True)
-                    time.sleep(3)
+                print(lua(ROUTE_SNAP_LUA), flush=True)
+                time.sleep(3)
                 break
     lua("return tostring(beamngEarth_settings.uiGpsAutodrive(true).autodrive)")
     obs = obs_start() if a.obs else None

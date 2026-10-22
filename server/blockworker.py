@@ -72,6 +72,8 @@ class _State:
                 self.graders[aid] = (gradingmod.Grader(
                     frame, self.md, lambda la, lo: self.dem.sample(la, lo, gradingmod.PROFILE_ZOOM), self.widths)
                     if self.grading else None)
+                if self.graders[aid] is not None:
+                    self.graders[aid].wet = self.sea.depth if getattr(self, "sea", None) is not None else None
                 for old in sorted(self.chunks)[:-ANCHORS_KEPT]:
                     del self.chunks[old], self.graders[old]
             return self.graders[aid], self.chunks[aid]
@@ -354,6 +356,7 @@ def roads_tile(aid, lat, lon, zoom, tx, ty, out_dir, vfs_dir, sidewalks, lift, b
     if items is not None:               # front doors and shopfronts, driveways into the road mesh
         drives = []
         props.extend(buildingsmod.doors(items, lines, x0, y0, drives))
+        props.extend(buildingsmod.toll_booth_rows(items, x0, y0))
         drives.extend(buildingsmod.garage_drives(items, lines, x0, y0))
         chunks += drives
         park = parkingmod.clear_of(park, props, drives)

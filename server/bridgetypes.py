@@ -317,9 +317,14 @@ def chain_structures(frame, parts, wet_fn=None, infra=()):
         tags, rings = g["tags"], g["rings"]
         code = OSM_TYPES.get(str(tags.get("bridge:structure")), 0)
         wdr = wd_record(g["wd"]) if g["wd"] is not None else None
+        wd_agrees = True
         if wdr is not None:
             wd_used.add(g["wd"])
-            if not (wdr["type"] == ARCH_ANY and code in (NBI_DECK_ARCH, NBI_THROUGH_ARCH)):
+            # Wikidata corrects the map within a kind of structure (suspension / stayed: the Rainbow Bridge) or where
+            # the map gives none; between kinds the map is kept (Wikidata's Port Mann Bridge still had the 1964 tied
+            # arch's type and span over the 2012 cable-stayed bridge: an arch drawn over its lanes, GitHub #65)
+            wd_agrees = code in (0, PLAIN) or _family(code) == _family(wdr["type"])
+            if wd_agrees and not (wdr["type"] == ARCH_ANY and code in (NBI_DECK_ARCH, NBI_THROUGH_ARCH)):
                 code = wdr["type"]          # (an arch the map places over or under its deck keeps that)
         if code in (0, PLAIN):
             continue                        # a plain kind: nothing drawn there
@@ -331,7 +336,7 @@ def chain_structures(frame, parts, wet_fn=None, infra=()):
                 {"span": 0.0, "length": 0.0, "width": 0.0, "src": "osm"})
         if found:
             used.add(found[0][1])
-        elif wdr is not None and wdr["span"] > 0:
+        elif wdr is not None and wdr["span"] > 0 and wd_agrees:
             info.update(span=wdr["span"], length=wdr["length"], src="osm+wd")
         info.update(type=code, paint=paint(tags.get("colour")) or (wdr or {}).get("wd_paint") or "grey", outline=rings)
         out.append(info)
@@ -386,6 +391,16 @@ def chain_structures(frame, parts, wet_fn=None, infra=()):
         return [{"type": NBI_THROUGH_TRUSS, "span": float(min(longest, 250.0)), "length": 0.0, "width": 0.0,
                  "src": "size", "paint": chain_paint}]
     return []
+
+
+FAMILIES = {NBI_SUSPENSION: "cable", NBI_STAYED: "cable", NBI_DECK_ARCH: "arch", NBI_THROUGH_ARCH: "arch",
+            ARCH_ANY: "arch", NBI_DECK_TRUSS: "truss", NBI_THROUGH_TRUSS: "truss", NBI_BASCULE: "movable",
+            NBI_LIFT: "movable", NBI_SWING: "movable"}
+
+
+def _family(code):
+    """The kind of structure of a type code (chain_structures: where Wikidata may correct the map)."""
+    return FAMILIES.get(code, "plain")
 
 
 def _osm_outlines(frame, parts, feats_list):
@@ -892,5 +907,45 @@ def _structure_members(parts, info, ground_fn, wet_fn, road_lines):
     if ms is None:
         return [], []
     if info["type"] in ARCH_TYPES:
-        return arch_members(P, arcs, tans, ms, info, ground_fn), []
-    return suspension_members(P, arcs, tans, ms, info, ground_fn, stayed=info["type"] == NBI_STAYED), []
+        return _clear_of_decks(arch_members(P, arcs, tans, ms, info, ground_fn), P), []
+    return _clear_of_decks(suspension_members(P, arcs, tans, ms, info, ground_fn, stayed=info["type"] == NBI_STAYED),
+                           P), []
+
+
+HEADROOM_M = 5.0        # _clear_of_decks: a member this little over a carriageway is in the traffic's way
+HEADROOM_STEP_M = 2.0
+
+
+def _clear_of_decks(beams, P):
+    """The members [(p, q, w, h, ...)] that keep HEADROOM_M over every deck of P (xy, z, width) they pass over: a stay
+    whose fan reached over the other carriageway where the two part on a curve came down to car height across its
+    lanes (an autodrive hit one at 49 mph on the Port Mann Bridge's south approach, GitHub #65). Members beside the
+    decks or under them stay. Pure."""
+    if not beams or not P:
+        return beams
+    segs = [(xy[:-1], xy[1:], z[:-1], z[1:], w / 2.0) for xy, z, w in P if len(xy) >= 2]
+    A = np.concatenate([a for a, _, _, _, _ in segs])
+    B = np.concatenate([b for _, b, _, _, _ in segs])
+    ZA = np.concatenate([za for _, _, za, _, _ in segs])
+    ZB = np.concatenate([zb for _, _, _, zb, _ in segs])
+    HW = np.concatenate([np.full(len(a), h) for a, _, _, _, h in segs])
+    AB = B - A
+    L2 = np.maximum((AB * AB).sum(1), 1e-12)
+    out = []
+    for b in beams:
+        p, q = np.asarray(b[0], np.float64), np.asarray(b[1], np.float64)
+        n = max(int(np.hypot(*(q[:2] - p[:2])) / HEADROOM_STEP_M), 1) + 1
+        pts = p[None] + (q - p)[None] * np.linspace(0.0, 1.0, n)[:, None]
+        lo_b, hi_b = pts[:, :2].min(0) - 30.0, pts[:, :2].max(0) + 30.0
+        near = ~((np.maximum(A, B) < lo_b).any(1) | (np.minimum(A, B) > hi_b).any(1))
+        if not near.any():
+            out.append(b)
+            continue
+        a, ab, l2 = A[near], AB[near], L2[near]
+        t = np.clip(((pts[:, None, :2] - a[None]) * ab[None]).sum(2) / l2[None], 0.0, 1.0)
+        d = np.hypot(*(pts[:, None, :2] - (a[None] + t[..., None] * ab[None])).transpose(2, 0, 1))
+        dz = pts[:, 2:3] - (ZA[near][None] + (ZB[near] - ZA[near])[None] * t)
+        over = (d < HW[near][None] - 0.3) & (dz > -0.5) & (dz < HEADROOM_M)
+        if not over.any():
+            out.append(b)
+    return out

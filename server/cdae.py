@@ -355,39 +355,9 @@ def face_normal_sum(positions, tris):
 def tangents(V, UV, N, I):
     """Per-vertex tangents (xyz, w) by Lengyel's method, as the engine computes them (matches
     engine output to 1e-7 for regular UVs). V, UV, N, I in the stored (engine) convention."""
-    if fast._ef is not None and hasattr(fast._ef, "tangents"):     # the Rust loop: the same numbers (parity test)
-        f64 = lambda a: np.ascontiguousarray(a, np.float64)        # noqa: E731
-        return fast._ef.tangents(f64(V), f64(UV), f64(N), np.ascontiguousarray(I, np.int64))
-    i0, i1, i2 = I[:, 0], I[:, 1], I[:, 2]
-    e1, e2 = V[i1] - V[i0], V[i2] - V[i0]
-    d1, d2 = UV[i1] - UV[i0], UV[i2] - UV[i0]
-    den = d1[:, 0] * d2[:, 1] - d2[:, 0] * d1[:, 1]
-    r = np.zeros_like(den)
-    np.divide(1.0, den, out=r, where=np.abs(den) > 0)
-    sdir = (e1 * d2[:, 1:2] - e2 * d1[:, 1:2]) * r[:, None]
-    tdir = (e2 * d1[:, 0:1] - e1 * d2[:, 0:1]) * r[:, None]
-    # every corner's contribution summed per vertex: one bincount over the three corner columns in the order
-    # np.add.at took them (corner 0 of every triangle, then 1, then 2), so the same sums; add.at was ~10x slower
-    idx = np.concatenate([I[:, 0], I[:, 1], I[:, 2]])
-    n = len(V)
-    t1 = np.stack([np.bincount(idx, np.tile(sdir[:, c], 3), n) for c in range(3)], 1)
-    t2 = np.stack([np.bincount(idx, np.tile(tdir[:, c], 3), n) for c in range(3)], 1)
-    t = t1 - N * np.einsum("ij,ij->i", N, t1)[:, None]
-    tl = np.linalg.norm(t, axis=1)
-    # No UV gradient (e.g. skirt vertices, whose quads have a constant uv): any unit vector
-    # perpendicular to the normal (the engine writes some unit tangent there as well).
-    for axis in (0, 1):
-        bad = tl < 1e-12
-        if not bad.any():
-            break
-        e = np.zeros(3)
-        e[axis] = 1.0
-        t[bad] = e - N[bad] * N[bad, axis:axis + 1]
-        tl[bad] = np.linalg.norm(t[bad], axis=1)
-    t /= np.where(tl > 0, tl, 1.0)[:, None]
-    w = np.where(np.einsum("ij,ij->i", np.cross(N, t), t2) < 0, -1.0, 1.0)
-    return np.concatenate([t, w[:, None]], axis=1)
-
+    fast.require(1, "tangents")
+    f64 = lambda a: np.ascontiguousarray(a, np.float64)        # noqa: E731
+    return fast._ef.tangents(f64(V), f64(UV), f64(N), np.ascontiguousarray(I, np.int64))
 
 def _vec(data, count, elem):
     return (count, elem, data)

@@ -33,7 +33,7 @@ import staging
 
 log = logging.getLogger("earthd.seacarve")
 
-VERSION = 16
+VERSION = 19
 SEA_E = 0.0                 # m: the sea surface (the DEMs' heights are above mean sea level)
 DEPTH_SLOPE = 0.15          # floor depth per metre from the shoreline (1 : 6.7)
 DEPTH_CAP = 6.0             # m: the floor's depth away from the shore without bathymetry (Chesapeake mean
@@ -55,6 +55,7 @@ SEA_WATER_TAGS = ('"water":"harbour"', '"water":"bay"', '"water":"lagoon"', '"wa
                   '"water":"fjord"', '"water":"cove"', '"tidal":"yes"')   # OSM water areas at sea level: the sea
                   # (Sydney Harbour, natural=water + water=harbour, not coastline: a lake 2-6 m up on the DEM, the
                   # Harbour Bridge's deck 35 m over "ground"; 2026-10-18)
+TAG_SEA_MAX_M = 15.0        # m: a water area tagged as the sea's (SEA_WATER_TAGS) is the sea only this near sea level
 SEA_LO, SEA_HI = -0.5, 0.3  # m: DEM heights in this band are the sea where no polygons are at hand (far
                             # tiles, the large water tiles): the DEMs' sea surfaces are flat at ~0
 SINK_M = 6.0                # m: such ground sunk below the surface (no flicker through the water tiles), as
@@ -92,6 +93,12 @@ LAKE_DEPTH_CAP = 4.0        # m: lakes and ponds (no bathymetry); the slope is D
 LAKE_MIN_PX = 100           # a lake smaller than this in the 3 x 3 cells' raster (~350 m^2) is left out
 LAKE_FLAT_M = 1.5           # a "lake" whose DEM inside spans more (p10..p90) is not flat (a river): out
 LAKE_DEM_ZOOM = 15          # its level: the median DEM inside, at this zoom (US DEMs flatten lakes)
+JOIN_SEA_PX = 8             # a lake at sea level (SEA_LO..SEA_HI) this close to the sea's pixels joins it
+LAKE_NOT_SEA_M = 0.02       # ... else its level is kept this far off SEA_E (sea_at tells the sea by its level)
+SHORE_RING_PX = (2, 6)      # ... at most the ground this far outside its shore (~4-11 m; its SHORE_PCT percentile)
+SHORE_PCT = 25              #     less SHORE_DROP_M: a DEM that does not see a canal (a town's, 10-20 m wide) puts its
+SHORE_DROP_M = 0.3          #     water at street level, and its tiles flooded the streets (Petten, Maarssen: GitHub
+                            #     #8 / #53); a dam's low side is a small part of a reservoir's ring
 LEVEL_Q = 0.1               # m: lake levels quantised (the same in every cell for a flattened lake)
 LEVEL_SAMPLES = 4000
 LEVEL_PAD_PX = 2            # the level raster spread this far onto the shore (lookups beside the water)
@@ -168,6 +175,17 @@ def shore_steps(water, kmax):
         cur = nxt
     out[cur] = kmax
     return out
+
+
+def _touches(m, other, k):
+    """Are pixels of `other` within k pixels (shore_steps) of the mask m (its box only)?"""
+    jm, im = np.nonzero(m)
+    if len(jm) == 0:
+        return False
+    j0, j1 = max(0, int(jm.min()) - k - 1), min(m.shape[0], int(jm.max()) + k + 2)
+    i0, i1 = max(0, int(im.min()) - k - 1), min(m.shape[1], int(im.max()) + k + 2)
+    near = shore_steps(~m[j0:j1, i0:i1], k + 1) <= k
+    return bool((near & other[j0:j1, i0:i1]).any())
 
 
 def _box_mean(v, w, r):
@@ -344,6 +362,13 @@ class SeaCarver:
                 if f is None:
                     continue
                 for i in self._sea_rows(f):
+                    if self.dem is not None and str(f.attrs["subtype"][i]) not in SEA_SUBTYPES:
+                        m = np.zeros((n, n), bool)
+                        self._rasterise(f, i, m, ox, oy)
+                        if not self._near_sea_level(m, ox, oy):
+                            continue    # a lake's harbour or bay (the lake rows take it)
+                        sea |= m
+                        continue
                     self._rasterise(f, i, sea, ox, oy)
                 if self.dem is not None:
                     for i in self._river_rows(f):
@@ -368,12 +393,14 @@ class SeaCarver:
             if through is not None and (m & through).any():
                 river |= m              # a river runs through it (a pool behind a dam, water=river): it
                 continue                # flows, as the river (River objects), not a still lake tile
-            lv = self._lake_level(m, ox, oy, px)
+            lv = self._lake_level(m, ox, oy, px, wet=sea | river | (lake >= 0))
             if lv is None:
                 continue
-            if lv <= SEA_HI:            # a lagoon, a tidal pond: part of the sea
-                sea |= m
+            if SEA_LO <= lv <= SEA_HI and _touches(m, sea, JOIN_SEA_PX):
+                sea |= m                # a lagoon, a tidal pond: part of the sea
                 continue
+            if abs(lv - SEA_E) < 0.01:  # a lake at sea level away from the sea (the Netherlands'): not the sea's
+                lv = SEA_E + LAKE_NOT_SEA_M     # tiles (sea_at), which flooded every town round it (GitHub #8)
             m &= ~self._lake_dry(m, lv, ox, oy)
             kmax = int(math.ceil(LAKE_DEPTH_CAP / DEPTH_SLOPE / px)) + 2
             st = shore_steps(m, kmax).astype(np.float32)
@@ -382,7 +409,8 @@ class SeaCarver:
         if river.any():
             rl = self._river_levels(river, ox, oy)
             if rl is not None:
-                tidal = river & (rl <= SEA_HI)
+                # (a river at sea level with no sea near: an inland one, the Vecht at Maarssen 50 km from the coast)
+                tidal = river & (rl >= SEA_LO) & (rl <= SEA_HI) & sea.any()
                 sea |= tidal            # a tidal river: the sea
                 outline &= ~tidal
                 river &= ~tidal & np.isfinite(rl)
@@ -666,6 +694,25 @@ class SeaCarver:
             ok |= np.array([any(t in str(v).replace(" ", "") for t in SEA_WATER_TAGS) for v in tags], bool)
         return np.flatnonzero(ok & (f.kind == 3))
 
+    def _near_sea_level(self, m, ox, oy):
+        """Is the DEM inside the pixels m (a water area tagged as the sea's: SEA_WATER_TAGS) near sea level (median at
+        most TAG_SEA_MAX_M)? Lake Michigan's harbours, tagged harbour at 176 m, were carved as the sea down to 0 m:
+        holes 180 m deep along Chicago's lakeshore (GitHub #45); Sydney Harbour's DEM reads 2-6 m. Yes without a DEM."""
+        jj, ii = np.nonzero(m)
+        if len(jj) == 0:
+            return True
+        if len(jj) > LEVEL_SAMPLES:
+            sel = np.linspace(0, len(jj) - 1, LEVEL_SAMPLES).astype(np.int64)
+            jj, ii = jj[sel], ii[sel]
+        lat, lon = _lonlat(ox + ii + 0.5, oy + jj + 0.5)
+        try:
+            e = np.asarray(self.dem.sample(lat, lon, LAKE_DEM_ZOOM), np.float64)
+        except Exception as ex:         # no DEM there yet: as tagged
+            log.debug("tagged sea level: %s", ex)
+            return True
+        e = e[np.isfinite(e)]
+        return not len(e) or float(np.median(e)) <= TAG_SEA_MAX_M
+
     @staticmethod
     def _lake_rows(f):
         sub = f.attrs["subtype"]
@@ -676,10 +723,10 @@ class SeaCarver:
         ok = np.isin(sub, LAKE_SUBTYPES) & ~np.isin(cls, LAKE_SKIP_CLASSES) & (f.kind == 3) & ~fountain
         return np.flatnonzero(ok & ~np.asarray(inter, bool))
 
-    def _lake_level(self, m, ox, oy, px):
+    def _lake_level(self, m, ox, oy, px, wet=None):
         """The water level of a lake (its pixels m): the median DEM height inside, away from the banks,
-        quantised to LEVEL_Q (SEA_E at sea level: it joins the sea); None if it is too small or not flat
-        (a river, bad data)."""
+        quantised to LEVEL_Q, no higher than the ground round its shore
+        (_shore_ground, away from the other water wet); None if it is too small or not flat (a river, bad data)."""
         cnt = int(m.sum())
         if cnt < LAKE_MIN_PX:
             return None
@@ -697,7 +744,40 @@ class SeaCarver:
         p10, p50, p90 = np.percentile(e, [10, 50, 90])
         if p90 - p10 > LAKE_FLAT_M:
             return None
-        return SEA_E if p50 <= SEA_HI else float(round(p50 / LEVEL_Q) * LEVEL_Q)
+        lv = p50
+        shore = self._shore_ground(m, ox, oy, wet)
+        if shore is not None:
+            lv = min(lv, shore - SHORE_DROP_M)
+        return float(round(lv / LEVEL_Q) * LEVEL_Q)     # (one at sea level and touching it joins the sea: raster)
+
+    def _shore_ground(self, m, ox, oy, wet=None):
+        """The SHORE_PCT percentile of the ground in a ring SHORE_RING_PX outside the lake's pixels m, but on the
+        water wet (None: no ring in the raster or no DEM)."""
+        jm, im = np.nonzero(m)
+        if len(jm) == 0:
+            return None
+        r = SHORE_RING_PX[1] + 2                    # (the lake's box and the ring round it only)
+        j0, j1 = max(0, int(jm.min()) - r), min(m.shape[0], int(jm.max()) + r + 1)
+        i0, i1 = max(0, int(im.min()) - r), min(m.shape[1], int(im.max()) + r + 1)
+        out = shore_steps(~m[j0:j1, i0:i1], SHORE_RING_PX[1] + 1)
+        ring = (out >= SHORE_RING_PX[0]) & (out <= SHORE_RING_PX[1])
+        if wet is not None:
+            ring &= ~wet[j0:j1, i0:i1]
+        jj, ii = np.nonzero(ring)
+        jj, ii = jj + j0, ii + i0
+        if len(jj) < 20:
+            return None
+        if len(jj) > LEVEL_SAMPLES:
+            sel = np.linspace(0, len(jj) - 1, LEVEL_SAMPLES).astype(np.int64)
+            jj, ii = jj[sel], ii[sel]
+        lat, lon = _lonlat(ox + ii + 0.5, oy + jj + 0.5)
+        try:
+            e = np.asarray(self.dem.sample(lat, lon, LAKE_DEM_ZOOM), np.float64)
+        except Exception as ex:
+            log.debug("lake shore: %s", ex)
+            return None
+        e = e[np.isfinite(e)]
+        return float(np.percentile(e, SHORE_PCT)) if len(e) >= 20 else None
 
     @staticmethod
     def _rasterise(f, i, water, ox, oy):
@@ -812,7 +892,7 @@ class SeaCarver:
         from water and in rivers (they slope: River objects, riverlines.py, not flat tiles; their beds are
         carved here all the same); wait=False: also in cells not at hand yet, built in the background."""
         d, lv = self.water(lat, lon, wait=wait)[:2]
-        return np.where((d > 0) & (lv > SEA_HI) & ~self.outline_at(lat, lon), lv, np.nan)
+        return np.where((d > 0) & (np.abs(lv - SEA_E) >= 0.01) & ~self.outline_at(lat, lon), lv, np.nan)
 
     def outline_at(self, lat, lon):
         """Inside a river outline above sea level (any, flattened or not) at the points; False in cells not

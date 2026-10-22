@@ -11,8 +11,14 @@ local g = {
   edges = { { 'a', 'b', 0, 1, 1, 11.2, 0.8, 4 }, { 'b', 'c', 1, 1, 0, 8.9, 0.8, 3 }, { 'c', 'far', 0, 1, 1, 11.2, 1, 3 },
             { 'b', 'a', 0, 1, 1, 11.2, 0.8, 4 } },
 }
-local nodes, nn, ne = N.toNodes(g, { -500, -500, 500, 500 }, 60, false)
+local nodes, nn, ne, cuts = N.toNodes(g, { -500, -500, 500, 500 }, 60, false)
 T.check(nn == 3 and ne == 2 and not nodes.far, 'clipped to the block: the far node and its edge left out')
+T.check(#cuts == 1 and cuts[1][1] == 100 and cuts[1][2] == 0, 'the cut: c, whose road to the far node was left out')
+T.check(N.headingToCut(60, 0, 1, 0, cuts, 60), 'a car 40 m from the cut, heading for it')
+T.check(not N.headingToCut(60, 0, -1, 0, cuts, 60), '... heading away from it: not')
+T.check(not N.headingToCut(60, 0, 0, 1, cuts, 60), '... across: not')
+T.check(not N.headingToCut(-20, 0, 1, 0, cuts, 60), '... 120 m from it: not yet')
+T.check(N.headingToCut(-20, 0, 1, 0, cuts, 30 * N.CUT_S), '... at 67 mph: from 120 m')
 local ab = nodes.a.links.b
 T.check(ab and nodes.b.links.a == ab, 'one edge table shared by both ends (double-sided)')
 T.check(ab.inNode == 'a' and ab.outNode == 'b' and ab.inPos == nodes.a.pos and ab.outPos == nodes.b.pos, 'in / out nodes and positions')

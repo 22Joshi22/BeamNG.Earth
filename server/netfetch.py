@@ -177,7 +177,9 @@ POLICIES = {
     "build.protomaps.com": HostPolicy(denied=True, daily_hard=0),
 }
 # Any other host: the conservative WMS-type row of §5.2 (2/s, 2 at once, no prefetch).
-# Regional orthophoto services (imagery_regional.py): tile caches at a modest shared rate, exports one at a time
+# Regional orthophoto services (imagery_regional.py): tile caches at a modest shared rate, exports one at a time.
+# Optional: the global imagery stands in while one is down (Lower Saxony's WMS answered a maintenance page for hours,
+# 2026-10-21, and the banner named it while Sentinel-2 drew every tile); tiles left without imagery still say so
 def _regional_policies():
     import urllib.parse
     import imagery_regional
@@ -188,11 +190,11 @@ def _regional_policies():
             continue
         if kind == "xyz":
             out[host] = HostPolicy(rate=6.0, burst=20.0, max_conc=4, daily_budget=20000, allow_prefetch=True,
-                                   miss_ttl=30 * DAY, timeout=20.0, **TILE_HOST)
+                                   miss_ttl=30 * DAY, timeout=20.0, optional=True, **TILE_HOST)
         else:
             out[host] = HostPolicy(rate=1.0, burst=4.0, max_conc=1, daily_budget=4000, allow_prefetch=True,
                                    miss_ttl=30 * DAY, binary=True, timeout=30.0, max_attempts=2, base_delay=2.0,
-                                   breaker_threshold=6, breaker_window=120.0)
+                                   breaker_threshold=6, breaker_window=120.0, optional=True)
     return out
 
 

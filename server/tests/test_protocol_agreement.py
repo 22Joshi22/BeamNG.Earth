@@ -137,7 +137,7 @@ SERVER_TO_MOD = {
     "random_place_result": {"id": F(int), "lat": F(NUM, OPT), "lon": F(NUM, OPT), "name": F(str, OPT)},
     "place_previews_ready": {"keys": F(list)},
     "map_tiles_ready": {"tiles": F(list)},  # [z, x, y, ok, layer] each: written to <user>/temp/beamngEarth/maptiles
-    "hello": {"protocol": F(int), "format": F(int), "serverVersion": F(str), "sessionId": F(str),
+    "hello": {"protocol": F(int), "format": F(int), "serverVersion": F(str), "appVersion": F(str), "sessionId": F(str),
               "farFormat": F(str), "material": F(str),
               "nearVisual": F(str), "attribution": F(str),          # protocol 4
               "cells": F(int, OPT),             # v1.4 M1: cells per tile edge, FORMAT 4 only

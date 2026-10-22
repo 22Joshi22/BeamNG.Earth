@@ -59,6 +59,23 @@ class PlanTest(unittest.TestCase):
         self.assertAlmostEqual(far.z, -(far.x ** 2 + far.y ** 2) / (2 * seatiles.EARTH_R), delta=0.05)
         self.assertEqual(len(tiles[0].to_msg()), 7)
 
+    def test_land_under_the_sea_is_not_flooded(self):
+        # GitHub #8: the polders by the coast (land 4 m under the sea) were under the sea's tiles
+        f = geodesy.EnuFrame(52.3, 4.6)
+        edge = 4.6 + 0.02                                           # the shore ~1.4 km east of the player
+        east = lambda la, lo, s: np.asarray(lo) > edge             # noqa: E731
+        polder = lambda la, lo, s: np.where(np.asarray(lo) > edge, -10.0, -4.0)    # noqa: E731
+        tiles = seatiles.plan(f, 0.0, 0.0, east, ground_at=polder)
+        self.assertTrue(tiles)
+        for t in tiles:
+            if math.hypot(t.x, t.y) > 2000.0:
+                continue                                           # (far away a mostly-sea tile is kept whole)
+            la, lo, _ = f.enu_to_geodetic(t.x - t.size / 2 + 1.0, t.y, 0.0)    # its west edge
+            self.assertGreater(float(lo), edge - 0.0015, t)        # no tile reaches more than ~100 m over the polder
+        dry = lambda la, lo, s: np.where(np.asarray(lo) > edge, -10.0, 2.0)    # noqa: E731
+        self.assertEqual(sorted(t.key for t in seatiles.plan(f, 0.0, 0.0, east, ground_at=dry)),
+                         sorted(t.key for t in seatiles.plan(f, 0.0, 0.0, east)), "land above the sea: as before")
+
     def test_no_sea_no_tiles(self):
         f = geodesy.EnuFrame(36.9, -110.1)
         self.assertEqual(seatiles.plan(f, 0.0, 0.0, lambda la, lo, s: np.zeros(np.shape(la), bool)), [])

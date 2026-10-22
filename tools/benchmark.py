@@ -541,6 +541,15 @@ class Bench:
 
     def screenshot(self, dest_stem):
         src = self.mcp("screenshot", lambda: self.game.screenshot(jpg=not self.opts.png))
+        remote = os.environ.get("BNGE_REMOTE")     # the game on another machine (user@host: the Steam Deck over ssh)
+        if remote:
+            dest = f"{dest_stem}{os.path.splitext(src)[1] or '.png'}"
+            for _ in range(20):                 # (written a moment after the call returns)
+                self.clock.sleep(0.5)
+                if subprocess.run(["scp", "-q", "-o", "BatchMode=yes", f"{remote}:{src}", dest],
+                                  stderr=subprocess.DEVNULL).returncode == 0 and os.path.getsize(dest) > 0:
+                    return dest
+            raise BenchError(f"screenshot {remote}:{src} was not written")
         last = -1
         for _ in range(100):                    # written asynchronously within a few frames
             size = os.path.getsize(src) if os.path.exists(src) else 0

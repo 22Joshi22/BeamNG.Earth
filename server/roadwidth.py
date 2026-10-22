@@ -149,43 +149,18 @@ def measure_row(centreline, walls):
     """The right-of-way (m) of a street (centreline (k, 2), metres) between the building walls, or None
     where it is not walled on both sides consistently. Pure."""
     import fast
-    if fast.AVAILABLE and len(walls.keys):     # the Rust loop (the same result; ~3000 streets a 9-tile set)
-        k = walls.__dict__.get("_rs")
-        f32 = walls.segs.dtype == np.float32 and getattr(fast._ef, "VERSION", 0) >= 34
-        if k is None:
-            k = walls._rs = tuple(np.ascontiguousarray(a, t) for a, t in
-                                  ((walls.keys, np.int64), (walls.first, np.int64), (walls.counts, np.int64),
-                                   (walls.seg_of, np.int64), (walls.segs, np.float32 if f32 else np.float64)))
-        fn = fast._ef.measure_row32 if f32 else fast._ef.measure_row
-        return fn(np.ascontiguousarray(np.asarray(centreline, np.float64)[:, :2]), *k, BUCKET,
-                                    STEP, END_SKIP, REACH, MIN_SAMPLES, WALLED, AGREE)
-    xy = np.asarray(centreline, np.float64)[:, :2]
-    seg = np.hypot(*np.diff(xy, axis=0).T)
-    s = np.r_[0.0, np.cumsum(seg)]
-    if s[-1] < 2 * END_SKIP + STEP:
+    if not len(walls.keys):         # (no walls at all: not walled)
         return None
-    dd = np.arange(END_SKIP, s[-1] - END_SKIP + 1e-9, STEP)
-    k = np.clip(np.searchsorted(s, dd), 1, len(s) - 1)
-    t = xy[k] - xy[k - 1]
-    L = np.hypot(t[:, 0], t[:, 1])
-    good = L >= 1e-6
-    dd, t, L = dd[good], t[good], L[good]
-    n = len(dd)
-    if n == 0:
-        return None
-    nrm = np.stack([-t[:, 1], t[:, 0]], 1) / L[:, None]
-    c = np.stack([np.interp(dd, s, xy[:, 0]), np.interp(dd, s, xy[:, 1])], 1)
-    hits = walls.rays(np.r_[c, c], np.r_[nrm, -nrm])
-    w = hits[:n] + hits[n:]
-    w = w[~np.isnan(w)]
-    if len(w) < MIN_SAMPLES or len(w) / n < WALLED:
-        return None
-    med = float(np.median(w))
-    q1, q3 = np.percentile(w, [25, 75])
-    if (q3 - q1) / med > AGREE:
-        return None
-    return med
-
+    fast.require(34, "measure_row")     # (the Rust loop; ~3000 streets a 9-tile set)
+    k = walls.__dict__.get("_rs")
+    f32 = walls.segs.dtype == np.float32
+    if k is None:
+        k = walls._rs = tuple(np.ascontiguousarray(a, t) for a, t in
+                              ((walls.keys, np.int64), (walls.first, np.int64), (walls.counts, np.int64),
+                               (walls.seg_of, np.int64), (walls.segs, np.float32 if f32 else np.float64)))
+    fn = fast._ef.measure_row32 if f32 else fast._ef.measure_row
+    return fn(np.ascontiguousarray(np.asarray(centreline, np.float64)[:, :2]), *k, BUCKET,
+              STEP, END_SKIP, REACH, MIN_SAMPLES, WALLED, AGREE)
 
 def split(row):
     """(carriageway m, sidewalk m) of a right-of-way, or None when the carriageway would be implausible."""

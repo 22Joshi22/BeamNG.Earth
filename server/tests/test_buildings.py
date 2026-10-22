@@ -1,5 +1,6 @@
 """buildings: footprints become closed walls and a roof, heights predicted where the data has none,
 deterministic, every triangle facing out."""
+import math
 import os
 import sys
 import tempfile
@@ -462,6 +463,20 @@ class DoorTest(unittest.TestCase):
                                           np.array([-100.0, 0.0]), np.array([300.0, 0.0]), 300.0 ** 2, 4.0, 1.5,
                                           False), [], "no fence without a front yard")
 
+    def test_front_fence_keeps_off_other_roads(self):
+        """A corner house: its fence along the front road stops short of the side street (GitHub #105)."""
+        a, d = np.array([0.0, 20.0]), np.array([1.0, 0.0])
+        args = (type("S", (), {"seed": 0.3})(), a, d, 12.0, 0.5, np.array([-100.0, 0.0]), np.array([300.0, 0.0]),
+                300.0 ** 2, 4.0, 1.5, False)
+        front = (np.array([[-100.0, 0.0]]), np.array([[300.0, 0.0]]), np.array([4.0]))
+        side = (np.array([[-100.0, 0.0], [-4.0, -50.0]]), np.array([[300.0, 0.0], [-4.0, 50.0]]), np.array([4.0, 4.0]))
+        alone = bld._front_fence(*args, front)
+        self.assertEqual(alone, bld._front_fence(*args), "its own road: as before")
+        cut = bld._front_fence(*args, side)
+        self.assertLess(len(cut), len(alone))
+        for row in cut:
+            self.assertGreater(row[1] - bld.FENCE_SEG_M / 2, -4.0 + 4.0 + bld.FENCE_CLEAR_M - 1e-9)
+
     def test_company_sign_on_a_warehouse_front(self):
         seen = 0
         for k in range(30):
@@ -624,6 +639,20 @@ class MachineLearnedFootprintTest(unittest.TestCase):
         self.assertFalse(bld._ml_false(lorry, None, None, None))
 
 
+    def test_in_a_median(self):
+        """GitHub #90: a 10 x 9 m footprint between the carriageways of Moscow's Bolshaya Tulskaya (7.6 m from each)
+        stood as a house in the road; a house between two streets of a block stays, as does one beside a single road."""
+        sq = lambda cx, cy: np.array([[cx - 5, cy - 4.5], [cx + 5, cy - 4.5], [cx + 5, cy + 4.5], [cx - 5, cy + 4.5]],
+                                     float)
+        dual = [np.array([[0.0, 7.6], [200.0, 7.6]]), np.array([[200.0, -7.6], [0.0, -7.6]])]
+        self.assertTrue(bld._ml_false(sq(100, 0), None, None, dual))
+        block = [np.array([[0.0, 30.0], [200.0, 30.0]]), np.array([[0.0, -30.0], [200.0, -30.0]])]
+        self.assertFalse(bld._ml_false(sq(100, 0), None, None, block))
+        self.assertFalse(bld._ml_false(sq(100, 0), None, None, dual[:1]))
+        crossing = [np.array([[0.0, 7.6], [200.0, 7.6]]), np.array([[100.0 - 7.6, -100.0], [100.0 - 7.6, -50.0]])]
+        self.assertFalse(bld._ml_false(sq(100, 0), None, None, crossing), "(a corner between two crossing streets)")
+
+
 class BridgeStructureTest(unittest.TestCase):
     """A bridge's tower (Overture bridge_structure: the Queensboro Bridge's, 33 x 4.6 x 110 m) is an open steel frame
     the decks run through, not a glass tower (2026-10-17)."""
@@ -686,8 +715,91 @@ class PortalSkipTest(unittest.TestCase):
         self.assertAlmostEqual(float(lines[0][:, 1].mean()), 50.0 + 128.0, delta=0.5)
 
 
+class TollBoothTest(unittest.TestCase):
+    """A toll plaza's islands (low mapped "buildings") with booths on them are West Coast USA's toll booth (the user's
+    report at the Golden Gate, 2026-10-21: bare boxes on slabs)."""
+
+    @staticmethod
+    def box(cx, cy, length, width, angle_deg):
+        u = np.array([math.cos(math.radians(angle_deg)), math.sin(math.radians(angle_deg))])
+        v = np.array([-u[1], u[0]])
+        c = np.array([cx, cy])
+        return np.array([c - u * length / 2 - v * width / 2, c + u * length / 2 - v * width / 2,
+                         c + u * length / 2 + v * width / 2, c - u * length / 2 + v * width / 2])
+
+    def test_island_with_booth_becomes_the_stock_booth(self):
+        island = bld.Spec(ring=self.box(50, 50, 16, 1.5, 40), height=0.2, min_h=0.0, cls="")
+        booth = bld.Spec(ring=self.box(50.5, 50.4, 3, 1.5, 40), height=4.75, min_h=0.0, cls="")
+        plaza = bld.Spec(ring=self.box(50, 50, 34, 8, 40), height=0.01, min_h=0.0, cls="")
+        house = bld.Spec(ring=self.box(90, 90, 10, 8, 0), height=6.0, min_h=0.0, cls="")
+        isl = [bld.oriented_box(island.ring)]
+        items = bld._toll_mark([(island, 1.0, 1.2), (booth, 1.0, 1.2), (plaza, 1.0, 1.2), (house, 1.0, 1.5)],
+                                     isl)
+        self.assertEqual([s for s, _, _ in items], [island, plaza, house], "the booth on the island left out")
+        self.assertEqual(island.cls, "toll_booth")
+        self.assertEqual(plaza.cls, "", "a plaza's flat footprint round the islands stays as it is")
+        rows = bld.toll_booth_rows(items, 100.0, 200.0)
+        self.assertEqual(len(rows), 1)
+        g, x, y, z, yaw = rows[0][:5]
+        self.assertEqual(g, bld.G_TOLLBOOTH)
+        self.assertAlmostEqual(x, 150.0, places=1)
+        self.assertAlmostEqual(y, 250.0, places=1)
+        self.assertAlmostEqual(z, 1.0)
+        self.assertAlmostEqual(yaw, 310.0, places=0, msg="its local y along the island (40 deg): yaw 40 - 90")
+        self.assertIsNone(bld.build([(island, 1.0, 1.2)]), "the island itself not built")
+
+
 if __name__ == "__main__":
     unittest.main()
+
+
+class PyramidTest(unittest.TestCase):
+    def test_a_mapped_pyramid_is_a_pyramid(self):
+        # GitHub #47: Menkaure's pyramid (66 m, roof pyramidal 66 m high) was a 66 m box with windows
+        s = bld.plan(rect(0, 0, 100, 100), {"class": "", "height": 66.0, "roof_shape": "pyramidal",
+                                            "roof_height": 66.0}, 0, 29.97, 31.13)
+        self.assertEqual((s.cls, s.roof), ("pyramid", "hipped"))
+        P = bld.build([(s, 0.0, 0.0)])[0]
+        self.assertAlmostEqual(float(np.max(P[:, 2])), 66.0, delta=2.0)
+        house = bld.plan(rect(0, 0, 8, 8), {"class": "house", "roof_shape": "pyramidal", "height": 8.0,
+                                            "roof_height": 3.0}, 0, 29.97, 31.13)
+        self.assertNotEqual(house.cls, "pyramid", "a house's pyramidal roof: a house")
+
+
+class ElevatorTest(unittest.TestCase):
+    def test_a_tall_slender_footprint_in_a_plains_town_is_a_grain_elevator(self):
+        # Strasburg, CO: two 25 m tall footprints by the railroad came out as 8-storey brick apartments
+        s = bld.plan(rect(0, 0, 11, 11), {"class": "", "height": 25.0}, 0, 39.73, -104.35, town=True)
+        self.assertEqual(s.cls, "elevator")
+        self.assertTrue(s.plain)
+        self.assertFalse(s.windows)
+        P = bld.build([(s, 0.0, 0.0)])[0]          # (a roof look without its tint failed the whole road tile)
+        self.assertAlmostEqual(float(np.max(P[:, 2])), 25.0, delta=0.5)
+        city = bld.plan(rect(0, 0, 11, 11), {"class": "", "height": 25.0}, 0, 39.73, -104.35)
+        self.assertNotEqual(city.cls, "elevator", "in a city: a tower")
+        motel = bld.plan(rect(0, 0, 50, 30), {"class": "", "height": 15.0}, 0, 39.73, -104.35, town=True)
+        self.assertNotEqual(motel.cls, "elevator", "a long low block")
+        floors = bld.plan(rect(0, 0, 11, 11), {"class": "", "height": 25.0, "num_floors": 8}, 0, 39.73, -104.35,
+                          town=True)
+        self.assertNotEqual(floors.cls, "elevator", "mapped with floors: a building of floors")
+
+
+class RoadAcrossTest(unittest.TestCase):
+    def test_a_narrow_footprint_across_a_road_is_over_it(self):
+        # GitHub #48: the 69th Street station's 3 m wide shelters across the Dan Ryan (a road runs only their width
+        # inside them, under ROAD_THROUGH_M)
+        shelter = rect(-18, -1.5, 36, 3)
+        across = [np.array([(0.0, -50.0), (0.0, 50.0)])]
+        self.assertLess(bld.road_through(shelter, across), bld.ROAD_THROUGH_M)
+        self.assertTrue(bld.road_across(shelter, across))
+        self.assertFalse(bld.road_across(shelter, [np.array([(-50.0, 10.0), (50.0, 10.0)])]), "a road beside it")
+        self.assertFalse(bld.road_across(shelter, [np.array([(25.0, -50.0), (25.0, 50.0)])]), "a road past its end")
+        self.assertFalse(bld.road_across(rect(-18, -10, 36, 20), across), "a wide one: road_through decides")
+
+    def test_a_long_shelter_is_a_canopy_not_a_barn(self):
+        s = bld.plan(rect(0, 0, 11, 140), {"class": "shelter"}, 0, 41.77, -87.63)
+        self.assertEqual(s.floors, 1)
+        self.assertLess(s.height, 5.0)
 
 
 class CurvatureTest(unittest.TestCase):
@@ -707,3 +819,16 @@ class CurvatureTest(unittest.TestCase):
         (spec, gmin, gmax), = items
         r = np.hypot(x0 + 20, y0 + 17)
         self.assertAlmostEqual(gmin, 100.0 - r * r / (2 * 6371000.0), delta=0.2)
+
+    def test_a_flat_area_is_not_a_building(self):
+        # the Golden Gate toll plaza's 0.01 m footprint drew a slab with a rim round the booths (2026-10-21)
+        import geodesy
+        f = geodesy.EnuFrame(37.807, -122.476)
+
+        def ll(x, y, w, d):
+            e = np.array([x, x + w, x + w, x, x]); n = np.array([y, y, y + d, y + d, y])
+            la, lo, _ = f.enu_to_geodetic(e, n, 0.0)
+            return np.stack([lo, la], 1)
+        b = Feats(["P", "K"], [ll(10, 10, 30, 30), ll(100, 100, 10, 10)], **{"class": ["", ""], "height": [0.01, 0.2]})
+        items = bld.tile_buildings(f, 0.0, 0.0, 256.0, 256.0, [b], lambda la, lo: np.full(np.shape(la), 5.0))
+        self.assertEqual([round(bld._area2(s.ring) / 2) for s, _, _ in items], [100], "the plaza left out, the 0.2 m one kept")
