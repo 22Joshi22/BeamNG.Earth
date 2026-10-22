@@ -2514,6 +2514,7 @@ class Connection:
                 # the mod's format is the newest it reads (a FORMAT 4 mod reads 3 too)
                 self.status(f"format mismatch: mod {msg.get('format')}, server {lay.format}")
             m = {"type": "hello", "protocol": PROTOCOL, "format": lay.format, "serverVersion": SERVER_VERSION,
+                 "appVersion": updatesmod.local_version() or "",     # the release (VERSION): the players' reports
                  "sessionId": self.s.sid, "farFormat": self.s.far_format, "material": farfield.MATERIAL,
                  "nearVisual": self.s.near_visual, "attribution": self.s.attribution()}
             if self.s.imagery is not None:      # the world map credits the sources its view shows
