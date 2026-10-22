@@ -3026,6 +3026,75 @@ fn tight_bends<'py>(py: Python<'py>, xy: PyReadonlyArray2<'py, f64>, half_span: 
     out.into_pyarray(py)
 }
 
+
+/// vegetation.regional: the groups of a region from the generic ones (group, height m, lat, lon, ESA WorldCover class,
+/// a hashed [0, 1) per item) by a coarse climate. ids: the group ids (deciduous, conifer, shrub, rock, pine_west, palm,
+/// juniper, desert_shrub, desert_rock, oak_west, tropical); wc: WorldCover's (shrub, bare, grass, built) classes.
+/// Palms are most town trees only where they are in life: South Florida, the Rio Grande Valley, coastal Southern
+/// California, the tropics; a few along the rest of the Gulf Coast (GitHub #110: Houston and Austin were mostly palms,
+/// in life live oaks and loblolly pines). The Southeast's conifers are pines.
+#[pyfunction]
+#[allow(clippy::too_many_arguments)]
+fn regional_groups<'py>(py: Python<'py>, group: PyReadonlyArray1<'py, u8>, height: PyReadonlyArray1<'py, f64>,
+                        lat: PyReadonlyArray1<'py, f64>, lon: PyReadonlyArray1<'py, f64>,
+                        lcls: PyReadonlyArray1<'py, u8>, u: PyReadonlyArray1<'py, f64>, ids: [u8; 11], wc: [u8; 4])
+                        -> Bound<'py, PyArray1<u8>> {
+    let (group, height, lat, lon, lcls, u) = (group.as_array(), height.as_array(), lat.as_array(), lon.as_array(),
+                                               lcls.as_array(), u.as_array());
+    let [g_dec, g_con, g_shrub, g_rock, g_pine_w, g_palm, g_juniper, g_dshrub, g_drock, g_oak_w, g_trop] = ids;
+    let [wc_shrub, wc_bare, wc_grass, wc_built] = wc;
+    let n = group.len();
+    let mut out = vec![0u8; n];
+    for i in 0..n {
+        let (mut g, h, la, lo, c, ui) = (group[i], height[i], lat[i], lon[i], lcls[i], u[i]);
+        let west_coast = lo < -114.0 && la > 32.0 && la < 49.5;
+        let dry_west = lo < -102.0 && la > 25.0 && la < 46.0 && !(lo < -121.0 && la > 37.0);
+        let open_dry = dry_west && (c == wc_shrub || c == wc_bare || c == wc_grass);
+        let tropics = la.abs() < 23.5;
+        let built = c == wc_built;
+        let north_america = la > 24.0 && lo > -170.0 && lo < -50.0;
+        // where palms are most town trees: South Florida, the Rio Grande Valley, coastal Southern California
+        let palm_land = (la < 29.0 && lo > -82.8 && lo < -79.5) || (la < 26.9 && lo > -99.8 && lo < -96.8)
+            || (la < 34.6 && lo < -114.0 && la > 20.0);
+        let gulf = !palm_land && la < 30.8 && lo > -98.0 && lo < -80.0;
+        let southeast = la < 35.5 && lo > -98.5 && lo < -75.0;
+        // towns of the dry West are irrigated broadleaves far more than conifers (Moab's photos)
+        if dry_west && built && g == g_con && ui < 0.8 {
+            g = g_dec;
+        }
+        let tree = g == g_dec || g == g_con;
+        if (west_coast || southeast) && g == g_con {       // the west's pines; the Southeast's loblolly / slash pines
+            g = g_pine_w;
+        }
+        if west_coast && g == g_dec && h < 11.0 {
+            g = g_oak_w;
+        }
+        if open_dry && tree && h < 9.0 {                    // dry open country: junipers
+            g = g_juniper;
+        }
+        if open_dry && g == g_con {
+            g = g_pine_w;
+        }
+        let arid = !north_america && (c == wc_shrub || c == wc_bare) && la.abs() < 42.0;
+        if (dry_west || arid) && g == g_shrub {
+            g = g_dshrub;
+        }
+        if (dry_west || arid) && g == g_rock {
+            g = g_drock;
+        }
+        let palm_p = if palm_land || tropics { if built { 0.6 } else { 0.2 } }
+                     else if gulf { if built { 0.08 } else { 0.02 } } else { 0.0 };
+        if tree && ui < palm_p {
+            g = g_palm;
+        }
+        if tropics && g == g_dec && h >= 12.0 {
+            g = g_trop;
+        }
+        out[i] = g;
+    }
+    out.into_pyarray(py)
+}
+
 #[pymodule]
 fn earthfast(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(island_ring_rays, m)?)?;
@@ -3077,6 +3146,7 @@ fn earthfast(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(sharp_probes, m)?)?;
     m.add_function(wrap_pyfunction!(sharp_cuts, m)?)?;
     m.add_function(wrap_pyfunction!(tight_bends, m)?)?;
-    m.add("VERSION", 42)?;
+    m.add_function(wrap_pyfunction!(regional_groups, m)?)?;
+    m.add("VERSION", 43)?;
     Ok(())
 }
