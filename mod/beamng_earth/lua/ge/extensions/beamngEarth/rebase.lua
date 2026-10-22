@@ -31,6 +31,11 @@ M.KEEP_EDGE_512 = 150
 M.LATENCY_S = 1          -- anchor latency assumed until one is measured (s)
 M.LEAD_EXTRA_S = 1       -- a re-requested terrain leads the player by the latency plus this
 M.RETRY_S = 5            -- wait after an anchor_error before asking again
+-- Idle rebase (the user 2026-10-22: "when loading/waiting for server to respond reposition world during idle
+-- time"): while the game waits anyway (paused, the edge guard or the drop hold holding the car, the car standing
+-- still) and the player is at least IDLE_DISTANCE from the origin, the rebase is prepared and committed then, instead
+-- of later at `distance` in the middle of a drive. Its hitch then falls where nobody is driving. 0 = off.
+M.IDLE_DISTANCE = 4000
 
 -- The session's block size (1024 or 512): the staleness distance and the stale-anchor rule.
 function M.configure(size)
@@ -58,18 +63,25 @@ end
 -- Staleness is judged only at the commit: the terrain was centred for where the player will be
 -- at the rebase distance (core.lua rebaseHint), up to PREFETCH_MARGIN + 424 m ahead of the player
 -- at the prefetch, so judging it earlier discards a good answer and re-requests in a loop.
-function M.decide(dist, pending, staleDist, now, retryAt, edgeDist)
+-- idle: the game waits anyway (see IDLE_DISTANCE): prepared and committed from IDLE_DISTANCE on.
+function M.decide(dist, pending, staleDist, now, retryAt, edgeDist, idle)
+  local early = M.idleDue(dist, idle)
   if not pending then
-    if dist >= M.distance - M.PREFETCH_MARGIN and now >= (retryAt or 0) then return 'prefetch' end
+    if (early or dist >= M.distance - M.PREFETCH_MARGIN) and now >= (retryAt or 0) then return 'prefetch' end
     return nil
   end
   if pending.purpose ~= 'rebase' or not pending.ready then return nil end
-  if dist < M.distance then return nil end
+  if dist < M.distance and not early then return nil end
   if staleDist and staleDist > M.STALE_DIST then
     if M.KEEP_EDGE > 0 and edgeDist and edgeDist >= M.KEEP_EDGE then return 'commit' end
     return 'discard'
   end
   return 'commit'
+end
+
+-- Is an idle rebase due: the game waits and the player is far enough from the origin for it to be worth one?
+function M.idleDue(dist, idle)
+  return idle and M.IDLE_DISTANCE > 0 and dist >= math.min(M.distance, M.IDLE_DISTANCE) or false
 end
 
 -- Lead time (s) of a re-requested rebase terrain (the stale-anchor rule): the measured anchor
