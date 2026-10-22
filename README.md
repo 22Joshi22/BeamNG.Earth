@@ -25,7 +25,8 @@ Status: beta (see VERSION). Tested on BeamNG.drive 0.40.1 on Linux (Vulkan) and 
   porches, churches with steeples, glass towers, far-away buildings drawn as a skyline.
 - Roads as meshes with lane markings, sidewalks and curbs, curb ramps, storm drains, cobblestone streets,
   traffic islands, roundabouts, rural motorways with shoulders and toll booths; the ground graded under them, with
-  stone retaining walls where a road is cut into a hill; street lights, utility poles with wires, traffic signals,
+  retaining walls where a road is cut into a hill (dry stone in the mountains and towns, concrete along major roads)
+  and stone parapets along mountain roads' drops; street lights, utility poles with wires, traffic signals,
   stop signs and speed-limit signs (mph or km/h by country).
 - Bridges drawn as their real type (beam, truss, arch, cable-stayed, suspension) with real heights and spans, piers
   that keep clear of the roads under them; tunnels through hills, with portals, lights and low arches where little
