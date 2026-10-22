@@ -3175,6 +3175,75 @@ fn clip_segments<'py>(py: Python<'py>, xy: PyReadonlyArray2<'py, f64>, bx: (f64,
     numpy::ndarray::Array2::from_shape_vec((n, 2), out).unwrap().into_pyarray(py)
 }
 
+
+/// roads.TunnelProfiles._road_caps' search: the first of the probe points (m, 2) (in order) that lies within
+/// radius[l] + gap of a road line l (vertices pts[starts[l]..starts[l + 1]]), lines tested in order, each by its nearest
+/// segment; lines of fewer than 2 points or with an end within join_m of p are left out. (probe index, the nearest
+/// point on that line) or None. The same float64 sums as the numpy loop it replaced (2 s of a Munich block).
+#[pyfunction]
+#[allow(clippy::too_many_arguments)]
+fn first_probe_near_lines(pts: PyReadonlyArray2<f64>, starts: PyReadonlyArray1<i64>, radius: PyReadonlyArray1<f64>,
+                          gap: f64, p: (f64, f64), join_m: f64, probes: PyReadonlyArray2<f64>)
+                          -> Option<(usize, f64, f64)> {
+    let (pv, st, rv, qv) = (pts.as_array(), starts.as_array(), radius.as_array(), probes.as_array());
+    let nl = rv.len();
+    let m = qv.nrows();
+    if m == 0 {
+        return None;
+    }
+    let (mut qx0, mut qy0, mut qx1, mut qy1) = (f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY);
+    for i in 0..m {
+        qx0 = qx0.min(qv[[i, 0]]); qx1 = qx1.max(qv[[i, 0]]);
+        qy0 = qy0.min(qv[[i, 1]]); qy1 = qy1.max(qv[[i, 1]]);
+    }
+    // the lines that count: not joined at p, their box near the probes
+    let mut lines: Vec<usize> = Vec::new();
+    for l in 0..nl {
+        let (a, b) = (st[l] as usize, st[l + 1] as usize);
+        if b < a + 2 {
+            continue;
+        }
+        let d0 = (pv[[a, 0]] - p.0).hypot(pv[[a, 1]] - p.1);
+        let d1 = (pv[[b - 1, 0]] - p.0).hypot(pv[[b - 1, 1]] - p.1);
+        if d0.min(d1) < join_m {
+            continue;
+        }
+        let r = rv[l] + gap;
+        let (mut lx, mut ly, mut hx, mut hy) = (f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY);
+        for k in a..b {
+            lx = lx.min(pv[[k, 0]]); hx = hx.max(pv[[k, 0]]);
+            ly = ly.min(pv[[k, 1]]); hy = hy.max(pv[[k, 1]]);
+        }
+        if hx + r < qx0 || lx - r > qx1 || hy + r < qy0 || ly - r > qy1 {
+            continue;
+        }
+        lines.push(l);
+    }
+    for i in 0..m {
+        let (qx, qy) = (qv[[i, 0]], qv[[i, 1]]);
+        for &l in &lines {
+            let (a, b) = (st[l] as usize, st[l + 1] as usize);
+            let (mut best, mut bx, mut by) = (f64::INFINITY, 0.0, 0.0);
+            for k in a..b - 1 {
+                let (ax, ay) = (pv[[k, 0]], pv[[k, 1]]);
+                let (dx, dy) = (pv[[k + 1, 0]] - ax, pv[[k + 1, 1]] - ay);
+                let t = (((qx - ax) * dx + (qy - ay) * dy) / (dx * dx + dy * dy).max(1e-9)).clamp(0.0, 1.0);
+                let (cx, cy) = (ax + t * dx, ay + t * dy);
+                let d = (cx - qx).hypot(cy - qy);
+                if d < best {
+                    best = d;
+                    bx = cx;
+                    by = cy;
+                }
+            }
+            if best < rv[l] + gap {
+                return Some((i, bx, by));
+            }
+        }
+    }
+    None
+}
+
 #[pymodule]
 fn earthfast(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(island_ring_rays, m)?)?;
@@ -3228,6 +3297,7 @@ fn earthfast(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(tight_bends, m)?)?;
     m.add_function(wrap_pyfunction!(regional_groups, m)?)?;
     m.add_function(wrap_pyfunction!(clip_segments, m)?)?;
-    m.add("VERSION", 44)?;
+    m.add_function(wrap_pyfunction!(first_probe_near_lines, m)?)?;
+    m.add("VERSION", 45)?;
     Ok(())
 }
