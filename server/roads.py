@@ -117,6 +117,8 @@ LANE_M = 3.3            # m per lane when counting the lanes a carriageway holds
 LANE_LINE = {"m": "line_dashed_long", "tl": 12.0, "p": 6, "w": 0.12}     # West Coast USA's 3 m dash, 9 m gap
 CUT_MARGIN = 0.5                # m: a sidewalk / line stops this far outside a crossing road's carriageway
 MIN_PIECE_M = 3.0               # shorter sidewalk / line pieces are dropped
+WALK_STEP_M = 1.0               # m the ground under a sidewalk may lie off the road's level: further, a cutting's wall or
+                                # a drop is there and the sidewalk stops (it was draped up a wall, Munich's McGraw-Graben)
 NEAR_M = 40.0                   # roads this far outside the tile still cut its sidewalks / lines
 # Carriageway = driving width + parking lanes on city streets or paved edge strips on rural roads
 # (docs/research/2026-10-11-official-road-study.md §2: rural paved surface = AI width + 2-2.5 m;
@@ -606,12 +608,26 @@ URBAN_MEDIAN_GAP_M = 24.0   # its carriageways out to it (Boston Street, Mapilla
 URBAN_DUAL_MAX_W = 12.0     # each way either side of a ~1.5 m curb; we drew 6.5 m carriageways and a 4.5 m strip)
 
 
+DUAL_MIN_MEDIAN_M = 0.6    # m between a divided road's carriageways at the least (a concrete barrier): the class's width
+                            # overlapped them (Munich's McGraw-Graben: two 11 m carriageways 9.6 m apart, wider than its
+                            # trench, their edges up its walls)
+DUAL_MIN_W = 3.5            # ... but a carriageway keeps one lane
+
+
+def dual_cap(gap, w):
+    """w capped so carriageways gap m apart (centre to centre) do not overlap (DUAL_MIN_MEDIAN_M between them)."""
+    return float(min(w, max(gap - DUAL_MIN_MEDIAN_M, DUAL_MIN_W)))
+
+
 def _dual_width(sp, w, gap, feats, i):
     """A divided road carriageway's width: a mapped width stands; in a city with its centre lines within
-    URBAN_MEDIAN_GAP_M, out to an URBAN_MEDIAN_M median (at most URBAN_DUAL_MAX_W); else w."""
-    if _rule_value(feats.rules.get("width"), i) is not None or not sp.urban or gap > URBAN_MEDIAN_GAP_M:
+    URBAN_MEDIAN_GAP_M, out to an URBAN_MEDIAN_M median (at most URBAN_DUAL_MAX_W); never overlapping the other
+    (dual_cap)."""
+    if _rule_value(feats.rules.get("width"), i) is not None:
         return w
-    return float(np.clip(gap - URBAN_MEDIAN_M, w, URBAN_DUAL_MAX_W))
+    if sp.urban and gap <= URBAN_MEDIAN_GAP_M:
+        w = float(np.clip(gap - URBAN_MEDIAN_M, w, URBAN_DUAL_MAX_W))
+    return dual_cap(gap, w)
 
 
 def _centre_gap(a, b):
@@ -1357,6 +1373,17 @@ def _blocker_segments(blockers):
            np.array(hws, np.float64), len(blockers))
     _BLOCKERS = ((blockers, arr),) + _BLOCKERS[:3]
     return arr[:3]
+
+
+def _on_level(frame, elev, run):
+    """The pieces of a sidewalk run (k, 3) whose ground (elev(lat, lon), the graded ground) lies within WALK_STEP_M of
+    the run's own level (MIN_PIECE_M long at least)."""
+    if len(run) < 2:
+        return [run]
+    la, lo, _ = frame.enu_to_geodetic(run[:, 0], run[:, 1], np.zeros(len(run)))
+    g = np.asarray(frame.geodetic_to_enu(la, lo, np.asarray(elev(la, lo), np.float64))[2], np.float64)
+    off = ~(np.abs(g - run[:, 2]) <= WALK_STEP_M)
+    return [run] if not off.any() else _runs_outside(run, off)
 
 
 def _runs_outside(d, inside):
@@ -2656,6 +2683,21 @@ WALL_STEP = 2.0         # m between a retaining wall's points
 WALL_PROBE_M = 1.0      # m beyond the cut's foot (grading.WALL_T_M) where the natural ground's height is read
 WALL_TOP_M = 0.15       # m the wall stands over the ground behind it
 WALL_FOOT_M = 0.3       # m it reaches under the road
+WALL_FULL = 0.9         # the graded ground this share of the way up to the natural ground behind a wall: its top ends
+                        # there ...
+WALL_THICK_MIN_M = 1.0  # ... at least this deep and at most WALL_THICK_MAX_M
+WALL_THICK_MAX_M = 3.5
+WALL_OTHER_GAP_M = 0.3  # m a wall's top keeps from another road's carriageway
+WALL_TAPER_M = 8.0      # m at each end of a wall over which it comes down ...
+WALL_TAPER_LOW_M = 0.6  # ... to this over the road
+WALL_SLAB_DZ = 0.8      # m the ground behind a wall may fall under its top before the top ends there ...
+WALL_COPING_MIN_M = 0.5  # ... at least its coping
+WALL_DIAG_M = 2.9       # the terrain lattice's diagonal (heightmap.SQUARE 2 m)
+# a major road's cutting is walled in concrete (Munich's McGraw-Graben, Mapillary 2026-10-21), a smaller road's in stone
+# (Central Park's transverses)
+CONCRETE_WALL_CLASSES = {"motorway", "motorway_link", "trunk", "trunk_link", "primary", "primary_link"}
+WALL_EVEN_N = 2         # a wall's top as deep as its deepest within this many WALL_STEPs either side
+WALL_STEP_UP_M = 0.5     # m the graded ground climbs over the road where a wall's face goes (short of the core's edge)
 
 
 WALL_KEEP_M = 1.2       # m: a wall goes on while the cut stays this deep (it starts at grading.WALL_CUT_M) ...
@@ -2719,6 +2761,241 @@ def _under_decks(xy, z, decks):
     return out
 
 
+def _off_wall_tops(chunks, walls):
+    """chunks with the ground roads' surfaces and lines cut away over the retaining walls' tops (a path on the bank
+    above a cutting lay on the lattice's low strip under the top, in patches through it, Munich's McGraw-Graben).
+    Decks, tunnels and filled polygons are left as they are."""
+    if not walls:
+        return chunks
+    blockers = []
+    for w in walls:
+        th = np.asarray(w["thick"], np.float64)
+        mid = np.asarray(w["base"], np.float64) - np.asarray(w["toward"], np.float64) * (th[:, None] / 2)
+        blockers.append((mid, max(float(th.max()) / 2 - WALL_TOP_EDGE_M, 0.1)))
+    lo = np.min([b[0].min(0) - b[1] for b in blockers], axis=0)
+    hi = np.max([b[0].max(0) + b[1] for b in blockers], axis=0)
+    out = []
+    for c in chunks:
+        n = c.get("n")
+        if c.get("deck") or c.get("tunnel") or c.get("poly") is not None or not n or len(n) < 2:
+            out.append(c)
+            continue
+        pts = np.asarray(n, np.float64)
+        if (pts[:, 0].max() < lo[0] or pts[:, 0].min() > hi[0] or pts[:, 1].max() < lo[1]
+                or pts[:, 1].min() > hi[1]):
+            out.append(c)
+            continue
+        pieces = cut_outside(pts, blockers, 1.0)
+        if len(pieces) == 1 and len(pieces[0]) >= len(pts) and np.allclose(pieces[0][[0, -1]], pts[[0, -1]]):
+            out.append(c)
+            continue
+        for piece in pieces:
+            out.append(dict(c, n=[[round(float(v), 3) for v in q] for q in simplify(piece)]))
+    return out
+
+
+WALL_TOP_EDGE_M = 0.3   # a road surface goes this far onto a wall's top at most (_off_wall_tops)
+
+
+def _taper(xy, run):
+    """Per point of a road's wall sample line xy (k, 2): its wall's height factor, 0 at the ends of each run of run (k,)
+    rising (smoothstep) to 1 over WALL_TAPER_M (no full-height wall ending in a cliff, the user 2026-10-21). Pure."""
+    s = np.r_[0.0, np.cumsum(np.hypot(*np.diff(np.asarray(xy, np.float64)[:, :2], axis=0).T))]
+    f = np.zeros(len(xy))
+    i = 0
+    while i < len(run):
+        if not run[i]:
+            i += 1
+            continue
+        j = i
+        while j + 1 < len(run) and run[j + 1]:
+            j += 1
+        d = np.minimum(s[i:j + 1] - s[i], s[j] - s[i:j + 1]) / WALL_TAPER_M
+        d = np.clip(d, 0.0, 1.0)
+        f[i:j + 1] = d * d * (3 - 2 * d)
+        i = j + 1
+    return f
+
+
+def _on_carriageways(pts, others, gap):
+    """Which points (k, 2) lie on a carriageway of others {fid: (centreline (m, 2), half width)} (+ gap). Pure."""
+    import fast
+    pts = np.ascontiguousarray(np.asarray(pts, np.float64))
+    hit = np.zeros(len(pts), bool)
+    if not len(pts):
+        return hit
+    lo, hi = pts.min(0), pts.max(0)
+    for ln, h in others.values():
+        if len(ln) < 2 or (ln.max(0) + h + gap < lo).any() or (ln.min(0) - h - gap > hi).any():
+            continue
+        fast.require(0, "points_near_segments")
+        hit |= np.asarray(fast._ef.points_near_segments(pts, np.ascontiguousarray(ln[:-1]), np.ascontiguousarray(ln[1:]),
+                                                        np.full(len(ln) - 1, h + gap)))
+    return hit
+
+
+def _clear_depth(base, out, depth, others, own):
+    """Per point of a wall's face line base (k, 2): how far (up to depth (k,)) out from it along out (k, 2) stays off
+    every other road's carriageway in others {fid: (centreline (m, 2), half width)} (less WALL_OTHER_GAP_M). Pure."""
+    import fast
+    steps = np.arange(0.5, float(np.max(depth)) + 0.51, 0.5)
+    q = (base[:, None, :] + out[:, None, :] * steps[None, :, None]).reshape(-1, 2)
+    hit = np.zeros(len(q), bool)
+    lo, hi = q.min(0), q.max(0)
+    for f2, (ln, h) in others.items():
+        # (its own road too: a hairpin's other leg; the face stands past its own carriageway, so the stretch beside it
+        # never hits)
+        if len(ln) < 2:
+            continue
+        if (ln.max(0) + h < lo).any() or (ln.min(0) - h > hi).any():
+            continue
+        fast.require(0, "points_near_segments")
+        hit |= np.asarray(fast._ef.points_near_segments(np.ascontiguousarray(q), np.ascontiguousarray(ln[:-1]),
+                                                        np.ascontiguousarray(ln[1:]),
+                                                        np.full(len(ln) - 1, h + WALL_OTHER_GAP_M)))
+    hit = hit.reshape(len(base), len(steps))
+    first = np.where(hit.any(axis=1), steps[np.argmax(hit, axis=1)] - 0.5, np.inf)
+    return np.minimum(np.asarray(depth, np.float64), np.maximum(first, 0.0))
+
+
+# Rock cliffs (the user, 2026-10-21, after the official maps: Italy's and West Coast USA's rural cuts are rock-face meshes
+# sunk into the slope, overlapping): a rural road's retaining wall is drawn as Italy's rock-face pieces (trees.lua group
+# "cliff") along its face instead of stone. (shape height m, its bottom under the pivot as a share of it, its depth in
+# front of the pivot m per unit scale, its width m, its depth m)
+CLIFF_SHAPES = ((2.9, 0.52, 1.5, 10.5, 2.9), (13.2, 0.17, 1.9, 12.9, 5.2))
+CLIFF_TALL_M = 6.2      # a piece this tall or taller: the tall shape (trees.lua M.pick: nearer to it than the short one by log)
+CLIFF_SINK_M = 1.0      # m the pieces reach under the road's level ...
+CLIFF_OVER_M = 0.3      # ... and over the ground behind
+CLIFF_SPACING = 0.55    # pieces along the face a share of their width apart (overlapping)
+CLIFF_REACH_M = 8.0     # m behind the face a piece may reach at most (less where another road is)
+CLIFF_EDGE_M = 0.5      # m off the carriageway's edge the pieces' fronts stand
+CLIFF_ROAD_GAP_M = 0.3  # m a piece's footprint keeps from any carriageway
+
+
+# Parapets (the Stelvio Pass, Mapillary 2026-10-21: a low dry-stone wall along the outside of every bend and drop): a
+# rural road (not a motorway / trunk: guardrails there) whose ground falls PARAPET_DROP_M or more within PARAPET_PROBE_M of
+# its edge gets a stone parapet just off its carriageway, not across a road joining it.
+PARAPET_DROP_M = 2.0
+PARAPET_PROBE_M = 3.0
+PARAPET_H = 0.6
+PARAPET_W = 0.45
+PARAPET_OFF_M = 0.2
+PARAPET_ROAD_GAP_M = 2.0
+NO_PARAPET_CLASSES = {"motorway", "motorway_link", "trunk", "trunk_link", "service", "track"}
+CLIFF_MIN_CUT_M = 6.0   # a rural cut this deep: rock faces (cliff_rows), when CLIFF_WALLS_ON; else a dry-stone wall
+CLIFF_WALLS_ON = os.environ.get("BNE_CLIFF_WALLS", "off") == "on"
+
+
+def _parapets(xy, z, out_n, rh, inside, steps, gs, others, own, decks):
+    """The stone parapets along one side of a road (see PARAPET_*): wall dicts as retaining_walls' (roadmesh draws them
+    with a back face). gs: the graded ground at steps (m off the centre line) per point. Pure but for decks."""
+    import fast
+    near = np.flatnonzero((steps >= rh + 0.5) & (steps <= rh + PARAPET_PROBE_M))
+    if not len(near):
+        return []
+    drop = (z[:, None] - gs[:, near]).max(axis=1) > PARAPET_DROP_M
+    base = xy + out_n * (rh + PARAPET_OFF_M)
+    ok = drop & inside & ~_under_decks(base, z, decks) & ~_on_carriageways(base, others, 0.0)
+    # not across a road joining it (its junctions), nor where another road runs beside
+    for f2, (ln, h) in others.items():
+        if f2 == own or len(ln) < 2 or not ok.any():
+            continue
+        fast.require(0, "points_near_segments")
+        ok &= ~np.asarray(fast._ef.points_near_segments(np.ascontiguousarray(base), np.ascontiguousarray(ln[:-1]),
+                                                        np.ascontiguousarray(ln[1:]),
+                                                        np.full(len(ln) - 1, h + PARAPET_ROAD_GAP_M)))
+    out, i = [], 0
+    while i < len(ok):
+        if not ok[i]:
+            i += 1
+            continue
+        j = i
+        while j + 1 < len(ok) and ok[j + 1]:
+            j += 1
+        if j - i + 1 >= WALL_MIN_N:
+            sl = slice(i, j + 1)
+            # (its foot down to the ground behind it, which falls away: it stood in the air seen from below)
+            back = np.flatnonzero((steps >= rh) & (steps <= rh + 2.5))
+            g_back = gs[sl][:, back].min(axis=1) if len(back) else z[sl] - 1.0
+            out.append({"base": base[sl], "top": z[sl] + PARAPET_H, "foot": np.minimum(z[sl] - 1.0, g_back - 0.3),
+                        "toward": -out_n[sl],
+                        "thick": np.full(j - i + 1, PARAPET_W), "concrete": False, "rock": False, "parapet": True,
+                        "road_z": z[sl]})
+        i = j + 1
+    return out
+
+
+def cliff_rows(walls, roads=()):
+    """trees.lua rows [group, x, y, z, yaw, scale, height, rank] of rock-face pieces along the rural walls' faces
+    (retaining_walls' "rock" walls). roads: build_tile's roads: no piece's footprint on a carriageway (shrunk until
+    clear, else left out). Deterministic (hashed by position)."""
+    import fast
+    lines = [(np.asarray(pts, np.float64)[:, :2], spec.width / 2 + CLIFF_ROAD_GAP_M) for _, spec, pts, _ in roads
+             if len(pts) >= 2]
+    A = np.concatenate([ln[:-1] for ln, _ in lines]) if lines else np.zeros((0, 2))
+    B = np.concatenate([ln[1:] for ln, _ in lines]) if lines else np.zeros((0, 2))
+    H = np.concatenate([np.full(len(ln) - 1, h) for ln, h in lines]) if lines else np.zeros(0)
+
+    def on_road(px, py, yaw, sc, width, front, depth):
+        """Does the piece's footprint (its corners and edge midpoints) touch a carriageway?"""
+        if not len(A):
+            return False
+        c, s_ = math.cos(math.radians(yaw)), math.sin(math.radians(yaw))
+        ux, uy = np.array([c, s_]), np.array([-s_, c])          # its local x (along) and y (back from the road)
+        pts = [np.array([px, py]) + ux * a * width * sc / 2 + uy * b * sc
+               for a in (-1.0, -0.5, 0.0, 0.5, 1.0) for b in (-front * 0.6, depth - front)]
+        fast.require(0, "points_near_segments")
+        return bool(np.asarray(fast._ef.points_near_segments(np.ascontiguousarray(np.array(pts)), np.ascontiguousarray(A),
+                                                             np.ascontiguousarray(B), np.ascontiguousarray(H))).any())
+    rows = []
+    for w in walls:
+        # (their fronts just off the carriageway, not at the wall's face: the ground climbing in front of the face
+        # showed as a mound under the rocks)
+        b = np.asarray(w.get("edge", w["base"]), np.float64)
+        if len(b) < 2:
+            continue
+        tw = np.asarray(w["toward"], np.float64)
+        road_z, top = np.asarray(w["road_z"], np.float64), np.asarray(w["top"], np.float64)
+        clear = np.asarray(w["clear"], np.float64)
+        s = np.r_[0.0, np.cumsum(np.hypot(*np.diff(b, axis=0).T))]
+        at = 0.0
+        while at <= s[-1]:
+            i = min(int(np.searchsorted(s, at)), len(b) - 1)
+            hh = float(np.interp(at, s, top) - np.interp(at, s, road_z)) + CLIFF_SINK_M + CLIFF_OVER_M
+            jit = _hash01(round(float(b[i, 0]), 1), round(float(b[i, 1]), 1))
+            hh *= 0.9 + 0.2 * jit
+            sh, frac, front, width, depth = CLIFF_SHAPES[1 if hh >= CLIFF_TALL_M else 0]
+            sc = hh / sh
+            sc = min(sc, float(clear[i]) / depth)          # (not over another road)
+            if sc < 0.2:
+                at += 3.0
+                continue
+            t = tw[i]
+            x, y = float(np.interp(at, s, b[:, 0])), float(np.interp(at, s, b[:, 1]))
+            jit2 = _hash01(round(float(b[i, 0]), 1), round(float(b[i, 1]), 1), "z")
+            yaw = math.degrees(math.atan2(t[0], -t[1])) + (jit - 0.5) * 30.0
+            while sc >= 0.2:            # (shrunk until its footprint is off every carriageway, this road's included)
+                px, py = x - t[0] * front * sc, y - t[1] * front * sc   # its front (-y, toward the road) on the face
+                if not on_road(px, py, yaw, sc, width, front, depth):
+                    break
+                sc *= 0.8
+            if sc < 0.2:
+                at += 3.0
+                continue
+            hh = sc * sh
+            zb = float(np.interp(at, s, road_z)) - CLIFF_SINK_M - jit2 * 0.8 * sc
+            rows.append(["cliff", round(px, 2), round(py, 2), round(zb + frac * hh, 2), round(yaw % 360.0, 1), 1.0,
+                         round(hh, 2), round(jit, 3)])
+            at += max(CLIFF_SPACING * width * sc, 1.5)
+    return rows
+
+
+def _hash01(*key):
+    import hashlib
+    h = hashlib.blake2b(repr(key).encode(), digest_size=8).digest()
+    return int.from_bytes(h, "little") / 2.0 ** 64
+
+
 def retaining_walls(frame, roads, elev, exact, decks=()):
     """Stone retaining walls along the ground roads cut deeper than grading.WALL_CUT_M into the ground (the grading
     leaves the ground at its natural height right behind them): [dict(base (k, 2) the wall's face line, top (k,),
@@ -2729,6 +3006,7 @@ def retaining_walls(frame, roads, elev, exact, decks=()):
     Bruce Highway, 2026-10-21). Central Park's 86th Street Transverse between its stone walls (the user's photos,
     2026-10-17). Pure given elev."""
     import grading
+    import roadmesh
     x0, y0, x1, y1 = exact
     pts_all, info = [], []
     for fid, spec, pts, _ in roads:
@@ -2747,20 +3025,65 @@ def retaining_walls(frame, roads, elev, exact, decks=()):
         nl = np.stack([-d[:, 1], d[:, 0]], axis=1)
         width = max(spec.width, carriageway(spec.cls, spec.kind, True, None, spec.oneway))
         core = width / 2 + grading.shoulder(spec)
+        # (the grading's sharp cuttings end the core sooner; its flat strip behind a wall reaches past the core)
+        steps = np.arange(width / 2 + 0.5, core + grading.WALL_FLAT_M + 1.51, 1.0)
         for side in (1.0, -1.0):
             probe = xy + nl * side * (core + grading.WALL_FLAT_M + grading.WALL_T_M + WALL_PROBE_M)
             pts_all.append(probe)
-            info.append((xy, z, nl * side, core, inside))
+            for o in steps:
+                pts_all.append(xy + nl * side * o)
+            info.append((xy, z, nl * side, core, inside, width / 2, steps, spec.cls in CONCRETE_WALL_CLASSES,
+                         fid, not spec.urban, not spec.urban and spec.cls not in NO_PARAPET_CLASSES))
     if not pts_all:
         return []
     P = np.concatenate(pts_all)
     la, lo, _ = frame.enu_to_geodetic(P[:, 0], P[:, 1], np.zeros(len(P)))
     g = np.asarray(frame.geodetic_to_enu(la, lo, np.asarray(elev(la, lo), np.float64))[2], np.float64)
     out, k = [], 0
-    for xy, z, out_n, core, inside in info:
+    others = {fid: (np.asarray(pts, np.float64)[:, :2], spec.width / 2) for fid, spec, pts, _ in roads if len(pts) >= 2}
+    bend_of = {}
+    for xy, z, out_n, core, inside, rh, steps, concrete, fid, rural, parapets in info:
+        key = (id(xy), len(xy))
+        if key not in bend_of:          # (a tight bend: no wall into it, grading.bend_zone)
+            bend_of[key] = grading.bend_zone(xy)
+        bends = bend_of[key]
         gg = g[k:k + len(xy)]
         k += len(xy)
-        cut = _wall_runs(gg - z) & inside & ~_under_decks(xy + out_n * core, z, decks)
+        face = np.full(len(xy), core + 0.1)
+        thick = np.full(len(xy), roadmesh.WALL_THICK_M)
+        top_g = gg
+        if len(steps):              # the wall where the graded ground starts to climb (a sharp cutting: before the core's edge)
+            gs = g[k:k + len(xy) * len(steps)].reshape(len(steps), len(xy)).T
+            k += len(xy) * len(steps)
+            up = gs - z[:, None] > WALL_STEP_UP_M
+            first = np.argmax(up, axis=1)
+            # (the grading's flat strip in front of the climb: the terrain's 2 m lattice draws a step at an angle to it
+            # as teeth reaching up to a grid diagonal out, under the wall's top; its face in front of them)
+            face = np.where(up.any(axis=1), np.maximum(steps[first] - 1.0 - grading.WALL_FLAT_M, rh + 0.1), face)
+            # its top back to where the graded ground is up again (no trough behind it: a street above drove into one)
+            full = gs >= (z + WALL_FULL * (gg - z))[:, None]
+            back = np.argmax(full, axis=1)
+            # (and a grid diagonal more: the terrain's lattice reaches the top that much later between its points)
+            thick = np.where(full.any(axis=1), np.clip(steps[back] - face + WALL_DIAG_M, WALL_THICK_MIN_M,
+                                                       WALL_THICK_MAX_M), thick)
+            # (its top over the highest graded ground under it, not the one probe's: the bank poked through it in
+            # patches where that probe sat in a dip)
+            under = steps[None, :] >= face[:, None]
+            top_g = np.maximum(gg, np.where(under, gs, -np.inf).max(axis=1))
+            # (and never past where the ground behind falls away again: between a hairpin's legs the bank tops out
+            # and drops to the other leg, and the top hung out over that slope, its underside seen from the road
+            # above, the Stelvio Pass 2026-10-21)
+            low = (gs < (top_g - WALL_SLAB_DZ)[:, None]) & (steps[None, :] > (face + 1.0)[:, None])
+            reach = np.where(low.any(axis=1), steps[np.argmax(low, axis=1)] - face, np.inf)
+            thick = np.minimum(thick, np.maximum(reach - 0.5, WALL_COPING_MIN_M))
+        if parapets and len(steps):
+            out.extend(_parapets(xy, z, out_n, rh, inside, steps, gs, others, fid, decks))
+        full = _wall_runs(gg - z) & ~_under_decks(xy + out_n * core, z, decks) & ~bends
+        # (no face standing on a carriageway: a hairpin's other leg, the same road, the Stelvio Pass 2026-10-21)
+        full &= ~_on_carriageways(xy + out_n * face[:, None], others, 0.0)
+        # (its ends lowered over WALL_TAPER_M toward the road, the whole wall's ends, not a tile edge's)
+        taper = _taper(xy, full)
+        cut = full & inside
         i = 0
         while i < len(cut):
             if not cut[i]:
@@ -2771,8 +3094,24 @@ def retaining_walls(frame, roads, elev, exact, decks=()):
                 j += 1
             if j > i:
                 sl = slice(i, j + 1)
-                out.append({"base": xy[sl] + out_n[sl] * (core + 0.1), "top": gg[sl] + WALL_TOP_M,
-                            "foot": z[sl] - WALL_FOOT_M, "toward": -out_n[sl]})
+                # (its top's depth evened out along it: the 1 m probe steps drew a jagged back edge)
+                th = thick[sl]
+                th = np.maximum.reduce([np.r_[th[:1].repeat(m), th[:len(th) - m]] for m in range(WALL_EVEN_N + 1)]
+                                       + [np.r_[th[m:], th[-1:].repeat(m)] for m in range(1, WALL_EVEN_N + 1)])
+                base = xy[sl] + out_n[sl] * face[sl][:, None]
+                # (never over another road: a hairpin's wall top covered the road above, the Stelvio Pass, the user's
+                # report 2026-10-21)
+                th = np.minimum(th, _clear_depth(base, out_n[sl], th, others, fid))
+                tp = np.minimum(top_g[sl], z[sl] + grading.WALL_MAX_H_M) + WALL_TOP_M      # (no taller than that)
+                tp = z[sl] + WALL_TAPER_LOW_M + (tp - z[sl] - WALL_TAPER_LOW_M).clip(0) * taper[sl]
+                # (rock faces only as an experiment, BNE_CLIFF_WALLS=on, for tall rural cuts: the Stelvio's hairpins are
+                # walled in dry stone, tall cuts too, Mapillary 2026-10-21; the user chose stone walls for passes)
+                tall = CLIFF_WALLS_ON and float(np.max(top_g[sl] - z[sl])) > CLIFF_MIN_CUT_M
+                out.append({"base": base, "top": np.maximum(tp, z[sl] + WALL_TAPER_LOW_M), "foot": z[sl] - WALL_FOOT_M,
+                            "toward": -out_n[sl], "thick": th, "concrete": concrete, "rock": rural and tall,
+                            "road_z": z[sl], "clear": _clear_depth(base, out_n[sl], np.full(len(base), CLIFF_REACH_M),
+                                                                   others, fid),
+                            "edge": xy[sl] + out_n[sl] * (rh + CLIFF_EDGE_M)})
             i = j + 1
     return out
 
@@ -3108,7 +3447,14 @@ def build_tile(frame, tx, ty, cells, elev, urban_fn=None, walks=None, bridges=No
                 decks_near.append({"n": n, "w": float(c["w"]) + 2 * roadmesh.TUNNEL_SHOULDER})
     exact = (x0, y0, x1, y1)
     if walls is not None:                       # retaining walls where a road is cut into the ground (roadmesh.tunnel)
-        walls.extend(retaining_walls(frame, roads, elev, exact, decks=decks_near))
+        tile_walls = retaining_walls(frame, roads, elev, exact, decks=decks_near)
+        if props is None:                       # (no props here: stone)
+            for w in tile_walls:
+                w["rock"] = False
+        walls.extend(w for w in tile_walls if not w["rock"])
+        if props is not None:                   # a rural cut: rock-face pieces instead (cliff_rows)
+            props.extend(cliff_rows([w for w in tile_walls if w["rock"]], roads))
+        chunks = _off_wall_tops(chunks, [w for w in tile_walls if not w["rock"]])
     corners, jcuts, crosswalks, jramps, jlines, jinternal = ({}, {}, [], {}, {}, set()) if walks is None else \
         junctions.find(roads, has_sidewalks, None, PARKING_M,
                        lambda sp: sp.urban and sp.cls in PARKING_CLASSES and sp.kind in BUILT and not sp.oneway
@@ -3170,8 +3516,8 @@ def build_tile(frame, tx, ty, cells, elev, urban_fn=None, walks=None, bridges=No
                 # whole runs near the tile first (joined across tile borders below), clipped to the tile after
                 for piece in clip_polyline(line, *near):
                     for cpiece, (j0, j1) in junctions.apply_cuts(piece, jcuts.get((fid, side), [])):
-                        for run in cut_outside(cpiece, wb, 0.5):
-                            run = densify(simplify(run))
+                        for run in [r for r0 in cut_outside(cpiece, wb, 0.5)
+                                    for r in _on_level(frame, elev, densify(simplify(r0)))]:
                             if len(run) < 2:
                                 continue
                             at_j0 = j0 and np.hypot(*(run[0, :2] - cpiece[0, :2])) < 0.6

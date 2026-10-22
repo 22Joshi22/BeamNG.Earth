@@ -57,6 +57,21 @@ def flat(lat, lon):
     return np.full(np.shape(lat), 10.0)
 
 
+
+class WalkLevelTest(unittest.TestCase):
+    def test_sidewalk_stops_at_a_wall(self):
+        """A sidewalk along y = 6 at the road's level 10 m: where the ground under it climbs a wall (x 30..50) it stops."""
+        run = np.c_[np.arange(0.0, 81.0, 2.0), np.full(41, 6.0), np.full(41, 10.0)]
+
+        def elev(la, lo):
+            e = (np.asarray(lo) - LON) * M_LON
+            return 10.0 + 0.3 * np.sin(e / 7.0) + np.where((e > 30) & (e < 50), 4.0, 0.0)
+        pieces = roads._on_level(FRAME, elev, run)
+        self.assertEqual(len(pieces), 2)
+        self.assertLess(pieces[0][-1, 0], 31.0)
+        self.assertGreater(pieces[1][0, 0], 49.0)
+        self.assertEqual(len(roads._on_level(FRAME, lambda la, lo: np.full(np.shape(la), 10.4), run)), 1)
+
 class RulesTest(unittest.TestCase):
     def test_surface_kind(self):
         self.assertEqual(roads.surface_kind("residential", None), "paved")
@@ -112,6 +127,17 @@ class DualCarriagewayTest(unittest.TestCase):
         ex = roads.extras(sp[0], np.array([[0, 0, 0], [300, 0, 0.0]]), LON)
         self.assertFalse(any(abs(abs(float(pts[0][1])) - roads.CENTRE["gap"]) < 1e-6 for _, _, pts in ex),
                          "no double centre line (a lane line instead)")
+
+    def test_carriageways_never_overlap(self):
+        """Two one-way trunk carriageways 9.6 m apart (Munich's McGraw-Graben): each narrower than the gap, not the
+        class's 11 m; far apart they keep the class's width."""
+        near = self.feats([[(0, 0), (300, 0)], [(300, 9.6), (0, 9.6)]], ["Graben", "Graben"], ["trunk", "trunk"])
+        far = self.feats([[(0, 0), (300, 0)], [(300, 30), (0, 30)]], ["Graben", "Graben"], ["trunk", "trunk"])
+        sp = roads.road_specs(near)
+        for s_ in sp:
+            self.assertAlmostEqual(s_.width, 9.6 - roads.DUAL_MIN_MEDIAN_M, delta=0.15)
+        w = roads.carriageway("trunk", "paved", False, None, True)
+        self.assertTrue(all(abs(s_.width - w) < 1e-9 for s_ in roads.road_specs(far)))
 
     def test_other_names_and_crossing_roads_untouched(self):
         f = self.feats([[(0, 0), (300, 0)], [(300, 20), (0, 20)], [(150, -100), (150, 100)]],

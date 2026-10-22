@@ -16,7 +16,6 @@ cell's map data and VERSION; its random choices (species, yaw, size, thinning ra
 - Groups: deciduous / conifer by a regional mix and height, shrub, rock (the mod maps groups to its
   stock shapes).
 """
-import hashlib
 import logging
 import math
 import os
@@ -35,7 +34,7 @@ import staging
 
 log = logging.getLogger("earthd.vegetation")
 
-VERSION = 13
+VERSION = 14          # (the cached cells hold their groups: 14 for the regional rules of GitHub #110)
 TREE_MIN_M = 3.0
 CROWN_SPACING = 0.5          # tops kept this many crown radii apart (0.8 looked sparse: the user, 2026-10-13)
 BUSH_MIN_M = 1.0
@@ -143,35 +142,16 @@ def _dry_west(lat, lon):
 def regional(group, height, lat, lon, lcls, u):
     """The groups of a region (the stock maps' species: West Coast USA's pines, oaks and palms, Utah's junipers
     and desert bushes, Johnson Valley's rocks, Jungle Rock Island's palms and tropical trees) from the generic
-    ones, by a coarse climate from the position and the land cover class at the item (until a species map).
-    u: a hashed [0, 1) per item. Pure."""
-    g = np.asarray(group).copy()
-    lat, lon, h, lcls = np.asarray(lat), np.asarray(lon), np.asarray(height), np.asarray(lcls)
-    west_coast = (lon < -114.0) & (lat > 32.0) & (lat < 49.5)
-    dry_west = _dry_west(lat, lon)
-    open_dry = dry_west & np.isin(lcls, (WC["shrub"], WC["bare"], WC["grass"]))
-    tropics = np.abs(lat) < 23.5
-    warm_coast = ((lat < 30.5) & (lon > -100.0) & (lon < -79.0)) | ((lat < 34.6) & (lon < -114.0) & (lat > 20.0))
-    built = lcls == WC["built"]
-    # towns of the dry West are irrigated broadleaves (cottonwoods, elms) far more than conifers (Moab's photos)
-    g = np.where(dry_west & built & (g == G_CONIFER) & (u < 0.8), G_DECIDUOUS, g)
-    tree = (g == G_DECIDUOUS) | (g == G_CONIFER)
-    # the west: pines for the conifers, oaks for the small broadleaves
-    g = np.where(west_coast & (g == G_CONIFER), G_PINE_WEST, g)
-    g = np.where(west_coast & (g == G_DECIDUOUS) & (h < 11.0), G_OAK_WEST, g)
-    # dry open country: junipers, desert bushes and rocks
-    g = np.where(open_dry & tree & (h < 9.0), G_JUNIPER, g)
-    g = np.where(open_dry & (g == G_CONIFER), G_PINE_WEST, g)
-    # arid land elsewhere (the land cover says shrubland or bare: the Sahara, Arabia, inner Australia, the
-    # Thar, the Kalahari): its bushes and rocks are the desert ones
-    arid = ~_north_america(lat, lon) & np.isin(lcls, (WC["shrub"], WC["bare"])) & (np.abs(lat) < 42.0)
-    g = np.where((dry_west | arid) & (g == G_SHRUB), G_DESERT_SHRUB, g)
-    g = np.where((dry_west | arid) & (g == G_ROCK), G_DESERT_ROCK, g)
-    # palms: most of a warm coast's town trees, some of its others; tall broadleaves in the tropics
-    palm_p = np.where(built, 0.6, 0.2)
-    g = np.where((warm_coast | tropics) & tree & (u < palm_p), G_PALM, g)
-    g = np.where(tropics & (g == G_DECIDUOUS) & (h >= 12.0), G_TROPICAL, g)
-    return g.astype(np.uint8)
+    ones, by a coarse climate from the position and the land cover class at the item (until a species map): the Rust
+    kernel earthfast.regional_groups (its rules there). u: a hashed [0, 1) per item. Pure."""
+    fast.require(43, "regional_groups")
+    f64 = np.float64
+    n = np.size(group)
+    bc = lambda a, t: np.ascontiguousarray(np.broadcast_to(np.asarray(a, t), (n,)))     # noqa: E731
+    return np.asarray(fast._ef.regional_groups(
+        bc(group, np.uint8), bc(height, f64), bc(lat, f64), bc(lon, f64), bc(lcls, np.uint8), bc(u, f64),
+        [G_DECIDUOUS, G_CONIFER, G_SHRUB, G_ROCK, G_PINE_WEST, G_PALM, G_JUNIPER, G_DESERT_SHRUB, G_DESERT_ROCK,
+         G_OAK_WEST, G_TROPICAL], [WC["shrub"], WC["bare"], WC["grass"], WC["built"]]), np.uint8)
 
 
 def _north_america(lat, lon):

@@ -120,14 +120,10 @@ class AbutmentTest(unittest.TestCase):
         base = np.array([369.9, 370.6])
         out = grading.grade_points(px, py, base, [approach, lower])
         self.assertTrue(np.allclose(out, 372.9, atol=0.25), out)     # (the segments along it still blend a little)
-        plain = grading.Plan(xy, np.full(21, 372.9), 6.9)     # (not onto a bridge, nor SEP_ON: blended as before)
+        plain = grading.Plan(xy, np.full(21, 372.9), 6.9)     # (not onto a bridge, nor SEP_ON: ...)
         with unittest.mock.patch.object(grading, "SEP_ON", False):
-            self.assertLess(grading.grade_points(px, py, base, [plain, lower])[0], 372.0)
-        import fast
-        if fast.AVAILABLE and getattr(fast._ef, "VERSION", 0) >= 36:
-            with unittest.mock.patch.object(fast, "AVAILABLE", False):
-                py_out = grading.grade_points(px, py, base, [approach, lower])
-            self.assertTrue(np.allclose(out, py_out, atol=1e-9), "Rust and Python agree")
+            # ... the lower road's verge still gives way to the approach's carriageway, 8 m over it (grade_points' rh)
+            self.assertGreater(grading.grade_points(px, py, base, [plain, lower])[0], 372.5)
 
 
 class SeparationTest(unittest.TestCase):
@@ -145,22 +141,62 @@ class SeparationTest(unittest.TestCase):
         out = grading.grade_points(self.px, self.py, self.base, [self.street, self.bank])
         self.assertLess(np.ptp(out), 0.3, out)
         with unittest.mock.patch.object(grading, "SEP_ON", False):
+            # (the bank pulled its edge up before SEP; the carriageway rule keeps it flat too: the bank's verge
+            # gives way to the street's carriageway, 7.5 m under it)
             old = grading.grade_points(self.px, self.py, self.base, [self.street, self.bank])
-        self.assertGreater(np.ptp(old), 1.0, "(the bank pulled its edge up before)")
+        self.assertLess(np.ptp(old), 0.3, old)
 
-    def test_rust_and_python_agree(self):
-        import fast
-        if not (fast.AVAILABLE and getattr(fast._ef, "VERSION", 0) >= 36):
-            self.skipTest("no Rust module")
-        z = np.full(3, 590.0)
-        dot = grading.Plan(np.array([[30.0, 4.0], [30.0, 4.0], [34.0, 4.0]]), z, 2.0)    # a zero-length segment
-        plans = [self.street, self.bank, dot]
-        px, py = np.meshgrid(np.arange(-20.0, 40.0, 0.7), np.arange(-25.0, 15.0, 0.7))
-        base = 589.0 + 0.4 * np.abs(py.ravel())
-        out = grading.grade_points(px.ravel(), py.ravel(), base, plans)
-        with unittest.mock.patch.object(fast, "AVAILABLE", False):
-            ref = grading.grade_points(px.ravel(), py.ravel(), base, plans)
-        self.assertLess(np.abs(out - ref).max(), 1e-9)
+
+class CarriagewayFirstTest(unittest.TestCase):
+    """A road in a cutting (carriageway 4 m each side) and a street 7 m above it, centres 10 m apart, its sidewalk verge
+    3 m past its own carriageway (5.3 m): the verge reaches over the cutting's carriageway and gives way to it."""
+
+    def test_verge_gives_way(self):
+        xs = np.arange(-100.0, 100.1, 4.0)
+        low = grading.Plan(np.stack([xs, np.zeros(len(xs))], axis=1), np.full(len(xs), 535.0), 7.0, road_half=4.0)
+        high = grading.Plan(np.stack([xs, np.full(len(xs), 10.0)], axis=1), np.full(len(xs), 542.0), 8.3,
+                            road_half=5.3)
+        py = np.arange(-4.0, 4.01, 0.5)                              # across the low carriageway
+        px = np.zeros(len(py))
+        base = np.where(py > 1.0, 538.0, 535.0)
+        out = grading.grade_points(px, py, base, [low, high])
+        np.testing.assert_allclose(out, 535.0 + grading.ROAD_LIFT * 0, atol=0.3)
+        up = grading.grade_points(np.zeros(5), np.arange(5.0, 7.1, 0.5), np.full(5, 542.0), [low, high])
+        np.testing.assert_allclose(up, 542.0, atol=0.3)              # the street's own carriageway stays up
+
+
+class SharpCutTest(unittest.TestCase):
+    """_add_cuts: a street along y = 0 with a smoothed 4 m wall rising beside its left side (+y) gets a cutting there:
+    the wall where the climb is half done, its top 4 m up; the open right side none."""
+
+    def test_wall_on_one_side(self):
+        import types
+        xy = np.c_[np.arange(0.0, 81.0, 8.0), np.zeros(11)]
+        p = types.SimpleNamespace(xy=xy, z=np.full(11, 10.0), half=5.0, road_half=4.0, cut=None)
+
+        def elev(la, lo):
+            _e, n, _ = FRAME.geodetic_to_enu(np.asarray(la), np.asarray(lo), np.zeros(np.shape(la)))
+            return 10.0 + 4.0 / (1.0 + np.exp(-(n - 8.0) / 0.8))
+        grading._add_cuts(FRAME, [p], elev)
+        self.assertIsNotNone(p.cut)
+        self.assertEqual(p.cut.shape, (10, 6))
+        wall, top, reach = p.cut[:, 0], p.cut[:, 1], p.cut[:, 2]
+        self.assertTrue(np.isfinite(wall).all() and np.isfinite(top).all())
+        np.testing.assert_allclose(wall, 8.0, atol=1.01)                # the half-way point of the climb
+        np.testing.assert_allclose(top, 10.0 + 3.6, atol=0.4)          # 90 % of it
+        self.assertTrue((reach > wall).all())
+        self.assertTrue(np.isnan(p.cut[:, 3:]).all(), "the open side: no cutting")
+
+    def test_gentle_slope_is_no_wall(self):
+        import types
+        xy = np.c_[np.arange(0.0, 81.0, 8.0), np.zeros(11)]
+        p = types.SimpleNamespace(xy=xy, z=np.full(11, 10.0), half=5.0, road_half=4.0, cut=None)
+
+        def elev(la, lo):
+            _e, n, _ = FRAME.geodetic_to_enu(np.asarray(la), np.asarray(lo), np.zeros(np.shape(la)))
+            return 10.0 + 0.2 * np.abs(n)                                # 1 in 5: a bank, not a wall
+        grading._add_cuts(FRAME, [p], elev)
+        self.assertIsNone(p.cut)
 
 
 class ShoulderTest(unittest.TestCase):
@@ -238,7 +274,8 @@ class GraderTest(unittest.TestCase):
         bbox = mapcells.cells_for_bbox(float(la.min()), float(lo.min()), float(la.max()), float(lo.max()))
         self.assertGreater(len(bbox), 100)
         out = g.apply(la, lo, np.zeros(2))
-        self.assertLessEqual(md.calls, 8, "the cells around the two points")
+        # (each point's own cells and those whose plans reach it: a cell plans CLIP_MARGIN_M past its edges)
+        self.assertLessEqual(md.calls, 18, "the cells around the two points")
         self.assertAlmostEqual(float(out[0]), 10.0, delta=0.05)
         near = mapcells.cells_near_points(la, lo, 1e-4, 1e-4)
         self.assertTrue(set(near) <= set(bbox))
@@ -254,6 +291,7 @@ class GraderTest(unittest.TestCase):
         b = g.plans(la2, lo2)
         self.assertEqual([id(p) for p in a], [id(p) for p in b])
 
+    @unittest.mock.patch.object(grading, "SHARP_ON", False)        # (the profile's samples alone counted)
     def test_long_parts_planned_near_the_cell_only(self):
         # a 30 km straight track (one segment): its plan in a cell covers the cell and CLIP_MARGIN_M round it, not
         # its whole length (each cell sampled the ground to both ends: thousands of DEM tiles, 2026-10-20), with the

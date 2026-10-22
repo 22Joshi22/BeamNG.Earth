@@ -185,8 +185,8 @@
   "1_0_-1": {
    "cdae_bytes": 86852,
    "cdae_tex_bytes": 96624,
-   "dae_bytes": 161910,
-   "err": 19.62357,
+   "dae_bytes": 161939,
+   "err": 26.62357,
    "grid": "c4e621d1c87bdd9bfef0ea39a51685a25b0ba1c7127bd25834c32916ed6bc6b4",
    "normals": "319ae5eb41bdc41d9b204e6a03edbc13501a5e86cee40554c1162aed647d6a17",
    "planar": "26e5ee5dac90c9f8f9ccbded21c3aa891d12222097344be784d648995c601554",
@@ -195,9 +195,9 @@
     -512.0,
     1507.0
    ],
-   "positions": "4a00a20fd5f4267d9e6de0f1602e69f3f1a2caf71594fd9aa52c381bed59be36",
+   "positions": "5cfd20d1f810ece01569ddbb26a18f0b460ea71267f03ea0ebce8269470d6a7a",
    "sink": null,
-   "skirt": 50.058924,
+   "skirt": 67.558924,
    "tris": "817efbea1872b10b5d8d79ffe551ca7ca3824df1b5af451f8c68d91b13428bf1",
    "uvs": "7f9804272b0cb26a98ffc852bb684b4b7d6100761e1813c3db813bdd1aa23bc9"
   },
@@ -241,7 +241,7 @@
   }
  },
  "zooms": [
-  15,
+  16,
   13,
   12,
   11,

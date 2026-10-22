@@ -634,7 +634,9 @@ TUNNEL_SOIL = "bne_tunnel_soil"     # grass on the ground over the masonry: a re
                                     # stone and terrain better")
 SOIL_UV_M = 1.0            # m per repeat of the grass (the terrain's detail texture: bngEarthGroundGrass, size 1)
 WALL_COPING_M = 0.5        # m of a retaining wall's top in stone (its coping), the rest of it soil
+WALL_SKIRT_M = 2.0         # m a retaining wall's back reaches down from its top
 STONE_UV_M = 3.0           # m per repeat of the stone on a low arch
+CONCRETE_UV_M = 4.0        # m per repeat of the concrete (as a tunnel's)
 LOW_PORTAL_UP = 1.4        # m a low arch's portal face reaches over the vault (to the ground over it) ...
 LOW_PORTAL_SIDE = 3.0      # ... and beside the opening
 LOW_RISE = 0.4             # a low arch's vault rises this share of its height from its walls (a segmental arch)
@@ -684,27 +686,38 @@ def _retaining_walls(walls, origin, P, T, UV, M, nv):
         if k < 2:
             continue
         s = np.concatenate(([0.0], np.cumsum(np.hypot(*np.diff(b, axis=0).T))))
-        back = b - tw * WALL_THICK_M
+        thick = np.asarray(w.get("thick", np.full(k, WALL_THICK_M)), np.float64)    # (roads.retaining_walls)
+        face_m, face_uv = (0, CONCRETE_UV_M) if w.get("concrete") else (2, STONE_UV_M)  # (a major road's: concrete)
+        back = b - tw * thick[:, None]
         face_lo = np.c_[b, foot] - origin
         face_hi = np.c_[b, top] - origin
         back_hi = np.c_[back, top] - origin
-        cop_hi = np.c_[b - tw * WALL_COPING_M, top] - origin
-        for lo_, hi_, vlo, vhi, mat in ((face_lo, face_hi, foot, top, 2), (face_hi, cop_hi, None, WALL_COPING_M, 2),
-                                        (cop_hi, back_hi, None, WALL_THICK_M - WALL_COPING_M, 4)):
+        cop = np.minimum(WALL_COPING_M, thick)
+        cop_hi = np.c_[b - tw * cop[:, None], top] - origin
+        quads = [(face_lo, face_hi, foot, top, face_m), (face_hi, cop_hi, None, float(np.mean(cop)), face_m)]
+        if (thick > cop + 0.01).any():          # the soil behind the coping (a parapet is all stone)
+            quads.append((cop_hi, back_hi, None, float(np.mean(thick - cop)), 4))
+        if w.get("parapet"):                    # a parapet's back, seen from the valley
+            quads.append((np.c_[back, foot] - origin, back_hi, foot, top, face_m))
+        else:                                   # a retaining wall's back: down into the ground behind it (where the
+            skirt = top - WALL_SKIRT_M          # ground there lies lower, its edge was open, seen from above)
+            quads.append((np.c_[back, skirt] - origin, back_hi, skirt, top, face_m))
+        for qi, (lo_, hi_, vlo, vhi, mat) in enumerate(quads):
             P.append(np.concatenate([lo_, hi_]))
             if vlo is not None:
-                UV.append(np.column_stack((np.concatenate((s, s)) / STONE_UV_M, np.concatenate((vlo, vhi)) / STONE_UV_M)))
+                UV.append(np.column_stack((np.concatenate((s, s)) / face_uv, np.concatenate((vlo, vhi)) / face_uv)))
             else:
-                sc = SOIL_UV_M if mat == 4 else STONE_UV_M
+                sc = SOIL_UV_M if mat == 4 else face_uv
                 UV.append(np.column_stack((np.concatenate((s, s)) / sc, np.concatenate((np.zeros(k), np.full(k, vhi))) / sc)))
             i = np.arange(k - 1)
             A, A1, B, B1 = nv + i, nv + i + 1, nv + k + i, nv + k + i + 1
             tri = np.concatenate([np.stack([A, B, B1], 1), np.stack([A, B1, A1], 1)])
             pts = np.concatenate([lo_, hi_])
             nrm = np.cross(pts[tri[:, 1] - nv] - pts[tri[:, 0] - nv], pts[tri[:, 2] - nv] - pts[tri[:, 0] - nv])
-            # the face looks toward the road, the top up
+            # the face looks toward the road, the top up (a parapet's back away from it)
             if vlo is not None:
-                look = np.c_[np.concatenate([tw[i], tw[i]]), np.zeros(2 * (k - 1))]
+                sgn = -1.0 if qi == len(quads) - 1 and quads[-1][2] is not None and qi > 0 else 1.0
+                look = np.c_[sgn * np.concatenate([tw[i], tw[i]]), np.zeros(2 * (k - 1))]
             else:
                 look = np.tile([0.0, 0.0, 1.0], (2 * (k - 1), 1))
             flip = (nrm * look).sum(1) < 0
@@ -718,7 +731,7 @@ def _retaining_walls(walls, origin, P, T, UV, M, nv):
             UV.append(np.array([[0, 0], [0, 1], [0.25, 1], [0.25, 0]], np.float64))
             T.append(np.array([[nv, nv + 1, nv + 2], [nv, nv + 2, nv + 3], [nv, nv + 2, nv + 1], [nv, nv + 3, nv + 2]],
                               np.int64))
-            M.append(2)
+            M.append(face_m)
             nv += 4
     return nv
 

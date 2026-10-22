@@ -817,20 +817,33 @@ fn measure_row32(line: PyReadonlyArray2<f64>, keys: PyReadonlyArray1<i64>, first
 }
 
 /// grading.grade_points: base heights at the points (px, py) graded under the plans' segments a-b (heights za-zb,
-/// core half width h): the weights, the inverse-distance blend and the max weight as the numpy code, the (segment,
-/// point) pairs in its order (segments, bucket rows, points sorted by bucket).
+/// core half width h, carriageway half width rh, road rid): the weights, the inverse-distance blend and the max weight
+/// as the numpy code, the (segment, point) pairs in its order (segments, bucket rows, points sorted by bucket). On a
+/// road's carriageway another road (past its own rh: its verge and blend) more than wall_cut above or below it does not
+/// count: a street's sidewalk over a cutting dragged the road in it up its wall (Munich's McGraw-Graben). Behind a
+/// cutting's wall (an up cut side, wall_flat deep: under the retaining wall's top) no other road at another level counts
+/// at all: the terrain's 2 m lattice drew the step as teeth in front of the wall where a street above came near it.
 #[pyfunction]
 #[allow(clippy::too_many_arguments)]
 fn grade_points<'py>(py: Python<'py>, px: PyReadonlyArray1<'py, f64>, pyy: PyReadonlyArray1<'py, f64>,
                      base: PyReadonlyArray1<'py, f64>, a: PyReadonlyArray2<'py, f64>, b: PyReadonlyArray2<'py, f64>,
                      za: PyReadonlyArray1<'py, f64>, zb: PyReadonlyArray1<'py, f64>, h: PyReadonlyArray1<'py, f64>,
-                     abut: PyReadonlyArray1<'py, u8>, lift: f64, slope_run: f64, t_min: f64, t_max: f64, blend_r: f64,
+                     rh: PyReadonlyArray1<'py, f64>, rid: PyReadonlyArray1<'py, i64>, abut: PyReadonlyArray1<'py, u8>, cut: PyReadonlyArray2<'py, f64>, lift: f64, slope_run: f64,
+                     t_min: f64, t_max: f64, blend_r: f64,
                      bucket: f64, wall_cut: f64, wall_t: f64, wall_flat: f64, wall_ahead: f64,
-                     sep: bool, sep_from: f64, sep_full: f64, core_fade: f64, side_fade: f64)
+                     sep: bool, sep_from: f64, sep_full: f64, core_fade: f64, side_fade: f64, sharp_step: f64)
                      -> Bound<'py, PyArray1<f64>> {
     let (px, pyy, base) = (px.as_array(), pyy.as_array(), base.as_array());
     let (a, b, za, zb, h) = (a.as_array(), b.as_array(), za.as_array(), zb.as_array(), h.as_array());
+    let (rh, rid) = (rh.as_array(), rid.as_array());
     let abut = abut.as_array();
+    let cut = cut.as_array();               // (segments, 6): a cutting's wall, top and top offset, left then right
+    let sharp = cut.iter().any(|v| v.is_finite());
+    let has_cut: Vec<bool> = (0..h.len()).map(|s| (0..6).any(|k| cut[[s, k]].is_finite())).collect();
+    let cut_reach: Vec<f64> = (0..h.len()).map(|s| {
+        let r = cut[[s, 2]].max(cut[[s, 5]]).max(cut[[s, 0]]).max(cut[[s, 3]]);
+        if r.is_finite() { r + 0.5 + 2.0 * sharp_step } else { 0.0 }
+    }).collect();
     let n = px.len();
     let mut out: Vec<f64> = base.iter().copied().collect();
     if n == 0 {
@@ -858,13 +871,27 @@ fn grade_points<'py>(py: Python<'py>, px: PyReadonlyArray1<'py, f64>, pyy: PyRea
     let mut cmax = vec![0.0f64; n];
     let mut csum = vec![0.0f64; n];
     let mut cz = vec![0.0f64; n];
+    let mut raised = vec![f64::NEG_INFINITY; n];    // (sharp) the cuttings' tops over the points beside them
+    let mut beff: Vec<f64> = base.iter().copied().collect();
+    // the carriageway each point is deepest in (d - rh, most negative) and its height there
+    let mut cdeep = vec![0.0f64; n];
+    let mut carz = vec![f64::NAN; n];
+    let mut carid = vec![-1i64; n];
+    // the cutting band each point is deepest in (d - its far edge) and its road and height
+    let mut bdeep = vec![0.0f64; n];
+    let mut bz = vec![f64::NAN; n];
+    let mut bid = vec![-1i64; n];
     let smooth = |v: f64| { let v = v.clamp(0.0, 1.0); v * v * (3.0 - 2.0 * v) };
     for pass in 0..2 {
-        for s in 0..h.len() {
-            if pass == 0 && abut[s] == 0 && !sep {
-                continue;
+        if pass == 1 && sharp {
+            for i in 0..n {
+                beff[i] = base[i].max(raised[i]);
             }
-            let reach = if pass == 0 { h[s] + if sep { core_fade } else { 0.0 } } else { h[s] + t_max };
+        }
+        for s in 0..h.len() {
+            // (pass 0 within the blend's reach too: the Python loop pairs the points with a segment once, at h + t_max)
+            let reach = if pass == 0 { (h[s] + if sep { core_fade } else { 0.0 }).max(cut_reach[s]).min(h[s] + t_max) }
+                        else { h[s] + t_max };
             let (ax, ay, bx, by) = (a[[s, 0]], a[[s, 1]], b[[s, 0]], b[[s, 1]]);
             let (lo_x, hi_x) = (ax.min(bx) - reach, ax.max(bx) + reach);
             let (lo_y, hi_y) = (ay.min(by) - reach, ay.max(by) + reach);
@@ -886,9 +913,32 @@ fn grade_points<'py>(py: Python<'py>, px: PyReadonlyArray1<'py, f64>, pyy: PyRea
                     let t = if l2 > 1e-12 { ((qx * abx + qy * aby) / l2).clamp(0.0, 1.0) } else { 0.0 };
                     let d = (qx - t * abx).hypot(qy - t * aby);
                     let target = za[s] + (zb[s] - za[s]) * t;
+                    let left = (qx * aby - qy * abx) < 0.0;
+                    let co = if left { 0 } else { 3 };
+                    let (cwall, ctop, creach) = (cut[[s, co]], cut[[s, co + 1]], cut[[s, co + 2]]);
                     if pass == 0 {
+                        if d - rh[s] < cdeep[idx] || (d <= rh[s] && carz[idx].is_nan()) {
+                            cdeep[idx] = d - rh[s];
+                            carz[idx] = target;
+                            carid[idx] = rid[s];
+                        }
                         if abut[s] != 0 && d <= h[s] && target > top[idx] {
                             top[idx] = target;
+                        }
+                        if has_cut[s] && ctop.is_finite() {     // the ground raised to a cutting's top past its wall
+                            let lab0 = l2.max(1e-24).sqrt();
+                            let al0 = (qx * abx + qy * aby) / lab0;
+                            let ahead0 = (-al0).max(al0 - lab0).max(0.0);
+                            let side0 = (qx * aby - qy * abx).abs() / lab0;
+                            let bend = h[s].min(cwall) + wall_flat;     // the band behind its wall
+                            if side0 > rh[s] && ahead0 < side0 && d - bend < bdeep[idx] {
+                                bdeep[idx] = d - bend;
+                                bz[idx] = target;
+                                bid[idx] = rid[s];
+                            }
+                            if side0 > cwall && side0 <= creach + 0.5 && ahead0 < sharp_step * 2.0 && ctop > raised[idx] {
+                                raised[idx] = ctop;
+                            }
                         }
                         if sep {
                             let cn = 1.0 - smooth((d - h[s]) / core_fade);
@@ -912,18 +962,30 @@ fn grade_points<'py>(py: Python<'py>, px: PyReadonlyArray1<'py, f64>, pyy: PyRea
                     } else { 0.0 };
                     // (and not far past a road's end: beside a tunnel the approach's last segment flattened a strip
                     // 10 m along it, a pit beside the arch, 2026-10-17)
-                    let wall = base[idx] - target > wall_cut && ahead < side && ahead < wall_ahead;
-                    let tt = if wall { wall_t } else { (slope_run * (target - base[idx]).abs()).clamp(t_min, t_max) };
+                    // (on a cutting's side the core ends at its wall; where the ground falls away there the road ends)
+                    let hs = if cwall.is_finite() { h[s].min(cwall) } else { h[s] };
+                    let drop = cwall.is_finite() && !ctop.is_finite() && d > cwall;
+                    let wall = beff[idx] - target > wall_cut && ahead < side && ahead < wall_ahead;
+                    let tt = if wall { wall_t } else { (slope_run * (target - beff[idx]).abs()).clamp(t_min, t_max) };
                     // a wall: flat on one terrain step behind it (no slope in front of its face), then up
-                    let u = ((d - h[s] - if wall { wall_flat } else { 0.0 }) / tt).clamp(0.0, 1.0);
+                    let u = ((d - hs - if wall { wall_flat } else { 0.0 }) / tt).clamp(0.0, 1.0);
                     let w = 1.0 - u * u * (3.0 - 2.0 * u);
-                    if w > 0.0 && !(d > h[s] && ahead < side && target < top[idx] - wall_cut) {
+                    // (another road's carriageway here, at another level: this road gives way past its own carriageway)
+                    // (a road's own carriageway never gives way: a hairpin's band over the leg above sank its lanes
+                    // under the terrain, the Stelvio Pass, the user's report 2026-10-21)
+                    // (a carriageway first: a road's cutting band reaching over another road's carriageway at another level
+                    // (its "climb" was that road's embankment) does not pull that road's ground; a bridge's abutment sank
+                    // 2.5 m under the deck into the street below, a wall cars hit, GitHub #108 Meppen)
+                    let on_other_car = carid[idx] >= 0 && carid[idx] != rid[s] && (target - carz[idx]).abs() > wall_cut;
+                    let yields = d > rh[s] && (on_other_car
+                        || (bid[idx] >= 0 && bid[idx] != rid[s] && (target - bz[idx]).abs() > wall_cut));
+                    if w > 0.0 && !drop && !yields && !(d > hs && ahead < side && target < top[idx] - wall_cut) {
                         let r = d / blend_r;
                         let mut wb = w / (1.0 + r * r);
                         if sep {
                             let rf = cz[idx] / csum[idx].max(1e-12);
                             let f = cmax[idx] * smooth(((target - rf).abs() - sep_from) / (sep_full - sep_from))
-                                * smooth((d - h[s]) / core_fade) * smooth((side - ahead) / side_fade);
+                                * smooth((d - hs) / core_fade) * smooth((side - ahead) / side_fade);
                             wb *= 1.0 - f;
                         }
                         num[idx] += wb * target;
@@ -937,8 +999,9 @@ fn grade_points<'py>(py: Python<'py>, px: PyReadonlyArray1<'py, f64>, pyy: PyRea
         }
     }
     for i in 0..n {
+        out[i] = beff[i];
         if den[i] > 0.0 {
-            out[i] = base[i] + wmax[i] * (num[i] / den[i] - base[i] + lift);
+            out[i] = beff[i] + wmax[i] * (num[i] / den[i] - beff[i] + lift);
         }
     }
     out.into_pyarray(py)
@@ -2170,13 +2233,49 @@ fn points_near_segments<'py>(py: Python<'py>, p: PyReadonlyArray2<'py, f64>, a: 
             let (ab0, ab1) = (bv[[k, 0]] - a0, bv[[k, 1]] - a1);
             [a0, a1, ab0, ab1, (ab0 * ab0 + ab1 * ab1).max(1e-9), hv[k]]
         }).collect();
-        (0..pv.shape()[0]).map(|i| {
+        let np_ = pv.shape()[0];
+        let near = |i: usize, g: &[f64; 6]| {
             let (p0, p1) = (pv[[i, 0]], pv[[i, 1]]);
-            seg.iter().any(|g| {
-                let t = (((p0 - g[0]) * g[2] + (p1 - g[1]) * g[3]) / g[4]).clamp(0.0, 1.0);
-                let d = (p0 - (g[0] + t * g[2])).hypot(p1 - (g[1] + t * g[3]));
-                d < g[5]
-            })
+            let t = (((p0 - g[0]) * g[2] + (p1 - g[1]) * g[3]) / g[4]).clamp(0.0, 1.0);
+            let d = (p0 - (g[0] + t * g[2])).hypot(p1 - (g[1] + t * g[3]));
+            d < g[5]
+        };
+        if np_ * ns < 4096 || np_ == 0 {
+            return (0..np_).map(|i| seg.iter().any(|g| near(i, g))).collect();
+        }
+        // a uniform grid over the points: each segment listed in the cells its box (+ its half width) covers, each
+        // point tests its own cell's segments (long roads' thousands of segments against a wall's points)
+        let (mut x0, mut y0, mut x1, mut y1) = (f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY);
+        for i in 0..np_ {
+            x0 = x0.min(pv[[i, 0]]); x1 = x1.max(pv[[i, 0]]);
+            y0 = y0.min(pv[[i, 1]]); y1 = y1.max(pv[[i, 1]]);
+        }
+        let cell = (((x1 - x0) * (y1 - y0)).max(1.0) / np_ as f64).sqrt().max(4.0) * 2.0;
+        let nx = (((x1 - x0) / cell).floor() as usize + 1).min(4096);
+        let ny = (((y1 - y0) / cell).floor() as usize + 1).min(4096);
+        let mut grid: Vec<Vec<u32>> = vec![Vec::new(); nx * ny];
+        for (k, g) in seg.iter().enumerate() {
+            let (ax, ay, bx, by) = (g[0], g[1], g[0] + g[2], g[1] + g[3]);
+            let r = g[5];
+            let (lx, hx) = (ax.min(bx) - r, ax.max(bx) + r);
+            let (ly, hy) = (ay.min(by) - r, ay.max(by) + r);
+            if hx < x0 || lx > x1 || hy < y0 || ly > y1 {
+                continue;
+            }
+            let cx0 = (((lx - x0) / cell).floor().max(0.0)) as usize;
+            let cx1 = ((((hx - x0) / cell).floor()).max(0.0) as usize).min(nx - 1);
+            let cy0 = (((ly - y0) / cell).floor().max(0.0)) as usize;
+            let cy1 = ((((hy - y0) / cell).floor()).max(0.0) as usize).min(ny - 1);
+            for cy in cy0..=cy1 {
+                for cx in cx0..=cx1 {
+                    grid[cy * nx + cx].push(k as u32);
+                }
+            }
+        }
+        (0..np_).map(|i| {
+            let cx = (((pv[[i, 0]] - x0) / cell).floor().max(0.0) as usize).min(nx - 1);
+            let cy = (((pv[[i, 1]] - y0) / cell).floor().max(0.0) as usize).min(ny - 1);
+            grid[cy * nx + cx].iter().any(|&k| near(i, &seg[k as usize]))
         }).collect()
     });
     numpy::ndarray::Array1::from(out).into_pyarray(py)
@@ -2797,6 +2896,285 @@ fn follow_tris<'py>(py: Python<'py>, pts: PyReadonlyArray2<'py, f64>, uv: PyRead
     (pa.into_pyarray(py), ua.into_pyarray(py), ta.into_pyarray(py), src.into_pyarray(py))
 }
 
+/// grading._add_cuts, its probes: per vertex of a road's centreline xy (n, 2), points on its left, then its right, at
+/// the offsets o from the carriageway's edge (road_half) out past the core (half): road_half + every step m short of
+/// the core's edge, then half + 0, step, .. reach. Returns (points (2 * n * m, 2) in side, vertex, offset order, o (m,)).
+#[pyfunction]
+fn sharp_probes<'py>(py: Python<'py>, xy: PyReadonlyArray2<'py, f64>, road_half: f64, half: f64, reach: f64, step: f64)
+                     -> (Bound<'py, PyArray2<f64>>, Bound<'py, PyArray1<f64>>) {
+    let p = xy.as_array();
+    let n = p.nrows();
+    let count = ((reach + 1e-9) / step).ceil().max(0.0) as usize;       // numpy.arange(0, reach + 1e-9, step)
+    let offs: Vec<f64> = (0..count).map(|i| i as f64 * step).collect();
+    let mut o: Vec<f64> = offs.iter().filter(|&&v| v < half - road_half).map(|&v| road_half + v).collect();
+    o.extend(offs.iter().map(|&v| (road_half + v) + (half - road_half)));
+    let m = o.len();
+    let mut out = Vec::with_capacity(2 * n * m * 2);
+    // the unit tangents (numpy.gradient: central differences inside, one-sided at the ends) and left normals
+    let mut nl = Vec::with_capacity(n);
+    for i in 0..n {
+        let (a, b, d) = if n < 2 { (0, 0, 1.0) } else if i == 0 { (1, 0, 1.0) } else if i == n - 1 { (n - 1, n - 2, 1.0) }
+                        else { (i + 1, i - 1, 2.0) };
+        let (tx, ty) = ((p[[a, 0]] - p[[b, 0]]) / d, (p[[a, 1]] - p[[b, 1]]) / d);
+        let l = tx.hypot(ty).max(1e-9);
+        nl.push((-(ty / l), tx / l));
+    }
+    for side in [1.0f64, -1.0] {
+        for i in 0..n {
+            let (nx, ny) = (nl[i].0 * side, nl[i].1 * side);
+            for &ov in &o {
+                out.push(p[[i, 0]] + nx * ov);
+                out.push(p[[i, 1]] + ny * ov);
+            }
+        }
+    }
+    let a = numpy::ndarray::Array2::from_shape_vec((2 * n * m, 2), out).unwrap();
+    (a.into_pyarray(py), o.into_pyarray(py))
+}
+
+/// grading._add_cuts, the walls: from the raw ground g at sharp_probes' points (2 * n * m,) and the road's heights z
+/// (n,) at its vertices, per segment and side (left, then right) a cutting's (wall offset, top height, top offset), NaN
+/// where none (a drop: its wall only), as Plan.cut (n - 1, 6); None when there is no cutting at all. A climb counts
+/// where the ground rises min_m or more at grade or steeper on average (from a quarter to 90 % of it), over runs of
+/// run_n vertices at least; its wall is where the climb is half done (never nearer than road_half + 0.2), its top
+/// where it is 90 % done. The same reading of a fall: the road's core ends there, nothing raised, and never before its
+/// full half width (its sidewalk on the level: it hung down the drop, Munich's McGraw-Graben).
+#[pyfunction]
+fn sharp_cuts<'py>(py: Python<'py>, g: PyReadonlyArray1<'py, f64>, z: PyReadonlyArray1<'py, f64>,
+                   o: PyReadonlyArray1<'py, f64>, road_half: f64, half: f64, min_m: f64, grade: f64, step: f64,
+                   run_n: usize)
+                   -> Option<Bound<'py, PyArray2<f64>>> {
+    let (g, z, o) = (g.as_array(), z.as_array(), o.as_array());
+    let n = z.len();
+    let m = o.len();
+    if n < 2 || m == 0 || g.len() != 2 * n * m {
+        return None;
+    }
+    let first = |r: &[f64], v: f64| r.iter().position(|&x| x >= v).unwrap_or(0);    // numpy.argmax of r >= v
+    // (ok, wall offset, top rise, top offset) of a climb r (m,); its wall no nearer than near
+    let wall_of = |r: &[f64], near: f64| -> (bool, f64, f64, f64) {
+        let top = r.iter().fold(f64::NEG_INFINITY, |a, &b| if a.is_nan() || b.is_nan() { f64::NAN } else { a.max(b) });
+        let ti = first(r, 0.9 * top);
+        let half_i = first(r, top / 2.0);
+        let foot_i = first(r, 0.25 * top);
+        let steep = (top * 0.75) / (o[ti] - o[foot_i]).max(step);
+        (top >= min_m && steep >= grade, o[half_i].max(near), top, o[ti])
+    };
+    let nan = f64::NAN;
+    let mut cols: Vec<Vec<f64>> = Vec::with_capacity(6);
+    for side in 0..2 {
+        let (mut ok, mut wall, mut ztop, mut reach) = (vec![false; n], vec![0.0; n], vec![nan; n], vec![0.0; n]);
+        let mut rise = vec![0.0f64; m];
+        let mut fall = vec![0.0f64; m];
+        for i in 0..n {
+            let base = (side * n + i) * m;
+            for k in 0..m {
+                rise[k] = g[base + k] - z[i];
+                fall[k] = -rise[k];
+            }
+            let (ok_up, wall_up, top, reach_o) = wall_of(&rise, road_half + 0.2);
+            let (ok_dn, wall_dn, _, _) = wall_of(&fall, half);
+            ok[i] = ok_up || ok_dn;
+            wall[i] = if ok_up { wall_up } else { wall_dn };
+            if ok_up {
+                ztop[i] = z[i] + top;
+            }
+            reach[i] = reach_o;
+        }
+        // runs of run_n vertices at least (a single steep sample is noise, not a wall)
+        let mut run = vec![false; n];
+        let mut i = 0;
+        while i < n {
+            if !ok[i] {
+                i += 1;
+                continue;
+            }
+            let mut e = i;
+            while e + 1 < n && ok[e + 1] {
+                e += 1;
+            }
+            if e + 1 - i >= run_n {
+                for q in i..=e {
+                    run[q] = true;
+                }
+            }
+            i = e + 1;
+        }
+        let (mut cw, mut ct, mut cr) = (vec![nan; n - 1], vec![nan; n - 1], vec![nan; n - 1]);
+        for s in 0..n - 1 {
+            if !(run[s] && run[s + 1]) {
+                continue;
+            }
+            cw[s] = wall[s].max(wall[s + 1]);
+            if ztop[s].is_finite() && ztop[s + 1].is_finite() {
+                ct[s] = ztop[s].min(ztop[s + 1]);
+                cr[s] = reach[s].max(reach[s + 1]);
+            }
+        }
+        cols.push(cw);
+        cols.push(ct);
+        cols.push(cr);
+    }
+    if !cols[0].iter().chain(cols[3].iter()).any(|v| v.is_finite()) {
+        return None;
+    }
+    let mut flat = Vec::with_capacity((n - 1) * 6);
+    for s in 0..n - 1 {
+        for c in &cols {
+            flat.push(c[s]);
+        }
+    }
+    Some(numpy::ndarray::Array2::from_shape_vec((n - 1, 6), flat).unwrap().into_pyarray(py))
+}
+
+
+/// The points of a polyline xy (k, 2) at a tight bend: its direction half_span m back along it and half_span m on differ by
+/// min_turn_deg or more (a hairpin's apex and its approaches). Retaining walls and sharp cuttings stop there (the user,
+/// the Stelvio Pass 2026-10-21: the wall between a hairpin's legs ran on into the turn, full height to its end).
+#[pyfunction]
+fn tight_bends<'py>(py: Python<'py>, xy: PyReadonlyArray2<'py, f64>, half_span: f64, min_turn_deg: f64)
+                    -> Bound<'py, PyArray1<bool>> {
+    let p = xy.as_array();
+    let k = p.nrows();
+    let mut out = vec![false; k];
+    if k < 3 {
+        return out.into_pyarray(py);
+    }
+    let mut s = vec![0.0f64; k];
+    for i in 1..k {
+        s[i] = s[i - 1] + (p[[i, 0]] - p[[i - 1, 0]]).hypot(p[[i, 1]] - p[[i - 1, 1]]);
+    }
+    let dir = |d: f64| -> (f64, f64) {         // the unit direction of the segment at arc d (clamped)
+        let d = d.clamp(0.0, s[k - 1]);
+        let mut j = s.partition_point(|&v| v < d).clamp(1, k - 1);
+        while j > 1 && s[j] - s[j - 1] < 1e-9 {
+            j -= 1;
+        }
+        let (dx, dy) = (p[[j, 0]] - p[[j - 1, 0]], p[[j, 1]] - p[[j - 1, 1]]);
+        let l = dx.hypot(dy).max(1e-12);
+        (dx / l, dy / l)
+    };
+    let cos_min = min_turn_deg.to_radians().cos();
+    for i in 0..k {
+        let (ux, uy) = dir(s[i] - half_span);
+        let (vx, vy) = dir(s[i] + half_span);
+        out[i] = ux * vx + uy * vy <= cos_min;
+    }
+    out.into_pyarray(py)
+}
+
+
+/// vegetation.regional: the groups of a region from the generic ones (group, height m, lat, lon, ESA WorldCover class,
+/// a hashed [0, 1) per item) by a coarse climate. ids: the group ids (deciduous, conifer, shrub, rock, pine_west, palm,
+/// juniper, desert_shrub, desert_rock, oak_west, tropical); wc: WorldCover's (shrub, bare, grass, built) classes.
+/// Palms are most town trees only where they are in life: South Florida, the Rio Grande Valley, coastal Southern
+/// California, the tropics; a few along the rest of the Gulf Coast (GitHub #110: Houston and Austin were mostly palms,
+/// in life live oaks and loblolly pines). The Southeast's conifers are pines.
+#[pyfunction]
+#[allow(clippy::too_many_arguments)]
+fn regional_groups<'py>(py: Python<'py>, group: PyReadonlyArray1<'py, u8>, height: PyReadonlyArray1<'py, f64>,
+                        lat: PyReadonlyArray1<'py, f64>, lon: PyReadonlyArray1<'py, f64>,
+                        lcls: PyReadonlyArray1<'py, u8>, u: PyReadonlyArray1<'py, f64>, ids: [u8; 11], wc: [u8; 4])
+                        -> Bound<'py, PyArray1<u8>> {
+    let (group, height, lat, lon, lcls, u) = (group.as_array(), height.as_array(), lat.as_array(), lon.as_array(),
+                                               lcls.as_array(), u.as_array());
+    let [g_dec, g_con, g_shrub, g_rock, g_pine_w, g_palm, g_juniper, g_dshrub, g_drock, g_oak_w, g_trop] = ids;
+    let [wc_shrub, wc_bare, wc_grass, wc_built] = wc;
+    let n = group.len();
+    let mut out = vec![0u8; n];
+    for i in 0..n {
+        let (mut g, h, la, lo, c, ui) = (group[i], height[i], lat[i], lon[i], lcls[i], u[i]);
+        let west_coast = lo < -114.0 && la > 32.0 && la < 49.5;
+        let dry_west = lo < -102.0 && la > 25.0 && la < 46.0 && !(lo < -121.0 && la > 37.0);
+        let open_dry = dry_west && (c == wc_shrub || c == wc_bare || c == wc_grass);
+        let tropics = la.abs() < 23.5;
+        let built = c == wc_built;
+        let north_america = la > 24.0 && lo > -170.0 && lo < -50.0;
+        // where palms are most town trees: South Florida, the Rio Grande Valley, coastal Southern California
+        let palm_land = (la < 29.0 && lo > -82.8 && lo < -79.5) || (la < 26.9 && lo > -99.8 && lo < -96.8)
+            || (la < 34.6 && lo < -114.0 && la > 20.0);
+        let gulf = !palm_land && la < 30.8 && lo > -98.0 && lo < -80.0;
+        let southeast = la < 35.5 && lo > -98.5 && lo < -75.0;
+        // towns of the dry West are irrigated broadleaves far more than conifers (Moab's photos)
+        if dry_west && built && g == g_con && ui < 0.8 {
+            g = g_dec;
+        }
+        let tree = g == g_dec || g == g_con;
+        if (west_coast || southeast) && g == g_con {       // the west's pines; the Southeast's loblolly / slash pines
+            g = g_pine_w;
+        }
+        if west_coast && g == g_dec && h < 11.0 {
+            g = g_oak_w;
+        }
+        if open_dry && tree && h < 9.0 {                    // dry open country: junipers
+            g = g_juniper;
+        }
+        if open_dry && g == g_con {
+            g = g_pine_w;
+        }
+        let arid = !north_america && (c == wc_shrub || c == wc_bare) && la.abs() < 42.0;
+        if (dry_west || arid) && g == g_shrub {
+            g = g_dshrub;
+        }
+        if (dry_west || arid) && g == g_rock {
+            g = g_drock;
+        }
+        let palm_p = if palm_land || tropics { if built { 0.6 } else { 0.2 } }
+                     else if gulf { if built { 0.08 } else { 0.02 } } else { 0.0 };
+        if tree && ui < palm_p {
+            g = g_palm;
+        }
+        if tropics && g == g_dec && h >= 12.0 {
+            g = g_trop;
+        }
+        out[i] = g;
+    }
+    out.into_pyarray(py)
+}
+
+
+/// Each segment of a polyline xy (k, 2) clipped to the box (x0, y0, x1, y1) (Liang-Barsky): (k - 1, 2) the parameters
+/// (t0, t1) along it of the part inside, NaN for a segment wholly outside. grading: a long road's plan trimmed to its
+/// cell's own box, so every stretch of road is planned once (GitHub #108 / the Stelvio Pass: overlapping copies from
+/// neighbouring cells counted a road several times, the ground graded differently by every batch).
+#[pyfunction]
+fn clip_segments<'py>(py: Python<'py>, xy: PyReadonlyArray2<'py, f64>, bx: (f64, f64, f64, f64))
+                      -> Bound<'py, PyArray2<f64>> {
+    let p = xy.as_array();
+    let k = p.nrows();
+    let n = k.saturating_sub(1);
+    let (x0, y0, x1, y1) = bx;
+    let mut out = vec![f64::NAN; n * 2];
+    for i in 0..n {
+        let (ax, ay, bx_, by) = (p[[i, 0]], p[[i, 1]], p[[i + 1, 0]], p[[i + 1, 1]]);
+        let (dx, dy) = (bx_ - ax, by - ay);
+        let (mut t0, mut t1) = (0.0f64, 1.0f64);
+        let mut inside = true;
+        for (pp, qq) in [(-dx, ax - x0), (dx, x1 - ax), (-dy, ay - y0), (dy, y1 - ay)] {
+            if pp.abs() < 1e-15 {
+                if qq < 0.0 {
+                    inside = false;
+                    break;
+                }
+            } else {
+                let r = qq / pp;
+                if pp < 0.0 {
+                    if r > t1 { inside = false; break; }
+                    if r > t0 { t0 = r; }
+                } else {
+                    if r < t0 { inside = false; break; }
+                    if r < t1 { t1 = r; }
+                }
+            }
+        }
+        if inside && t1 > t0 {
+            out[2 * i] = t0;
+            out[2 * i + 1] = t1;
+        }
+    }
+    numpy::ndarray::Array2::from_shape_vec((n, 2), out).unwrap().into_pyarray(py)
+}
+
 #[pymodule]
 fn earthfast(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(island_ring_rays, m)?)?;
@@ -2845,6 +3223,11 @@ fn earthfast(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(over_tunnel, m)?)?;
     m.add_function(wrap_pyfunction!(veg_rows_json, m)?)?;
     m.add_function(wrap_pyfunction!(follow_tris, m)?)?;
-    m.add("VERSION", 36)?;
+    m.add_function(wrap_pyfunction!(sharp_probes, m)?)?;
+    m.add_function(wrap_pyfunction!(sharp_cuts, m)?)?;
+    m.add_function(wrap_pyfunction!(tight_bends, m)?)?;
+    m.add_function(wrap_pyfunction!(regional_groups, m)?)?;
+    m.add_function(wrap_pyfunction!(clip_segments, m)?)?;
+    m.add("VERSION", 44)?;
     Ok(())
 }
