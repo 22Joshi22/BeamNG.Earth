@@ -2688,6 +2688,8 @@ WALL_FULL = 0.9         # the graded ground this share of the way up to the natu
 WALL_THICK_MIN_M = 1.0  # ... at least this deep and at most WALL_THICK_MAX_M
 WALL_THICK_MAX_M = 3.5
 WALL_OTHER_GAP_M = 0.3  # m a wall's top keeps from another road's carriageway
+WALL_SLAB_DZ = 0.8      # m the ground behind a wall may fall under its top before the top ends there ...
+WALL_COPING_MIN_M = 0.5  # ... at least its coping
 WALL_DIAG_M = 2.9       # the terrain lattice's diagonal (heightmap.SQUARE 2 m)
 # a major road's cutting is walled in concrete (Munich's McGraw-Graben, Mapillary 2026-10-21), a smaller road's in stone
 # (Central Park's transverses)
@@ -3037,6 +3039,12 @@ def retaining_walls(frame, roads, elev, exact, decks=()):
             # patches where that probe sat in a dip)
             under = steps[None, :] >= face[:, None]
             top_g = np.maximum(gg, np.where(under, gs, -np.inf).max(axis=1))
+            # (and never past where the ground behind falls away again: between a hairpin's legs the bank tops out
+            # and drops to the other leg, and the top hung out over that slope, its underside seen from the road
+            # above, the Stelvio Pass 2026-10-21)
+            low = (gs < (top_g - WALL_SLAB_DZ)[:, None]) & (steps[None, :] > (face + 1.0)[:, None])
+            reach = np.where(low.any(axis=1), steps[np.argmax(low, axis=1)] - face, np.inf)
+            thick = np.minimum(thick, np.maximum(reach - 0.5, WALL_COPING_MIN_M))
         if parapets and len(steps):
             out.extend(_parapets(xy, z, out_n, rh, inside, steps, gs, others, fid, decks))
         cut = _wall_runs(gg - z) & inside & ~_under_decks(xy + out_n * core, z, decks)

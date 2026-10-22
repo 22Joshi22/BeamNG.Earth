@@ -634,6 +634,7 @@ TUNNEL_SOIL = "bne_tunnel_soil"     # grass on the ground over the masonry: a re
                                     # stone and terrain better")
 SOIL_UV_M = 1.0            # m per repeat of the grass (the terrain's detail texture: bngEarthGroundGrass, size 1)
 WALL_COPING_M = 0.5        # m of a retaining wall's top in stone (its coping), the rest of it soil
+WALL_SKIRT_M = 2.0         # m a retaining wall's back reaches down from its top
 STONE_UV_M = 3.0           # m per repeat of the stone on a low arch
 CONCRETE_UV_M = 4.0        # m per repeat of the concrete (as a tunnel's)
 LOW_PORTAL_UP = 1.4        # m a low arch's portal face reaches over the vault (to the ground over it) ...
@@ -698,6 +699,9 @@ def _retaining_walls(walls, origin, P, T, UV, M, nv):
             quads.append((cop_hi, back_hi, None, float(np.mean(thick - cop)), 4))
         if w.get("parapet"):                    # a parapet's back, seen from the valley
             quads.append((np.c_[back, foot] - origin, back_hi, foot, top, face_m))
+        else:                                   # a retaining wall's back: down into the ground behind it (where the
+            skirt = top - WALL_SKIRT_M          # ground there lies lower, its edge was open, seen from above)
+            quads.append((np.c_[back, skirt] - origin, back_hi, skirt, top, face_m))
         for qi, (lo_, hi_, vlo, vhi, mat) in enumerate(quads):
             P.append(np.concatenate([lo_, hi_]))
             if vlo is not None:
@@ -712,7 +716,7 @@ def _retaining_walls(walls, origin, P, T, UV, M, nv):
             nrm = np.cross(pts[tri[:, 1] - nv] - pts[tri[:, 0] - nv], pts[tri[:, 2] - nv] - pts[tri[:, 0] - nv])
             # the face looks toward the road, the top up (a parapet's back away from it)
             if vlo is not None:
-                sgn = -1.0 if qi == 3 else 1.0
+                sgn = -1.0 if qi == len(quads) - 1 and quads[-1][2] is not None and qi > 0 else 1.0
                 look = np.c_[sgn * np.concatenate([tw[i], tw[i]]), np.zeros(2 * (k - 1))]
             else:
                 look = np.tile([0.0, 0.0, 1.0], (2 * (k - 1), 1))
