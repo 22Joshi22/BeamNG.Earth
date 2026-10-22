@@ -691,9 +691,14 @@ def _retaining_walls(walls, origin, P, T, UV, M, nv):
         face_lo = np.c_[b, foot] - origin
         face_hi = np.c_[b, top] - origin
         back_hi = np.c_[back, top] - origin
-        cop_hi = np.c_[b - tw * WALL_COPING_M, top] - origin
-        for lo_, hi_, vlo, vhi, mat in ((face_lo, face_hi, foot, top, face_m), (face_hi, cop_hi, None, WALL_COPING_M, face_m),
-                                        (cop_hi, back_hi, None, float(np.mean(thick)) - WALL_COPING_M, 4)):
+        cop = np.minimum(WALL_COPING_M, thick)
+        cop_hi = np.c_[b - tw * cop[:, None], top] - origin
+        quads = [(face_lo, face_hi, foot, top, face_m), (face_hi, cop_hi, None, float(np.mean(cop)), face_m)]
+        if (thick > cop + 0.01).any():          # the soil behind the coping (a parapet is all stone)
+            quads.append((cop_hi, back_hi, None, float(np.mean(thick - cop)), 4))
+        if w.get("parapet"):                    # a parapet's back, seen from the valley
+            quads.append((np.c_[back, foot] - origin, back_hi, foot, top, face_m))
+        for qi, (lo_, hi_, vlo, vhi, mat) in enumerate(quads):
             P.append(np.concatenate([lo_, hi_]))
             if vlo is not None:
                 UV.append(np.column_stack((np.concatenate((s, s)) / face_uv, np.concatenate((vlo, vhi)) / face_uv)))
@@ -705,9 +710,10 @@ def _retaining_walls(walls, origin, P, T, UV, M, nv):
             tri = np.concatenate([np.stack([A, B, B1], 1), np.stack([A, B1, A1], 1)])
             pts = np.concatenate([lo_, hi_])
             nrm = np.cross(pts[tri[:, 1] - nv] - pts[tri[:, 0] - nv], pts[tri[:, 2] - nv] - pts[tri[:, 0] - nv])
-            # the face looks toward the road, the top up
+            # the face looks toward the road, the top up (a parapet's back away from it)
             if vlo is not None:
-                look = np.c_[np.concatenate([tw[i], tw[i]]), np.zeros(2 * (k - 1))]
+                sgn = -1.0 if qi == 3 else 1.0
+                look = np.c_[sgn * np.concatenate([tw[i], tw[i]]), np.zeros(2 * (k - 1))]
             else:
                 look = np.tile([0.0, 0.0, 1.0], (2 * (k - 1), 1))
             flip = (nrm * look).sum(1) < 0

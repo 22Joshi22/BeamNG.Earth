@@ -2829,6 +2829,55 @@ CLIFF_EDGE_M = 0.5      # m off the carriageway's edge the pieces' fronts stand
 CLIFF_ROAD_GAP_M = 0.3  # m a piece's footprint keeps from any carriageway
 
 
+# Parapets (the Stelvio Pass, Mapillary 2026-10-21: a low dry-stone wall along the outside of every bend and drop): a
+# rural road (not a motorway / trunk: guardrails there) whose ground falls PARAPET_DROP_M or more within PARAPET_PROBE_M of
+# its edge gets a stone parapet just off its carriageway, not across a road joining it.
+PARAPET_DROP_M = 2.0
+PARAPET_PROBE_M = 3.0
+PARAPET_H = 0.6
+PARAPET_W = 0.45
+PARAPET_OFF_M = 0.2
+PARAPET_ROAD_GAP_M = 2.0
+NO_PARAPET_CLASSES = {"motorway", "motorway_link", "trunk", "trunk_link", "service", "track"}
+CLIFF_MIN_CUT_M = 6.0   # a rural cut this deep: rock faces (cliff_rows), when CLIFF_WALLS_ON; else a dry-stone wall
+CLIFF_WALLS_ON = os.environ.get("BNE_CLIFF_WALLS", "off") == "on"
+
+
+def _parapets(xy, z, out_n, rh, inside, steps, gs, others, own, decks):
+    """The stone parapets along one side of a road (see PARAPET_*): wall dicts as retaining_walls' (roadmesh draws them
+    with a back face). gs: the graded ground at steps (m off the centre line) per point. Pure but for decks."""
+    import fast
+    near = np.flatnonzero((steps >= rh + 0.5) & (steps <= rh + PARAPET_PROBE_M))
+    if not len(near):
+        return []
+    drop = (z[:, None] - gs[:, near]).max(axis=1) > PARAPET_DROP_M
+    base = xy + out_n * (rh + PARAPET_OFF_M)
+    ok = drop & inside & ~_under_decks(base, z, decks)
+    # not across a road joining it (its junctions), nor where another road runs beside
+    for f2, (ln, h) in others.items():
+        if f2 == own or len(ln) < 2 or not ok.any():
+            continue
+        fast.require(0, "points_near_segments")
+        ok &= ~np.asarray(fast._ef.points_near_segments(np.ascontiguousarray(base), np.ascontiguousarray(ln[:-1]),
+                                                        np.ascontiguousarray(ln[1:]),
+                                                        np.full(len(ln) - 1, h + PARAPET_ROAD_GAP_M)))
+    out, i = [], 0
+    while i < len(ok):
+        if not ok[i]:
+            i += 1
+            continue
+        j = i
+        while j + 1 < len(ok) and ok[j + 1]:
+            j += 1
+        if j - i + 1 >= WALL_MIN_N:
+            sl = slice(i, j + 1)
+            out.append({"base": base[sl], "top": z[sl] + PARAPET_H, "foot": z[sl] - 1.0, "toward": -out_n[sl],
+                        "thick": np.full(j - i + 1, PARAPET_W), "concrete": False, "rock": False, "parapet": True,
+                        "road_z": z[sl]})
+        i = j + 1
+    return out
+
+
 def cliff_rows(walls, roads=()):
     """trees.lua rows [group, x, y, z, yaw, scale, height, rank] of rock-face pieces along the rural walls' faces
     (retaining_walls' "rock" walls). roads: build_tile's roads: no piece's footprint on a carriageway (shrunk until
@@ -2937,7 +2986,7 @@ def retaining_walls(frame, roads, elev, exact, decks=()):
             for o in steps:
                 pts_all.append(xy + nl * side * o)
             info.append((xy, z, nl * side, core, inside, width / 2, steps, spec.cls in CONCRETE_WALL_CLASSES,
-                         fid, not spec.urban))
+                         fid, not spec.urban, not spec.urban and spec.cls not in NO_PARAPET_CLASSES))
     if not pts_all:
         return []
     P = np.concatenate(pts_all)
@@ -2945,7 +2994,7 @@ def retaining_walls(frame, roads, elev, exact, decks=()):
     g = np.asarray(frame.geodetic_to_enu(la, lo, np.asarray(elev(la, lo), np.float64))[2], np.float64)
     out, k = [], 0
     others = {fid: (np.asarray(pts, np.float64)[:, :2], spec.width / 2) for fid, spec, pts, _ in roads if len(pts) >= 2}
-    for xy, z, out_n, core, inside, rh, steps, concrete, fid, rural in info:
+    for xy, z, out_n, core, inside, rh, steps, concrete, fid, rural, parapets in info:
         gg = g[k:k + len(xy)]
         k += len(xy)
         face = np.full(len(xy), core + 0.1)
@@ -2969,6 +3018,8 @@ def retaining_walls(frame, roads, elev, exact, decks=()):
             # patches where that probe sat in a dip)
             under = steps[None, :] >= face[:, None]
             top_g = np.maximum(gg, np.where(under, gs, -np.inf).max(axis=1))
+        if parapets and len(steps):
+            out.extend(_parapets(xy, z, out_n, rh, inside, steps, gs, others, fid, decks))
         cut = _wall_runs(gg - z) & inside & ~_under_decks(xy + out_n * core, z, decks)
         i = 0
         while i < len(cut):
@@ -2988,8 +3039,11 @@ def retaining_walls(frame, roads, elev, exact, decks=()):
                 # (never over another road: a hairpin's wall top covered the road above, the Stelvio Pass, the user's
                 # report 2026-10-21)
                 th = np.minimum(th, _clear_depth(base, out_n[sl], th, others, fid))
+                # (rock faces only as an experiment, BNE_CLIFF_WALLS=on, for tall rural cuts: the Stelvio's hairpins are
+                # walled in dry stone, tall cuts too, Mapillary 2026-10-21; the user chose stone walls for passes)
+                tall = CLIFF_WALLS_ON and float(np.max(top_g[sl] - z[sl])) > CLIFF_MIN_CUT_M
                 out.append({"base": base, "top": top_g[sl] + WALL_TOP_M, "foot": z[sl] - WALL_FOOT_M,
-                            "toward": -out_n[sl], "thick": th, "concrete": concrete, "rock": rural,
+                            "toward": -out_n[sl], "thick": th, "concrete": concrete, "rock": rural and tall,
                             "road_z": z[sl], "clear": _clear_depth(base, out_n[sl], np.full(len(base), CLIFF_REACH_M),
                                                                    others, fid),
                             "edge": xy[sl] + out_n[sl] * (rh + CLIFF_EDGE_M)})
